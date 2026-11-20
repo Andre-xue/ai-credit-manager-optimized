@@ -52,6 +52,8 @@ export interface ReminderInput {
   spendAnomalies?: Array<{ accountId: string; name: string; dateLabel: string; cost: number; avgDaily: number; ratio: number }>
   /** 上月消费报告摘要（可选）：事件 ID 按月份去重，每月只推一次 */
   monthlyReportSummary?: { month: string; totalCost: number; recordCount: number; topPlatform?: string; deltaPct?: number | null }
+  /** 订阅续费临近（可选）：days 为距下次续费天数，窗口过滤由调用方按 alertDays 完成 */
+  subscriptionRenewals?: Array<{ accountId: string; name: string; days: number; renewAt: string }>
 }
 
 function localDateKey(d: Date): string {
@@ -88,6 +90,20 @@ export function buildReminders(input: ReminderInput): ReminderEvent[] {
         kind: 'expiry',
         title: '订阅 / 额度即将到期',
         body: e.days === 0 ? `「${e.name}」今天到期，记得及时处理。` : `「${e.name}」将在 ${e.days} 天后到期，记得及时处理。`,
+      })
+    }
+  }
+
+  if (prefs.expiry && input.subscriptionRenewals) {
+    for (const r of input.subscriptionRenewals) {
+      if (r.days < 0) continue
+      out.push({
+        id: `subrenew:${r.accountId}:${r.renewAt}`,
+        kind: 'expiry',
+        title: '订阅即将续费',
+        body: r.days === 0
+          ? `「${r.name}」今天（${r.renewAt}）续费，记得确认余额/支付方式。`
+          : `「${r.name}」将在 ${r.days} 天后（${r.renewAt}）续费，记得提前处理。`,
       })
     }
   }

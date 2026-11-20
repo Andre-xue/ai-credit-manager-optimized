@@ -5,6 +5,7 @@ import type { AppState } from '../core/types'
 import { buildCalendarMonth, checkinHeatmap, checkinStreak, monthGrid, shiftMonth } from '../core/calendar'
 import { predictExhaustion } from '../core/forecast'
 import { buildICalendar } from '../core/ical'
+import { buildAchievements } from '../core/achievements'
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日']
 
@@ -23,6 +24,7 @@ export function CalendarView({ state }: { state: AppState }) {
   const monthCost = [...cal.days.values()].reduce((s, d) => s + d.cost, 0)
 
   const streak = useMemo(() => checkinStreak(state, today), [state, today])
+  const achievements = useMemo(() => buildAchievements(state, today), [state, today])
   const heat = useMemo(() => checkinHeatmap(state, today, 18), [state, today])
   const heatLead = heat.length ? (new Date(heat[0].date + 'T00:00:00').getDay() + 6) % 7 : 0
   /** 各账户预计耗尽日（按当前消耗速度预测）→ 日期 → 账户名 */
@@ -105,6 +107,23 @@ export function CalendarView({ state }: { state: AppState }) {
           {Array.from({ length: heatLead }).map((_, i) => <i key={`b-${i}`} className="heat-cell blank" />)}
           {heat.map((d) => (
             <i key={d.date} className={`heat-cell lv${Math.min(4, d.count)}`} title={`${d.date} · 签到 ${d.count} 个工具`} />
+          ))}
+        </div>
+      </div>
+
+      <div className="panel" style={{ padding: 16, marginTop: 14 }}>
+        <b style={{ fontSize: 13.5 }}>签到成就</b>
+        <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>已点亮 {achievements.filter((a) => a.earned).length} / {achievements.length} 枚徽章</span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginTop: 12 }}>
+          {achievements.map((a) => (
+            <div key={a.id} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: '10px 12px', opacity: a.earned ? 1 : 0.62, background: a.earned ? 'rgba(109,40,217,.07)' : 'transparent' }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{a.earned ? '🏅 ' : '🔒 '}{a.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{a.desc}</div>
+              <div style={{ height: 5, borderRadius: 3, background: 'var(--border)', marginTop: 8, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round((a.current / a.target) * 100)}%`, background: a.earned ? '#16a34a' : 'var(--primary)', borderRadius: 3 }} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{a.current} / {a.target}</div>
+            </div>
           ))}
         </div>
       </div>

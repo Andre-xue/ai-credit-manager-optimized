@@ -9,6 +9,7 @@ export interface UsageEventInput {
   outputTokens: number
   estimatedCost: number
   model?: string
+  project?: string
 }
 
 /** 解析单行 CSV（支持双引号包裹含逗号的字段） */

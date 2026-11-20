@@ -104,3 +104,73 @@ export function reportToText(r: MonthlyReport): string {
   }
   return lines.join('\n')
 }
+
+/** 年度总结：全年消费/签到/平台与模型之最/分月走势 */
+export interface YearReport {
+  year: string
+  totalCost: number
+  totalTokens: number
+  recordCount: number
+  activeDays: number
+  checkinDays: number
+  checkinCount: number
+  topPlatform?: { name: string; cost: number }
+  topModel?: { name: string; cost: number }
+  bestMonth?: { month: string; cost: number }
+  byMonth: Array<{ month: string; cost: number }>
+  accountCount: number
+}
+
+export function buildYearReport(state: AppState, year: string): YearReport {
+  const events = state.usage.filter((u) => u.date.startsWith(year))
+  const totalCost = events.reduce((s, u) => s + u.estimatedCost, 0)
+  const totalTokens = events.reduce((s, u) => s + (u.inputTokens || 0) + (u.outputTokens || 0), 0)
+  const monthMap = new Map<string, number>()
+  const platMap = new Map<string, number>()
+  const modelMap = new Map<string, number>()
+  for (const u of events) {
+    const mk = u.date.slice(0, 7)
+    monthMap.set(mk, (monthMap.get(mk) ?? 0) + u.estimatedCost)
+    const acc = state.accounts.find((a) => a.id === u.accountId)
+    const pname = acc ? (PROVIDER_MAP[acc.providerId]?.shortName ?? acc.providerId) : '未知账户'
+    platMap.set(pname, (platMap.get(pname) ?? 0) + u.estimatedCost)
+    if (u.model) modelMap.set(u.model, (modelMap.get(u.model) ?? 0) + u.estimatedCost)
+  }
+  const byMonth = [...monthMap.entries()].map(([month, cost]) => ({ month, cost })).sort((a, b) => a.month.localeCompare(b.month))
+  const topOf = (m: Map<string, number>) => {
+    let best: { name: string; cost: number } | undefined
+    for (const [name, cost] of m) if (!best || cost > best.cost) best = { name, cost }
+    return best
+  }
+  const doneCheckins = state.checkins.filter((c) => c.done && c.date.startsWith(year))
+  return {
+    year,
+    totalCost,
+    totalTokens,
+    recordCount: events.length,
+    activeDays: new Set(events.map((u) => u.date)).size,
+    checkinDays: new Set(doneCheckins.map((c) => c.date)).size,
+    checkinCount: doneCheckins.length,
+    topPlatform: topOf(platMap),
+    topModel: topOf(modelMap),
+    bestMonth: byMonth.length ? byMonth.reduce((a, b) => (b.cost > a.cost ? b : a)) : undefined,
+    byMonth,
+    accountCount: state.accounts.length,
+  }
+}
+
+export function yearReportToText(r: YearReport): string {
+  const lines = [
+    `# AI 积分管家 · ${r.year} 年度总结`,
+    `总消费 ¥${r.totalCost.toFixed(2)} · 总 Tokens ${r.totalTokens.toLocaleString()} · 记录 ${r.recordCount} 条 · 活跃 ${r.activeDays} 天`,
+    `签到 ${r.checkinCount} 次（${r.checkinDays} 天）· 账户 ${r.accountCount} 个`,
+  ]
+  if (r.topPlatform) lines.push(`最常用平台：${r.topPlatform.name}（¥${r.topPlatform.cost.toFixed(2)}）`)
+  if (r.topModel) lines.push(`最常用模型：${r.topModel.name}（¥${r.topModel.cost.toFixed(2)}）`)
+  if (r.bestMonth) lines.push(`消费最高的月份：${r.bestMonth.month}（¥${r.bestMonth.cost.toFixed(2)}）`)
+  if (r.byMonth.length) {
+    lines.push('', '## 分月消费')
+    for (const m of r.byMonth) lines.push(`- ${m.month}：¥${m.cost.toFixed(2)}`)
+  }
+  return lines.join('\n')
+}

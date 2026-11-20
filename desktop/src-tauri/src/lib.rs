@@ -1347,6 +1347,310 @@ fn icon_display_apply(app: tauri::AppHandle, mode: String) {
     }
 }
 
+// ===== 本地统一网关：OpenAI 兼容代理（仅监听 127.0.0.1，真实 Key 只存进程内存） =====
+// 前端在保险箱解锁后把「模型 id → 上游账户列表」路由表下发到这里；本地工具（Cursor 等）
+// 以 http://127.0.0.1:<port>/v1 + 网关令牌调用，按模型名路由到真实账户；
+// 上游报错（401/403/429/5xx）或连接失败时自动换下一个账户重试（故障转移）。
+// gateway_stop 会清掉路由与令牌；应用退出后内存路由自然消失，不落盘。
+
+#[derive(serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GatewayRouteIn {
+    base_url: String,
+    api_key: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayStatus {
+    running: bool,
+    port: u16,
+    route_count: usize,
+    model_count: usize,
+    requests: u64,
+}
+
+struct GatewayInner {
+    running: bool,
+    port: u16,
+    token: String,
+    routes: std::collections::HashMap<String, Vec<GatewayRouteIn>>,
+    requests: u64,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static GATEWAY: OnceLock<std::sync::Mutex<GatewayInner>> = OnceLock::new();
+
+fn gateway_inner() -> &'static std::sync::Mutex<GatewayInner> {
+    GATEWAY.get_or_init(|| std::sync::Mutex::new(GatewayInner {
+        running: false,
+        port: 0,
+        token: String::new(),
+        routes: std::collections::HashMap::new(),
+        requests: 0,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }))
+}
+
+fn gateway_blocking_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent("ai-credit-manager-gateway/0.1")
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .expect("初始化网关 HTTP 客户端失败")
+    })
+}
+
+#[tauri::command]
+fn gateway_set_routes(routes: std::collections::HashMap<String, Vec<GatewayRouteIn>>) -> Result<usize, String> {
+    let mut g = gateway_inner().lock().map_err(|_| "网关状态锁定失败".to_string())?;
+    let models = routes.len();
+    g.routes = routes;
+    Ok(models)
+}
+
+#[tauri::command]
+fn gateway_start(port: u16, token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("网关令牌为空，先在设置里生成令牌".to_string());
+    }
+    let stop;
+    {
+        let mut g = gateway_inner().lock().map_err(|_| "网关状态锁定失败".to_string())?;
+        if g.running && g.port == port {
+            g.token = token;
+            return Ok(format!("网关已在运行：http://127.0.0.1:{}/v1", port));
+        }
+        if g.running {
+            g.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            g.running = false;
+        }
+        stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        g.stop = stop.clone();
+        g.port = port;
+        g.token = token;
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("端口 {} 绑定失败：{}", port, e))?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    {
+        let mut g = gateway_inner().lock().map_err(|_| "网关状态锁定失败".to_string())?;
+        g.running = true;
+    }
+    std::thread::spawn(move || {
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    std::thread::spawn(move || gateway_handle_conn(stream));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(format!("网关已开启：http://127.0.0.1:{}/v1", port))
+}
+
+#[tauri::command]
+fn gateway_stop() -> Result<(), String> {
+    let mut g = gateway_inner().lock().map_err(|_| "网关状态锁定失败".to_string())?;
+    g.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    g.running = false;
+    g.routes.clear();
+    g.token.clear();
+    Ok(())
+}
+
+#[tauri::command]
+fn gateway_status() -> GatewayStatus {
+    match gateway_inner().lock() {
+        Ok(g) => GatewayStatus {
+            running: g.running,
+            port: g.port,
+            route_count: g.routes.values().map(|v| v.len()).sum(),
+            model_count: g.routes.len(),
+            requests: g.requests,
+        },
+        Err(_) => GatewayStatus { running: false, port: 0, route_count: 0, model_count: 0, requests: 0 },
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() { return None; }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn gateway_write(stream: &mut std::net::TcpStream, status: u16, reason: &str, content_type: &str, body: &[u8]) {
+    use std::io::Write;
+    let head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        status, reason, content_type, body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+}
+
+fn gateway_err_json(stream: &mut std::net::TcpStream, status: u16, reason: &str, msg: &str) {
+    let body = serde_json::json!({ "error": { "message": msg, "type": "gateway_error" } }).to_string();
+    gateway_write(stream, status, reason, "application/json", body.as_bytes());
+}
+
+fn gateway_handle_conn(mut stream: std::net::TcpStream) {
+    use std::io::{Read, Write};
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(180)));
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
+    let head_end;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+                    head_end = pos + 4;
+                    break;
+                }
+                if buf.len() > 65536 { return; }
+            }
+            Err(_) => return,
+        }
+    }
+    let head_text = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let mut lines = head_text.lines();
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut content_length: usize = 0;
+    let mut authorization = String::new();
+    let mut expect_continue = false;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim().to_string();
+            match key.as_str() {
+                "content-length" => content_length = val.parse().unwrap_or(0),
+                "authorization" => authorization = val,
+                "expect" => expect_continue = val.eq_ignore_ascii_case("100-continue"),
+                _ => {}
+            }
+        }
+    }
+    if expect_continue {
+        let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+        let _ = stream.flush();
+    }
+    let mut body: Vec<u8> = buf.split_off(head_end);
+    while body.len() < content_length {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => body.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        if body.len() > 33_554_432 { return; }
+    }
+    body.truncate(content_length);
+
+    let (token, routes_snapshot) = {
+        let g = match gateway_inner().lock() { Ok(g) => g, Err(_) => return };
+        (g.token.clone(), g.routes.clone())
+    };
+    if path.starts_with("/v1/") {
+        if token.is_empty() || authorization != format!("Bearer {}", token) {
+            gateway_err_json(&mut stream, 401, "Unauthorized", "网关令牌不正确（Authorization: Bearer <令牌>）");
+            return;
+        }
+    } else if path == "/" || path == "/health" {
+        let body = serde_json::json!({ "ok": true, "service": "ai-credit-manager gateway" }).to_string();
+        gateway_write(&mut stream, 200, "OK", "application/json", body.as_bytes());
+        return;
+    } else {
+        gateway_err_json(&mut stream, 404, "Not Found", "路径不存在");
+        return;
+    }
+
+    if method == "GET" && path == "/v1/models" {
+        let data: Vec<serde_json::Value> = routes_snapshot.keys()
+            .map(|id| serde_json::json!({ "id": id, "object": "model", "owned_by": "ai-credit-manager" }))
+            .collect();
+        let body = serde_json::json!({ "object": "list", "data": data }).to_string();
+        gateway_write(&mut stream, 200, "OK", "application/json", body.as_bytes());
+        return;
+    }
+    if !(method == "POST" && path == "/v1/chat/completions") {
+        gateway_err_json(&mut stream, 404, "Not Found", "仅支持 GET /v1/models 与 POST /v1/chat/completions");
+        return;
+    }
+
+    let req_json: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    let model = req_json.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let want_stream = req_json.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let candidates = match routes_snapshot.get(&model) {
+        Some(list) if !list.is_empty() => list.clone(),
+        _ => {
+            gateway_err_json(&mut stream, 404, "Not Found", &format!("模型 {} 未注册路由（开启网关时按账户引擎目录注册）", model));
+            return;
+        }
+    };
+    if let Ok(mut g) = gateway_inner().lock() { g.requests += 1; }
+
+    let client = gateway_blocking_client();
+    let mut last_err = String::new();
+    for (idx, route) in candidates.iter().enumerate() {
+        let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", route.api_key))
+            .header("Content-Type", "application/json")
+            .body(body.clone())
+            .send();
+        let mut resp = match resp {
+            Ok(r) => r,
+            Err(e) => { last_err = format!("连接上游失败：{}", e); continue; }
+        };
+        let status = resp.status();
+        let failover_worthy = status.as_u16() == 401 || status.as_u16() == 403 || status.as_u16() == 429 || status.is_server_error();
+        if failover_worthy && idx + 1 < candidates.len() {
+            last_err = format!("上游返回 {}", status);
+            continue;
+        }
+        let reason = status.canonical_reason().unwrap_or("");
+        let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()).unwrap_or("application/json").to_string();
+        if want_stream || content_type.contains("text/event-stream") {
+            let head = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nConnection: close\r\nCache-Control: no-cache\r\n\r\n",
+                status.as_u16(), reason, content_type
+            );
+            if stream.write_all(head.as_bytes()).is_err() { return; }
+            let mut rbuf = [0u8; 8192];
+            loop {
+                match resp.read(&mut rbuf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if stream.write_all(&rbuf[..n]).is_err() { return; }
+                        let _ = stream.flush();
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = stream.flush();
+        } else {
+            match resp.bytes() {
+                Ok(bytes) => gateway_write(&mut stream, status.as_u16(), reason, &content_type, &bytes),
+                Err(e) => gateway_err_json(&mut stream, 502, "Bad Gateway", &format!("读取上游响应失败：{}", e)),
+            }
+        }
+        return;
+    }
+    gateway_err_json(&mut stream, 502, "Bad Gateway", &format!("所有上游账户均不可用：{}", last_err));
+}
+
 /// 最近一次托盘图标的物理矩形（x, y, w, h）：迷你窗据此定位到图标正下方弹出
 static TRAY_RECT: OnceLock<std::sync::Mutex<Option<(i32, i32, i32, i32)>>> = OnceLock::new();
 
@@ -1600,7 +1904,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -52,3 +52,53 @@ export async function unbindBiometric(): Promise<void> {
   if (!isNativeApp()) return
   try { await (await plugin()).deleteCredentials({ server: SERVER }) } catch { /* 忽略 */ }
 }
+
+// ===== 保险箱主密码（原生端）：存系统钥匙串，读取必须先过生物验证 =====
+// 取代原生端「localStorage 混淆存储」：密码只在系统钥匙串里，读出即代表刚通过指纹/人脸。
+const VAULT_SERVER = 'acm.vault.master'
+const VAULT_BOUND_KEY = 'acm.vault.bioNative'
+
+/** 把保险箱主密码存入系统钥匙串（开启指纹解锁/改密/解锁成功时刷新） */
+export async function bindVaultPasswordNative(password: string): Promise<boolean> {
+  if (!isNativeApp()) return false
+  try {
+    await (await plugin()).setCredentials({ username: 'master', password, server: VAULT_SERVER })
+    try { localStorage.setItem(VAULT_BOUND_KEY, '1') } catch { /* 忽略 */ }
+    return true
+  } catch { return false }
+}
+
+/** 本机是否已把保险箱密码存入钥匙串 */
+export function vaultPasswordNativeBound(): boolean {
+  try { return localStorage.getItem(VAULT_BOUND_KEY) === '1' } catch { return false }
+}
+
+/** 弹生物验证并从钥匙串取回保险箱主密码；取消/失败返回 null */
+export async function readVaultPasswordNative(): Promise<string | null> {
+  if (!isNativeApp() || !vaultPasswordNativeBound()) return null
+  try {
+    const c = await (await plugin()).getCredentials({ server: VAULT_SERVER })
+    return c?.password || null
+  } catch { return null }
+}
+
+/** 解除钥匙串绑定（切换回密码解锁/重置保险箱时调用） */
+export async function unbindVaultPasswordNative(): Promise<void> {
+  try { localStorage.removeItem(VAULT_BOUND_KEY) } catch { /* 忽略 */ }
+  if (!isNativeApp()) return
+  try { await (await plugin()).deleteCredentials({ server: VAULT_SERVER }) } catch { /* 忽略 */ }
+}
+
+/**
+ * 生物解锁保险箱的统一取密：
+ * 原生端优先钥匙串（读出即已验证）；桌面/Web 走系统生物验证 + 本地混淆存储。
+ * 返回 null 表示未通过验证或没有已保存的凭据。
+ */
+export async function resolveBiometricVaultPassword(reason: string): Promise<string | null> {
+  const nativePwd = await readVaultPasswordNative()
+  if (nativePwd) return nativePwd
+  const { biometricAuth } = await import('./openExternal')
+  const { getBiometricPassword } = await import('./crypto')
+  if (!(await biometricAuth(reason))) return null
+  return getBiometricPassword()
+}

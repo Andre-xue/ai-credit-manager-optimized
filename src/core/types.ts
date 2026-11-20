@@ -67,6 +67,8 @@ export interface Account {
   note?: string
   /** 保险箱分组（逻辑分组，如 工作 / 个人 / 项目；空 = 未分组） */
   group?: string
+  /** 订阅信息（订阅制账户）：价格（元）/ 周期 / 下次续费日（YYYY-MM-DD），用于订阅续费总览与续费提醒 */
+  subscription?: { price: number; cycle: 'monthly' | 'yearly'; renewAt: string }
   /** 模型能力分类（添加时自动识别：chat/translation/embedding/image/audio/unknown） */
   modelCapability?: ModelCapability
   /** 语音配置(APP)账户所选的语音服务商 id（aliyun/volcengine/tencent/minimax/elevenlabs） */
@@ -110,6 +112,8 @@ export interface UsageEvent {
   outputTokens: number
   estimatedCost: number // 估算费用（货币单位）
   model?: string
+  /** 项目标签（记账归类，如「短视频项目」；空 = 未分类） */
+  project?: string
 }
 
 /** 福利领取标记（仅记录本人已跳转/领取，不执行任何自动操作） */
@@ -141,6 +145,16 @@ export interface AppState {
   settings: AppSettings
   /** 操作审计日志（跨端同步时按 id 合并，保留最近 500 条） */
   audit?: AuditEntry[]
+  /** AI 助手提示词库（随整份状态云同步） */
+  prompts?: PromptTemplate[]
+}
+
+/** AI 助手提示词模板：正文可含 {变量} 占位，插入后在输入框里改 */
+export interface PromptTemplate {
+  id: string
+  title: string
+  body: string
+  createdAt: string
 }
 
 /** 系统通知提醒偏好（签到/到期/告急/预算） */
@@ -217,6 +231,14 @@ export interface AppSettings {
   localServicesInitialized?: boolean
   /** 内存档位手动覆盖（Web/手机端无系统内存检测时使用；desktop 以实际检测为准） */
   memoryTierOverride?: MemoryTier
+  /** 本地统一网关监听端口（仅桌面端；缺省 8787） */
+  gatewayPort?: number
+  /** 本地统一网关访问令牌（调用方以 Bearer 携带；仅存本机设置，不参与云同步过滤以外的传输） */
+  gatewayToken?: string
+  /** 解锁保险箱后自动开启本地网关（仅桌面端） */
+  gatewayAutoStart?: boolean
+  /** 保险箱闲置自动上锁分钟数（0/缺省 = 关闭；解锁后无操作达到该时长自动清空会话密码） */
+  autoLockMinutes?: number
 }
 
 /** 本地模型服务类型 */

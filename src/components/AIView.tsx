@@ -5,10 +5,10 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, Pencil,
 } from 'lucide-react'
 import {
-  listModels, loadHistory, saveHistory, rotateConversationId,
+  listModels, loadHistory, rotateConversationId,
   loadModel, saveModel, streamChat, friendlyAiError,
   type ChatMessage, type AiModel,
 } from '../core/ai'
@@ -29,7 +29,7 @@ import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { buildDataDigest } from '../core/dataDigest'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
-import type { Account } from '../core/types'
+import type { Account, PromptTemplate } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
@@ -78,13 +78,53 @@ function joinDictation(base: string, text: string): string {
   return base + text
 }
 
-export function AIView({ notify, accounts, settings, serviceController }: {
+/** AI 助手多会话：每个会话独立保存消息，可新建/切换/重命名/删除（存本机 localStorage） */
+export interface ChatSession {
+  id: string
+  title: string
+  messages: ChatMessage[]
+  updatedAt: number
+}
+
+const SESSIONS_KEY = 'acm_ai_sessions_v1'
+
+function loadSessionStore(): { sessions: ChatSession[]; activeId: string } {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sessions?: ChatSession[]; activeId?: string }
+      if (Array.isArray(parsed.sessions)) {
+        const sessions = parsed.sessions.filter(s => s && Array.isArray(s.messages))
+        if (sessions.length) {
+          return { sessions, activeId: parsed.activeId && sessions.some(s => s.id === parsed.activeId) ? parsed.activeId : sessions[0].id }
+        }
+      }
+    }
+  } catch { /* 忽略 */ }
+  const legacy = loadHistory()
+  const first: ChatSession = { id: `sess-${Date.now()}`, title: legacy.length ? '历史对话' : '新对话', messages: legacy, updatedAt: Date.now() }
+  return { sessions: [first], activeId: first.id }
+}
+
+function saveSessionStore(store: { sessions: ChatSession[]; activeId: string }): void {
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify({
+      activeId: store.activeId,
+      sessions: store.sessions.map(s => ({ ...s, messages: s.messages.slice(-100) })),
+    }))
+  } catch { /* 忽略 */ }
+}
+
+export function AIView({ notify, accounts, settings, serviceController, prompts, onPromptsChange }: {
   notify: (m: string) => void
   accounts: Account[]
   settings?: import('../core/types').AppSettings
   serviceController?: import('../core/useServiceController').ServiceController
+  prompts?: PromptTemplate[]
+  onPromptsChange?: (p: PromptTemplate[]) => void
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>(() => loadHistory())
+  const [sessionStore, setSessionStore] = useState<{ sessions: ChatSession[]; activeId: string }>(loadSessionStore)
+  const [messages, setMessages] = useState<ChatMessage[]>(() => sessionStore.sessions.find(s => s.id === sessionStore.activeId)?.messages ?? [])
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
   const [models, setModels] = useState<AiModel[]>([])
@@ -237,7 +277,49 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   }, [notify])
 
   // 持久化历史 + 自动滚动到底部
-  useEffect(() => { saveHistory(messages) }, [messages])
+  // 多会话：messages 变化时同步回当前会话并持久化全部会话
+  useEffect(() => {
+    setSessionStore(store => ({
+      ...store,
+      sessions: store.sessions.map(s => s.id === store.activeId
+        ? { ...s, messages: messages.slice(-100), updatedAt: Date.now(), title: s.title === '新对话' ? (messages.find(m => m.role === 'user')?.content.slice(0, 20) || '新对话') : s.title }
+        : s),
+    }))
+  }, [messages])
+  useEffect(() => { saveSessionStore(sessionStore) }, [sessionStore])
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
+  const switchSession = (id: string) => {
+    const target = sessionStore.sessions.find(s => s.id === id)
+    if (!target) return
+    setSessionStore(store => ({ ...store, activeId: id }))
+    setMessages(target.messages)
+    setSessionsOpen(false)
+    setCompareRuns(null)
+  }
+  const newSession = () => {
+    const s: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
+    setSessionStore(store => ({ sessions: [s, ...store.sessions], activeId: s.id }))
+    setMessages([])
+    setSessionsOpen(false)
+    rotateConversationId()
+  }
+  const deleteSession = (id: string) => {
+    const rest = sessionStore.sessions.filter(s => s.id !== id)
+    if (!rest.length) {
+      const fresh: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
+      setSessionStore({ sessions: [fresh], activeId: fresh.id })
+      setMessages([])
+      return
+    }
+    if (sessionStore.activeId === id) {
+      setSessionStore({ sessions: rest, activeId: rest[0].id })
+      setMessages(rest[0].messages)
+    } else {
+      setSessionStore(store => ({ ...store, sessions: rest }))
+    }
+  }
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamingText])
 
   // 本地型：Ollama 服务开启时自动拉取本机可用模型（文本+视觉，排除嵌入/生图/视频/语音）
@@ -411,7 +493,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   }, [currentAccount, engines])
 
   /** 统一取回复：用户自己的账户走其 API，否则走平台免费模型 */
-  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false, optKey?: string): Promise<string> => {
+  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false, optKey?: string, onDelta?: (d: string) => void): Promise<string> => {
     const opt = allOptions.find(o => o.key === (optKey ?? model))
     const isFirstReply = !history.some(m => m.role === 'assistant')
     const systemPrompt = voiceMode
@@ -465,7 +547,8 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       return r.text
     }
     // 平台免费模型：流式输出（图片附件随多模态消息发送）
-    return streamChat(model || 'auto', voiceHistory, content, delta => setStreamingText(prev => prev + delta), signal, images, effectiveReasoning, effectiveSystemPrompt)
+    // 指定了 optKey（换 Key 重试/多模型对比）时按该选项自己的模型 id 调用，否则用当前所选模型
+    return streamChat(opt?.free ? opt.key : (model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt)
   }
 
   // 报错自动换 Key：调用失败（鉴权/额度类）时，若同平台还有别的可用账户，给出「一键切换重试」
@@ -475,6 +558,13 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     const content = (text ?? input).trim()
     const hasAttach = attachments.length > 0
     if ((!content && !hasAttach) || generating) return
+    // 对比模式：同一个问题并行发给所选的 2–3 个模型（换 Key 重试等带 optKey 的调用不走对比）
+    if (compareMode && !optKey) {
+      if (hasAttach) { notify('对比模式暂不支持附件，请先移除附件'); return }
+      if (compareKeys.length < 2) { notify('对比模式：请先在上方选择至少 2 个模型'); return }
+      await runCompare(content)
+      return
+    }
     const effectiveText = content || '请分析这些附件'
     if (!model && !optKey) { notify('模型尚未就绪，请稍候'); return }
     // 生图型/视频型：允许发送提示词，交给 callByCategory 调用生图/视频接口（不再拦截）
@@ -507,9 +597,35 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      const answer = await getReply(aiText, messages, controller.signal, imageUrls, false, optKey)
+      let answer = ''
+      let failoverNote = ''
+      try {
+        answer = await getReply(aiText, messages, controller.signal, imageUrls, false, optKey)
+      } catch (firstErr) {
+        // 自动故障转移：鉴权/额度/限流类失败且同平台有备用账户时，自动换备用 Key 重试（最多 2 个），
+        // 全部失败才落到外层 catch（保留手动换 Key 重试条）
+        const fe = firstErr as { needPwd?: boolean; message?: string }
+        const retryable = !fe?.needPwd && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
+        const failed0 = !optKey ? allOptions.find(o => o.key === model)?.account : undefined
+        const alts = retryable && failed0
+          ? ownOptions.filter(o => o.account && o.account.providerId === failed0.providerId && o.account.id !== failed0.id).slice(0, 2)
+          : []
+        if (!alts.length) throw firstErr
+        let lastErr: unknown = firstErr
+        let switched = ''
+        for (const alt of alts) {
+          try {
+            answer = await getReply(aiText, messages, controller.signal, imageUrls, false, alt.key)
+            switched = alt.account!.label
+            break
+          } catch (e2) { lastErr = e2 }
+        }
+        if (!switched) throw lastErr
+        failoverNote = `\n\n（原账户调用失败，已自动切换到备用账户「${switched}」）`
+        notify(`已自动切换到备用账户「${switched}」`)
+      }
       setPendingRetry(null)
-      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: answer || '（无回复内容）', at: Date.now() }])
+      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: (answer || '（无回复内容）') + failoverNote, at: Date.now() }])
       // 自动朗读：AI 回复完成且未被中止时，朗读清洗后的纯文字
       if (autoSpeak && answer && !controller.signal.aborted) {
         const spoken = cleanForAutoSpeech(answer)
@@ -567,6 +683,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   const clear = () => {
     if (generating) stop()
     setMessages([])
+    setSessionStore(store => ({ ...store, sessions: store.sessions.map(s => s.id === store.activeId ? { ...s, title: '新对话' } : s) }))
     rotateConversationId()
     notify('已开启新对话')
   }
@@ -606,6 +723,81 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       notify(next ? '已开启「引用我的数据」：问额度、消费、签到时，助手会按你的真实数据回答' : '已关闭「引用我的数据」：对话不再附带你的本地数据')
       return next
     })
+  }
+  // ---- 多模型同问对比 ----
+  const [compareMode, setCompareMode] = useState(false)
+  const [compareKeys, setCompareKeys] = useState<string[]>([])
+  const [compareRuns, setCompareRuns] = useState<Array<{ key: string; label: string; status: 'loading' | 'done' | 'error'; text: string; ms: number }> | null>(null)
+  const toggleCompareKey = (k: string) => {
+    setCompareKeys(prev => {
+      if (prev.includes(k)) return prev.filter(x => x !== k)
+      if (prev.length >= 3) { notify('对比最多选 3 个模型'); return prev }
+      return [...prev, k]
+    })
+  }
+  const runCompare = async (content: string) => {
+    const history = messages
+    setMessages(prev => [...prev, { id: `${Date.now()}-u`, role: 'user', content, at: Date.now() }])
+    setInput('')
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    setGenerating(true)
+    const controller = new AbortController()
+    abortRef.current = controller
+    setCompareRuns(compareKeys.map(k => ({ key: k, label: allOptions.find(x => x.key === k)?.label ?? k, status: 'loading' as const, text: '', ms: 0 })))
+    await Promise.all(compareKeys.map(async (k) => {
+      const t0 = Date.now()
+      try {
+        const ans = await getReply(content, history, controller.signal, undefined, false, k, (d) => {
+          setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, text: r.text + d } : r) : prev)
+        })
+        setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'done' as const, text: ans || r.text, ms: Date.now() - t0 } : r) : prev)
+      } catch (e) {
+        setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'error' as const, text: (e as Error)?.message ?? '调用失败', ms: Date.now() - t0 } : r) : prev)
+      }
+    }))
+    setGenerating(false)
+  }
+  // ---- 引擎可用性探测（给当前账户的每个引擎发一条极短消息验证真能出话） ----
+  const [probeResults, setProbeResults] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
+  const [probing, setProbing] = useState(false)
+  const probeEngines = async () => {
+    if (!currentAccount?.encryptedKey) { notify('当前账户未配置 Key，无法探测'); return }
+    const pwd = resolvePwd()
+    if (!pwd) { notify('请先解锁保险箱，再探测引擎可用性'); return }
+    let apiKey = ''
+    try { apiKey = await decryptSecret(currentAccount.encryptedKey, pwd) } catch { notify('Key 解密失败，无法探测'); return }
+    setProbing(true)
+    setProbeResults({})
+    const targets = engines.slice(0, 12)
+    await Promise.all(targets.map(async (e) => {
+      const t0 = Date.now()
+      try {
+        const r = await callByCategory(currentAccount, apiKey, selectedOption?.category ?? '通用型', [{ role: 'user', content: 'ping' }], e.id, undefined)
+        setProbeResults(prev => ({ ...prev, [e.id]: r.ok ? { ok: true, ms: Date.now() - t0 } : { ok: false, ms: Date.now() - t0, error: r.error ?? '调用失败' } }))
+      } catch (err) {
+        setProbeResults(prev => ({ ...prev, [e.id]: { ok: false, ms: Date.now() - t0, error: (err as Error)?.message ?? '调用失败' } }))
+      }
+    }))
+    setProbing(false)
+    notify(`引擎探测完成（共 ${targets.length} 个）`)
+  }
+  // ---- 提示词库 ----
+  const [promptsOpen, setPromptsOpen] = useState(false)
+  const [promptTitle, setPromptTitle] = useState('')
+  const promptList = prompts ?? []
+  const savePromptFromInput = () => {
+    const body = input.trim()
+    if (!body) { notify('输入框是空的，先写好提示词再存为模板'); return }
+    if (!onPromptsChange) return
+    const title = promptTitle.trim() || body.slice(0, 18)
+    onPromptsChange([{ id: `pt-${Date.now()}`, title, body, createdAt: new Date().toISOString() }, ...promptList])
+    setPromptTitle('')
+    notify(`已存为模板「${title}」`)
+  }
+  const insertPrompt = (body: string) => {
+    setInput(prev => prev.trim() ? `${prev}\n${body}` : body)
+    setPromptsOpen(false)
+    textareaRef.current?.focus()
   }
   const buildChatMarkdown = () => {
     const lines = [
@@ -715,9 +907,52 @@ export function AIView({ notify, accounts, settings, serviceController }: {
             <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} title="搜索对话内容"><Search size={17} /></button>
             <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} title="导出对话记录（Markdown）"><Download size={17} /></button>
             <button className={`ai-icon-btn ${useMyData ? 'active' : ''}`} onClick={toggleUseMyData} title={useMyData ? '引用我的数据：已开启（问额度/消费/签到会按你的真实数据回答），点击关闭' : '引用我的数据：已关闭，点击开启后助手能查你的额度/消费/签到'}><Database size={17} /></button>
-            <button className="ai-icon-btn" onClick={clear} title="新建对话"><RotateCcw size={17} /></button>
+            <button className={`ai-icon-btn ${compareMode ? 'active' : ''}`} onClick={() => setCompareMode(v => !v)} title="多模型对比：同一个问题同时发给 2–3 个模型并排对比"><Columns2 size={17} /></button>
+            <button className={`ai-icon-btn ${sessionsOpen ? 'active' : ''}`} onClick={() => setSessionsOpen(v => !v)} title="会话列表：新建/切换/重命名/删除多个对话"><MessagesSquare size={17} /></button>
+            <button className="ai-icon-btn" onClick={clear} title="清空当前对话"><RotateCcw size={17} /></button>
           </div>
         </div>
+
+        {/* 多模型对比选择条 */}
+        {compareMode && (
+          <div className="ai-compare-bar">
+            <span className="ai-compare-hint">对比模式：选 2–3 个模型（已选 {compareKeys.length}），发送后并排看回答与耗时</span>
+            <div className="ai-compare-chips">
+              {allOptions.map(o => (
+                <button key={o.key} className={`ai-compare-chip ${compareKeys.includes(o.key) ? 'active' : ''}`} onClick={() => toggleCompareKey(o.key)}>{o.label}</button>
+              ))}
+              {allOptions.length === 0 && <span className="ai-compare-hint">暂无可用模型</span>}
+            </div>
+          </div>
+        )}
+
+        {/* 会话列表面板 */}
+        {sessionsOpen && (
+          <div className="ai-sessions-panel">
+            <div className="ai-sessions-head">
+              <b>会话列表</b>
+              <span className="hint">共 {sessionStore.sessions.length} 个 · 保存在本机</span>
+              <button className="btn sm primary" onClick={newSession}><Plus size={13} /> 新建会话</button>
+              <button className="ai-icon-btn" onClick={() => setSessionsOpen(false)} title="关闭"><X size={15} /></button>
+            </div>
+            {[...sessionStore.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map(s => (
+              <div key={s.id} className={`ai-session-item ${s.id === sessionStore.activeId ? 'active' : ''}`}>
+                {renamingId === s.id ? (
+                  <input className="input" autoFocus value={renameText} onChange={e => setRenameText(e.target.value)}
+                    onBlur={() => { if (renameText.trim()) setSessionStore(store => ({ ...store, sessions: store.sessions.map(x => x.id === s.id ? { ...x, title: renameText.trim() } : x) })); setRenamingId(null) }}
+                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+                ) : (
+                  <button className="ai-session-main" onClick={() => switchSession(s.id)}>
+                    <b>{s.title}</b>
+                    <span>{s.messages.length} 条 · {new Date(s.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  </button>
+                )}
+                <button className="icon-btn" title="重命名" onClick={() => { setRenamingId(s.id); setRenameText(s.title) }}><Pencil size={13} /></button>
+                <button className="icon-btn" title="删除会话" onClick={() => deleteSession(s.id)}><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* 对话搜索栏 */}
         {searchOpen && (
@@ -838,6 +1073,22 @@ export function AIView({ notify, accounts, settings, serviceController }: {
                   <div className="ai-bubble ai-thinking"><span /><span /><span /></div>
                 </div>
               )}
+              {compareRuns && (
+                <div className="ai-compare-wrap">
+                  <div className="ai-compare-grid">
+                    {compareRuns.map(r => (
+                      <div key={r.key} className="ai-compare-col">
+                        <div className="ai-compare-head">
+                          <b>{r.label}</b>
+                          <span>{r.status === 'loading' ? '生成中…' : r.status === 'error' ? `失败 · ${(r.ms / 1000).toFixed(1)}s` : `${(r.ms / 1000).toFixed(1)}s · ${r.text.length} 字`}</span>
+                        </div>
+                        <div className={`ai-compare-body ${r.status === 'error' ? 'error' : ''}`}>{r.text || (r.status === 'loading' ? '…' : '（无回复）')}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="btn sm ghost" onClick={() => setCompareRuns(null)}>关闭对比结果</button>
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
           )}
@@ -900,11 +1151,37 @@ export function AIView({ notify, accounts, settings, serviceController }: {
                 <Cpu size={13} /> 引擎 <ChevronDown size={13} />
               </button>
             )}
+            <button className="ai-model-btn" onClick={() => setPromptsOpen(v => !v)} title="提示词库：常用提示词存成模板，一键插入（可跨设备同步）">
+              <BookMarked size={13} /> 提示词
+            </button>
           </div>
           {resolvingKey && <div className="ai-hint-inline"><Loader2 size={12} className="spin" /> 正在解锁密钥…</div>}
         </div>
       </div>
       {/* 右侧引擎选择面板 */}
+      {promptsOpen && (
+        <div className="ai-prompts-panel">
+          <div className="ai-prompts-head">
+            <b>提示词库</b>
+            <span className="hint">点模板插入输入框；正文里的 {'{变量}'} 插入后自己改</span>
+            <button className="icon-btn" onClick={() => setPromptsOpen(false)}><X size={15} /></button>
+          </div>
+          {promptList.length === 0 && <div className="ai-prompts-empty">还没有模板。在下面写好标题，把输入框里的内容存为模板。</div>}
+          {promptList.map(p => (
+            <div key={p.id} className="ai-prompt-item">
+              <button className="ai-prompt-main" onClick={() => insertPrompt(p.body)} title={p.body}>
+                <b>{p.title}</b>
+                <span>{p.body.slice(0, 60)}{p.body.length > 60 ? '…' : ''}</span>
+              </button>
+              <button className="icon-btn" title="删除模板" onClick={() => onPromptsChange?.(promptList.filter(x => x.id !== p.id))}><Trash2 size={14} /></button>
+            </div>
+          ))}
+          <div className="ai-prompts-add">
+            <input className="input" placeholder="模板标题（留空取正文前 18 字）" value={promptTitle} onChange={e => setPromptTitle(e.target.value)} />
+            <button className="btn sm primary" onClick={savePromptFromInput}>把当前输入存为模板</button>
+          </div>
+        </div>
+      )}
       {enginePanelOpen && currentAccount && (
         <>
           <div className="engine-backdrop" onClick={() => setEnginePanelOpen(false)} />
@@ -921,6 +1198,10 @@ export function AIView({ notify, accounts, settings, serviceController }: {
               </div>
               <button className="icon-btn" onClick={() => setEnginePanelOpen(false)}><X size={17} /></button>
             </div>
+            <div className="engine-probe-bar">
+              <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? '探测中…' : '探测可用性'}</button>
+              <span>给每个引擎发一条极短消息，验证真能出话（最多 12 个，会消耗极少量额度）</span>
+            </div>
             <div className="engine-list">
               {engines.map(e => (
                 <button key={e.id} className={`engine-item ${engineId === e.id ? 'active' : ''}`}
@@ -933,6 +1214,11 @@ export function AIView({ notify, accounts, settings, serviceController }: {
                     <span className="engine-id">{e.id}</span>
                   </span>
                   <span className="engine-multi">{e.multiplier.toFixed(2)}x</span>
+                  {probeResults[e.id] && (
+                    <span className={`engine-probe ${probeResults[e.id].ok ? 'ok' : 'fail'}`} title={probeResults[e.id].error ?? ''}>
+                      {probeResults[e.id].ok ? `● ${probeResults[e.id].ms}ms` : '● 不可用'}
+                    </span>
+                  )}
                   {engineId === e.id && <span className="engine-check">✓</span>}
                 </button>
               ))}

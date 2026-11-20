@@ -4,7 +4,7 @@ import {
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
-  Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
+  Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste,
 } from 'lucide-react'
@@ -45,6 +45,13 @@ import { detectSpendAnomalies } from './core/anomaly'
 import { buildMonthlyReport, prevMonthKey } from './core/monthlyReport'
 import { detectProviderFromKey, extractKey } from './core/keyDetect'
 import { rankProvidersByValue, rankModelsByValue } from './core/valueRank'
+import { summarizeSubscriptions } from './core/subscriptions'
+import { scoreAccounts } from './core/healthScore'
+import { summarizeByProject, projectSuggestions } from './core/projectStats'
+import { forecastMonthSpend } from './core/spendForecast'
+import { buildGatewayRoutes, gatewaySetRoutes, gatewayStart, gatewayStop, gatewayStatus, genGatewayToken, type GatewayStatusInfo } from './core/gateway'
+import { bindVaultPasswordNative, resolveBiometricVaultPassword, unbindVaultPasswordNative } from './core/biometric'
+import { copyKeyWithAutoClear } from './core/clipboard'
 import { buildBackup, parseBackup, type ParseBackupResult } from './core/backup'
 import { syncWidgetData } from './core/widgetData'
 import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
@@ -276,12 +283,10 @@ function App() {
     notify('已撤回，数据已恢复')
   }, [undo, notify])
 
-  /** 设置页快捷解锁：系统指纹/人脸验证通过后，把已保存凭据带入 Key 管理页自动解锁（仅作用于该页） */
+  /** 设置页快捷解锁：生物验证通过后（原生端密码在系统钥匙串、桌面端系统验证），把凭据带入 Key 管理页自动解锁 */
   const handleBioUnlock = useCallback(async () => {
-    const ok = await biometricAuth('验证身份以解锁 API Key 管理')
-    if (!ok) { notify(`${bioLabel}验证未通过或已取消`); return }
-    const pwd = getBiometricPassword()
-    if (!pwd) { notify('未配置解锁凭据，请先在「解锁方式」中开启'); return }
+    const pwd = await resolveBiometricVaultPassword('验证身份以解锁 API Key 管理')
+    if (!pwd) { notify(`${bioLabel}验证未通过，或未配置解锁凭据（请先在「解锁方式」中开启）`); return }
     if (!(await verifyVault(pwd))) { notify('解锁凭据已失效，请重新开启'); return }
     setKeyPageInitialPwd('')
     window.setTimeout(() => setKeyPageInitialPwd(pwd), 0)
@@ -610,6 +615,7 @@ function App() {
     .filter((u) => u.date.startsWith(todayISO().slice(0, 7)))
     .reduce((s, u) => s + u.estimatedCost, 0)
   const portfolioValue = totalPortfolioValue(state)
+  const healthRows = useMemo(() => scoreAccounts(state), [state])
 
   // ---- 主题（深色模式）：system 跟随系统，其余按设置固定；写入 <html data-theme> ----
   const themePref = state.settings.theme ?? 'system'
@@ -684,6 +690,44 @@ function App() {
     void runPriceCheck(false, true)
   }, [runPriceCheck])
 
+  // ---- 本地网关自动开启：解锁保险箱后（且设置开启）注册路由并启动（仅桌面端） ----
+  const gatewayAutoRef = useRef(false)
+  useEffect(() => {
+    if (!sessionPwd) { gatewayAutoRef.current = false; return }
+    if (gatewayAutoRef.current) return
+    const st = stateRef.current
+    if (!('__TAURI_INTERNALS__' in window) || !st.settings.gatewayAutoStart || !st.settings.gatewayToken) return
+    gatewayAutoRef.current = true
+    void (async () => {
+      try {
+        const routes = await buildGatewayRoutes(st, sessionPwd)
+        if (!Object.keys(routes).length) return
+        await gatewaySetRoutes(routes)
+        await gatewayStart(st.settings.gatewayPort || 8787, st.settings.gatewayToken!)
+      } catch { /* 网关是增强功能，失败静默 */ }
+    })()
+  }, [sessionPwd])
+
+  // ---- 保险箱闲置自动上锁：解锁后无操作达到设置时长，清空会话密码并通知 Key 管理页同步上锁 ----
+  useEffect(() => {
+    const mins = state.settings.autoLockMinutes ?? 0
+    if (!sessionPwd || !mins) return
+    const lock = () => {
+      setSessionPwd('')
+      window.dispatchEvent(new Event('acm-autolock'))
+      notify(`保险箱已自动上锁（闲置 ${mins} 分钟）`)
+    }
+    let timer = window.setTimeout(lock, mins * 60_000)
+    const reset = () => { window.clearTimeout(timer); timer = window.setTimeout(lock, mins * 60_000) }
+    window.addEventListener('pointerdown', reset, { passive: true })
+    window.addEventListener('keydown', reset)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('pointerdown', reset)
+      window.removeEventListener('keydown', reset)
+    }
+  }, [sessionPwd, state.settings.autoLockMinutes, notify])
+
   // ---- 余额自动巡检：保险箱解锁后（sessionPwd 就绪）静默刷新可查余额平台的官方余额 ----
   // 6 小时节流（localStorage 时间戳）；失败静默，不打扰；无总额度上限的结果（仅 label）不落快照。
   const balancePatrolRef = useRef(false)
@@ -752,6 +796,9 @@ function App() {
           const rep = buildMonthlyReport(state, lastMonth)
           return { month: lastMonth, totalCost: rep.totalCost, recordCount: rep.recordCount, topPlatform: rep.byPlatform[0]?.name, deltaPct: rep.costDeltaPct }
         })(),
+        subscriptionRenewals: summarizeSubscriptions(state).rows
+          .filter((r) => r.daysLeft <= (state.settings.alertDays || 7))
+          .map((r) => ({ accountId: r.accountId, name: r.label, days: r.daysLeft, renewAt: r.nextRenewAt })),
         accountBudgets: Object.entries(state.settings.accountBudgets ?? {})
           .filter(([, b]) => b > 0)
           .map(([accountId, budget]) => {
@@ -953,7 +1000,7 @@ function App() {
         {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
-          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} />}
+          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
             <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title="不再显示"><X size={15} /></button>
@@ -1020,6 +1067,29 @@ function App() {
               <div className="bento-sub">预算 ¥{state.settings.monthlyBudget} · 查看趋势 →</div>
             </button>
           </section>
+
+          {healthRows.length > 0 && (
+            <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
+              <div className="row between">
+                <b style={{ fontSize: 13.5 }}>账户体检 <span className="hint">按分数从低到高 · 先救最差的</span></b>
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>告急 {healthRows.filter(h => h.grade === '告急').length} · 注意 {healthRows.filter(h => h.grade === '注意').length} · 健康 {healthRows.filter(h => h.grade === '健康').length}</span>
+              </div>
+              <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                {healthRows.slice(0, 5).map(h => (
+                  <div key={h.accountId} className="row" style={{ gap: 10, alignItems: 'center' }}>
+                    <b style={{ fontSize: 15, minWidth: 34, textAlign: 'center', color: h.grade === '告急' ? 'var(--red)' : h.grade === '注意' ? '#d97706' : '#16a34a' }}>{h.score}</b>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13 }}>{h.label} <span className="hint">{h.platform}</span></div>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.reasons.length ? h.reasons.join('；') : '状态良好'}</div>
+                    </div>
+                    <div style={{ width: 90, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', flex: 'none' }}>
+                      <div style={{ height: '100%', width: `${h.score}%`, background: h.grade === '告急' ? 'var(--red)' : h.grade === '注意' ? '#d97706' : '#16a34a' }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <DashboardView views={views} onAdd={() => setAddOpen(true)} onRemove={(id) => {
             const acc = state.accounts.find(a => a.id === id)
@@ -1167,12 +1237,13 @@ function App() {
             renewed.forEach((cipher, i) => {
               setState(s => ({ ...s, accounts: s.accounts.map(a => a.id === keyAccounts[i].id ? { ...a, encryptedKey: cipher } : a) }))
             })
-            if (state.settings.unlockMethod === 'biometric') saveBiometricPassword(newPwd)
+            if (state.settings.unlockMethod === 'biometric') { saveBiometricPassword(newPwd); void bindVaultPasswordNative(newPwd) }
             setSessionPwd(newPwd)
             audit('修改主密码')
           }}
           onResetVault={() => {
             clearBiometricPassword()
+            void unbindVaultPasswordNative()
             resetVault()
             setSessionPwd('')
             setState(s => ({
@@ -1292,7 +1363,7 @@ function App() {
         onClose={() => setVaultOpen(false)} notify={notify}
         onInit={async (pwd) => {
           await initVault(pwd)
-          if (state.settings.unlockMethod === 'biometric') saveBiometricPassword(pwd)
+          if (state.settings.unlockMethod === 'biometric') { saveBiometricPassword(pwd); void bindVaultPasswordNative(pwd) }
           setState(s => ({ ...s, settings: { ...s.settings, vaultInitialized: true } }))
           setSessionPwd(pwd)
           notify('保险箱已创建')
@@ -1310,7 +1381,7 @@ function App() {
         />
       })()}
       {usageOpen && <UsageModal
-        accounts={state.accounts} onClose={() => setUsageOpen(false)}
+        accounts={state.accounts} projectSuggestions={projectSuggestions(state)} onClose={() => setUsageOpen(false)}
         onSave={(e) => { setState(s => addUsageEvent(s, e)); setUsageOpen(false); notify('用量记录已添加') }}
       />}
       {importData && <ImportModal
@@ -1956,6 +2027,12 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const keyAccounts = state.accounts.filter(a => a.encryptedKey)
 
   useEffect(() => { void biometricAvailable().then(setBioAvailable) }, [])
+  // 全局自动上锁事件：同步锁上本页（清掉本页会话密码与已显示的明文）
+  useEffect(() => {
+    const onAutoLock = () => { setVaultPwd(''); setRevealed({}); setUnlockOpen(false) }
+    window.addEventListener('acm-autolock', onAutoLock)
+    return () => window.removeEventListener('acm-autolock', onAutoLock)
+  }, [])
   // 筛选条件变化时重置页码
   useEffect(() => { setPage(1) }, [category])
 
@@ -2178,8 +2255,9 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                       <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={13} /> 编辑</button>
                       <button className="key-action" title="复制 Key" onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
-                        try { await navigator.clipboard.writeText(plain); onAudit('复制Key', a.label); notify('API Key 已复制（注意保管）') }
-                        catch { notify('复制失败，请检查浏览器权限') }
+                        const okCopy = await copyKeyWithAutoClear(plain)
+                        if (okCopy) { onAudit('复制Key', a.label); notify('API Key 已复制（30 秒后自动清除剪贴板）') }
+                        else notify('复制失败，请检查浏览器权限')
                       }}><Copy size={13} /> 复制</button>
                       <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={13} /> 备份</button>
                       {adapter.supported && <button className="key-action" title="查询官方用量" onClick={async () => {
@@ -2306,10 +2384,8 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         onClose={() => { setUnlockOpen(false); setUnlockPwd('') }}
         onPassword={(pwd) => void unlockWith(pwd)}
         onBiometric={async () => {
-          const ok = await biometricAuth()
-          if (!ok) { notify(`${bioLabel ?? '生物'}验证未通过`); return false }
-          const pwd = getBiometricPassword()
-          if (!pwd) { notify(`未配置${bioLabel ?? '生物'}解锁密码，请在设置中开启`); return false }
+          const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
+          if (!pwd) { notify(`未通过${bioLabel ?? '生物'}验证，或未配置解锁凭据（请在设置中开启）`); return false }
           await unlockWith(pwd)
           return true
         }}
@@ -2487,8 +2563,7 @@ function KeyRevealModal({ label, plain, onClose, onCopied }: {
         <div className="modal-foot">
           <button className="btn" onClick={onClose}>关闭</button>
           <button className="btn primary" onClick={async () => {
-            try { await navigator.clipboard.writeText(plain); onCopied() }
-            catch { /* 复制失败由浏览器处理 */ }
+            if (await copyKeyWithAutoClear(plain)) onCopied()
           }}><Copy size={14} /> 复制 Key</button>
         </div>
       </div>
@@ -2557,6 +2632,10 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
   const [noteExtra, setNoteExtra] = useState(() => (account.note ?? '').replace(/^\[[^\]]+\]\s*/, '').split(/[:：]/).slice(1).join(':').trim())
   const [newKey, setNewKey] = useState('')
   const [group, setGroup] = useState(account.group ?? '')
+  const [subOn, setSubOn] = useState(!!account.subscription)
+  const [subPrice, setSubPrice] = useState(account.subscription ? String(account.subscription.price) : '')
+  const [subCycle, setSubCycle] = useState<'monthly' | 'yearly'>(account.subscription?.cycle ?? 'monthly')
+  const [subRenewAt, setSubRenewAt] = useState(account.subscription?.renewAt ?? '')
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -2594,6 +2673,21 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
             <div className="desc">按用途分组管理密钥；Key 管理页可按组筛选，并按组统计剩余额度</div>
           </div>
           <div className="field">
+            <label>订阅续费（可选）</label>
+            <label className="row" style={{ gap: 6, fontSize: 13, alignItems: 'center' }}><input type="checkbox" checked={subOn} onChange={e => setSubOn(e.target.checked)} /> 这是订阅制账户（包月/包年）</label>
+            {subOn && (
+              <div className="row" style={{ gap: 6, marginTop: 8 }}>
+                <input className="input" type="number" min="0" step="0.01" placeholder="价格（元）" value={subPrice} onChange={e => setSubPrice(e.target.value)} style={{ flex: 1 }} />
+                <select className="select" value={subCycle} onChange={e => setSubCycle(e.target.value as 'monthly' | 'yearly')}>
+                  <option value="monthly">每月</option>
+                  <option value="yearly">每年</option>
+                </select>
+                <input className="input" type="date" value={subRenewAt} onChange={e => setSubRenewAt(e.target.value)} style={{ flex: 1.2 }} title="下次续费日" />
+              </div>
+            )}
+            <div className="desc">填好后会出现在用量页「订阅续费」总览里，临近续费日会收到提醒</div>
+          </div>
+          <div className="field">
             <label>更换 API Key（留空表示不修改）</label>
             <input className="input" type="password" placeholder="留空保持不变" value={newKey} onChange={e => setNewKey(e.target.value)} />
             <div className="desc">修改密钥需先在主界面解锁保险箱；新密钥将以主密码重新加密。</div>
@@ -2603,7 +2697,7 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
           <button className="btn" onClick={onClose}>取消</button>
           <button className="btn primary" onClick={() => {
             if (!label.trim()) { notify('名称不能为空'); return }
-            onSave({ label: label.trim(), apiUrl: apiUrl.trim(), note: buildNote(noteCat, noteExtra), group: group.trim() || undefined }, newKey.trim() || undefined)
+            onSave({ label: label.trim(), apiUrl: apiUrl.trim(), note: buildNote(noteCat, noteExtra), group: group.trim() || undefined, subscription: subOn && Number(subPrice) > 0 && subRenewAt ? { price: Number(subPrice), cycle: subCycle, renewAt: subRenewAt } : undefined }, newKey.trim() || undefined)
           }}>保存</button>
         </div>
       </div>
@@ -2650,6 +2744,9 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
   const prices = state.settings.unitPrices ?? {}
   const effectivePrices = { ...DEFAULT_UNIT_PRICES, ...prices }
   const rankRows = rankTab === 'provider' ? rankProvidersByValue(state) : rankModelsByValue(state)
+  const subSummary = summarizeSubscriptions(state)
+  const projectRows = summarizeByProject(state, month)
+  const spendFc = forecastMonthSpend(state)
 
   return (
     <>
@@ -2763,6 +2860,24 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         )}
       </div>
 
+      <div className="section-head"><h2>订阅续费 <span className="hint">订阅制账户的固定支出与下次续费日 · 在 API Key 管理里编辑账户填写订阅信息</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        {subSummary.rows.length === 0
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无订阅账户。订阅制账户（如包月/包年套餐）在 API Key 管理里编辑该账户，勾选「这是订阅制账户」并填价格、周期和下次续费日，就会汇总到这里。</div>
+          : <>
+            {subSummary.rows.map(r => (
+              <div key={r.accountId} className="row between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 13.5 }}>{r.label} <span className="hint">{r.platform}</span></span>
+                <span style={{ fontSize: 13.5 }}>¥{r.price.toFixed(2)} / {r.cycle === 'monthly' ? '月' : '年'} · 下次续费 {r.nextRenewAt} <b style={{ color: r.daysLeft <= 7 ? 'var(--red)' : r.daysLeft <= 30 ? 'var(--amber, #d97706)' : 'var(--text-3)' }}>{r.daysLeft === 0 ? '今天' : `${r.daysLeft} 天后`}</b></span>
+              </div>
+            ))}
+            <div className="row between" style={{ paddingTop: 10 }}>
+              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>每月固定支出合计（年付按月摊销）</span>
+              <b>¥{subSummary.monthlyTotal.toFixed(2)}</b>
+            </div>
+          </>}
+      </div>
+
       <div className="section-head"><h2>性价比榜 <span className="hint">按你的实际用量统计 · ¥/百万 token，越低越划算（样本需 ≥1 万 token）</span></h2>
         <div className="row" style={{ gap: 6 }}>
           <button className={`btn sm ${rankTab === 'provider' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('provider')}>按平台</button>
@@ -2776,6 +2891,33 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             <div key={r.key} className="row between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 13.5 }}>{i + 1}. {r.name}</span>
               <span style={{ fontSize: 13.5 }}><b>¥{r.perMillion.toFixed(2)}</b> / 百万 token <span className="hint">共 {(r.tokens / 10000).toFixed(1)} 万 token · 花 ¥{r.cost.toFixed(2)}</span></span>
+            </div>
+          ))}
+      </div>
+
+      <div className="section-head"><h2>本月消费预测 <span className="hint">按本月日均速度推算到月底，提前看会不会超预算</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        {spendFc.spent <= 0
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>本月暂无消费记录。</div>
+          : <div style={{ fontSize: 13.5, lineHeight: 1.9 }}>
+              本月已过 {spendFc.daysElapsed}/{spendFc.daysInMonth} 天 · 已花 <b>¥{spendFc.spent.toFixed(2)}</b> · 日均 ¥{spendFc.dailyAvg.toFixed(2)}<br />
+              按当前速度，月底预计总消费 <b style={{ fontSize: 15 }}>¥{spendFc.projected.toFixed(2)}</b>
+              {state.settings.monthlyBudget > 0 && (
+                <> · 月预算 ¥{state.settings.monthlyBudget.toFixed(0)} —— {spendFc.projected > state.settings.monthlyBudget
+                  ? <b style={{ color: 'var(--red)' }}>预计超支 ¥{(spendFc.projected - state.settings.monthlyBudget).toFixed(2)}，注意控制</b>
+                  : <span style={{ color: '#16a34a' }}>在预算内（预计用 {(spendFc.projected / state.settings.monthlyBudget * 100).toFixed(0)}%）</span>}</>
+              )}
+            </div>}
+      </div>
+
+      <div className="section-head"><h2>按项目汇总 <span className="hint">给用量记录打项目标签后，这里看每个项目花了多少 · 添加用量记录时填写「项目标签」</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        {projectRows.length === 0
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无用量记录。</div>
+          : projectRows.map(r => (
+            <div key={r.project} className="row between" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 13.5 }}>{r.project} <span className="hint">{r.count} 笔</span></span>
+              <span style={{ fontSize: 13 }}>本月 ¥{r.monthCost.toFixed(2)} · 累计 <b>¥{r.totalCost.toFixed(2)}</b> · {(r.tokens / 10000).toFixed(1)} 万 token</span>
             </div>
           ))}
       </div>
@@ -3563,8 +3705,9 @@ function QuotaModal({ account, provider, existing, defaultUnit, onClose, onSave 
 }
 
 /** 用量记录添加模态框 */
-function UsageModal({ accounts, onClose, onSave }: {
+function UsageModal({ accounts, projectSuggestions: projSug, onClose, onSave }: {
   accounts: AppState['accounts'];
+  projectSuggestions?: string[];
   onClose: () => void;
   onSave: (e: UsageEventInput) => void
 }) {
@@ -3574,6 +3717,7 @@ function UsageModal({ accounts, onClose, onSave }: {
   const [outputTokens, setOutputTokens] = useState('0')
   const [estimatedCost, setEstimatedCost] = useState('0')
   const [model, setModel] = useState('')
+  const [project, setProject] = useState('')
   const valid = !!accountId && /^\d{4}-\d{2}-\d{2}$/.test(date) &&
     [inputTokens, outputTokens, estimatedCost].every(v => v !== '' && !isNaN(Number(v)) && Number(v) >= 0)
 
@@ -3618,6 +3762,11 @@ function UsageModal({ accounts, onClose, onSave }: {
                   <input className="input" placeholder="如 gpt-4o" value={model} onChange={e => setModel(e.target.value)} />
                 </div>
               </div>
+              <div className="field">
+                <label>项目标签（可选）</label>
+                <input className="input" list="acm-project-list" placeholder="如：短视频项目 / 客户 A（用量页可按项目汇总）" value={project} onChange={e => setProject(e.target.value)} />
+                <datalist id="acm-project-list">{(projSug ?? []).map(p => <option key={p} value={p} />)}</datalist>
+              </div>
               <div className="desc">费用为本地估算，以平台官方账单为准。</div>
             </>
           )}
@@ -3628,6 +3777,7 @@ function UsageModal({ accounts, onClose, onSave }: {
             accountId, date,
             inputTokens: Number(inputTokens), outputTokens: Number(outputTokens),
             estimatedCost: Number(estimatedCost), model: model.trim() || undefined,
+            project: project.trim() || undefined,
           })}>保存记录</button>
         </div>
       </div>
@@ -4073,6 +4223,33 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     try { await w.__TAURI_INTERNALS__?.invoke?.('autostart_set', { enabled: v }); setAutostart(v) }
     catch { notify('设置开机自启失败，请重试') }
   }
+  // ---- 本地统一网关（仅桌面端） ----
+  const [gwStatus, setGwStatus] = useState<GatewayStatusInfo | null>(null)
+  const [gwBusy, setGwBusy] = useState(false)
+  const refreshGw = async () => { try { setGwStatus(await gatewayStatus()) } catch { setGwStatus(null) } }
+  useEffect(() => { if (desktopShell) void refreshGw() }, [desktopShell])
+  const gwStartFlow = async () => {
+    if (!sessionPwd) { notify('请先解锁保险箱，再开启网关（需要解密各账户的 Key 来注册路由）'); return }
+    setGwBusy(true)
+    try {
+      let tok = s.gatewayToken
+      if (!tok) { tok = genGatewayToken(); onChange({ gatewayToken: tok }) }
+      const routes = await buildGatewayRoutes(state, sessionPwd)
+      const models = Object.keys(routes).length
+      if (!models) { notify('没有可注册的模型：需要已配 Key、且平台在引擎目录里的账户'); setGwBusy(false); return }
+      await gatewaySetRoutes(routes)
+      const msg = await gatewayStart(s.gatewayPort || 8787, tok)
+      notify(`${msg} · 已注册 ${models} 个模型`)
+      await refreshGw()
+    } catch (e) { notify(`开启网关失败：${(e as Error)?.message ?? e}`) }
+    setGwBusy(false)
+  }
+  const gwStopFlow = async () => {
+    setGwBusy(true)
+    try { await gatewayStop(); notify('网关已停止，内存中的 Key 路由已清除') } catch { /* 忽略 */ }
+    await refreshGw()
+    setGwBusy(false)
+  }
   // ---- 全局快捷键自定义（桌面端）：组合存 settings，App 壳下发 Tauri 动态注册 ----
   const [recording, setRecording] = useState<'ai' | 'mini' | null>(null)
   const accelAi = s.shortcutAi ?? 'CommandOrControl+Shift+A'
@@ -4216,6 +4393,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       const ok = await verifyVault(bioSwitchPwd)
       if (!ok) { notify('主密码错误，未切换'); return }
       saveBiometricPassword(bioSwitchPwd)
+      void bindVaultPasswordNative(bioSwitchPwd)
       onChange({ unlockMethod: 'biometric' })
       setBioSwitchOpen(false)
       setBioSwitchPwd('')
@@ -4417,6 +4595,36 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <button className="btn sm" onClick={() => onChange({ shortcutAi: undefined, shortcutMini: undefined })}>恢复默认</button>
             </SettingsRow>}
           </SettingsSection>}
+
+          {desktopShell && <SettingsSection title="本地统一网关" desc="在本机开一个 OpenAI 兼容接口（仅 127.0.0.1），Cursor 等工具填这个地址即可用管家里的 Key；按模型名路由，同模型多账户自动故障转移；真实 Key 只存内存，停止即清除" icon={Network} tone="indigo">
+            <SettingsRow title={gwStatus?.running ? `运行中 · ${gwStatus.modelCount} 个模型 / ${gwStatus.routeCount} 条路由 · 已处理 ${gwStatus.requests} 次请求` : '网关未运行'} desc="开启需要先解锁保险箱（解密 Key 注册路由，只存内存不落盘）">
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn sm" onClick={() => void refreshGw()}>刷新</button>
+                {gwStatus?.running
+                  ? <button className="btn sm" disabled={gwBusy} onClick={() => void gwStopFlow()}>停止并清除 Key</button>
+                  : <button className="btn sm primary" disabled={gwBusy} onClick={() => void gwStartFlow()}>{gwBusy ? '开启中…' : '开启网关'}</button>}
+              </div>
+            </SettingsRow>
+            <SettingsRow title="接口地址（填到 Cursor 等工具的 OpenAI Base URL）" desc="模型名填引擎目录里的 id（如 deepseek-chat），工具会自动按名路由">
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <code style={{ fontSize: 12 }}>http://127.0.0.1:{s.gatewayPort || 8787}/v1</code>
+                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(`http://127.0.0.1:${s.gatewayPort || 8787}/v1`); notify('接口地址已复制') }}>复制</button>
+              </div>
+            </SettingsRow>
+            <SettingsRow title="访问令牌（工具里的 API Key 填这个）" desc="不是你的真实平台 Key；泄露了重新生成即可（生成后需重启网关生效）">
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input className="input" style={{ width: 190 }} value={s.gatewayToken ?? ''} placeholder="尚未生成" onChange={e => onChange({ gatewayToken: e.target.value })} />
+                <button className="btn sm" onClick={() => onChange({ gatewayToken: genGatewayToken() })}>生成</button>
+                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(s.gatewayToken ?? ''); notify('令牌已复制') }}>复制</button>
+              </div>
+            </SettingsRow>
+            <SettingsRow title="监听端口" desc="改端口后需停止再重新开启网关">
+              <input className="input" type="number" min={1024} max={65535} style={{ width: 110 }} value={s.gatewayPort ?? 8787} onChange={e => onChange({ gatewayPort: Number(e.target.value) || 8787 })} />
+            </SettingsRow>
+            <SettingsRow title="解锁保险箱后自动开启" desc="每次解锁后自动注册路由并启动网关（令牌需已生成）">
+              <Toggle checked={!!s.gatewayAutoStart} onChange={v => onChange({ gatewayAutoStart: v })} />
+            </SettingsRow>
+          </SettingsSection>}
         </>}
 
         {setTab === 'data' && <>
@@ -4583,6 +4791,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   const m = e.target.value as 'biometric' | 'password'
                   if (m === 'password') {
                     clearBiometricPassword()
+                    void unbindVaultPasswordNative()
                     onChange({ unlockMethod: 'password' })
                     setBioSwitchOpen(false)
                   } else if (m === 'biometric' && onBioAvailable) {
@@ -4615,6 +4824,15 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </div>
               </div>
             )}
+            <SettingsRow title="闲置自动上锁" desc="解锁后无操作达到此时长，自动清空会话密码并重新上锁（活动会重置计时）">
+              <select className="select" style={{ width: 150 }} value={s.autoLockMinutes ?? 0} onChange={e => onChange({ autoLockMinutes: Number(e.target.value) })}>
+                <option value={0}>关闭</option>
+                <option value={1}>1 分钟</option>
+                <option value={5}>5 分钟</option>
+                <option value={15}>15 分钟</option>
+                <option value={30}>30 分钟</option>
+              </select>
+            </SettingsRow>
             <SettingsRow title="修改主密码" desc="需用原密码验证，所有密钥将重新加密">
               <button className="btn sm" onClick={() => {
                 const known = sessionPwd || getBiometricPassword() || ''
