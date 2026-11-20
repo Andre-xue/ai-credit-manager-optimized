@@ -315,6 +315,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   margin: 0 !important;
   z-index: 60;
 }
+.phone-shell .topbar-ai { display: none !important; } /* AI 页用自带顶栏，全局顶栏在手机端隐藏，避免与悬浮按钮/新建对话重叠 */
 .phone-shell .main { flex: 1 1 auto !important; width: 100% !important; min-width: 0 !important; }
 .phone-shell .content { max-width: none !important; width: 100% !important; box-sizing: border-box; }
 .phone-shell .ai-shell { max-width: none !important; width: 100% !important; }
