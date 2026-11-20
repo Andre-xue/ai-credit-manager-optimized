@@ -662,3 +662,6 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-search-count { font-size: 12px; color: var(--text-3); min-width: 44px; text-align: center; }
 .ai-msg.search-hit .ai-bubble { box-shadow: 0 0 0 2px rgba(217, 119, 6, .45); }
 .ai-msg.search-current .ai-bubble { box-shadow: 0 0 0 2.5px var(--amber, #d97706); }
+
+/* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
+.ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }

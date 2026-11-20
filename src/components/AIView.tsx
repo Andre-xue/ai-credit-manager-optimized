@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download,
+  Search, Download, Database,
 } from 'lucide-react'
 import {
   listModels, loadHistory, saveHistory, rotateConversationId,
@@ -26,6 +26,8 @@ import {
 } from '../core/modelCategories'
 import { detectModelCapability, capabilityChatCapable } from '../core/modelCapability'
 import { dedupeSameKeyAccounts } from '../core/adapters'
+import { loadState } from '../core/store'
+import { buildDataDigest } from '../core/dataDigest'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import type { Account } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -415,6 +417,11 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     const systemPrompt = voiceMode
       ? buildVoiceSystemPrompt(botProfile, userProfile)
       : buildIdentitySystemPrompt(botProfile, userProfile, isFirstReply)
+    // 引用我的数据：把本地额度/消费/签到摘要附加到 system 提示（语音通话不附，保持低延迟）
+    let effectiveSystemPrompt = systemPrompt
+    if (useMyData && !voiceMode) {
+      try { effectiveSystemPrompt = `${systemPrompt}\n\n${buildDataDigest(loadState())}` } catch { /* 摘要生成失败不阻断对话 */ }
+    }
     // 语音模式：关闭推理、只带最近 2 条上下文，最大限度缩短首字延迟
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
     const voiceHistory = voiceMode ? history.slice(-2) : history
@@ -438,7 +445,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
         throw Object.assign(new Error(hint), { needPwd: true })
       }
       finally { setResolvingKey(false) }
-      const msgs = [{ role: 'system', content: systemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
+      const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
       const r = await callByCategory(acct, apiKey, opt.category, msgs, engineId || undefined, effectiveReasoning)
       if (!r.ok) throw Object.assign(new Error(r.error ?? '调用失败'), { cors: r.cors })
       if (r.images?.length) {
@@ -449,7 +456,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     // 本机 Ollama 模型：无需账户 Key，直接调本机服务（图片附件随多模态消息发送）
     if (opt?.localModel) {
       const msgs = [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: effectiveSystemPrompt },
         ...voiceHistory.map(m => ({ role: m.role, content: m.content })),
         { role: 'user', content },
       ]
@@ -458,7 +465,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       return r.text
     }
     // 平台免费模型：流式输出（图片附件随多模态消息发送）
-    return streamChat(model || 'auto', voiceHistory, content, delta => setStreamingText(prev => prev + delta), signal, images, effectiveReasoning, systemPrompt)
+    return streamChat(model || 'auto', voiceHistory, content, delta => setStreamingText(prev => prev + delta), signal, images, effectiveReasoning, effectiveSystemPrompt)
   }
 
   // 报错自动换 Key：调用失败（鉴权/额度类）时，若同平台还有别的可用账户，给出「一键切换重试」
@@ -590,6 +597,16 @@ export function AIView({ notify, accounts, settings, serviceController }: {
 
   // ---- 对话导出（Markdown） ----
   const [exportOpen, setExportOpen] = useState(false)
+  // 「引用我的数据」：开启后每次对话附带本地数据摘要（额度/消费/签到），助手可据此回答；默认开，记住选择
+  const [useMyData, setUseMyData] = useState(() => { try { return localStorage.getItem('acm_ai_use_my_data') !== '0' } catch { return true } })
+  const toggleUseMyData = () => {
+    setUseMyData(v => {
+      const next = !v
+      try { localStorage.setItem('acm_ai_use_my_data', next ? '1' : '0') } catch { /* 忽略 */ }
+      notify(next ? '已开启「引用我的数据」：问额度、消费、签到时，助手会按你的真实数据回答' : '已关闭「引用我的数据」：对话不再附带你的本地数据')
+      return next
+    })
+  }
   const buildChatMarkdown = () => {
     const lines = [
       '# AI 助手对话记录',
@@ -697,6 +714,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
               title={callEnabled ? 'AI 语音通话' : '当前分类模型不支持语音通话'}><Phone size={17} /></button>
             <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} title="搜索对话内容"><Search size={17} /></button>
             <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} title="导出对话记录（Markdown）"><Download size={17} /></button>
+            <button className={`ai-icon-btn ${useMyData ? 'active' : ''}`} onClick={toggleUseMyData} title={useMyData ? '引用我的数据：已开启（问额度/消费/签到会按你的真实数据回答），点击关闭' : '引用我的数据：已关闭，点击开启后助手能查你的额度/消费/签到'}><Database size={17} /></button>
             <button className="ai-icon-btn" onClick={clear} title="新建对话"><RotateCcw size={17} /></button>
           </div>
         </div>
