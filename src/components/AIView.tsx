@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, Copy, Volume2, VolumeX,
-  Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu,
+  Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
 } from 'lucide-react'
 import {
   listModels, loadHistory, saveHistory, rotateConversationId,
@@ -12,6 +12,7 @@ import {
   type ChatMessage, type AiModel,
 } from '../core/ai'
 import { speakAsync, stopSpeak, getSavedVoice, cleanForAutoSpeech } from '../core/tts'
+import { startSpeechInput, type SpeechInputSession } from '../core/speechInput'
 import { listClonedVoices, type ClonedVoice } from '../core/voiceClone'
 import {
   loadBotProfile, saveBotProfile, loadUserProfile, saveUserProfile,
@@ -64,6 +65,15 @@ function welcomeText(userNick?: string): string {
 
 /** AI 助手页只展示这 4 类模型，免费模型排第一（生图型/视频型/文本型不在此页展示） */
 const AI_CATEGORIES: ModelCategory[] = ['免费模型', '通用型', '对话型', '本地型']
+
+/** 听写文本并入已有输入：中文直接相连，英文单词间补空格，标点后不加空格 */
+function joinDictation(base: string, text: string): string {
+  if (!base) return text
+  if (!text) return base
+  if (/[\s。！？；，、,.!?;:]$/u.test(base)) return base + text
+  if (/[A-Za-z0-9]$/.test(base) && /^[A-Za-z0-9]/.test(text)) return `${base} ${text}`
+  return base + text
+}
 
 export function AIView({ notify, accounts, settings, serviceController }: {
   notify: (m: string) => void
@@ -162,6 +172,23 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // 语音输入（听写）：点麦克风开始，识别文本实时并入输入框；再点一次停止
+  const [listening, setListening] = useState(false)
+  const speechRef = useRef<SpeechInputSession | null>(null)
+  const dictBaseRef = useRef('')
+  useEffect(() => () => { speechRef.current?.stop() }, [])
+  const toggleMic = async () => {
+    if (listening) { speechRef.current?.stop(); return }
+    dictBaseRef.current = input
+    setListening(true)
+    const session = await startSpeechInput({
+      onText: (t) => onInput(joinDictation(dictBaseRef.current, t)),
+      onError: (m) => { notify(m); setListening(false) },
+      onEnd: () => { speechRef.current = null; setListening(false) },
+    })
+    if (!session) { setListening(false); return }
+    speechRef.current = session
+  }
   const longPressRef = useRef<number | null>(null)
 
   const avatarContent = (p: BotProfile | UserProfile) => p.avatarDataUrl
@@ -717,6 +744,10 @@ export function AIView({ notify, accounts, settings, serviceController }: {
               onChange={e => onInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
               disabled={generating} />
+            <button className={`ai-mic-btn ${listening ? 'listening' : ''}`} onClick={() => void toggleMic()} disabled={generating}
+              title={listening ? '停止语音输入' : '语音输入（点击后说话，文字会填入输入框）'}>
+              <Mic size={16} />
+            </button>
             {generating ? (
               <button className="ai-send stop" onClick={stop} title="停止生成"><Square size={15} fill="currentColor" /></button>
             ) : (
