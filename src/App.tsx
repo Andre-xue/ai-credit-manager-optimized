@@ -4,7 +4,7 @@ import {
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
-  Film, Layers, Monitor, PanelLeftOpen,
+  Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
@@ -594,6 +594,7 @@ function App() {
             <div className="brand-sub">AI CREDIT MANAGER</div>
           </div>
           {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title="关闭菜单"><X size={19} /></button>}
+          {!isPhone && <button className="icon-btn sidebar-toggle sidebar-head-toggle" onClick={toggleSidebar} title={sidebarVisible ? '收起侧边栏（只显示图标）' : '展开侧边栏'} aria-label="切换侧边栏">{sidebarVisible ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>}
         </div>
         <nav className="nav" aria-label="主导航">
           {navGroups.map((group) => {
@@ -633,8 +634,6 @@ function App() {
       <main className="main">
         {/* 手机端：悬浮玻璃菜单按钮，点击打开侧栏抽屉 */}
         {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
-        {/* 桌面/Web 端：左上角常驻侧栏开关（位置固定，折叠/展开都用它，不遮挡标题） */}
-        {!isPhone && <button className="desktop-sidebar-restore" aria-label="切换侧边栏" onClick={toggleSidebar} title={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'}><PanelLeftOpen size={18} /></button>}
         <header className={`topbar ${tab === 'ai' ? 'topbar-ai' : ''}`}>
           <div className="topbar-heading">
             <div>

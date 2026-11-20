@@ -52,7 +52,6 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
   background: #fff !important; border-right: 1px solid var(--border) !important;
   box-shadow: none !important; display: flex; flex-direction: column; z-index: 40;
 }
-.sidebar-collapsed .sidebar { display: none; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 20px 20px 18px; border-bottom: 1px solid var(--border); }
 .brand-mark { width: 40px; height: 40px; border-radius: 12px; overflow: hidden; background: var(--primary-soft) !important; box-shadow: none !important; display: grid; place-items: center; flex: none; }
 .brand-mark img, .app-mark-img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -323,3 +322,27 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   .app-shell { padding: 0 !important; gap: 0 !important; }
   .phone-shell .topbar { border-radius: 0 !important; border-left: none; border-right: none; }
 }
+
+
+/* ============================================================
+   桌面端折叠侧栏 = 图标栏（用户 2026-11-20 要求）
+   开关位于侧栏品牌区右侧；折叠后侧栏固定为 78px 图标栏：
+   只显示应用图标与各模块图标，文字/分组名/徽标隐藏，点开关恢复。
+   ============================================================ */
+.sidebar { transition: width .25s cubic-bezier(.22, 1, .36, 1); }
+.sidebar-head-toggle { flex: none; }
+.sidebar-collapsed:not(.phone-shell) .sidebar { display: flex !important; width: 78px !important; }
+.sidebar-collapsed:not(.phone-shell) .brand { flex-direction: column; align-items: center; gap: 10px; padding: 16px 8px 14px; }
+.sidebar-collapsed:not(.phone-shell) .brand-text { display: none; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-head-toggle { margin: 0; }
+.sidebar-collapsed:not(.phone-shell) .nav { padding: 12px 10px 18px; }
+.sidebar-collapsed:not(.phone-shell) .nav-group { margin-bottom: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.sidebar-collapsed:not(.phone-shell) .nav-group:first-child { border-top: none; padding-top: 0; }
+.sidebar-collapsed:not(.phone-shell) .nav-group-label { display: none; }
+.sidebar-collapsed:not(.phone-shell) .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar-collapsed:not(.phone-shell) .nav-item-label,
+.sidebar-collapsed:not(.phone-shell) .nav-badge { display: none; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-foot { padding: 12px 10px 16px; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-status { justify-content: center; padding: 10px 0; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-status > div,
+.sidebar-collapsed:not(.phone-shell) .compliance { display: none; }
