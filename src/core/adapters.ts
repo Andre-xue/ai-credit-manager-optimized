@@ -136,7 +136,8 @@ export function getAdapter(providerId: string): DataSourceAdapter {
   return {
     providerId,
     mode: p?.modes[0] ?? 'manual',
-    supported: !!endpoint && !!p?.modes.includes('api'),
+    // 能否查余额只看是否有官方端点：平台目录的 modes 是「用量录入方式」标记（多为 manual），不能拿来当余额接口的开关
+    supported: !!endpoint,
     usageUrl: p?.usageUrl ?? p?.officialUrl ?? '#',
     async fetchUsage(apiKey: string): Promise<UsageResult> {
       if (!endpoint) throw new Error(`${p?.name ?? providerId} 无公开只读用量 API，请到官方页面查看后手动录入`)

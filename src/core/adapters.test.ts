@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatUsageBalance,
+  getAdapter,
   parseDeepseekBalance,
   parseGlmBalance,
   parseMoonshotBalance,
@@ -72,6 +73,17 @@ describe('余额接口解析', () => {
     const r = parseOpenrouterKeyInfo({ data: { usage: 3, limit: null } })
     expect(r.label).toContain('无额度上限')
     expect(r.remaining).toBeUndefined()
+  })
+})
+
+describe('getAdapter.supported（余额可用性只看端点，不看目录 modes）', () => {
+  it('已接端点的平台均可用（目录里 modes 为 manual 也不影响）', () => {
+    for (const id of ['deepseek', 'kim', 'glm', 'siliconflow', 'openrouter']) {
+      expect(getAdapter(id).supported, id).toBe(true)
+    }
+  })
+  it('无端点的平台不可用', () => {
+    expect(getAdapter('doubao').supported).toBe(false)
   })
 })
 
