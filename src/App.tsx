@@ -44,6 +44,7 @@ import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, 
 import { detectSpendAnomalies } from './core/anomaly'
 import { buildMonthlyReport, prevMonthKey } from './core/monthlyReport'
 import { buildBackup, parseBackup, type ParseBackupResult } from './core/backup'
+import { syncWidgetData } from './core/widgetData'
 import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
@@ -769,6 +770,9 @@ function App() {
     return () => { cancelled = true; window.clearInterval(t) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
+
+  // 安卓端：把额度摘要同步给桌面小组件（原生小组件读 Preferences 渲染）
+  useEffect(() => { if (isNativeApp()) syncWidgetData(state) }, [state])
 
   // 安卓端：同步每日签到定时通知（App 关闭也能提醒）
   useEffect(() => {

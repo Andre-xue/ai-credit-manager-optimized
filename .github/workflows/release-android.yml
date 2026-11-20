@@ -88,6 +88,7 @@ jobs:
           if [ -z "$MANIFEST" ]; then echo "manifest not found"; exit 1; fi
           echo "Manifest: $MANIFEST"
           python3 assets/inject-android-permissions.py "$MANIFEST"
+          python3 assets/inject-android-widget.py "$MANIFEST"
 
       - name: Apply unified app icon
         run: |
