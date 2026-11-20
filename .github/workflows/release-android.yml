@@ -35,21 +35,25 @@ jobs:
           ls "$ANDROID_HOME/platforms" 2>/dev/null | head -5 || true
           which sdkmanager || true
 
-      # 关键：固定 debug 签名，否则每次 CI 重新生成 ~/.android/debug.keystore，
+      # 关键：固定 debug 签名，否则每次 CI 重新生成临时密钥，
       # 用户安装新 APK 时会因签名不同被系统要求先卸载（卸载就意味着数据丢失）。
-      # 原先用 actions/cache 存密钥，但按 tag 触发的运行彼此不共享缓存作用域，
-      # 缓存形同虚设、每版签名都不同。改用仓库 Secrets 存放固定密钥（长期有效）。
+      # 教训（v0.1.182~0.1.188 实测）：密钥放 ~/.android/debug.keystore 并未被 AGP
+      # 真正使用——每版 APK 证书指纹都不同。现改为：解码到工作区确定路径，
+      # keytool 当场验签（失败即中断），再由 inject-android-signing.py 把
+      # storeFile 绝对路径写进生成的 build.gradle，构建后打印 APK 指纹核对。
       - name: Restore stable Android debug keystore (from Secrets)
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            mkdir -p ~/.android
-            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
-            echo "已恢复固定签名密钥（Secrets）"
-          else
-            echo "::warning::未配置 ANDROID_DEBUG_KEYSTORE_B64，本次构建将使用临时密钥，APK 无法覆盖安装上一版"
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::未配置 ANDROID_DEBUG_KEYSTORE_B64，终止构建（避免产出无法覆盖安装的 APK）"
+            exit 1
           fi
+          mkdir -p "$GITHUB_WORKSPACE/signing"
+          echo "$KEYSTORE_B64" | base64 -d > "$GITHUB_WORKSPACE/signing/debug.keystore"
+          keytool -list -keystore "$GITHUB_WORKSPACE/signing/debug.keystore" -storepass android -alias androiddebugkey
+          echo "ACM_DEBUG_KEYSTORE=$GITHUB_WORKSPACE/signing/debug.keystore" >> "$GITHUB_ENV"
+          echo "固定签名密钥已恢复并验签通过"
 
       - name: Install root deps & build web
         run: |
@@ -76,6 +80,7 @@ jobs:
           GRADLE=$(find android -path "*/app/build.gradle" -type f | head -1)
           if [ -z "$GRADLE" ]; then echo "app/build.gradle not found"; exit 1; fi
           python3 assets/inject-android-version.py "$GRADLE" "${{ github.ref_name }}"
+          python3 assets/inject-android-signing.py "$GRADLE"
 
       - name: Inject media permissions
         run: |
@@ -126,6 +131,8 @@ jobs:
           if [ -z "$APK" ]; then echo "No APK produced"; exit 1; fi
           echo "path=$APK" >> $GITHUB_OUTPUT
           ls -lh "$APK"
+          echo "=== APK 签名证书（应与固定密钥指纹一致）==="
+          keytool -printcert -jarfile "$APK" | grep -i "SHA256:" || true
 
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
