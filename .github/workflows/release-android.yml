@@ -37,11 +37,19 @@ jobs:
 
       # 关键：固定 debug 签名，否则每次 CI 重新生成 ~/.android/debug.keystore，
       # 用户安装新 APK 时会因签名不同被系统要求先卸载（卸载就意味着数据丢失）。
-      - name: Restore stable Android debug keystore
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: acm-android-debug-keystore-v1
+      # 原先用 actions/cache 存密钥，但按 tag 触发的运行彼此不共享缓存作用域，
+      # 缓存形同虚设、每版签名都不同。改用仓库 Secrets 存放固定密钥（长期有效）。
+      - name: Restore stable Android debug keystore (from Secrets)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "已恢复固定签名密钥（Secrets）"
+          else
+            echo "::warning::未配置 ANDROID_DEBUG_KEYSTORE_B64，本次构建将使用临时密钥，APK 无法覆盖安装上一版"
+          fi
 
       - name: Install root deps & build web
         run: |
