@@ -351,3 +351,21 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 /* 全局标题栏已移除（用户 2026-11-20 要求）：内容整体上移 */
 .page-action-row { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 .phone-shell .content:not(.content-ai) { padding-top: calc(env(safe-area-inset-top, 0px) + 62px) !important; }
+
+
+/* ============================================================
+   手机端滚动修复（v0.1.176）
+   现象：除 AI 页（自带内部滚动）与设置（弹层自带滚动）外，其余页面
+   在安卓 WebView 里无法上下滑动——普通页依赖 body 滚动，而手机端
+   html/body 被 overflow-x:hidden 锁定后 body 滚动在 WebView 中失效。
+   改法：让内容区成为自己的滚动容器（与 AI 页/设置弹层相同的可靠模式）。
+   ============================================================ */
+.phone-shell { height: 100dvh; max-height: 100dvh; }
+.phone-shell .main { min-height: 0 !important; height: 100%; }
+.phone-shell .content:not(.content-ai) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
