@@ -626,12 +626,6 @@ function App() {
     return () => { unlisten?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return
-    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
-    void w.__TAURI_INTERNALS__?.invoke?.('tray_set_title', { text: pendingCheckins.length > 0 ? `待签到 ${pendingCheckins.length}` : null })
-  }, [pendingCheckins.length])
-
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
   useEffect(() => {
