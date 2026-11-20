@@ -68,6 +68,18 @@ async function nativeCloudFetch(input: RequestInfo | URL, init?: RequestInit): P
   return new Response(text, { status: res.status, headers: res.headers as Record<string, string> })
 }
 
+/**
+ * 直连云端接口（不走 SDK 的 cloudFetch）时必须手动补齐的客户端特征头：
+ * 网关按 Origin + X-Device-Id 绑定会话，原生端缺了会被判为「另一客户端」而拒绝 token
+ *（AI 免费模型列表/对话在手机端曾因此误报「请先登录」：同步走 SDK 没事，直连的 ai.ts 中招）。
+ * 非原生端浏览器/WebView 会自带 Origin，只补设备 ID。
+ */
+export function cloudClientHeaders(): Record<string, string> {
+  return isNativeApp()
+    ? { Origin: 'https://localhost', 'X-Device-Id': getCloudDeviceId() }
+    : { 'X-Device-Id': getCloudDeviceId() }
+}
+
 const cloudFetch: typeof fetch = (input, init) => {
   try {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url

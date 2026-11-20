@@ -2,7 +2,7 @@
 // 对话历史仅存本机 localStorage，不纳入账单数据的云同步——聊天是私密且高频的内容，
 // 与额度数据分离可避免同步载荷膨胀，也符合用户对对话隐私的预期。
 
-import { LLM_PROXY_CONFIG, cloud } from './cloud'
+import { LLM_PROXY_CONFIG, cloud, cloudClientHeaders } from './cloud'
 import { isDesktopApp, isNativeApp } from './openExternal'
 import type { ChatCompletionContentPart } from '@tencent-ai/workbuddy-cloud-sdk'
 
@@ -49,14 +49,15 @@ export async function listModels(): Promise<AiModel[]> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
     'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
+    ...cloudClientHeaders(),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
   let text: string
   if (isNativeApp()) {
     const { CapacitorHttp } = await import('@capacitor/core')
     const res = await CapacitorHttp.request({ url, method: 'GET', headers, responseType: 'text' })
-    if (res.status < 200 || res.status >= 300) throw new Error(`模型列表请求失败（${res.status}）`)
     text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '')
+    if (res.status < 200 || res.status >= 300) throw new Error(`模型列表请求失败（${res.status}）：${text.slice(0, 120)}`)
   } else {
     const res = await fetch(url, { method: 'GET', headers })
     text = await res.text()
@@ -192,6 +193,7 @@ export async function streamChat(
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
         'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
+        ...cloudClientHeaders(),
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       data: { ...body, conversationId },
@@ -213,6 +215,7 @@ export async function streamChat(
       'Accept': 'text/event-stream',
       'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
       'X-Conversation-ID': conversationId,
+      ...cloudClientHeaders(),
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
     body: JSON.stringify({ ...body, conversationId }),
