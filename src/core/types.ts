@@ -128,6 +128,17 @@ export interface AppState {
   settings: AppSettings
 }
 
+/** 系统通知提醒偏好（签到/到期/告急/预算） */
+export interface NotifyPrefs {
+  enabled: boolean
+  checkin: boolean
+  /** 签到提醒时间 HH:mm */
+  checkinTime: string
+  expiry: boolean
+  forecast: boolean
+  budget: boolean
+}
+
 export interface AppSettings {
   /** 本地加密主密码校验位（不存明文） */
   vaultInitialized: boolean
@@ -135,6 +146,8 @@ export interface AppSettings {
   monthlyBudget: number
   /** 签到提醒开关 */
   checkinReminder: boolean
+  /** 系统通知提醒偏好（可选，缺省见 reminders.DEFAULT_NOTIFY_PREFS） */
+  notify?: NotifyPrefs
   /** 用户手动确认有官方每日签到的平台 id（默认空，只展示真正可签到的） */
   checkinProviders: string[]
   /** 额度耗尽预警阈值（天）：低于此值计入"即将耗尽" */

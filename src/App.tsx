@@ -6,11 +6,14 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
+  Bell,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
 import { detectLocalServices, getSystemMemoryGb, checkLocalService, startLocalService, stopLocalService, stopServiceByPort, isServiceAppManaged, fetchLocalModels, chooseModelFile, type LocalService } from './core/localServices'
 import { DocQAView } from './components/DocQAView'
+import { buildReminders, filterUnsent, markSent, notifyPrefsOf } from './core/reminders'
+import { getNotificationPermission, requestNotificationPermission, showNotification, scheduleDailyCheckin, cancelDailyCheckin, type NotificationPermissionState } from './core/notifications'
 import { TranslationView } from './components/TranslationView'
 import { ChatTranslateView } from './components/ChatTranslateView'
 import { ImageView } from './components/ImageView'
@@ -525,6 +528,47 @@ function App() {
     .filter((u) => u.date.startsWith(todayISO().slice(0, 7)))
     .reduce((s, u) => s + u.estimatedCost, 0)
   const portfolioValue = totalPortfolioValue(state)
+
+  // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
+  const notifyPrefs = notifyPrefsOf(state.settings)
+  useEffect(() => {
+    if (!notifyPrefs.enabled) return
+    let cancelled = false
+    const run = async () => {
+      const perm = await getNotificationPermission()
+      if (cancelled || perm !== 'granted') return
+      const events = buildReminders({
+        now: new Date(),
+        prefs: notifyPrefs,
+        pendingCheckins: pendingCheckins.map((t) => t.name),
+        expiring: views
+          .filter((v) => v.daysUntilReset != null && v.daysUntilReset >= 0 && v.daysUntilReset <= state.settings.alertDays)
+          .map((v) => ({ accountId: v.account.id, name: v.account.label || v.provider?.name || '账户', days: v.daysUntilReset as number })),
+        forecastAlerts: views
+          .filter((v) => v.forecast && (v.forecast.level === 'exhausted' || v.forecast.level === 'critical' || (v.forecast.level === 'warning' && (v.forecast.daysLeft ?? 99) <= state.settings.alertDays)))
+          .map((v) => ({ accountId: v.account.id, name: v.account.label || v.provider?.name || '账户', daysLeft: v.forecast?.daysLeft ?? 0 })),
+        monthCost,
+        monthlyBudget: state.settings.monthlyBudget,
+      })
+      const fresh = filterUnsent(events).slice(0, 3)
+      for (const e of fresh) { if (!cancelled) await showNotification(e.title, e.body, e.id) }
+      if (fresh.length && !cancelled) markSent(fresh)
+    }
+    void run()
+    const t = window.setInterval(run, 15 * 60 * 1000)
+    return () => { cancelled = true; window.clearInterval(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state])
+
+  // 安卓端：同步每日签到定时通知（App 关闭也能提醒）
+  useEffect(() => {
+    if (notifyPrefs.enabled && notifyPrefs.checkin) {
+      const [h, m] = notifyPrefs.checkinTime.split(':').map((x) => Number(x) || 0)
+      void scheduleDailyCheckin(h, m)
+    } else {
+      void cancelDailyCheckin()
+    }
+  }, [notifyPrefs.enabled, notifyPrefs.checkin, notifyPrefs.checkinTime])
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof LayoutDashboard }> = [
     { id: 'ai', label: 'AI 助手', icon: Sparkles },
@@ -3213,6 +3257,26 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const [bioSwitchPwd, setBioSwitchPwd] = useState('')
   const [bioSwitchBusy, setBioSwitchBusy] = useState(false)
   const [setTab, setSetTab] = useState<'general' | 'data' | 'security'>('general')
+  // ---- 提醒通知（系统通知） ----
+  const np = notifyPrefsOf(s)
+  const [notifyPerm, setNotifyPerm] = useState<NotificationPermissionState>('prompt')
+  useEffect(() => { void getNotificationPermission().then(setNotifyPerm) }, [])
+  const patchNotify = (patch: Partial<typeof np>) => onChange({ notify: { ...np, ...patch } })
+  const onToggleNotifyEnabled = async (v: boolean) => {
+    if (!v) { patchNotify({ enabled: false }); return }
+    const perm = await requestNotificationPermission()
+    setNotifyPerm(perm)
+    if (perm === 'denied') notify('通知权限被拒绝，请到系统设置里允许本应用发送通知')
+    if (perm === 'unsupported') notify('当前平台不支持系统通知')
+    patchNotify({ enabled: true })
+  }
+  const onTestNotification = async () => {
+    let perm = await getNotificationPermission()
+    if (perm !== 'granted') { perm = await requestNotificationPermission(); setNotifyPerm(perm) }
+    if (perm !== 'granted') { notify('未获得通知权限，无法发送测试通知'); return }
+    const ok = await showNotification('AI 积分管家', '这是一条测试通知，提醒功能工作正常。', 'acm-test')
+    notify(ok ? '测试通知已发送，请留意系统通知' : '当前平台不支持系统通知')
+  }
   const [devices, setDevices] = useState<DeviceRecord[]>(() => loadDevices())
 
   // 本地模型服务：检测物理内存 → 档位（Web/手机端检测失败用手动覆盖档位）
@@ -3449,6 +3513,32 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                      onChange={e => onChange({ monthlyBudget: Math.max(0, Number(e.target.value)) })}
                      style={{ width: 100 }} />
             </SettingsRow>
+          </SettingsSection>
+
+          <SettingsSection title="提醒通知" desc="通过系统通知提醒签到、到期、额度告急与预算" icon={Bell} tone="amber">
+            <SettingsRow title="开启系统通知" desc={notifyPerm === 'granted' ? '通知权限已获得' : notifyPerm === 'denied' ? '通知权限被拒绝，请到系统设置中开启' : notifyPerm === 'unsupported' ? '当前平台不支持系统通知' : '开启时将请求系统通知权限'}>
+              <Toggle checked={np.enabled} onChange={(v) => void onToggleNotifyEnabled(v)} />
+            </SettingsRow>
+            {np.enabled && <>
+              <SettingsRow title="每日签到提醒" desc="到达设定时间后，当天仍有未签到工具时提醒；安卓端关掉 App 也会定时提醒">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input className="input" type="time" value={np.checkinTime} onChange={e => patchNotify({ checkinTime: e.target.value || '09:00' })} style={{ width: 108 }} />
+                  <Toggle checked={np.checkin} onChange={v => patchNotify({ checkin: v })} />
+                </div>
+              </SettingsRow>
+              <SettingsRow title="到期提醒" desc={`订阅/额度在 ${s.alertDays} 天内到期时提醒`}>
+                <Toggle checked={np.expiry} onChange={v => patchNotify({ expiry: v })} />
+              </SettingsRow>
+              <SettingsRow title="额度告急提醒" desc="按当前用量预测，账户额度即将耗尽时提醒">
+                <Toggle checked={np.forecast} onChange={v => patchNotify({ forecast: v })} />
+              </SettingsRow>
+              <SettingsRow title="预算提醒" desc="本月花费达到预算 90% 以及超支时提醒">
+                <Toggle checked={np.budget} onChange={v => patchNotify({ budget: v })} />
+              </SettingsRow>
+              <SettingsRow title="测试通知" desc="立即发送一条测试通知，确认系统能收到">
+                <button className="btn sm" onClick={() => void onTestNotification()}>发送测试</button>
+              </SettingsRow>
+            </>}
           </SettingsSection>
         </>}
 

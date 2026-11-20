@@ -1,7 +1,7 @@
 {
   "name": "ai-credit-manager",
   "private": true,
-  "version": "0.1.177",
+  "version": "0.1.178",
   "type": "module",
   "description": "AI 积分管家 - 统一管理各家 AI 平台的积分、额度、用量与 API Key（合规版：只读官方接口 + 跳转本人操作）",
   "scripts": {
@@ -19,10 +19,12 @@
     "@capacitor/camera": "^6.1.3",
     "@capacitor/core": "^6.2.3",
     "@capacitor/filesystem": "^6.0.4",
+    "@capacitor/local-notifications": "^6.0.0",
     "@capacitor/preferences": "^6.0.2",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-fs": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2.0.0",
     "@tauri-apps/plugin-process": "^2.4.0",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "@tencent-ai/workbuddy-cloud-sdk": "^0.1.4-dev.71e5d1e.202611161655",
