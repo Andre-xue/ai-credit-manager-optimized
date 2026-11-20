@@ -547,19 +547,6 @@ function App() {
     { label: '资产管理', ids: ['keys', 'usage', 'checkin'] },
     { label: '系统', ids: ['voice', 'settings'] },
   ]
-  const tabDesc: Partial<Record<Tab, string>> = {
-    ai: '和你的模型对话、生成与推理，都在这里',
-    dashboard: '所有平台的额度、余额与耗尽预测一目了然',
-    checkin: '主流 AI 工具目录与每日签到提醒',
-    benefits: '文本、文档与对话翻译',
-    image: '用你的模型账户生成图像',
-    video: '用你的模型账户生成视频',
-    keys: '加密保存的 API Key 与账户资产',
-    usage: '用量、费用趋势与预算',
-    voice: '朗读音色、方言与声音克隆',
-    docs: '基于本地文档的问答',
-    settings: '偏好、安全与数据管理',
-  }
 
   // 移动端底部导航：只保留 5 个高频入口，AI 置于正中，其余从抽屉进入（原 10 个太挤）
   const bottomTabs: Tab[] = ['dashboard', 'checkin', 'ai', 'keys', 'settings']
@@ -634,19 +621,6 @@ function App() {
       <main className="main">
         {/* 手机端：悬浮玻璃菜单按钮，点击打开侧栏抽屉 */}
         {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
-        <header className={`topbar ${tab === 'ai' ? 'topbar-ai' : ''}`}>
-          <div className="topbar-heading">
-            <div>
-              <div className="topbar-eyebrow">{navGroups.find((g) => g.ids.includes(tab))?.label ?? '工作台'}</div>
-              <h1>{tabs.find((t) => t.id === tab)?.label ?? (tab === 'chat-translate' ? '对话翻译' : tab === 'local-image' ? '本地图像' : tab === 'local-video' ? '本地视频' : '')}</h1>
-              <div className="subtitle">{tabDesc[tab] ?? '本地优先存储 · 数据仅保存在此设备'}</div>
-            </div>
-          </div>
-          <div className="topbar-actions">
-            <span className="topbar-pill"><span className="status-dot" />本地模式</span>
-            {(tab === 'keys' || tab === 'dashboard') && <button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button>}
-          </div>
-        </header>
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
           {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={serviceController} />}
@@ -736,6 +710,7 @@ function App() {
 
           {tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> 返回 AI 视频</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
+          {tab === 'keys' && <div className="page-action-row"><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify}
             onImportFile={handleImportFile}

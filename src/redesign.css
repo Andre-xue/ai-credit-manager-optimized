@@ -346,3 +346,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .sidebar-collapsed:not(.phone-shell) .sidebar-status { justify-content: center; padding: 10px 0; }
 .sidebar-collapsed:not(.phone-shell) .sidebar-status > div,
 .sidebar-collapsed:not(.phone-shell) .compliance { display: none; }
+
+
+/* 全局标题栏已移除（用户 2026-11-20 要求）：内容整体上移 */
+.page-action-row { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+.phone-shell .content:not(.content-ai) { padding-top: calc(env(safe-area-inset-top, 0px) + 62px) !important; }
