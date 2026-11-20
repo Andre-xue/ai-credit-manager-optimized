@@ -594,3 +594,14 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .group-stat-chip { border: 1px solid var(--border); background: var(--panel); color: var(--text-2); border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
 .group-stat-chip:hover { border-color: var(--primary); color: var(--primary); }
 .group-stat-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* 翻译页下拉在安卓端文字下半截被裁（Ethan 截图 2026-11-20）：styles.css 给翻译设置区的
+   select/input 定了 height:36px，全局 border-box 下再叠加 .select 的 10px 上下内边距，
+   内容盒只剩 14px，装不下 13.5px 字体的行高；安卓 WebView 的原生下拉按盒裁字
+   （桌面浏览器不裁，所以只在手机上暴露）。改为高度自适应并归一内边距/行高，桌面观感不变。 */
+.translate-settings .tr-field .select,
+.translate-settings .tr-field .input { height: auto; min-height: 40px; line-height: 1.4; padding-top: 9px; padding-bottom: 9px; }
+/* 目标语言下拉在手机上与其它下拉等宽（桌面保持 220px 设计宽不变） */
+@media (max-width: 680px) {
+  .tr-target-row .tr-field { flex: 1 1 100%; min-width: 100%; }
+}
