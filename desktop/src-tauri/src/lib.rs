@@ -1278,12 +1278,16 @@ fn toggle_mini_window(app: &tauri::AppHandle) {
         if w.is_visible().unwrap_or(false) {
             let _ = w.hide();
         } else {
-            // 定位到主显示器右上角（菜单栏/任务栏下方）
+            // 定位到主显示器右上角（菜单栏/任务栏下方）。
+            // 注意：monitor.size() 与窗口 outer_size() 都是物理像素，不能拿逻辑宽度 348
+            // 直接相减——Retina 屏（缩放 2x）上窗口会溢出屏幕右缘、右侧数据被切掉。
             if let Ok(Some(monitor)) = w.primary_monitor() {
-                let size = monitor.size();
-                let win_w = 348i32;
-                let x = (size.width as i32 - win_w - 12).max(0);
-                let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, 30)));
+                let scale = monitor.scale_factor();
+                let margin = (12.0 * scale) as i32;
+                let win_w = w.outer_size().map(|s| s.width as i32).unwrap_or((348.0 * scale) as i32);
+                let x = (monitor.size().width as i32 - win_w - margin).max(0);
+                let y = (32.0 * scale) as i32;
+                let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
             }
             let _ = w.show();
             let _ = w.set_focus();
