@@ -198,6 +198,14 @@ export interface DataSourceAdapter {
     used: number
     total?: number
     unit: CreditUnit
+    /** 余额型接口：可直接展示的剩余余额（与 used/total 并存时以此为准） */
+    remaining?: number
+    /** 余额货币符号（¥ / $） */
+    symbol?: string
+    /** 余额明细文案（如「充值 ¥100 · 赠金 ¥10」） */
+    detail?: string
+    /** 完整展示文案（如无额度上限时），优先于其它字段 */
+    label?: string
     events?: Array<{ date: string; inputTokens: number; outputTokens: number; model?: string }>
   }>
   /** 官方用量页，跳转用 */

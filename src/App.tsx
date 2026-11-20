@@ -47,7 +47,7 @@ import {
   isVaultInitialized, initVault, verifyVault, encryptSecret, decryptSecret, fingerprint, resetVault,
   changeMasterPassword, saveBiometricPassword, getBiometricPassword, clearBiometricPassword,
 } from './core/crypto'
-import { getAdapter } from './core/adapters'
+import { getAdapter, formatUsageBalance } from './core/adapters'
 import { parseUsageCsv, type UsageEventInput } from './core/csv'
 import {
   type ExportFormat, type ServiceEntry, exportByFormat, detectCsvKind, isJsonImport,
@@ -1835,7 +1835,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           try {
                             const r = await adapter.fetchUsage!(plain)
                             onQuotaFetched(a.id, r.used, r.total, r.unit)
-                            notify(`余额已更新：剩余 ${Math.max(0, (r.total ?? r.used) - r.used).toLocaleString()} ${r.unit}`)
+                            notify(`余额已更新：${formatUsageBalance(r)}`)
                           } catch (e: any) { notify(e.message ?? '获取官方余额失败') }
                           finally { setRefreshing(s => { const n = new Set(s); n.delete(a.id); return n }) }
                         }}><RefreshCw size={13} style={refreshing.has(a.id) ? { animation: 'acm-spin 1s linear infinite' } : undefined} /></button>}
@@ -1883,7 +1883,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                         try {
                           const r = await adapter.fetchUsage!(plain)
                           onQuotaFetched(a.id, r.used, r.total, r.unit)
-                          notify(`查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
+                          notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
                         } catch (e: any) { notify(e.message ?? '查询失败') }
                       }}><RefreshCw size={13} /> 查询</button>}
                       <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
@@ -2705,6 +2705,8 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
   const [noteCat, setNoteCat] = useState<NoteCategory>('通用型')
   const [secret, setSecret] = useState('')
   const [balance, setBalance] = useState<string | null>(null)
+  // 已获取的剩余额度（结构化保存，提交时生成初始额度快照；label 型结果无快照）
+  const [fetchedQuota, setFetchedQuota] = useState<{ total: number; unit: CreditUnit } | null>(null)
   const [fetching, setFetching] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -2734,13 +2736,15 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
     setFetching(true)
     try {
       const r = await adapter.fetchUsage!(secret.trim())
-      const remain = (r.total ?? r.used) - r.used
-      setBalance(`剩余 ${Math.max(0, remain).toLocaleString()} ${r.unit}`)
-    } catch (e: any) { setErr(e.message ?? '获取余额失败'); setBalance(null) }
+      setBalance(formatUsageBalance(r))
+      if (r.label) setFetchedQuota(null)
+      else if (r.remaining !== undefined) setFetchedQuota({ total: r.remaining, unit: 'currency' })
+      else setFetchedQuota({ total: Math.max(0, (r.total ?? r.used) - r.used), unit: r.unit })
+    } catch (e: any) { setErr(e.message ?? '获取余额失败'); setBalance(null); setFetchedQuota(null) }
     finally { setFetching(false) }
   }
 
-  const reset = () => { setNote(''); setNoteCat('通用型'); setSecret(''); setBalance(null); setErr('') }
+  const reset = () => { setNote(''); setNoteCat('通用型'); setSecret(''); setBalance(null); setFetchedQuota(null); setErr('') }
 
   const submit = async () => {
     setErr('')
@@ -2756,9 +2760,8 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
       const enc = await encryptSecret(secret.trim(), pwd)
       const fp = fingerprint(secret.trim())
       const now = new Date().toISOString()
-      // 解析已获取的余额为额度快照（若成功获取）
-      const quotaMatch = balance?.match(/剩余\s*([\d,]+(?:\.\d+)?)/)
-      const quotaTotal = quotaMatch ? Number(quotaMatch[1].replace(/,/g, '')) : 0
+      // 已获取的余额生成初始额度快照（若成功获取）
+      const quotaTotal = fetchedQuota?.total ?? 0
       const account: AppState['accounts'][number] = {
         id: uid('acc'), providerId: provider.id,
         label: isVoiceCfg ? `${chosenVoice?.short ?? '语音'}（语音配置APP）` : provider.shortName,
@@ -2769,7 +2772,7 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
         createdAt: now, updatedAt: now,
       }
       const quota: QuotaSnapshot | undefined = quotaTotal > 0 ? {
-        id: uid('q'), accountId: account.id, unit: 'token' as CreditUnit, total: quotaTotal, used: 0,
+        id: uid('q'), accountId: account.id, unit: fetchedQuota!.unit, total: quotaTotal, used: 0,
         capturedAt: now, source: 'api' as const,
       } : undefined
       onSave({ account, quota, pwd })

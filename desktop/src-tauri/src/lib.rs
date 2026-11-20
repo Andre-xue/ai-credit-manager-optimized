@@ -460,6 +460,11 @@ async fn proxy_usage(provider: String, api_key: String) -> Result<serde_json::Va
     let (url, need_range): (&str, bool) = match provider.as_str() {
         "openai" => ("https://api.openai.com/v1/organization/usage/completions", true),
         "anthropic" => ("https://api.anthropic.com/v1/usage", false),
+        "deepseek" => ("https://api.deepseek.com/user/balance", false),
+        "kim" => ("https://api.moonshot.cn/v1/users/me/balance", false),
+        "glm" => ("https://open.bigmodel.cn/api/paas/v4/balance", false),
+        "siliconflow" => ("https://api.siliconflow.cn/v1/user/info", false),
+        "openrouter" => ("https://openrouter.ai/api/v1/auth/key", false),
         _ => return Err(format!("平台 {} 不支持官方只读用量 API", provider)),
     };
 
