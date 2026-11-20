@@ -418,3 +418,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   .sd-layout { grid-template-columns: 1fr; }
   .sd-result { min-height: 420px; }
 }
+
+/* Key 健康状态徽标（密钥管理表） */
+.health-badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hatch-widget-border,#e5e0f2);background:transparent;border-radius:999px;padding:3px 9px;font-size:11.5px;cursor:pointer;color:inherit;white-space:nowrap}
+.health-badge:disabled{opacity:.6;cursor:wait}
+.health-badge .health-dot{width:7px;height:7px;border-radius:50%;background:#b6b0c8;flex:none}
+.health-badge.ok .health-dot{background:#22a06b}
+.health-badge.auth .health-dot{background:#dc2626}
+.health-badge.quota .health-dot{background:#d97706}
+.health-badge.network .health-dot{background:#d97706}
+.health-badge.error .health-dot{background:#dc2626}
+.health-badge.skipped .health-dot{background:#b6b0c8}

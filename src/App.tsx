@@ -6,7 +6,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff,
+  Bell, CloudOff, Activity,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -64,6 +64,7 @@ import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, che
 import { useServiceController } from './core/useServiceController'
 import { CloudLoginModal } from './components/CloudLogin'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
+import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
 import {
   buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup,
   type KeyBackupMode, type KeyBackupFormat, type KeyBackupFile, type BackupFileFormat,
@@ -1670,6 +1671,23 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [revealKeyTarget, setRevealKeyTarget] = useState<{ id: string; label: string; plain: string } | null>(null)
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set())
+  // Key 健康检查：结果存本地（healthCheck.ts），逐个/全部探测 /v1/models
+  const [health, setHealth] = useState<Record<string, KeyHealthResult>>(() => loadKeyHealth())
+  const [checking, setChecking] = useState<Set<string>>(new Set())
+  const runHealthCheck = async (list: AppState['accounts']) => {
+    const targets = list.filter(a => !checking.has(a.id))
+    if (!targets.length) return
+    setChecking(s => new Set([...s, ...targets.map(a => a.id)]))
+    let okN = 0, badN = 0, skipN = 0
+    await Promise.all(targets.map(async a => {
+      const eff = { ...a, apiUrl: a.apiUrl || PROVIDER_MAP[a.providerId]?.apiBaseUrl || '' }
+      const r = await checkKeyHealth(eff, revealed[a.id])
+      if (r.status === 'ok') okN++; else if (r.status === 'skipped') skipN++; else badN++
+      setHealth(prev => { const next = { ...prev, [a.id]: r }; saveKeyHealth(next); return next })
+      setChecking(s => { const n = new Set(s); n.delete(a.id); return n })
+    }))
+    if (list.length > 1) notify(`健康检查完成：正常 ${okN}${badN ? ` · 异常 ${badN}` : ''}${skipN ? ` · 跳过 ${skipN}（未解锁或无地址）` : ''}`)
+  }
   const PAGE_SIZE = 3
   const keyAccounts = state.accounts.filter(a => a.encryptedKey)
 
@@ -1720,6 +1738,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{keyAccounts.length} 个密钥 · 本地加密存储</div>
         </div>
         <div className="keys-header-tools">
+          <button className="btn sm" disabled={checking.size > 0 || keyAccounts.length === 0}
+            onClick={() => void runHealthCheck(keyAccounts)}
+            title="用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）">
+            <Activity size={14} /> {checking.size > 0 ? `检查中（剩 ${checking.size}）` : '健康检查'}
+          </button>
           {categories.length > 0 && (
             <select className="select" style={{ width: 150 }} value={category} onChange={e => setCategory(e.target.value)}>
               <option value="__all__">全部分类 ({keyAccounts.length})</option>
@@ -1762,13 +1785,14 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               <th style={{ width: 110 }}>余额</th>
               <th style={{ width: 160 }}>链接地址 (API)</th>
               <th style={{ width: 130 }}>API Key</th>
+              <th style={{ width: 118 }}>健康状态</th>
               <th>备注 (用途)</th>
               <th style={{ width: 260 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {pageItems.length === 0 ? (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
                 {keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前分类下没有密钥'}
               </td></tr>
             ) : pageItems.map(a => {
@@ -1834,6 +1858,15 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           setRevealKeyTarget({ id: a.id, label: a.label, plain })
                         }}><Eye size={13} /></button>
                     </div>
+                  </td>
+                  <td>
+                    {(() => { const h = health[a.id]; const busyH = checking.has(a.id); return (
+                      <button className={`health-badge ${h ? h.status : 'none'}`} disabled={busyH}
+                        title={h ? `${h.message}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '点击检查该 Key 是否可用'}
+                        onClick={() => void runHealthCheck([a])}>
+                        <span className="health-dot" />
+                        {busyH ? '检查中…' : h ? `${HEALTH_LABEL[h.status]}${h.status === 'ok' && h.latencyMs ? ` ${h.latencyMs}ms` : ''}` : '未检查'}
+                      </button> ) })()}
                   </td>
                   <td><span className="key-note" title={a.note ?? ''}>{a.note ?? '—'}</span></td>
                   <td>
