@@ -14,9 +14,9 @@
   --text: #1f2023;
   --text-2: #6b6c70;
   --text-3: #9b9c9f;
-  --primary: #c15f3c;          /* Claude 暖橙棕主色 */
-  --primary-soft: #faf1ec;
-  --primary-hover: #a84e2e;
+  --primary: #5b5bd6;          /* Claude 暖橙棕主色 */
+  --primary-soft: #eef0ff;
+  --primary-hover: #4a4ac2;
   background: #ffffff;
   color: var(--text);
 }
@@ -46,57 +46,7 @@
   box-shadow: none !important;
 }
 .claude-ui .brand-name { color: var(--text); }
-/* 新拟物键帽菜单项：凸起外阴影 → 悬停浮起 → 按下内阴影下沉 → 当前项保持按下 + 蓝色指示灯 */
-.claude-ui .nav { gap: 8px; } /* 键帽之间留缝，立体阴影才可见 */
-.claude-ui .nav-item {
-  margin-bottom: 0;
-  color: var(--text-2);
-  background: #f6f6f4;
-  border: 1px solid rgba(0,0,0,.02);
-  border-radius: 12px;
-  box-shadow: 4px 4px 9px #dcdcd8, -4px -4px 9px #ffffff;
-  transform: translateY(0);
-  transition: transform .18s cubic-bezier(.2,.8,.3,1), box-shadow .18s ease, background .18s ease, color .18s ease;
-}
-.claude-ui .nav-item:hover {
-  background: #f8f8f6;
-  color: #1f2023;
-  transform: translateY(-2px);
-  box-shadow: 6px 6px 13px #d8d8d4, -6px -6px 13px #ffffff;
-}
-.claude-ui .nav-item:active {
-  transform: translateY(2px);
-  box-shadow: inset 3px 3px 6px #d9d9d5, inset -3px -3px 6px #ffffff;
-  background: #f2f2f0;
-  transition-duration: .09s; /* 按下更快，松手回弹用上面的 .18s */
-}
-/* 当前项：保持按下态 + 蓝色指示灯 */
-.claude-ui .nav-item.active {
-  color: #1f2023;
-  font-weight: 600;
-  background: #f2f2f0;
-  transform: translateY(2px);
-  box-shadow: inset 3px 3px 6px #d9d9d5, inset -3px -3px 6px #ffffff;
-}
-.claude-ui .nav-item.active::before { display: none; }
-/* 蓝色指示灯：右侧发光圆点 */
-.claude-ui .nav-item::after {
-  content: ''; position: absolute; right: 14px; top: 50%;
-  width: 7px; height: 7px; border-radius: 50%;
-  transform: translateY(-50%) scale(0);
-  background: #3b82f6;
-  box-shadow: 0 0 0 0 rgba(59,130,246,.45);
-  transition: transform .2s cubic-bezier(.34,1.56,.64,1), box-shadow .2s ease;
-}
-.claude-ui .nav-item.active::after {
-  transform: translateY(-50%) scale(1);
-  box-shadow: 0 0 8px 2px rgba(59,130,246,.55), 0 0 0 3px rgba(59,130,246,.14);
-  animation: nav-led-pulse 2.2s ease-in-out infinite;
-}
-@keyframes nav-led-pulse {
-  0%,100% { box-shadow: 0 0 8px 2px rgba(59,130,246,.55), 0 0 0 3px rgba(59,130,246,.14); }
-  50%     { box-shadow: 0 0 11px 3px rgba(59,130,246,.7), 0 0 0 4px rgba(59,130,246,.18); }
-}
+/* Nav styling is owned by redesign.css (grouped sidebar) */
 .claude-ui .compliance {
   background: #fffdf5; border-color: #f0e6c8; border-radius: 8px;
 }
@@ -111,10 +61,8 @@
 /* ---------- 顶栏：极简，弱化 ---------- */
 .claude-ui .topbar { height: 60px; border-bottom-color: #f0f0ee; }
 .claude-ui .topbar h1 { font-size: 16px; font-weight: 600; }
-.claude-ui .topbar .subtitle { display: none; }  /* Claude 顶栏只有标题，副标题冗余 */
-.claude-ui .topbar-actions .btn.primary {
-  background: #1f2023; border-color: #1f2023; color: #fff;
-}
+.claude-ui .topbar .subtitle { display: block; } /* Redesign: 副标题提供页面说明，保留显示 */
+.claude-ui .topbar-actions .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 
 /* ---------- 卡片/面板：扁平、无强阴影 ---------- */
 .claude-ui .stat-card,
@@ -142,7 +90,7 @@
   min-height: 0;
 }
 /* AI 页隐藏全局顶栏与自带品牌，只留极简模型控件（Claude 顶部只有套餐标签+模型） */
-.claude-ui .topbar-ai { display: none; }
+.claude-ui .topbar-ai { display: flex; }
 .claude-ui .content-ai { margin-top: 0; }
 .claude-ui .ai-topbar {
   border-bottom: none;

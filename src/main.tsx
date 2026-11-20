@@ -5,6 +5,7 @@ import './styles.css'
 import './liquid-glass.css'
 import './claude-ui.css'
 import './motion-effects.css'
+import './redesign.css'
 
 // 预览钩子：URL 带 ?preview=phone 时模拟 Capacitor 原生环境，便于在浏览器里预览手机端液态玻璃界面。
 // 仅用于开发/验收，正常用户不会带此参数，对生产无影响。

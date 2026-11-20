@@ -4,22 +4,22 @@
     <view>管理你自己的 AI 平台额度。数据仅存本机，签到只提醒、跳转由你本人操作，不模拟登录、不自动领取。</view>
   </view>
 
-  <view class="stats card">
-    <view class="stat">
-      <view class="stat-num">{{stats.accounts}}</view>
-      <view class="stat-label">账户</view>
+  <view class="bento">
+    <view class="bento-main">
+      <view class="bento-label">我的 AI 账户</view>
+      <view class="bento-big">{{stats.accounts}}<text class="bento-unit"> 个账户</text></view>
+      <view class="bento-sub">覆盖 {{stats.platforms}} 个平台 · 数据只存本机</view>
+      <view class="bento-cta" bindtap="openAdd">+ 添加账户</view>
     </view>
-    <view class="stat">
-      <view class="stat-num">{{stats.platforms}}</view>
-      <view class="stat-label">平台</view>
+    <view class="bento-tile bento-amber" bindtap="goCheckin">
+      <view class="bento-label">待签到</view>
+      <view class="bento-num">{{stats.pending}}<text class="bento-unit"> 个</text></view>
+      <view class="bento-sub">去领取 ›</view>
     </view>
-    <view class="stat">
-      <view class="stat-num" style="color:#dc2626">{{stats.low}}</view>
-      <view class="stat-label">额度告急</view>
-    </view>
-    <view class="stat" bindtap="goCheckin">
-      <view class="stat-num" style="color:#d97706">{{stats.pending}}</view>
-      <view class="stat-label">待签到 ›</view>
+    <view class="bento-tile bento-red">
+      <view class="bento-label">额度告急</view>
+      <view class="bento-num">{{stats.low}}<text class="bento-unit"> 个</text></view>
+      <view class="bento-sub">{{stats.low ? '优先处理' : '一切正常'}}</view>
     </view>
   </view>
 

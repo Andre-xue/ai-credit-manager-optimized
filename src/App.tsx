@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import {
   LayoutDashboard, CalendarCheck2, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
-  Wallet, Flame, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
+  Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
@@ -540,16 +540,37 @@ function App() {
     { id: 'settings', label: '设置', icon: Settings },
   ]
 
-  // 移动端底部导航：AI 置于正中间（看板/签到/翻译 · AI · 密钥/用量/设置）
-  const bottomTabs: Tab[] = ['dashboard', 'checkin', 'benefits', 'ai', 'image', 'video', 'keys', 'usage', 'voice', 'settings']
+  // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
+  const navGroups: Array<{ label: string; ids: Tab[] }> = [
+    { label: '概览', ids: ['ai', 'dashboard'] },
+    { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs'] },
+    { label: '资产管理', ids: ['keys', 'usage', 'checkin'] },
+    { label: '系统', ids: ['voice', 'settings'] },
+  ]
+  const tabDesc: Partial<Record<Tab, string>> = {
+    ai: '和你的模型对话、生成与推理，都在这里',
+    dashboard: '所有平台的额度、余额与耗尽预测一目了然',
+    checkin: '主流 AI 工具目录与每日签到提醒',
+    benefits: '文本、文档与对话翻译',
+    image: '用你的模型账户生成图像',
+    video: '用你的模型账户生成视频',
+    keys: '加密保存的 API Key 与账户资产',
+    usage: '用量、费用趋势与预算',
+    voice: '朗读音色、方言与声音克隆',
+    docs: '基于本地文档的问答',
+    settings: '偏好、安全与数据管理',
+  }
+
+  // 移动端底部导航：只保留 5 个高频入口，AI 置于正中，其余从抽屉进入（原 10 个太挤）
+  const bottomTabs: Tab[] = ['dashboard', 'checkin', 'ai', 'keys', 'settings']
   const shortLabel: Record<Tab, string> = {
-    ai: 'AI', dashboard: '看板', checkin: '签到', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
+    ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
     'local-image': '本地图像', 'local-video': '本地视频',
     keys: '密钥', usage: '用量', voice: '语音', docs: '文档', settings: '设置',
   }
 
-  // 手机端侧栏：AI 主页面置顶，其后依次为 看板 / 签到 / 翻译 / 图像 / 视频 / 密钥 / 用量 / 设置
-  const drawerTabs: Tab[] = ['ai', 'dashboard', 'checkin', 'benefits', 'image', 'video', 'keys', 'usage', 'settings']
+  // 手机端侧栏：与桌面端使用同一分组顺序
+  const drawerTabs: Tab[] = ['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'checkin', 'voice', 'settings']
 
   // 界面风格：全平台统一极简留白风（已移除其他风格选项，强制 claude）
   const motionOn = state.settings.uiMotion !== false
@@ -567,30 +588,44 @@ function App() {
       {isPhone && sidebarVisible && <button className="phone-scrim" aria-label="关闭菜单" onClick={() => setSidebarVisible(false)} />}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><img src="/pwa-512.png" alt="AI 积分管家" className="app-mark-img" /></div>
-          <div>
+          <div className="brand-mark"><img src="./pwa-512.png" alt="AI 积分管家" className="app-mark-img" /></div>
+          <div className="brand-text">
             <div className="brand-name">AI 积分管家</div>
-            <div className="brand-sub">Credit Manager</div>
+            <div className="brand-sub">AI CREDIT MANAGER</div>
           </div>
           {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title="关闭菜单"><X size={19} /></button>}
         </div>
-        <nav className="nav">
-          {(isPhone ? drawerTabs : tabs.map(t => t.id)).map((id) => {
-            const t = tabs.find(x => x.id === id)!
-            const Icon = t.icon
+        <nav className="nav" aria-label="主导航">
+          {navGroups.map((group) => {
+            const visibleIds = group.ids.filter((id) => (isPhone ? drawerTabs : tabs.map((t) => t.id)).includes(id))
+            if (!visibleIds.length) return null
             return (
-              <button key={t.id} className={`nav-item ${tab === t.id ? 'active' : ''}`}
-                onClick={() => openTab(t.id)} title={t.label}>
-                <Icon size={17} />
-                <span>{t.label}</span>
-              </button>
+              <div className="nav-group" key={group.label}>
+                <div className="nav-group-label">{group.label}</div>
+                {visibleIds.map((id) => {
+                  const t = tabs.find((x) => x.id === id)!
+                  const Icon = t.icon
+                  const badge = id === 'dashboard' && runningOut.length > 0 ? runningOut.length : id === 'checkin' && pendingCheckins.length > 0 ? pendingCheckins.length : null
+                  return (
+                    <button key={t.id} className={`nav-item ${tab === t.id ? 'active' : ''}`}
+                      onClick={() => openTab(t.id)} title={t.label}>
+                      <span className="nav-item-icon"><Icon size={17} /></span>
+                      <span className="nav-item-label">{t.label}</span>
+                      {badge ? <span className="badge nav-badge">{badge}</span> : null}
+                    </button>
+                  )
+                })}
+              </div>
             )
           })}
         </nav>
         <div className="sidebar-foot">
+          <div className="sidebar-status">
+            <span className="status-dot" />
+            <div><b>本地优先</b><span>数据只保存在此设备</span></div>
+          </div>
           <div className="compliance">
-            <b>合规使用</b><br />
-            仅只读官方接口，签到跳转官方页面由本人操作。不模拟登录、不自动领取、不共享凭证。
+            仅只读官方接口 · 签到跳转官方页本人操作
           </div>
         </div>
       </aside>
@@ -603,24 +638,62 @@ function App() {
         <header className={`topbar ${tab === 'ai' ? 'topbar-ai' : ''}`}>
           <div className="topbar-heading">
             <div>
-              <h1>{tabs.find((t) => t.id === tab)?.label}</h1>
-              <div className="subtitle">本地优先存储 · 数据仅保存在此设备</div>
+              <div className="topbar-eyebrow">{navGroups.find((g) => g.ids.includes(tab))?.label ?? '工作台'}</div>
+              <h1>{tabs.find((t) => t.id === tab)?.label ?? (tab === 'chat-translate' ? '对话翻译' : tab === 'local-image' ? '本地图像' : tab === 'local-video' ? '本地视频' : '')}</h1>
+              <div className="subtitle">{tabDesc[tab] ?? '本地优先存储 · 数据仅保存在此设备'}</div>
             </div>
           </div>
           <div className="topbar-actions">
-            {tab === 'keys' && <button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button>}
+            <span className="topbar-pill"><span className="status-dot" />本地模式</span>
+            {(tab === 'keys' || tab === 'dashboard') && <button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button>}
           </div>
         </header>
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
           {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={serviceController} />}
           {tab === 'dashboard' && <>
-          <div className="stats-grid">
-            <StatCard icon={<Wallet size={17} />} color="blue" label="资源总估值" value={`¥${portfolioValue.toFixed(0)}`} hint={`${state.accounts.length} 个账户 · 单价可校准`} />
-            <StatCard icon={<Flame size={17} />} color="amber" label="今日待签到" value={String(pendingCheckins.length)} hint={pendingCheckins.length ? '点击右侧跳转官方页面' : '今日已全部完成'} />
-            <StatCard icon={<AlertTriangle size={17} />} color="red" label="即将耗尽" value={String(runningOut.length)} hint={runningOut.length ? `按近期速度 ${state.settings.alertDays} 天内` : `${lowQuota.length} 个账户用量超 80%`} />
-            <StatCard icon={<TrendingUp size={17} />} color="green" label="本月预估费用" value={`¥${monthCost.toFixed(2)}`} hint={`预算 ¥${state.settings.monthlyBudget}`} />
+          <div className="bento-greeting">
+            <h2>{runningOut.length ? `今天先处理这 ${runningOut.length} 件` : '今天一切正常'}</h2>
+            {runningOut.length ? <span className="bento-alert-pill">{runningOut.length} 个账户告急</span> : pendingCheckins.length ? <span className="bento-alert-pill warn">{pendingCheckins.length} 个待签到</span> : <span className="bento-alert-pill ok">额度健康</span>}
           </div>
+          <section className="bento-grid" aria-label="概览">
+            <div className="bento-tile bento-main">
+              <div className="bento-label">资源总估值 · {state.accounts.length} 个账户</div>
+              <div className="bento-big">¥{portfolioValue.toFixed(0)}</div>
+              <div className="bento-sub">本月已用 ¥{monthCost.toFixed(2)} / 预算 ¥{state.settings.monthlyBudget}<br />单价可在用量页校准</div>
+              <button className="btn bento-cta" onClick={() => setAddOpen(true)}><Plus size={15} /> 添加账户</button>
+            </div>
+            <button className="bento-tile bento-amber" onClick={() => openTab('checkin')}>
+              <div className="bento-label">今日待签到</div>
+              <div className="bento-num">{pendingCheckins.length}<small> 个</small></div>
+              <div className="bento-sub">{pendingCheckins.length ? '去领取免费额度 →' : '今日已全部完成'}</div>
+            </button>
+            <button className="bento-tile bento-red" onClick={() => openTab('usage')}>
+              <div className="bento-label">即将耗尽</div>
+              <div className="bento-num">{runningOut.length}<small> 个</small></div>
+              <div className="bento-sub">{runningOut.length ? `${state.settings.alertDays} 天内优先处理 →` : `${lowQuota.length} 个用量超 80%`}</div>
+            </button>
+            <button className="bento-tile bento-green" onClick={() => openTab('image')}>
+              <div className="bento-label">AI 图像</div>
+              <div className="bento-action">开始生成 →</div>
+              <div className="bento-sub">用你的模型账户生图</div>
+            </button>
+            <button className="bento-tile bento-blue" onClick={() => openTab('video')}>
+              <div className="bento-label">AI 视频</div>
+              <div className="bento-action">开始生成 →</div>
+              <div className="bento-sub">用你的模型账户生视频</div>
+            </button>
+            <button className="bento-tile bento-violet" onClick={() => openTab('ai')}>
+              <div className="bento-label">AI 助手</div>
+              <div className="bento-action">开始对话 →</div>
+              <div className="bento-sub">对话、推理与附件分析</div>
+            </button>
+            <button className="bento-tile bento-teal" onClick={() => openTab('usage')}>
+              <div className="bento-label">本月预估费用</div>
+              <div className="bento-num">¥{monthCost.toFixed(2)}</div>
+              <div className="bento-sub">预算 ¥{state.settings.monthlyBudget} · 查看趋势 →</div>
+            </button>
+          </section>
 
           <DashboardView views={views} onAdd={() => setAddOpen(true)} onRemove={(id) => {
             const acc = state.accounts.find(a => a.id === id)

@@ -8,7 +8,7 @@
         <view style="font-size:27rpx">签到提醒</view>
         <view class="hint" style="margin-top:6rpx">在看板显示今日待签到数量</view>
       </view>
-      <switch checked="{{settings.checkinReminder}}" bindchange="onToggleReminder" color="#4f46e5" />
+      <switch checked="{{settings.checkinReminder}}" bindchange="onToggleReminder" color="#9333ea" />
     </view>
     <view class="row between setting-row">
       <view>
@@ -55,7 +55,7 @@
         <view style="font-size:27rpx">备份提醒</view>
         <view class="hint" style="margin-top:6rpx">长期未备份时提示</view>
       </view>
-      <switch checked="{{settings.backupReminder}}" bindchange="onToggleBackup" color="#4f46e5" />
+      <switch checked="{{settings.backupReminder}}" bindchange="onToggleBackup" color="#9333ea" />
     </view>
     <view class="row between setting-row">
       <view>
