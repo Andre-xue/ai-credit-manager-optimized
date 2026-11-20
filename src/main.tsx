@@ -29,6 +29,16 @@ if (typeof window !== 'undefined') {
 
 /** 手机端：先从原生存储恢复数据，再渲染 App（确保更新/重装后数据不丢），最后定时镜像备份。 */
 async function bootstrap() {
+  // 桌面端菜单栏迷你窗是独立窗口（#/mini）：只读本机状态，不走主应用启动流程
+  if (typeof window !== 'undefined' && location.hash.includes('/mini')) {
+    const { MiniView } = await import('./components/MiniView')
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <MiniView />
+      </React.StrictMode>,
+    )
+    return
+  }
   const { restoreFromNative, backupToNative } = await import('./core/persistence')
   await restoreFromNative()
 

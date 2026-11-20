@@ -22,6 +22,8 @@ tauri-plugin-fs = "2"
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
 tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
 
 # 火山端到端实时语音桥接骨架（cpal/tokio-tungstenite 等依赖未接入编译）：
 # 当前构建环境无法从 crates.io 下载新依赖，待联网后按 volc_realtime.rs 顶部说明启用。

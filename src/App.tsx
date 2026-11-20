@@ -615,6 +615,23 @@ function App() {
     }
   }, [themePref])
 
+  // ---- 桌面外壳联动（仅 Tauri）：托盘/快捷键发来导航事件时切页；待签到数同步到菜单栏标题 ----
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      unlisten = await listen<string>('acm-navigate', (e) => { if (e.payload) openTab(e.payload as Tab) })
+    })()
+    return () => { unlisten?.() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    void w.__TAURI_INTERNALS__?.invoke?.('tray_set_title', { text: pendingCheckins.length > 0 ? `待签到 ${pendingCheckins.length}` : null })
+  }, [pendingCheckins.length])
+
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
   useEffect(() => {
@@ -3582,6 +3599,20 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     const ok = await showNotification('AI 积分管家', '这是一条测试通知，提醒功能工作正常。', 'acm-test')
     notify(ok ? '测试通知已发送，请留意系统通知' : '当前平台不支持系统通知')
   }
+  // ---- 桌面外壳（仅 Tauri 桌面端）：开机自启开关 ----
+  const desktopShell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  const shortcutMod = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform ?? '') ? '⌘' : 'Ctrl'
+  const [autostart, setAutostart] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (!desktopShell) return
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    void w.__TAURI_INTERNALS__?.invoke?.('autostart_is_enabled').then(v => setAutostart(!!v)).catch(() => setAutostart(null))
+  }, [desktopShell])
+  const onToggleAutostart = async (v: boolean) => {
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    try { await w.__TAURI_INTERNALS__?.invoke?.('autostart_set', { enabled: v }); setAutostart(v) }
+    catch { notify('设置开机自启失败，请重试') }
+  }
   const [devices, setDevices] = useState<DeviceRecord[]>(() => loadDevices())
 
   // 本地模型服务：检测物理内存 → 档位（Web/手机端检测失败用手动覆盖档位）
@@ -3854,6 +3885,20 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </SettingsRow>
             </>}
           </SettingsSection>
+
+          {desktopShell && <SettingsSection title="桌面端" desc="菜单栏常驻、全局快捷键与开机自启（仅桌面客户端）" icon={Monitor} tone="indigo">
+            <SettingsRow title="开机自启（登录系统后常驻菜单栏）" desc="开启后开机自动启动，点菜单栏图标打开迷你窗">
+              {autostart === null
+                ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>不可用</span>
+                : <Toggle checked={autostart} onChange={(v) => void onToggleAutostart(v)} />}
+            </SettingsRow>
+            <SettingsRow title="菜单栏迷你窗：待签到与额度速览" desc="点菜单栏图标弹出；关闭主窗口后应用仍常驻，退出请用托盘右键菜单">
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{shortcutMod}+Shift+M</span>
+            </SettingsRow>
+            <SettingsRow title="全局快捷键呼出 AI 助手" desc="在任何应用中按下即可呼出主窗口并打开 AI 助手">
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{shortcutMod}+Shift+A</span>
+            </SettingsRow>
+          </SettingsSection>}
         </>}
 
         {setTab === 'data' && <>

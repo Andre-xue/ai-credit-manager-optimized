@@ -1252,6 +1252,169 @@ fn choose_model_file() -> Result<Option<String>, String> {
     { Err("当前平台暂不支持系统文件选择，请手动输入模型名".to_string()) }
 }
 
+// ================= 桌面外壳：托盘常驻 / 菜单栏迷你窗 / 全局快捷键 / 开机自启 =================
+use tauri::menu::{MenuBuilder, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+const TRAY_ID: &str = "acm-tray";
+const MINI_LABEL: &str = "mini";
+
+fn show_main_window(app: &tauri::AppHandle, section: Option<&str>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        if let Some(s) = section {
+            let _ = w.emit("acm-navigate", s);
+        }
+    }
+}
+
+fn toggle_mini_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(MINI_LABEL) {
+        if w.is_visible().unwrap_or(false) {
+            let _ = w.hide();
+        } else {
+            // 定位到主显示器右上角（菜单栏/任务栏下方）
+            if let Ok(Some(monitor)) = w.primary_monitor() {
+                let size = monitor.size();
+                let win_w = 348i32;
+                let x = (size.width as i32 - win_w - 12).max(0);
+                let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, 30)));
+            }
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }
+}
+
+/// 前端上报待签到数 → 菜单栏图标旁显示「待签到 N」（macOS 托盘标题）
+#[tauri::command]
+fn tray_set_title(app: tauri::AppHandle, text: Option<String>) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_title(text.as_deref());
+        let tip = match &text {
+            Some(t) if !t.is_empty() => format!("AI 积分管家 · {}", t),
+            _ => "AI 积分管家".to_string(),
+        };
+        let _ = tray.set_tooltip(Some(tip));
+    }
+}
+
+/// 显示主窗口并（可选）跳转到指定页签（迷你窗/托盘/快捷键共用）
+#[tauri::command]
+fn show_main(app: tauri::AppHandle, section: Option<String>) {
+    show_main_window(&app, section.as_deref());
+}
+
+#[tauri::command]
+fn mini_hide(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(MINI_LABEL) {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+fn autostart_is_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let m = app.autolaunch();
+    if enabled { m.enable() } else { m.disable() }.map_err(|e| e.to_string())
+}
+
+fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = app.handle().clone();
+
+    // 主窗口关闭 = 隐藏到托盘（菜单栏常驻应用的标准行为；退出走托盘菜单/迷你窗）
+    if let Some(main) = app.get_webview_window("main") {
+        let main_for_event = main.clone();
+        main.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = main_for_event.hide();
+            }
+        });
+    }
+
+    // 迷你窗：隐藏创建，点托盘图标或快捷键时在右上角切换显隐
+    let mini = tauri::WebviewWindowBuilder::new(app.handle(), MINI_LABEL, tauri::WebviewUrl::App("index.html#/mini".into()))
+        .title("AI 积分管家 · 速览")
+        .inner_size(348.0, 470.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()?;
+    let mini_for_event = mini.clone();
+    mini.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = mini_for_event.hide();
+        }
+    });
+
+    // 托盘菜单（右键）：打开主窗口 / AI 助手 / 今日签到 / 退出
+    let menu = MenuBuilder::new(app.handle())
+        .item(&MenuItem::with_id(app.handle(), "open-main", "打开主窗口", true, None::<&str>)?)
+        .item(&MenuItem::with_id(app.handle(), "open-ai", "AI 助手", true, None::<&str>)?)
+        .item(&MenuItem::with_id(app.handle(), "open-checkin", "今日签到", true, None::<&str>)?)
+        .separator()
+        .item(&MenuItem::with_id(app.handle(), "quit", "退出 AI 积分管家", true, None::<&str>)?)
+        .build()?;
+
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("AI 积分管家")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open-main" => show_main_window(app, None),
+            "open-ai" => show_main_window(app, Some("ai")),
+            "open-checkin" => show_main_window(app, Some("checkin")),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                toggle_mini_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+
+    // 全局快捷键：Cmd/Ctrl+Shift+A 呼出 AI 助手；Cmd/Ctrl+Shift+M 切换迷你窗
+    #[cfg(target_os = "macos")]
+    let mods = Modifiers::SUPER | Modifiers::SHIFT;
+    #[cfg(not(target_os = "macos"))]
+    let mods = Modifiers::CONTROL | Modifiers::SHIFT;
+    let h1 = handle.clone();
+    app.global_shortcut().on_shortcut(Shortcut::new(Some(mods), Code::KeyA), move |_app, _sc, event| {
+        if event.state == ShortcutState::Pressed {
+            show_main_window(&h1, Some("ai"));
+        }
+    })?;
+    let h2 = handle;
+    app.global_shortcut().on_shortcut(Shortcut::new(Some(mods), Code::KeyM), move |_app, _sc, event| {
+        if event.state == ShortcutState::Pressed {
+            toggle_mini_window(&h2);
+        }
+    })?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1259,7 +1422,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints])
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<String>>))
+        .setup(|app| setup_desktop_shell(app))
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, tray_set_title, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
