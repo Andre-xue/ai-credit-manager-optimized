@@ -81,6 +81,17 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 .sidebar-status b { display: block; font-size: 12.5px; }
 .sidebar-status span:not(.status-dot) { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 3px #d1fadf; flex: none; margin-top: 5px; display: inline-block; }
+/* v0.1.179 云同步状态条：常驻侧栏底部（.sidebar-foot 被全局隐藏，故独立于它） */
+.sync-status-bar { display: flex; gap: 10px; align-items: flex-start; width: calc(100% - 24px); margin: 0 12px 12px; padding: 11px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.sync-status-bar:hover { border-color: var(--border-strong, #d0d5dd); }
+.sync-status-bar b { display: block; font-size: 12.5px; }
+.sync-status-text { flex: 1; min-width: 0; }
+.sync-status-text span { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync-status-icon { color: var(--text-3); margin-top: 2px; flex: none; display: inline-flex; }
+.status-dot.off { background: #98a2b3; box-shadow: 0 0 0 3px #eaecf0; }
+.status-dot.err { background: #f04438; box-shadow: 0 0 0 3px #fee4e2; }
+.status-dot.busy { background: #f79009; box-shadow: 0 0 0 3px #fef0c7; animation: sync-pulse 1.1s ease-in-out infinite; }
+@keyframes sync-pulse { 50% { opacity: .3; } }
 .claude-ui .compliance, .compliance { background: transparent !important; border: none !important; padding: 0 2px; font-size: 11px; line-height: 1.6; color: var(--text-3); }
 
 /* ---------- Topbar ---------- */
@@ -346,6 +357,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .sidebar-collapsed:not(.phone-shell) .sidebar-status { justify-content: center; padding: 10px 0; }
 .sidebar-collapsed:not(.phone-shell) .sidebar-status > div,
 .sidebar-collapsed:not(.phone-shell) .compliance { display: none; }
+.sidebar-collapsed:not(.phone-shell) .sync-status-bar { justify-content: center; padding: 10px 0; margin: 0 10px 12px; width: auto; }
+.sidebar-collapsed:not(.phone-shell) .sync-status-text,
+.sidebar-collapsed:not(.phone-shell) .sync-status-icon { display: none; }
+.sidebar-collapsed:not(.phone-shell) .sync-status-bar .status-dot { margin-top: 0; }
 
 
 /* 全局标题栏已移除（用户 2026-11-20 要求）：内容整体上移 */

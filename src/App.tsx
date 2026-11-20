@@ -6,7 +6,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell,
+  Bell, CloudOff,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -257,6 +257,8 @@ function App() {
   const [cloudUser, setCloudUser] = useState<CloudUser | null>(null)
   const [loginOpen, setLoginOpen] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [, setSyncTick] = useState(0)
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(() => getLastSyncAt())
   const cloudUserRef = useRef<CloudUser | null>(null)
   const pushTimer = useRef<number | null>(null)
@@ -273,6 +275,7 @@ function App() {
     setBaseline(version)
     setState(s => applyPayload(payload, s))
     setLastSyncAt(getLastSyncAt())
+    setSyncError(null)
   }, [])
 
   // 统一的登录后初始化：拉取云端；云端为空则把本地作为初始快照上传；完成后才允许自动推送。
@@ -285,6 +288,7 @@ function App() {
     try {
       const result = await pullPayload()
       if (!result.ok) {
+        setSyncError(result.error ?? '云端连接失败')
         if (announce) notify(`云端连接失败：${result.error}`)
       } else if (result.payload) {
         applyRemote(result.payload, result.remoteVersion)
@@ -292,9 +296,10 @@ function App() {
       } else {
         const pushed = await pushPayload(stateRef.current)
         if (pushed.ok) {
+          setSyncError(null)
           setLastSyncAt(getLastSyncAt())
           if (announce) notify('本地数据已上传云端，其他端登录即可同步')
-        }
+        } else setSyncError(pushed.error ?? '上传失败')
       }
     } finally {
       syncReady.current = true
@@ -337,7 +342,8 @@ function App() {
       syncingRef.current = true
       try {
         const r = await pushPayload(stateRef.current)
-        if (r.ok) setLastSyncAt(getLastSyncAt())
+        if (r.ok) { setLastSyncAt(getLastSyncAt()); setSyncError(null) }
+        else setSyncError(r.error ?? '推送失败')
       } finally { syncingRef.current = false }
     }, 1200)
     return () => { if (pushTimer.current !== null) window.clearTimeout(pushTimer.current) }
@@ -397,11 +403,11 @@ function App() {
     syncingRef.current = true
     try {
       const result = await pullPayload()
-      if (!result.ok) notify(`拉取失败：${result.error}`)
+      if (!result.ok) { setSyncError(result.error ?? '拉取失败'); notify(`拉取失败：${result.error}`) }
       else if (result.payload) {
         applyRemote(result.payload, result.remoteVersion)
         notify('已同步云端最新数据')
-      } else notify('云端暂无数据')
+      } else { setSyncError(null); notify('云端暂无数据') }
     } finally { syncingRef.current = false; setSyncing(false) }
   }, [notify, applyRemote])
 
@@ -416,8 +422,16 @@ function App() {
     setCloudUser(null)
     cloudUserRef.current = null
     syncReady.current = false
+    setSyncError(null)
     notify('已退出云同步，数据仍保存在本机')
   }, [notify])
+
+  // 已登录时每 30 秒刷新一次侧边栏「最近同步」相对时间文案
+  useEffect(() => {
+    if (!cloudUser) return
+    const t = window.setInterval(() => setSyncTick(n => n + 1), 30000)
+    return () => window.clearInterval(t)
+  }, [cloudUser])
 
   /** 读取文件：自动识别 JSON 备份 / 账户 CSV / 额度 CSV / 用量 CSV */
   const handleImportFile = useCallback((file?: File) => {
@@ -651,6 +665,27 @@ function App() {
             )
           })}
         </nav>
+        <button
+          className="sync-status-bar"
+          onClick={() => {
+            if (!cloudUser) { setLoginOpen(true); return }
+            if (!syncing) void pullCloud()
+          }}
+          title={!cloudUser ? '登录后开启云同步' : syncError ? `同步失败：${syncError}，点击重试` : '点击立即同步'}
+        >
+          <span className={`status-dot ${!cloudUser ? 'off' : syncing ? 'busy' : syncError ? 'err' : 'ok'}`} />
+          <div className="sync-status-text">
+            <b>{!cloudUser ? '本地模式' : syncing ? '同步中…' : syncError ? '同步失败' : '已云同步'}</b>
+            <span>{!cloudUser
+              ? '未登录云同步 · 点此登录'
+              : syncing
+                ? (cloudUser.name ?? cloudUser.email ?? '正在与云端同步')
+                : syncError
+                  ? '点此重试'
+                  : `最近 ${syncTimeText(lastSyncAt)} · 点此刷新`}</span>
+          </div>
+          <span className="sync-status-icon">{!cloudUser ? <CloudOff size={16} /> : syncError ? <AlertTriangle size={16} /> : <Cloud size={16} />}</span>
+        </button>
         <div className="sidebar-foot">
           <div className="sidebar-status">
             <span className="status-dot" />
@@ -867,6 +902,7 @@ function App() {
           }}
           cloudUser={cloudUser}
           syncing={syncing}
+          syncError={syncError}
           lastSyncAt={lastSyncAt}
           onLogin={() => setLoginOpen(true)}
           onLogout={handleCloudLogout}
@@ -1052,6 +1088,18 @@ function App() {
       {toast && !undo && <div className="toast"><Check size={15} /> {toast}</div>}
     </div>
   )
+}
+
+/** 同步时间相对文案：刚刚 / N 分钟前 / N 小时前 / 日期 */
+function syncTimeText(iso: string | null): string {
+  if (!iso) return '尚未同步'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return '尚未同步'
+  const diff = Date.now() - t
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  return new Date(iso).toLocaleDateString('zh-CN')
 }
 
 function StatCard({ icon, color, label, value, hint }: { icon: React.ReactNode; color: string; label: string; value: string; hint: string }) {
@@ -3225,7 +3273,7 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
 }
 
 /** 设置中心 */
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate }: {
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
   notify: (m: string) => void
@@ -3239,6 +3287,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   sessionPwd: string
   cloudUser: CloudUser | null
   syncing: boolean
+  syncError: string | null
   lastSyncAt: string | null
   onLogin: () => void
   onLogout: () => void
@@ -3555,6 +3604,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <button className="btn sm ghost" onClick={onLogout}>退出</button>
               </div> : <button className="btn sm primary" onClick={onLogin}>登录 / 注册</button>}
             </SettingsRow>
+            {cloudUser && syncError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12.5, color: 'var(--red, #d92d20)' }}>
+              <AlertTriangle size={14} /> 同步失败：{syncError}（点「立即同步」重试）
+            </div>}
             <p className="set-note">支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。</p>
           </SettingsSection>
 
