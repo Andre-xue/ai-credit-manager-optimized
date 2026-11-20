@@ -1262,6 +1262,13 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 const TRAY_ID: &str = "acm-tray";
 const MINI_LABEL: &str = "mini";
 
+/// 最近一次托盘图标的物理矩形（x, y, w, h）：迷你窗据此定位到图标正下方弹出
+static TRAY_RECT: OnceLock<std::sync::Mutex<Option<(i32, i32, i32, i32)>>> = OnceLock::new();
+
+fn tray_rect_store() -> &'static std::sync::Mutex<Option<(i32, i32, i32, i32)>> {
+    TRAY_RECT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 fn show_main_window(app: &tauri::AppHandle, section: Option<&str>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -1278,15 +1285,28 @@ fn toggle_mini_window(app: &tauri::AppHandle) {
         if w.is_visible().unwrap_or(false) {
             let _ = w.hide();
         } else {
-            // 定位到主显示器右上角（菜单栏/任务栏下方）。
-            // 注意：monitor.size() 与窗口 outer_size() 都是物理像素，不能拿逻辑宽度 348
-            // 直接相减——Retina 屏（缩放 2x）上窗口会溢出屏幕右缘、右侧数据被切掉。
+            // 定位：优先贴托盘图标正下方弹出（与图标水平居中对齐）；从未点过托盘
+            // （快捷键呼出）时退回主显示器右上角。全部用物理像素计算——逻辑宽度
+            // 直接相减会在 Retina 屏上让窗口溢出屏幕右缘、右侧数据被切掉。
             if let Ok(Some(monitor)) = w.primary_monitor() {
                 let scale = monitor.scale_factor();
-                let margin = (12.0 * scale) as i32;
+                let mon_w = monitor.size().width as i32;
+                let mon_h = monitor.size().height as i32;
                 let win_w = w.outer_size().map(|s| s.width as i32).unwrap_or((348.0 * scale) as i32);
-                let x = (monitor.size().width as i32 - win_w - margin).max(0);
-                let y = (32.0 * scale) as i32;
+                let win_h = w.outer_size().map(|s| s.height as i32).unwrap_or((470.0 * scale) as i32);
+                let edge = (8.0 * scale) as i32;
+                let gap = (4.0 * scale) as i32;
+                let anchored = tray_rect_store().lock().ok().and_then(|g| *g);
+                let (x, y) = match anchored {
+                    Some((rx, ry, rw, rh)) => {
+                        let cx = rx + rw / 2;
+                        let x = (cx - win_w / 2).clamp(edge, (mon_w - win_w - edge).max(edge));
+                        // 图标在屏幕上半部（macOS 菜单栏）→ 窗口在其下方；下半部（Windows 任务栏）→ 窗口在其上方
+                        let y = if ry + rh / 2 <= mon_h / 2 { ry + rh + gap } else { (ry - win_h - gap).max(edge) };
+                        (x, y)
+                    }
+                    None => ((mon_w - win_w - (12.0 * scale) as i32).max(0), (32.0 * scale) as i32),
+                };
                 let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
             }
             let _ = w.show();
@@ -1415,8 +1435,20 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                toggle_mini_window(tray.app_handle());
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
+                // 记住托盘图标位置，迷你窗据此定位到图标正下方
+                let app = tray.app_handle();
+                let scale = app
+                    .get_webview_window(MINI_LABEL)
+                    .and_then(|w| w.primary_monitor().ok().flatten())
+                    .map(|m| m.scale_factor())
+                    .unwrap_or(2.0);
+                let p = rect.position.to_physical(scale);
+                let s = rect.size.to_physical(scale);
+                if let Ok(mut g) = tray_rect_store().lock() {
+                    *g = Some((p.x, p.y, s.width as i32, s.height as i32));
+                }
+                toggle_mini_window(app);
             }
         });
     if let Some(icon) = app.default_window_icon() {
