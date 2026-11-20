@@ -174,13 +174,20 @@ export function CloudLoginModal({ onClose, onSuccess }: {
             <button className={`login-method ${method === 'password' ? 'active' : ''}`} onClick={() => { setMethod('password'); setErr(''); setPending(null) }}>
               <KeyRound size={16} /> 密码登录
             </button>
-            <button className={`login-method ${method === 'wechat' ? 'active' : ''}`} onClick={() => { setMethod('wechat'); setErr('') }}>
-              <QrCode size={16} /> 微信扫码
-            </button>
-            <button className={`login-method ${method === 'workbuddy' ? 'active' : ''}`} onClick={() => { setMethod('workbuddy'); setErr('') }}>
-              <ShieldCheck size={16} /> WorkBuddy
-            </button>
+            {!oauthBlocked && (<>
+              <button className={`login-method ${method === 'wechat' ? 'active' : ''}`} onClick={() => { setMethod('wechat'); setErr('') }}>
+                <QrCode size={16} /> 微信扫码
+              </button>
+              <button className={`login-method ${method === 'workbuddy' ? 'active' : ''}`} onClick={() => { setMethod('workbuddy'); setErr('') }}>
+                <ShieldCheck size={16} /> WorkBuddy
+              </button>
+            </>)}
           </div>
+          {oauthBlocked && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
+              微信扫码 / WorkBuddy 登录属于网页授权，仅网页版可用；桌面与手机客户端请用手机号或邮箱验证码登录，数据同样全端同步。
+            </div>
+          )}
 
           {(method === 'phone' || method === 'email') && <>
             <label className="form-label" style={{ marginTop: 18 }}>
