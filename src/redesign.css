@@ -369,3 +369,21 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
+
+
+/* ============================================================
+   本地图像/视频页（sd-*）布局加宽（v0.1.177）
+   问题：控制栏被压在 340–430px，参数网格两列每列不足 200px，
+   标签与数值挤在一起。中等宽度窗口改为上下堆叠，控制栏占满整行；
+   宽屏下控制栏放宽到 500px。
+   ============================================================ */
+.sd-layout { grid-template-columns: minmax(400px, 500px) minmax(0, 1fr); gap: 20px; }
+.sd-control { padding: 18px; }
+.sd-param-grid { gap: 14px 18px; }
+.sd-field label { font-size: 12px; }
+.sd-tabs button { font-size: 12.5px; padding: 9px 8px; }
+.sd-block-title { font-size: 12.5px; }
+@media (max-width: 1240px) {
+  .sd-layout { grid-template-columns: 1fr; }
+  .sd-result { min-height: 420px; }
+}
