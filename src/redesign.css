@@ -515,3 +515,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 :root[data-theme="dark"] .cal-cell{background:var(--panel-2)}
 :root[data-theme="dark"] .cal-cell.selected{background:var(--primary-soft)}
 :root[data-theme="dark"] .cmdk-trigger{background:var(--panel-2)}
+
+/* ===== 深色模式修复：变量实际作用域在 .claude-ui 上（claude-ui.css 与 redesign 前段都在此重定义），
+   且多处表面用字面色 + !important 绘制，必须在同一作用域以更高优先级覆盖 ===== */
+:root[data-theme="dark"] .claude-ui{
+  --bg:#0f1115; --panel:#171a21; --panel-2:#1b1f28; --panel-3:#232833;
+  --border:#262b36; --border-strong:#343b4a;
+  --text:#e6e8ec; --text-2:#9aa3b2; --text-3:#69707e;
+  --primary:#8b7cf6; --primary-soft:#28224a; --primary-hover:#a394ff;
+  --green:#34d399; --green-soft:#0d2b21; --amber:#fbbf24; --amber-soft:#2e230a;
+  --red:#f87171; --red-soft:#33151a; --blue:#60a5fa; --blue-soft:#12263f;
+  background:#0f1115; color:var(--text);
+}
+:root[data-theme="dark"] .claude-ui.app-shell{background:#0f1115}
+:root[data-theme="dark"] .claude-ui.phone-shell{background:#0f1115!important}
+:root[data-theme="dark"] .claude-ui .topbar{background:var(--panel)!important;border-bottom-color:var(--border)}
+:root[data-theme="dark"] .claude-ui .sidebar{background:var(--panel-2)!important;border-right-color:var(--border)!important}
+:root[data-theme="dark"] .claude-ui.phone-shell .sidebar{background:var(--panel-2)!important;border-right-color:var(--border)!important}
+:root[data-theme="dark"] .claude-ui .stat-card,
+:root[data-theme="dark"] .claude-ui .panel,
+:root[data-theme="dark"] .claude-ui .set-section,
+:root[data-theme="dark"] .claude-ui .agent-card,
+:root[data-theme="dark"] .claude-ui .account-card{background:var(--panel)!important;border-color:var(--border)!important}
+:root[data-theme="dark"] .claude-ui .ai-page{background:var(--bg)}
+:root[data-theme="dark"] .claude-ui .set-modal{background:var(--panel);color:var(--text)}
+:root[data-theme="dark"] .claude-ui .set-modal-head{border-bottom-color:var(--border)}
+:root[data-theme="dark"] .claude-ui .set-tabs{background:var(--panel-2);border-right-color:var(--border)}
+:root[data-theme="dark"] .claude-ui .set-tabs button{color:var(--text-2)}
+:root[data-theme="dark"] .claude-ui .set-tabs button.active{background:var(--panel-3);color:var(--text)}
+:root[data-theme="dark"] .claude-ui .ai-model-btn{background:var(--panel-2);border-color:var(--border);color:var(--text-2)}
+:root[data-theme="dark"] .claude-ui .reasoning-btn{background:var(--panel-2);border-color:var(--border);color:var(--text-2)}
+:root[data-theme="dark"] .claude-ui .ai-quick-card:hover{background:var(--panel-2)}
+:root[data-theme="dark"] .claude-ui .compliance{background:#2e230a;border-color:#57451a;color:var(--text-2)}
+:root[data-theme="dark"] .claude-ui .brand{border-bottom-color:var(--border)}
