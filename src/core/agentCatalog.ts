@@ -103,3 +103,23 @@ export function currentCatalog(): { tools: AgentTool[]; updatedAt: string | null
   if (cached) return { tools: cached.tools, updatedAt: cached.updatedAt, fromCache: true }
   return { tools: AGENT_TOOLS, updatedAt: null, fromCache: false }
 }
+
+const SEEN_KEY = 'acm_agent_catalog_seen_v1'
+
+/** 目录更新提醒：返回用户尚未见过的新工具。首次运行只登记不提醒，避免把全量目录当新闻。 */
+export function getUnseenTools(tools: AgentTool[]): AgentTool[] {
+  try {
+    const raw = localStorage.getItem(SEEN_KEY)
+    if (!raw) {
+      localStorage.setItem(SEEN_KEY, JSON.stringify(tools.map(t => t.id)))
+      return []
+    }
+    const seen = new Set(JSON.parse(raw) as string[])
+    return tools.filter(t => !seen.has(t.id))
+  } catch { return [] }
+}
+
+/** 用户已查看目录后登记全部工具 id，后续只提醒真正的新增。 */
+export function markCatalogSeen(tools: AgentTool[]): void {
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(tools.map(t => t.id))) } catch { /* 忽略 */ }
+}

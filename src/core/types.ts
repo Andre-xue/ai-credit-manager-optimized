@@ -162,6 +162,8 @@ export interface AppSettings {
   unlockMethod: 'biometric' | 'password'
   /** 各平台每单位额度价值（元），key 为 providerId，'default' 为兜底；用户可自行校准 */
   unitPrices: Record<string, number>
+  /** 是否把本地模型账户（Ollama/ComfyUI 等）也纳入云同步，默认否（仅本机） */
+  syncLocalProviders?: boolean
   /** 上次导出备份时间 ISO */
   lastExportAt?: string
   /** 上次同步时间（预留云同步） */

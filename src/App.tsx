@@ -39,7 +39,7 @@ import {
   AGENT_TOOLS, CHECKIN_TOOLS, CATEGORY_TAGS, PLATFORM_TAGS,
   type AgentTool, type AgentRegion, type AgentCategory, type AgentPlatform,
 } from './data/agentTools'
-import { currentCatalog, fetchCatalog } from './core/agentCatalog'
+import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
 import { todayISO } from './core/store'
@@ -60,7 +60,7 @@ import { VoiceSettings } from './components/VoiceSettings'
 import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
-import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
+import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult, type SyncPayload } from './core/sync'
 import { useServiceController } from './core/useServiceController'
 import { CloudLoginModal } from './components/CloudLogin'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
@@ -142,6 +142,22 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('acm.sidebar.visible', sidebarVisible ? '1' : '0') } catch { /* 忽略 */ }
   }, [sidebarVisible])
+  const [onboardingOff, setOnboardingOff] = useState(() => {
+    try { return localStorage.getItem('acm.onboarding.dismissed') === '1' } catch { return false }
+  })
+  const [catalogNews, setCatalogNews] = useState<AgentTool[]>([])
+  // 启动时拉取工具目录，发现用户没见过的新工具则提醒（导航红点 + 目录页横幅）
+  useEffect(() => {
+    let alive = true
+    void fetchCatalog(false).then(r => {
+      if (alive && r.ok && r.snapshot) setCatalogNews(getUnseenTools(r.snapshot.tools))
+    })
+    return () => { alive = false }
+  }, [])
+  const ackCatalogNews = useCallback(() => {
+    markCatalogSeen(currentCatalog().tools)
+    setCatalogNews([])
+  }, [])
   const [addOpen, setAddOpen] = useState(false)
   const [formProviderId, setFormProviderId] = useState<string | null>(null)
   const [vaultOpen, setVaultOpen] = useState(false)
@@ -261,6 +277,9 @@ function App() {
   const [, setSyncTick] = useState(0)
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(() => getLastSyncAt())
   const cloudUserRef = useRef<CloudUser | null>(null)
+  const localDirtyRef = useRef(false)   // 本机有尚未推送成功的修改（冲突检测用）
+  const conflictDismissedRef = useRef<string | null>(null)
+  const [syncConflict, setSyncConflict] = useState<{ payload: SyncPayload; version: string | null } | null>(null)
   const pushTimer = useRef<number | null>(null)
   const syncReady = useRef(false)
   const syncingRef = useRef(false)      // 同步互斥：拉取/推送不可同时进行
@@ -276,6 +295,7 @@ function App() {
     setState(s => applyPayload(payload, s))
     setLastSyncAt(getLastSyncAt())
     setSyncError(null)
+    localDirtyRef.current = false
   }, [])
 
   // 统一的登录后初始化：拉取云端；云端为空则把本地作为初始快照上传；完成后才允许自动推送。
@@ -294,7 +314,7 @@ function App() {
         applyRemote(result.payload, result.remoteVersion)
         if (announce) notify('已从云端同步最新数据')
       } else {
-        const pushed = await pushPayload(stateRef.current)
+        const pushed = await pushPayload(stateRef.current, undefined, { includeLocal: !!stateRef.current.settings.syncLocalProviders })
         if (pushed.ok) {
           setSyncError(null)
           setLastSyncAt(getLastSyncAt())
@@ -335,14 +355,15 @@ function App() {
   useEffect(() => {
     if (!cloudUser || !syncReady.current) return
     if (skipPushOnce.current) { skipPushOnce.current = false; return }
+    localDirtyRef.current = true   // 有本地修改待推送
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current)
     pushTimer.current = window.setTimeout(async () => {
       if (syncingRef.current) return
       if (Date.now() - lastPullAt.current < 1500) return  // 刚拉取过，丢弃这次由拉取引发的回环推送
       syncingRef.current = true
       try {
-        const r = await pushPayload(stateRef.current)
-        if (r.ok) { setLastSyncAt(getLastSyncAt()); setSyncError(null) }
+        const r = await pushPayload(stateRef.current, undefined, { includeLocal: !!stateRef.current.settings.syncLocalProviders })
+        if (r.ok) { setLastSyncAt(getLastSyncAt()); setSyncError(null); localDirtyRef.current = false }
         else setSyncError(r.error ?? '推送失败')
       } finally { syncingRef.current = false }
     }, 1200)
@@ -367,6 +388,14 @@ function App() {
         return
       }
       if (result.payload) {
+        // 同步冲突：云端是其他端的更新，而本机也有未推送的修改——不静默覆盖，交给用户选；
+        // 用户对该版本选过「稍后」则本轮什么都不做（不应用也不推送）
+        if (localDirtyRef.current) {
+          if (conflictDismissedRef.current !== result.remoteVersion) {
+            setSyncConflict(prev => prev ?? { payload: result.payload!, version: result.remoteVersion })
+          }
+          return
+        }
         applyRemote(result.payload, result.remoteVersion)
         if (!silent) notify('已从云端同步其他端的最新数据')
       } else setBaseline(result.remoteVersion)
@@ -405,6 +434,7 @@ function App() {
       const result = await pullPayload()
       if (!result.ok) { setSyncError(result.error ?? '拉取失败'); notify(`拉取失败：${result.error}`) }
       else if (result.payload) {
+        setSyncConflict(null)
         applyRemote(result.payload, result.remoteVersion)
         notify('已同步云端最新数据')
       } else { setSyncError(null); notify('云端暂无数据') }
@@ -501,10 +531,44 @@ function App() {
     if (format === 'json') setState(prev => updateSettings(prev, { lastExportAt: new Date().toISOString() }))
   }, [notify])
 
+  /** 立即把本地数据推送云端（备份横幅/手动备份用） */
+  const pushCloud = useCallback(async (): Promise<boolean> => {
+    if (!cloudUserRef.current) return false
+    setSyncing(true)
+    syncingRef.current = true
+    try {
+      const r = await pushPayload(stateRef.current, undefined, { includeLocal: !!stateRef.current.settings.syncLocalProviders })
+      if (r.ok) {
+        setLastSyncAt(getLastSyncAt())
+        setSyncError(null)
+        setState(prev => updateSettings(prev, { lastExportAt: new Date().toISOString() }))
+        notify('已备份到云端')
+        return true
+      }
+      setSyncError(r.error ?? '推送失败')
+      notify(`云端备份失败：${r.error ?? '未知错误'}`)
+      return false
+    } finally { syncingRef.current = false; setSyncing(false) }
+  }, [notify])
+
+  /** 同步冲突抉择：保留本机 = 立即把本机数据推送覆盖云端 */
+  const resolveConflictKeepLocal = useCallback(async () => {
+    const ok = await pushCloud()
+    if (ok) {
+      setSyncConflict(null)
+      conflictDismissedRef.current = null
+      notify('已用本机数据覆盖云端')
+    }
+  }, [pushCloud, notify])
+
   /** 备份提醒：全平台通用的界面横幅。超过阈值天数未备份即提示。 */
   const checkBackupDue = useCallback(() => {
     const st = stateRef.current.settings
     if (!st.backupReminder) { setBackupDue(false); return }
+    try {
+      const snooze = Number(localStorage.getItem('acm.backup.snoozeUntil') ?? 0)
+      if (snooze && Date.now() < snooze) { setBackupDue(false); return }
+    } catch { /* 忽略 */ }
     const days = st.backupReminderDays ?? 7
     const ref = st.lastExportAt || stateRef.current.accounts[0]?.createdAt
     if (!ref) { setBackupDue(false); return }   // 没有数据时无需提醒
@@ -657,6 +721,7 @@ function App() {
                       onClick={() => openTab(t.id)} title={t.label}>
                       <span className="nav-item-icon"><Icon size={17} /></span>
                       <span className="nav-item-label">{t.label}</span>
+                      {id === 'checkin' && catalogNews.length > 0 ? <span className="nav-new-dot" title={`目录新增 ${catalogNews.length} 款工具`} /> : null}
                       {badge ? <span className="badge nav-badge">{badge}</span> : null}
                     </button>
                   )
@@ -704,6 +769,29 @@ function App() {
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
           {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={serviceController} />}
           {tab === 'dashboard' && <>
+          {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
+            <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title="不再显示"><X size={15} /></button>
+            <h3>三步上手 AI 积分管家</h3>
+            <div className="onboarding-steps">
+              <div className="onboarding-step">
+                <b>1 · 添加账户</b>
+                <span>把你在用的 AI 平台账户（DeepSeek、Kimi、智谱等）加进来。</span>
+                <button className="btn sm primary" onClick={() => setAddOpen(true)}><Plus size={14} /> 添加账户</button>
+              </div>
+              <div className="onboarding-step">
+                <b>2 · 录入额度</b>
+                <span>在账户卡片上点「录入/更新额度」，看板会自动预测到期时间与耗尽风险。</span>
+              </div>
+              <div className="onboarding-step">
+                <b>3 · 开提醒与同步</b>
+                <span>开启签到/到期提醒，登录云同步后手机与电脑自动对齐。</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn sm" onClick={() => setSettingsOpen(true)}>开启提醒</button>
+                  <button className="btn sm" onClick={() => setLoginOpen(true)}>登录同步</button>
+                </div>
+              </div>
+            </div>
+          </div>}
           <div className="bento-greeting">
             <h2>{runningOut.length ? `今天先处理这 ${runningOut.length} 件` : '今天一切正常'}</h2>
             {runningOut.length ? <span className="bento-alert-pill">{runningOut.length} 个账户告急</span> : pendingCheckins.length ? <span className="bento-alert-pill warn">{pendingCheckins.length} 个待签到</span> : <span className="bento-alert-pill ok">额度健康</span>}
@@ -775,6 +863,7 @@ function App() {
           {tab === 'checkin' && <AgentToolsView
             checkins={state.checkins} notify={notify}
             onToggle={(pid, aid) => setState(s => toggleCheckin(s, pid, aid))}
+            catalogNews={catalogNews} onCatalogNewsAck={ackCatalogNews}
           />}
 
           {tab === 'benefits' && <TranslationView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={serviceController} onOpenChat={() => openTab('chat-translate')} />}
@@ -1073,6 +1162,28 @@ function App() {
         }}
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
+      {syncConflict && <div className="set-modal-backdrop" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }}>
+        <div className="set-modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+          <div className="set-modal-head">
+            <h2>同步冲突</h2>
+            <button className="icon-btn" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }} title="稍后处理"><X size={18} /></button>
+          </div>
+          <div style={{ padding: '16px 20px 20px', display: 'grid', gap: 14 }}>
+            <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-2)' }}>
+              云端在 {new Date(syncConflict.payload.clientAt).toLocaleString('zh-CN')} 被另一台设备更新过，而这台设备也有尚未同步的修改。请选择保留哪一份（另一份将被覆盖）：
+            </p>
+            <button className="btn primary" onClick={() => { const c = syncConflict; setSyncConflict(null); conflictDismissedRef.current = null; applyRemote(c.payload, c.version) }}>
+              使用云端数据（覆盖本机）
+            </button>
+            <button className="btn" onClick={() => void resolveConflictKeepLocal()}>
+              保留本机数据（覆盖云端）
+            </button>
+            <button className="btn ghost" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }}>
+              稍后处理
+            </button>
+          </div>
+        </div>
+      </div>}
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
       {undo && <div className="undo-bar">
         <span><Check size={15} /> {undo.label}</span>
@@ -1081,8 +1192,10 @@ function App() {
       </div>}
       {backupDue && !undo && <div className="backup-due-bar">
         <AlertTriangle size={15} />
-        <span>已超过 {state.settings.backupReminderDays ?? 7} 天未备份数据，建议到「设置 → 数据管理」导出备份。</span>
-        <button onClick={() => { setSettingsOpen(true); setBackupDue(false) }}>去备份</button>
+        <span>已超过 {state.settings.backupReminderDays ?? 7} 天未备份数据。</span>
+        <button onClick={() => { void doExport('json') }}>立即导出备份</button>
+        <button onClick={() => { if (cloudUser) { void pushCloud().then(ok => { if (ok) setBackupDue(false) }) } else setLoginOpen(true) }}>{cloudUser ? '备份到云端' : '登录后云备份'}</button>
+        <button onClick={() => { try { localStorage.setItem('acm.backup.snoozeUntil', String(Date.now() + 3 * 86400000)) } catch { /* 忽略 */ } setBackupDue(false) }}>3 天后再提醒</button>
         <button className="backup-due-close" onClick={() => setBackupDue(false)} title="本次忽略"><X size={14} /></button>
       </div>}
       {toast && !undo && <div className="toast"><Check size={15} /> {toast}</div>}
@@ -1355,9 +1468,10 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
 }
 
 /** AI 工具目录：地区 → 签到 → 功能 → 平台 多级筛选 + 使用量排序 + 每页 3 项分页 */
-function AgentToolsView({ checkins, notify, onToggle }: {
+function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNewsAck }: {
   checkins: AppState['checkins']; notify: (m: string) => void;
   onToggle: (pid: string, aid?: string) => void
+  catalogNews?: AgentTool[]; onCatalogNewsAck?: () => void
 }) {
   const today = todayISO()
   const initial = useMemo(() => currentCatalog(), [])
@@ -1445,6 +1559,11 @@ function AgentToolsView({ checkins, notify, onToggle }: {
 
   return (
     <div className="agent-tools">
+      {catalogNews && catalogNews.length > 0 && <div className="catalog-news-bar">
+        <Sparkles size={15} />
+        <span>目录上新：{catalogNews.slice(0, 3).map(t => t.name).join('、')}{catalogNews.length > 3 ? ` 等 ${catalogNews.length} 款新工具` : ''}，去看看有没有免费额度可领。</span>
+        <button onClick={onCatalogNewsAck}>知道了</button>
+      </div>}
       <div className="agent-toolbar">
         <div className="agent-search">
           <Search size={15} />
@@ -3607,6 +3726,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             {cloudUser && syncError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12.5, color: 'var(--red, #d92d20)' }}>
               <AlertTriangle size={14} /> 同步失败：{syncError}（点「立即同步」重试）
             </div>}
+            <SettingsRow title="同步本地模型账户" desc="把 Ollama / ComfyUI 等本地模型账户也同步到云端（其他设备上仅显示记录，仍需本机服务才能调用）">
+              <Toggle checked={!!s.syncLocalProviders} onChange={v => onChange({ syncLocalProviders: v })} />
+            </SettingsRow>
             <p className="set-note">支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。</p>
           </SettingsSection>
 

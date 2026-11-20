@@ -113,7 +113,7 @@ export async function pullPayload(): Promise<PullResult> {
 }
 
 /** 把本地数据与保险箱材料推送到云端（每用户一行，存在则更新、不存在则插入） */
-export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile[]): Promise<PushResult> {
+export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile[], opts?: { includeLocal?: boolean }): Promise<PushResult> {
   try {
     // 先查是否已有行：既决定 insert/update，也保留云端已有的删除前备份
     const db = dbAny()
@@ -122,8 +122,8 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
 
     const remotePrev = existing?.payload as SyncPayload | undefined
     const backups = [...(remotePrev?.keyBackups ?? []), ...(newBackups ?? [])].slice(-MAX_CLOUD_BACKUPS)
-    // 本地模型（Ollama/ComfyUI 等）不进云同步
-    const localIds = new Set(appState.accounts.filter(a => isLocalProvider(a.providerId)).map(a => a.id))
+    // 本地模型（Ollama/ComfyUI 等）默认不进云同步；用户在设置里开启后一并同步
+    const localIds = new Set(opts?.includeLocal ? [] : appState.accounts.filter(a => isLocalProvider(a.providerId)).map(a => a.id))
     const syncState: AppState = localIds.size ? {
       ...appState,
       accounts: appState.accounts.filter(a => !localIds.has(a.id)),
@@ -169,8 +169,10 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
 export function applyPayload(payload: SyncPayload, local: AppState): AppState {
   if (payload.vault) applyVaultSyncMaterial(payload.vault)
   try { localStorage.setItem(LAST_SYNC_KEY, payload.clientAt) } catch { /* 忽略 */ }
-  // 云端不含本地模型：把本机已有的本地模型账户与其关联数据保留下来
-  const localAccounts = local.accounts.filter(a => isLocalProvider(a.providerId))
+  // 云端默认不含本地模型：把本机已有的本地模型账户与其关联数据保留下来；
+  // 若云端已包含同一账户（用户开启了「同步本地模型账户」），以云端为准，不重复保留
+  const remoteIds = new Set(payload.appState.accounts.map(a => a.id))
+  const localAccounts = local.accounts.filter(a => isLocalProvider(a.providerId) && !remoteIds.has(a.id))
   if (!localAccounts.length) return payload.appState
   const localIds = new Set(localAccounts.map(a => a.id))
   return {

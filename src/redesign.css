@@ -89,6 +89,21 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 .sync-status-text span { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sync-status-icon { color: var(--text-3); margin-top: 2px; flex: none; display: inline-flex; }
 .status-dot.off { background: #98a2b3; box-shadow: 0 0 0 3px #eaecf0; }
+/* v0.1.180 工具目录上新：导航紫点 + 目录页横幅 */
+.nav-new-dot { width: 7px; height: 7px; border-radius: 50%; background: #7c3aed; flex: none; margin-left: 2px; }
+.catalog-news-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; border-radius: 12px; background: #f5f0ff; border: 1px solid #e3d7fd; color: #4c1d95; font-size: 13px; }
+.catalog-news-bar button { margin-left: auto; border: 1px solid #d6bcfa; background: #fff; color: #6d28d9; border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; }
+/* v0.1.180 新手引导卡 */
+.onboarding-card { position: relative; border: 1px solid var(--border); border-radius: 20px; background: linear-gradient(135deg, #f5f0ff, #eef4ff); padding: 20px 22px; margin-bottom: 16px; }
+.onboarding-card h3 { margin: 0 0 14px; font-size: 16px; }
+.onboarding-close { position: absolute; top: 10px; right: 10px; border: none; background: transparent; color: var(--text-3); cursor: pointer; padding: 4px; display: inline-flex; }
+.onboarding-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.onboarding-step { display: grid; gap: 7px; align-content: start; background: rgba(255,255,255,.75); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+.onboarding-step b { font-size: 13.5px; }
+.onboarding-step span { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.onboarding-step .btn { justify-self: start; }
+@media (max-width: 900px) { .onboarding-steps { grid-template-columns: 1fr; } }
+.backup-due-bar { flex-wrap: wrap; }
 .status-dot.err { background: #f04438; box-shadow: 0 0 0 3px #fee4e2; }
 .status-dot.busy { background: #f79009; box-shadow: 0 0 0 3px #fef0c7; animation: sync-pulse 1.1s ease-in-out infinite; }
 @keyframes sync-pulse { 50% { opacity: .3; } }

@@ -13,7 +13,7 @@ class MemStorage {
 
 import {
   loadCachedCatalog, setCatalogUrl, getCatalogUrl, currentCatalog,
-  fetchCatalog, DEFAULT_CATALOG_URL,
+  fetchCatalog, DEFAULT_CATALOG_URL, getUnseenTools, markCatalogSeen,
 } from './agentCatalog'
 
 describe('AI 工具目录实时更新层', () => {
@@ -79,5 +79,15 @@ describe('AI 工具目录实时更新层', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     await fetchCatalog(false)         // 非强制，命中缓存
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('目录上新提醒：首次只登记不提醒，之后只报新增', () => {
+    const base = AGENT_TOOLS.slice(0, 3)
+    expect(getUnseenTools(base)).toEqual([])           // 首次运行：登记全部，零提醒
+    const withNew = [...base, { ...AGENT_TOOLS[3] }]
+    const unseen = getUnseenTools(withNew)
+    expect(unseen.map(t => t.id)).toEqual([AGENT_TOOLS[3].id])
+    markCatalogSeen(withNew)                            // 用户看过后登记
+    expect(getUnseenTools(withNew)).toEqual([])
   })
 })
