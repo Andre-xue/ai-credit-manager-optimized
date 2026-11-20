@@ -60,7 +60,7 @@ import { VoiceSettings } from './components/VoiceSettings'
 import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
-import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult, type SyncPayload } from './core/sync'
+import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
 import { useServiceController } from './core/useServiceController'
 import { CloudLoginModal } from './components/CloudLogin'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
@@ -286,9 +286,7 @@ function App() {
   const [, setSyncTick] = useState(0)
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(() => getLastSyncAt())
   const cloudUserRef = useRef<CloudUser | null>(null)
-  const localDirtyRef = useRef(false)   // 本机有尚未推送成功的修改（冲突检测用）
-  const conflictDismissedRef = useRef<string | null>(null)
-  const [syncConflict, setSyncConflict] = useState<{ payload: SyncPayload; version: string | null } | null>(null)
+  const localDirtyRef = useRef(false)   // 本机有尚未推送成功的修改
   const pushTimer = useRef<number | null>(null)
   const syncReady = useRef(false)
   const syncingRef = useRef(false)      // 同步互斥：拉取/推送不可同时进行
@@ -397,14 +395,8 @@ function App() {
         return
       }
       if (result.payload) {
-        // 同步冲突：云端是其他端的更新，而本机也有未推送的修改——不静默覆盖，交给用户选；
-        // 用户对该版本选过「稍后」则本轮什么都不做（不应用也不推送）
-        if (localDirtyRef.current) {
-          if (conflictDismissedRef.current !== result.remoteVersion) {
-            setSyncConflict(prev => prev ?? { payload: result.payload!, version: result.remoteVersion })
-          }
-          return
-        }
+        // 同步策略（用户 2026-11-20 选定）：静默覆盖、新盖旧——云端是其他端的更新就直接应用，
+        // 本机未推送的修改随之被覆盖，不再弹冲突提醒。applyRemote 会清掉待推送标记，不会把旧数据推回去。
         applyRemote(result.payload, result.remoteVersion)
         if (!silent) notify('已从云端同步其他端的最新数据')
       } else setBaseline(result.remoteVersion)
@@ -443,7 +435,6 @@ function App() {
       const result = await pullPayload()
       if (!result.ok) { setSyncError(result.error ?? '拉取失败'); notify(`拉取失败：${result.error}`) }
       else if (result.payload) {
-        setSyncConflict(null)
         applyRemote(result.payload, result.remoteVersion)
         notify('已同步云端最新数据')
       } else { setSyncError(null); notify('云端暂无数据') }
@@ -562,16 +553,6 @@ function App() {
       return false
     } finally { syncingRef.current = false; setSyncing(false) }
   }, [notify])
-
-  /** 同步冲突抉择：保留本机 = 立即把本机数据推送覆盖云端 */
-  const resolveConflictKeepLocal = useCallback(async () => {
-    const ok = await pushCloud()
-    if (ok) {
-      setSyncConflict(null)
-      conflictDismissedRef.current = null
-      notify('已用本机数据覆盖云端')
-    }
-  }, [pushCloud, notify])
 
   /** 备份提醒：全平台通用的界面横幅。超过阈值天数未备份即提示。 */
   const checkBackupDue = useCallback(() => {
@@ -1258,28 +1239,6 @@ function App() {
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
       {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
-      {syncConflict && <div className="set-modal-backdrop" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }}>
-        <div className="set-modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
-          <div className="set-modal-head">
-            <h2>同步冲突</h2>
-            <button className="icon-btn" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }} title="稍后处理"><X size={18} /></button>
-          </div>
-          <div style={{ padding: '16px 20px 20px', display: 'grid', gap: 14 }}>
-            <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-2)' }}>
-              云端在 {new Date(syncConflict.payload.clientAt).toLocaleString('zh-CN')} 被另一台设备更新过，而这台设备也有尚未同步的修改。请选择保留哪一份（另一份将被覆盖）：
-            </p>
-            <button className="btn primary" onClick={() => { const c = syncConflict; setSyncConflict(null); conflictDismissedRef.current = null; applyRemote(c.payload, c.version) }}>
-              使用云端数据（覆盖本机）
-            </button>
-            <button className="btn" onClick={() => void resolveConflictKeepLocal()}>
-              保留本机数据（覆盖云端）
-            </button>
-            <button className="btn ghost" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }}>
-              稍后处理
-            </button>
-          </div>
-        </div>
-      </div>}
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
       {undo && <div className="undo-bar">
         <span><Check size={15} /> {undo.label}</span>
