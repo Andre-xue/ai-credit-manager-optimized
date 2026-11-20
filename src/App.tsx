@@ -4262,16 +4262,21 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           </SettingsSection>
 
           <SettingsSection title="账号管理" desc="已登录账号、登录方式与本机可见设备" icon={Fingerprint} tone="blue">
-            <SettingsRow title="当前账号" desc={cloudUser
-              ? `ID：${cloudUser.id.slice(0, 12)}… · 来源：${cloudUser.provider ?? (cloudUser.email ? '邮箱' : cloudUser.phone ? '手机号' : '第三方')}`
-              : '未登录，无法查看账号与设备'}>
-              <div style={{ display: 'flex', gap: 6 }}>
+            <SettingsRow title="当前账号" desc="已登录账号的 ID 与登录来源">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {/* 账号信息必须渲染为可见内容：主题会隐藏 settings-row-desc，写进 desc 等于不显示 */}
+                {cloudUser
+                  ? <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>ID：{cloudUser.id.slice(0, 12)}… · 来源：{cloudUser.provider ?? (cloudUser.email ? '邮箱' : cloudUser.phone ? '手机号' : '第三方')}</span>
+                  : <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>未登录</span>}
                 <button className="btn sm" onClick={onLogin}>{cloudUser ? '切换账号' : '登录'}</button>
               </div>
             </SettingsRow>
             {cloudUser && <>
-              <SettingsRow title="账号标识" desc={cloudUser.email ?? cloudUser.phone ?? cloudUser.name ?? '未公开'}>
-                <span className="set-status-dot ok" />
+              <SettingsRow title="账号标识" desc="登录所用的邮箱或手机号">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{cloudUser.email ?? cloudUser.phone ?? cloudUser.name ?? '未公开'}</span>
+                  <span className="set-status-dot ok" />
+                </div>
               </SettingsRow>
             </>}
             <div className="voice-section-label" style={{ marginTop: 12 }}>本机可见登录设备 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>（{devices.length}）</span></div>
