@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""给 CI 生成的 AndroidManifest.xml 注入相机/相册/存储/麦克风权限（幂等）。
+"""给 CI 生成的 AndroidManifest.xml 注入相机/相册/存储/麦克风权限（幂等），
+并注入语音识别服务的 <queries> 可见性声明（Android 11+ 包可见性规则：
+没有这段声明，系统语音识别服务对应用不可见，SpeechRecognition.available() 恒为 false）。
 用法: python3 assets/inject-android-permissions.py <AndroidManifest.xml路径>
 """
 import sys
@@ -38,14 +40,32 @@ def main():
             lines.append(f'    <uses-permission android:name="{perm}" android:maxSdkVersion="32" />')
         else:
             lines.append(f'    <uses-permission android:name="{perm}" />')
+    changed = False
     if lines:
         block = '\n' + '\n'.join(lines)
         content = content[:insert_at] + block + content[insert_at:]
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        changed = True
         print('injected', len(lines), 'permissions')
     else:
         print('permissions already present')
+    # 语音识别服务可见性声明（幂等：已有 RecognitionService 则跳过）
+    if 'android.speech.RecognitionService' not in content:
+        queries = ('\n    <queries>\n'
+                   '        <intent>\n'
+                   '            <action android:name="android.speech.RecognitionService" />\n'
+                   '        </intent>\n'
+                   '    </queries>')
+        # queries 放在 <application> 之前（与 uses-permission 同级）
+        app_at = content.find('<application')
+        if app_at > 0:
+            content = content[:app_at] + queries.strip() + '\n    ' + content[app_at:]
+            changed = True
+            print('injected RecognitionService queries')
+    else:
+        print('RecognitionService queries already present')
+    if changed:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
 
 if __name__ == '__main__':
     main()
