@@ -40,6 +40,7 @@ import {
   type AgentTool, type AgentRegion, type AgentCategory, type AgentPlatform,
 } from './data/agentTools'
 import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
+import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, type PriceChange } from './core/priceWatch'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
 import { todayISO } from './core/store'
@@ -626,6 +627,44 @@ function App() {
     return () => { unlisten?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // ---- 桌面端：把快捷键设置（总开关 + 自定义组合）下发给 Tauri 动态注册 ----
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    void w.__TAURI_INTERNALS__?.invoke?.('shortcuts_apply', {
+      enabled: state.settings.shortcutsEnabled ?? true,
+      ai: state.settings.shortcutAi ?? 'CommandOrControl+Shift+A',
+      mini: state.settings.shortcutMini ?? 'CommandOrControl+Shift+M',
+    }).catch(() => { /* 旧版本桌面壳没有此命令时忽略，壳内默认快捷键仍生效 */ })
+  }, [state.settings.shortcutsEnabled, state.settings.shortcutAi, state.settings.shortcutMini])
+
+  // ---- 价格变动订阅：启动时（6 小时节流）拉取仓库价格表与本地快照对比，变动记入提醒 ----
+  const [priceAlerts, setPriceAlerts] = useState<PriceChange[]>(() => loadPriceAlerts())
+  const [priceCheckedAt, setPriceCheckedAt] = useState<string | null>(() => lastPriceCheckAt())
+  const [checkingPrices, setCheckingPrices] = useState(false)
+  const runPriceCheck = useCallback(async (force: boolean, silent: boolean) => {
+    setCheckingPrices(true)
+    try {
+      const r = await checkPriceUpdates(force)
+      setPriceCheckedAt(lastPriceCheckAt())
+      if (r.ok && r.changes.length) {
+        setPriceAlerts(prev => { const next = [...r.changes, ...prev].slice(0, 30); savePriceAlerts(next); return next })
+        const fmt = (c: PriceChange) => `${PROVIDER_MAP[c.providerId]?.shortName ?? c.providerId} ${c.newPrice > c.oldPrice ? '涨价' : '降价'} ¥${c.oldPrice}→¥${c.newPrice}`
+        const mine = r.changes.filter(c => stateRef.current.accounts.some(a => a.providerId === c.providerId))
+        if (mine.length) notify(`价格变动提醒：${mine.slice(0, 3).map(fmt).join('；')}${mine.length > 3 ? ` 等 ${mine.length} 处` : ''}`)
+        else if (!silent) notify(`价格表有 ${r.changes.length} 处变动（不涉及你已添加的平台），详见用量页「价格动态」`)
+      } else if (!silent) {
+        notify(r.ok ? '已检查，暂无价格变动' : `检查失败（${r.error ?? '网络不可用'}），请稍后再试`)
+      }
+    } finally { setCheckingPrices(false) }
+  }, [notify])
+  const priceCheckRanRef = useRef(false)
+  useEffect(() => {
+    if (priceCheckRanRef.current) return
+    priceCheckRanRef.current = true
+    void runPriceCheck(false, true)
+  }, [runPriceCheck])
+
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
   useEffect(() => {
@@ -990,6 +1029,9 @@ function App() {
           {tab === 'report' && <ReportView state={state} notify={notify} />}
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
+            priceAlerts={priceAlerts} priceCheckedAt={priceCheckedAt} checkingPrices={checkingPrices}
+            onCheckPrices={() => void runPriceCheck(true, false)}
+            onAckPriceAlerts={() => { setPriceAlerts([]); savePriceAlerts([]) }}
             onOpenReport={() => openTab('report')}
             onProviderBudget={(providerId, v) => setState(s => ({ ...s, settings: {
               ...s.settings, providerBudgets: { ...(s.settings.providerBudgets ?? {}), [providerId]: v },
@@ -1595,6 +1637,24 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
     checkins.filter(c => c.date === today && c.done).map(c => c.providerId),
   ), [checkins, today])
   const doneCount = tools.filter(t => t.canCheckin && doneIds.has(t.id)).length
+
+  // ---- 签到助手（引导模式）：把待签到排成队列，逐个打开页面→点「已签到」自动推进 ----
+  const [guideQueue, setGuideQueue] = useState<string[] | null>(null)
+  const [guideSkipped, setGuideSkipped] = useState<string[]>([])
+  const pendingTools = useMemo(
+    () => tools.filter(t => t.canCheckin && !doneIds.has(t.id)).sort((a, b) => b.usage - a.usage),
+    [tools, doneIds],
+  )
+  const guideCurrent = guideQueue
+    ? tools.find(t => t.id === guideQueue.find(id => !doneIds.has(id) && !guideSkipped.includes(id)))
+    : undefined
+  const guideDone = guideQueue ? guideQueue.filter(id => doneIds.has(id)).length : 0
+  const startGuide = () => {
+    if (!pendingTools.length) { notify('今日待签到已全部完成'); return }
+    setGuideSkipped([])
+    setGuideQueue(pendingTools.map(t => t.id))
+  }
+  const endGuide = () => { setGuideQueue(null); setGuideSkipped([]) }
   const q = keyword.trim().toLowerCase()
 
   // 多级筛选：地区 → 签到 → 功能 → 平台 → 关键词；再按使用量由高到低排序
@@ -1630,6 +1690,47 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
         <span>目录上新：{catalogNews.slice(0, 3).map(t => t.name).join('、')}{catalogNews.length > 3 ? ` 等 ${catalogNews.length} 款新工具` : ''}，去看看有没有免费额度可领。</span>
         <button onClick={onCatalogNewsAck}>知道了</button>
       </div>}
+      <div className="checkin-guide">
+        {!guideQueue ? (
+          <div className="cg-row">
+            <div className="cg-info">
+              <div className="cg-title"><CalendarCheck2 size={16} /> 今日签到助手</div>
+              <div className="cg-sub">{pendingTools.length > 0
+                ? `还有 ${pendingTools.length} 个工具待签到：逐个打开签到页，你点完领取，这边自动跳下一个`
+                : '今日可签到的工具已全部完成 🎉'}</div>
+            </div>
+            {pendingTools.length > 0 && <button className="btn primary" onClick={startGuide}>开始签到（{pendingTools.length}）</button>}
+          </div>
+        ) : guideCurrent ? (
+          <div className="cg-active">
+            <div className="cg-progress-row">
+              <span className="cg-progress-label">进度 {guideDone + guideSkipped.length}/{guideQueue.length}</span>
+              <div className="cg-bar"><i style={{ width: `${((guideDone + guideSkipped.length) / guideQueue.length) * 100}%` }} /></div>
+              <button className="btn sm ghost" onClick={endGuide}>结束</button>
+            </div>
+            <div className="cg-current">
+              <span className="cg-tool-ic" style={{ background: guideCurrent.color }}>{guideCurrent.name.slice(0, 1)}</span>
+              <div className="cg-tool-info">
+                <b>{guideCurrent.name}</b>
+                <span>{guideCurrent.checkinTip ?? guideCurrent.desc}</span>
+              </div>
+            </div>
+            <div className="cg-actions">
+              <button className="btn" onClick={() => { void openExternal(guideCurrent.checkinUrl ?? guideCurrent.downloadUrl) }}><ExternalLink size={14} /> 打开签到页</button>
+              <button className="btn primary" onClick={() => handleToggle(guideCurrent.id)}><Check size={14} /> 我已签到</button>
+              <button className="btn ghost" onClick={() => setGuideSkipped(sk => [...sk, guideCurrent.id])}>跳过</button>
+            </div>
+          </div>
+        ) : (
+          <div className="cg-row">
+            <div className="cg-info">
+              <div className="cg-title">🎉 本轮签到完成</div>
+              <div className="cg-sub">完成 {guideDone} 个{guideSkipped.length ? `，跳过 ${guideSkipped.length} 个` : ''}，明天再来领新额度。</div>
+            </div>
+            <button className="btn" onClick={endGuide}>关闭</button>
+          </div>
+        )}
+      </div>
       <div className="agent-toolbar">
         <div className="agent-search">
           <Search size={15} />
@@ -1728,6 +1829,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [editing, setEditing] = useState<string | null>(null)
   const [unlockOpen, setUnlockOpen] = useState(false)
   const [category, setCategory] = useState('__all__')
+  const [groupFilter, setGroupFilter] = useState('__all__')
   const [page, setPage] = useState(1)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [revealKeyTarget, setRevealKeyTarget] = useState<{ id: string; label: string; plain: string } | null>(null)
@@ -1786,7 +1888,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   /** 从备注提取分类：取 [ xxx ] 或冒号前的部分 */
   const categoryOf = noteCategory
   const categories = Array.from(new Set(keyAccounts.map(a => categoryOf(a.note)))).sort()
-  const filtered = keyAccounts.filter(a => category === '__all__' || categoryOf(a.note) === category)
+  /** 保险箱分组（账户 group 字段）：已有分组名列表 */
+  const groups = Array.from(new Set(keyAccounts.map(a => a.group).filter((g): g is string => !!g))).sort()
+  const filtered = keyAccounts.filter(a =>
+    (category === '__all__' || categoryOf(a.note) === category) &&
+    (groupFilter === '__all__' || (groupFilter === '__none__' ? !a.group : a.group === groupFilter)))
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages)
   const pageItems = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
@@ -1810,6 +1916,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
             </select>
           )}
+          {groups.length > 0 && (
+            <select className="select" style={{ width: 150 }} value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选">
+              <option value="__all__">全部分组 ({keyAccounts.length})</option>
+              {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
+              <option value="__none__">未分组 ({keyAccounts.filter(a => !a.group).length})</option>
+            </select>
+          )}
           <div className="keys-unlock-group">
             <label className="btn sm" style={{ cursor: 'pointer' }} title="导入备份">
               <Download size={14} style={{ transform: 'rotate(180deg)' }} /> 导入
@@ -1827,6 +1940,30 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           </div>
         </div>
       </div>
+
+      {groups.length > 0 && (
+        <div className="group-stats">
+          <span className="group-stats-label">分组额度</span>
+          {groups.map(g => {
+            const members = state.accounts.filter(a => a.group === g)
+            const remain = members.reduce((sum, a) => {
+              const q = latestQuota(state.quotas, a.id)
+              return q && q.unit === 'currency' ? sum + Math.max(0, q.total - q.used) : sum
+            }, 0)
+            return (
+              <button key={g} className={`group-stat-chip ${groupFilter === g ? 'active' : ''}`}
+                onClick={() => { setGroupFilter(groupFilter === g ? '__all__' : g); setPage(1) }}
+                title="点击按此分组筛选">
+                {g} · {members.length} 个账户 · 剩余 ¥{remain.toFixed(1)}
+              </button>
+            )
+          })}
+          <button className={`group-stat-chip ${groupFilter === '__none__' ? 'active' : ''}`}
+            onClick={() => { setGroupFilter(groupFilter === '__none__' ? '__all__' : '__none__'); setPage(1) }}>
+            未分组 · {keyAccounts.filter(a => !a.group).length} 个密钥
+          </button>
+        </div>
+      )}
 
       <div className="panel key-table-wrap">
         <table className="key-table">
@@ -1854,7 +1991,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <tbody>
             {pageItems.length === 0 ? (
               <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
-                {keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前分类下没有密钥'}
+                {keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前筛选下没有密钥'}
               </td></tr>
             ) : pageItems.map(a => {
               const provider = PROVIDER_MAP[a.providerId]
@@ -1988,6 +2125,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         if (!acc) return null
         return <KeyEditModal
           account={acc} provider={PROVIDER_MAP[acc.providerId]}
+          groupSuggestions={groups}
           currentKey={revealed[acc.id]}
           onClose={() => setEditing(null)}
           onSave={(patch, newKey) => {
@@ -2250,17 +2388,19 @@ function UnlockModal({ method, bioAvailable, bioLabel, onClose, onPassword, onBi
 
 
 /** 密钥条目编辑弹窗 */
-function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify }: {
+function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, groupSuggestions }: {
   account: AppState['accounts'][number]; provider: ProviderDefinition; currentKey?: string;
   onClose: () => void;
   onSave: (patch: Partial<AppState['accounts'][number]>, newKey?: string) => void;
   notify: (m: string) => void
+  groupSuggestions: string[]
 }) {
   const [label, setLabel] = useState(account.label)
   const [apiUrl, setApiUrl] = useState(account.apiUrl ?? '')
   const [noteCat, setNoteCat] = useState<NoteCategory>(() => categoryFromNote(account.note))
   const [noteExtra, setNoteExtra] = useState(() => (account.note ?? '').replace(/^\[[^\]]+\]\s*/, '').split(/[:：]/).slice(1).join(':').trim())
   const [newKey, setNewKey] = useState('')
+  const [group, setGroup] = useState(account.group ?? '')
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -2292,6 +2432,12 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify }
             <div className="desc">分类决定 AI 助手里该模型的用途与联动</div>
           </div>
           <div className="field">
+            <label>保险箱分组（可选）</label>
+            <input className="input" list="acm-group-list" placeholder="如：工作 / 个人 / 项目（留空 = 未分组）" value={group} onChange={e => setGroup(e.target.value)} />
+            <datalist id="acm-group-list">{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
+            <div className="desc">按用途分组管理密钥；Key 管理页可按组筛选，并按组统计剩余额度</div>
+          </div>
+          <div className="field">
             <label>更换 API Key（留空表示不修改）</label>
             <input className="input" type="password" placeholder="留空保持不变" value={newKey} onChange={e => setNewKey(e.target.value)} />
             <div className="desc">修改密钥需先在主界面解锁保险箱；新密钥将以主密码重新加密。</div>
@@ -2301,7 +2447,7 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify }
           <button className="btn" onClick={onClose}>取消</button>
           <button className="btn primary" onClick={() => {
             if (!label.trim()) { notify('名称不能为空'); return }
-            onSave({ label: label.trim(), apiUrl: apiUrl.trim(), note: buildNote(noteCat, noteExtra) }, newKey.trim() || undefined)
+            onSave({ label: label.trim(), apiUrl: apiUrl.trim(), note: buildNote(noteCat, noteExtra), group: group.trim() || undefined }, newKey.trim() || undefined)
           }}>保存</button>
         </div>
       </div>
@@ -2309,7 +2455,7 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify }
   )
 }
 
-function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onOpenReport }: {
+function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onOpenReport, priceAlerts, priceCheckedAt, checkingPrices, onCheckPrices, onAckPriceAlerts }: {
   state: AppState; notify: (m: string) => void; onBudget: (v: number) => void;
   onAddUsage: () => void;
   onDeleteUsage: (ids: string[]) => void;
@@ -2317,6 +2463,8 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
   onPriceChange: (providerId: string, price: number) => void
   onProviderBudget: (providerId: string, v: number) => void
   onOpenReport: () => void
+  priceAlerts: PriceChange[]; priceCheckedAt: string | null; checkingPrices: boolean
+  onCheckPrices: () => void; onAckPriceAlerts: () => void
 }) {
   const [selectedUsage, setSelectedUsage] = useState<Set<string>>(new Set())
   const month = todayISO().slice(0, 7)
@@ -2422,6 +2570,35 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             </div>
           )
         })}
+      </div>
+
+      <div className="section-head"><h2>价格动态 <span className="hint">官方参考单价变动订阅 · 每 6 小时自动检查</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        <div className="row between" style={{ marginBottom: priceAlerts.length ? 10 : 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            {priceCheckedAt
+              ? `上次检查：${new Date(priceCheckedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+              : '尚未检查'} · 平台调价时自动记录，涉及你账户的变动会弹窗提醒
+          </span>
+          <button className="btn sm" disabled={checkingPrices} onClick={onCheckPrices}>{checkingPrices ? '检查中…' : '检查更新'}</button>
+        </div>
+        {priceAlerts.length === 0 ? (
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无价格变动</div>
+        ) : <>
+          {priceAlerts.map((c, i) => (
+            <div key={`${c.providerId}-${c.detectedAt}-${i}`} className="settings-row">
+              <span style={{ fontSize: 13 }}>{PROVIDER_MAP[c.providerId]?.name ?? c.providerId}
+                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{new Date(c.detectedAt).toLocaleDateString('zh-CN')} 检测到</span>
+              </span>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: c.newPrice > c.oldPrice ? '#dc2626' : '#16a34a' }}>
+                {c.newPrice > c.oldPrice ? '↑ 涨价' : '↓ 降价'} ¥{c.oldPrice} → ¥{c.newPrice} / 单位
+              </span>
+            </div>
+          ))}
+          <div style={{ textAlign: 'right', marginTop: 8 }}>
+            <button className="btn sm ghost" onClick={onAckPriceAlerts}>全部知道了</button>
+          </div>
+        </>}
       </div>
 
       <div className="section-head"><h2>额度单价校准 <span className="hint">用于资源总估值 · 官方参考价 {OFFICIAL_PRICES_AS_OF}</span></h2></div>
@@ -3607,6 +3784,37 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     try { await w.__TAURI_INTERNALS__?.invoke?.('autostart_set', { enabled: v }); setAutostart(v) }
     catch { notify('设置开机自启失败，请重试') }
   }
+  // ---- 全局快捷键自定义（桌面端）：组合存 settings，App 壳下发 Tauri 动态注册 ----
+  const [recording, setRecording] = useState<'ai' | 'mini' | null>(null)
+  const accelAi = s.shortcutAi ?? 'CommandOrControl+Shift+A'
+  const accelMini = s.shortcutMini ?? 'CommandOrControl+Shift+M'
+  const fmtAccel = (a: string) => a.split('+').map(p => (p === 'CommandOrControl' ? shortcutMod : p)).join('+')
+  useEffect(() => {
+    if (!recording) return
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation()
+      if (e.key === 'Escape') { setRecording(null); return }
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return // 只按了修饰键，继续等主键
+      const mods: string[] = []
+      if (e.ctrlKey || e.metaKey) mods.push('CommandOrControl')
+      if (e.altKey) mods.push('Alt')
+      if (e.shiftKey) mods.push('Shift')
+      if (mods.length === 0) { notify('组合键需至少带一个修饰键（Ctrl/⌘/Alt/Shift）'); return }
+      let key = e.key
+      if (key === ' ') key = 'Space'
+      else if (key.length === 1) key = key.toUpperCase()
+      else if (/^f\d{1,2}$/i.test(key)) key = key.toUpperCase()
+      else { notify(`主键「${key}」暂不支持，请用字母、数字、空格或 F 键`); return }
+      const accel = [...mods, key].join('+')
+      if ((recording === 'ai' ? accelMini : accelAi) === accel) { notify('与另一个快捷键冲突，换个组合'); return }
+      onChange(recording === 'ai' ? { shortcutAi: accel } : { shortcutMini: accel })
+      setRecording(null)
+      notify(`已设为 ${fmtAccel(accel)}`)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, accelAi, accelMini])
   const [devices, setDevices] = useState<DeviceRecord[]>(() => loadDevices())
 
   // 本地模型服务：检测物理内存 → 档位（Web/手机端检测失败用手动覆盖档位）
@@ -3886,12 +4094,18 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>不可用</span>
                 : <Toggle checked={autostart} onChange={(v) => void onToggleAutostart(v)} />}
             </SettingsRow>
-            <SettingsRow title="菜单栏迷你窗：待签到与额度速览" desc="点菜单栏图标弹出；关闭主窗口后应用仍常驻，退出请用托盘右键菜单">
-              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{shortcutMod}+Shift+M</span>
+            <SettingsRow title="全局快捷键" desc="关闭后两个组合键都不再生效（托盘图标与迷你窗不受影响）">
+              <Toggle checked={s.shortcutsEnabled ?? true} onChange={v => onChange({ shortcutsEnabled: v })} />
             </SettingsRow>
-            <SettingsRow title="全局快捷键呼出 AI 助手" desc="在任何应用中按下即可呼出主窗口并打开 AI 助手">
-              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{shortcutMod}+Shift+A</span>
+            <SettingsRow title="快捷键：呼出 AI 助手" desc="在任何应用中按下即可呼出主窗口并打开 AI 助手；点按钮后按新组合录制">
+              <button className="btn sm" onClick={() => setRecording('ai')}>{recording === 'ai' ? '请按下组合键…（Esc 取消）' : fmtAccel(accelAi)}</button>
             </SettingsRow>
+            <SettingsRow title="快捷键：菜单栏迷你窗" desc="点菜单栏图标也可弹出速览；关闭主窗口后应用仍常驻，退出请用托盘菜单">
+              <button className="btn sm" onClick={() => setRecording('mini')}>{recording === 'mini' ? '请按下组合键…（Esc 取消）' : fmtAccel(accelMini)}</button>
+            </SettingsRow>
+            {(s.shortcutAi || s.shortcutMini) && <SettingsRow title="恢复默认快捷键" desc="回到 ⌘/Ctrl+Shift+A（AI 助手）与 ⌘/Ctrl+Shift+M（迷你窗）">
+              <button className="btn sm" onClick={() => onChange({ shortcutAi: undefined, shortcutMini: undefined })}>恢复默认</button>
+            </SettingsRow>}
           </SettingsSection>}
         </>}
 

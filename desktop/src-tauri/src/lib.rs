@@ -1295,6 +1295,44 @@ fn toggle_mini_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 前端下发快捷键设置：先注销全部，再按开关与自定义组合重新注册（设置页动态生效）
+#[tauri::command]
+fn shortcuts_apply(app: tauri::AppHandle, enabled: bool, ai: Option<String>, mini: Option<String>) -> Result<(), String> {
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+    if !enabled {
+        return Ok(());
+    }
+    let parse = |s: Option<String>| -> Result<Option<Shortcut>, String> {
+        match s {
+            None => Ok(None),
+            Some(v) => v
+                .parse::<Shortcut>()
+                .map(Some)
+                .map_err(|e| format!("快捷键格式无效（{v}）：{e}")),
+        }
+    };
+    if let Some(sc) = parse(ai)? {
+        let h = app.clone();
+        gs.on_shortcut(sc, move |_app, _s, event| {
+            if event.state == ShortcutState::Pressed {
+                show_main_window(&h, Some("ai"));
+            }
+        })
+        .map_err(|e| format!("注册 AI 助手快捷键失败（可能被其他应用占用）：{e}"))?;
+    }
+    if let Some(sc) = parse(mini)? {
+        let h = app.clone();
+        gs.on_shortcut(sc, move |_app, _s, event| {
+            if event.state == ShortcutState::Pressed {
+                toggle_mini_window(&h);
+            }
+        })
+        .map_err(|e| format!("注册迷你窗快捷键失败（可能被其他应用占用）：{e}"))?;
+    }
+    Ok(())
+}
+
 /// 显示主窗口并（可选）跳转到指定页签（迷你窗/托盘/快捷键共用）
 #[tauri::command]
 fn show_main(app: tauri::AppHandle, section: Option<String>) {
@@ -1416,7 +1454,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

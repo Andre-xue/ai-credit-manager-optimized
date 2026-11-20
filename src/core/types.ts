@@ -65,6 +65,8 @@ export interface Account {
   apiUrl?: string
   /** 备注（用途） */
   note?: string
+  /** 保险箱分组（逻辑分组，如 工作 / 个人 / 项目；空 = 未分组） */
+  group?: string
   /** 模型能力分类（添加时自动识别：chat/translation/embedding/image/audio/unknown） */
   modelCapability?: ModelCapability
   /** 语音配置(APP)账户所选的语音服务商 id（aliyun/volcengine/tencent/minimax/elevenlabs） */
@@ -181,6 +183,12 @@ export interface AppSettings {
   theme?: 'system' | 'light' | 'dark'
   /** 分平台月预算（元），key 为 providerId；未设置的平台只受总预算约束 */
   providerBudgets?: Record<string, number>
+  /** 桌面全局快捷键总开关（默认开；仅桌面端生效） */
+  shortcutsEnabled?: boolean
+  /** 自定义快捷键·呼出 AI 助手（Tauri accelerator，如 CommandOrControl+Shift+A；缺省即默认） */
+  shortcutAi?: string
+  /** 自定义快捷键·菜单栏迷你窗（Tauri accelerator；缺省 CommandOrControl+Shift+M） */
+  shortcutMini?: string
   /** 上次导出备份时间 ISO */
   lastExportAt?: string
   /** 上次同步时间（预留云同步） */
