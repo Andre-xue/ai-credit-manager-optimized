@@ -125,13 +125,15 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
     const backups = [...(remotePrev?.keyBackups ?? []), ...(newBackups ?? [])].slice(-MAX_CLOUD_BACKUPS)
     // 本地模型（Ollama/ComfyUI 等）默认不进云同步；用户在设置里开启后一并同步
     const localIds = new Set(opts?.includeLocal ? [] : appState.accounts.filter(a => isLocalProvider(a.providerId)).map(a => a.id))
+    // 网关令牌是本机凭据（可调用本机网关代理全部 Key），永不离开本机：推送前剥离
+    const noTokenState: AppState = { ...appState, settings: { ...appState.settings, gatewayToken: undefined } }
     const syncState: AppState = localIds.size ? {
-      ...appState,
-      accounts: appState.accounts.filter(a => !localIds.has(a.id)),
-      quotas: appState.quotas.filter(q => !localIds.has(q.accountId)),
-      usage: appState.usage.filter(u => !localIds.has(u.accountId)),
-      checkins: appState.checkins.filter(c => !c.accountId || !localIds.has(c.accountId)),
-    } : appState
+      ...noTokenState,
+      accounts: noTokenState.accounts.filter(a => !localIds.has(a.id)),
+      quotas: noTokenState.quotas.filter(q => !localIds.has(q.accountId)),
+      usage: noTokenState.usage.filter(u => !localIds.has(u.accountId)),
+      checkins: noTokenState.checkins.filter(c => !c.accountId || !localIds.has(c.accountId)),
+    } : noTokenState
     const payload: SyncPayload = {
       appState: syncState,
       vault: getVaultSyncMaterial(),
@@ -177,15 +179,20 @@ export function applyPayload(payload: SyncPayload, local: AppState): AppState {
   // 若云端已包含同一账户（用户开启了「同步本地模型账户」），以云端为准，不重复保留
   const remoteIds = new Set(payload.appState.accounts.map(a => a.id))
   const localAccounts = local.accounts.filter(a => isLocalProvider(a.providerId) && !remoteIds.has(a.id))
-  if (!localAccounts.length) return payload.appState
+  // 网关令牌只认本机的：远端（已剥离）不覆盖本机令牌
+  const withLocalToken = (s: AppState): AppState => ({
+    ...s,
+    settings: { ...s.settings, gatewayToken: local.settings.gatewayToken },
+  })
+  if (!localAccounts.length) return withLocalToken(payload.appState)
   const localIds = new Set(localAccounts.map(a => a.id))
-  return {
+  return withLocalToken({
     ...payload.appState,
     accounts: [...payload.appState.accounts, ...localAccounts],
     quotas: [...payload.appState.quotas, ...local.quotas.filter(q => localIds.has(q.accountId))],
     usage: [...payload.appState.usage, ...local.usage.filter(u => localIds.has(u.accountId))],
     checkins: [...payload.appState.checkins, ...local.checkins.filter(c => !!c.accountId && localIds.has(c.accountId))],
-  }
+  })
 }
 
 export function getLastSyncAt(): string | null {

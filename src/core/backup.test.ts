@@ -37,3 +37,14 @@ describe('完整备份 buildBackup / parseBackup', () => {
     expect(parseBackup('42').ok).toBe(false)
   })
 })
+
+describe('备份不含本机凭据', () => {
+  it('buildBackup 剥离网关令牌', () => {
+    const s = { ...sampleState, settings: { ...sampleState.settings, gatewayToken: 'gw-secret-token-123' } } as unknown as AppState
+    const text = buildBackup(s, '0.1.228')
+    expect(text).not.toContain('gw-secret-token-123')
+    const back = parseBackup(text)
+    expect(back.ok).toBe(true)
+    if (back.ok) expect(back.state.settings.gatewayToken).toBeUndefined()
+  })
+})

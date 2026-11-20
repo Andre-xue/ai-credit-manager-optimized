@@ -14,13 +14,15 @@ export interface BackupEnvelope {
 }
 
 export function buildBackup(state: AppState, appVersion: string): string {
+  // 网关令牌是本机凭据，不进备份文件（导入后保留目标设备自己的令牌）
+  const safeState: AppState = { ...state, settings: { ...state.settings, gatewayToken: undefined } }
   const env: BackupEnvelope = {
     app: 'ai-credit-manager',
     kind: 'full-backup',
     version: 1,
     appVersion,
     exportedAt: new Date().toISOString(),
-    state,
+    state: safeState,
   }
   return JSON.stringify(env, null, 2)
 }

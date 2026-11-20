@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense } from 'react'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
@@ -11,15 +11,8 @@ import {
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
 import { detectLocalServices, getSystemMemoryGb, checkLocalService, startLocalService, stopLocalService, stopServiceByPort, isServiceAppManaged, fetchLocalModels, chooseModelFile, type LocalService } from './core/localServices'
-import { DocQAView } from './components/DocQAView'
 import { buildReminders, filterUnsent, markSent, notifyPrefsOf } from './core/reminders'
 import { getNotificationPermission, requestNotificationPermission, showNotification, scheduleDailyCheckin, cancelDailyCheckin, type NotificationPermissionState } from './core/notifications'
-import { TranslationView } from './components/TranslationView'
-import { ChatTranslateView } from './components/ChatTranslateView'
-import { ImageView } from './components/ImageView'
-import { VideoView } from './components/VideoView'
-import { LocalImageView } from './components/LocalImageView'
-import { LocalVideoView } from './components/LocalVideoView'
 import { syncVoiceAccounts, setVoiceSessionPwd } from './core/voiceKey'
 import { saveTtsConfig } from './core/voice-download'
 import { detectModelCapability, shouldHideFromChat } from './core/modelCapability'
@@ -70,8 +63,6 @@ import {
 } from './core/io'
 import { openExternal, openTool, isDesktopApp, isNativeApp, isAppInstalled, biometricAvailable, biometricAuth, biometricLabel } from './core/openExternal'
 import { cloud, type CloudUser } from './core/cloud'
-import { AIView } from './components/AIView'
-import { VoiceSettings } from './components/VoiceSettings'
 import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
@@ -79,8 +70,18 @@ import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, che
 import { useServiceController } from './core/useServiceController'
 import { CloudLoginModal } from './components/CloudLogin'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
-import { CalendarView } from './components/CalendarView'
-import { ReportView } from './components/ReportView'
+// 性能优化：标签页级代码分割 —— 重型视图按需加载，减小首屏解析与内存占用（本地资源加载近乎瞬时）
+const DocQAView = lazy(() => import('./components/DocQAView').then(m => ({ default: m.DocQAView })))
+const TranslationView = lazy(() => import('./components/TranslationView').then(m => ({ default: m.TranslationView })))
+const ChatTranslateView = lazy(() => import('./components/ChatTranslateView').then(m => ({ default: m.ChatTranslateView })))
+const ImageView = lazy(() => import('./components/ImageView').then(m => ({ default: m.ImageView })))
+const VideoView = lazy(() => import('./components/VideoView').then(m => ({ default: m.VideoView })))
+const LocalImageView = lazy(() => import('./components/LocalImageView').then(m => ({ default: m.LocalImageView })))
+const LocalVideoView = lazy(() => import('./components/LocalVideoView').then(m => ({ default: m.LocalVideoView })))
+const AIView = lazy(() => import('./components/AIView').then(m => ({ default: m.AIView })))
+const VoiceSettings = lazy(() => import('./components/VoiceSettings').then(m => ({ default: m.VoiceSettings })))
+const CalendarView = lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })))
+const ReportView = lazy(() => import('./components/ReportView').then(m => ({ default: m.ReportView })))
 import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
@@ -1000,6 +1001,7 @@ function App() {
         {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
+          <Suspense fallback={<div style={{ padding: 32, color: 'var(--text-3)', fontSize: 13 }}>加载中…</div>}>
           {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
@@ -1210,7 +1212,7 @@ function App() {
               </div>
             </SettingsSection>
           </div>}
-
+          </Suspense>
         </div>
       </main>
 
@@ -1224,7 +1226,8 @@ function App() {
           onClearAudit={() => { setState(s => ({ ...s, audit: [] })); notify('审计日志已清空') }}
           onImportBackup={(imported) => {
             try { localStorage.setItem('acm.state.pre-import-backup', JSON.stringify(state)) } catch { /* 存不下就忽略，不阻断导入 */ }
-            setState(imported)
+            // 网关令牌是本机凭据：导入备份不覆盖本机的令牌
+            setState({ ...imported, settings: { ...imported.settings, gatewayToken: state.settings.gatewayToken } })
             setSessionPwd('')
             audit('导入完整备份', `账户 ${imported.accounts.length} 个`)
             notify('备份已导入并覆盖当前数据；保险箱已锁定，请用备份来源的主密码重新解锁')

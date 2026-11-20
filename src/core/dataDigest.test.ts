@@ -52,3 +52,16 @@ describe('buildDataDigest', () => {
     expect(d).toContain('本月（2026-11）暂无消费记录')
   })
 })
+
+describe('buildDataDigest 凭据隔离', () => {
+  it('摘要不包含任何 Key 密文或指纹', () => {
+    const cipher = 'U2FsdGVkX1+fakeCipherTextForTest1234567890'
+    const s = mkState({
+      accounts: [{ id: 'a1', providerId: 'deepseek', label: 'DS', encryptedKey: cipher, keyFingerprint: 'fp-abcdef' }] as AppState['accounts'],
+    })
+    const d = buildDataDigest(s, TODAY)
+    expect(d).not.toContain(cipher)
+    expect(d).not.toContain('fp-abcdef')
+    expect(d).not.toContain('encryptedKey')
+  })
+})

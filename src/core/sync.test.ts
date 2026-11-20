@@ -30,3 +30,19 @@ describe('sync.errMsg 错误文本提取', () => {
     expect(errMsg(null)).toBeTruthy()
   })
 })
+
+import { applyPayload } from './sync'
+import type { AppState } from './types'
+
+describe('sync 网关令牌本机保留', () => {
+  it('applyPayload 不让远端覆盖本机网关令牌', () => {
+    const base = {
+      version: 1, accounts: [], quotas: [], checkins: [], benefitMarks: [], usage: [],
+      settings: { vaultInitialized: false, monthlyBudget: 0, checkinReminder: true, checkinProviders: [], alertDays: 7, defaultUnit: 'credit', backupReminder: true, backupReminderDays: 7, unlockMethod: 'password', uiStyle: 'claude', uiMotion: true, unitPrices: {} },
+    } as unknown as AppState
+    const local = { ...base, settings: { ...base.settings, gatewayToken: 'local-token' } } as AppState
+    const remote = { ...base, settings: { ...base.settings, gatewayToken: 'remote-token' } } as AppState
+    const out = applyPayload({ appState: remote, clientAt: '2026-11-20T00:00:00.000Z', clientId: 'x' } as never, local)
+    expect(out.settings.gatewayToken).toBe('local-token')
+  })
+})
