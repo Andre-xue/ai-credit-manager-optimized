@@ -185,6 +185,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       onText: (t) => onInput(joinDictation(dictBaseRef.current, t)),
       onError: (m) => { notify(m); setListening(false) },
       onEnd: () => { speechRef.current = null; setListening(false) },
+      onProcessing: () => notify('录音结束，正在转写成文字…'),
     })
     if (!session) { setListening(false); return }
     speechRef.current = session

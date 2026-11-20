@@ -1,8 +1,11 @@
 import { isDesktopApp, isNativeApp } from './openExternal'
+import { cloudAsrConfigured, transcribeWithDashScope } from './asr'
 
 /**
- * 语音输入（听写）：把说的话实时转成文字填进输入框。
- * 引擎与「AI 语音通话」同款：安卓原生用 Capacitor 语音识别插件，
+ * 语音输入（听写）：把说的话转成文字填进输入框。
+ * 安卓原生优先「原生录音 + 百炼云端识别」（不依赖本机识别服务——vivo 等 ROM 的系统
+ * 识别服务会接受会话却永不返回结果，实测 2026-11-20）；未配置百炼 Key 时退回系统
+ * 语音识别插件，并带 6 秒无结果看门狗，把静默假死变成明确提示。
  * 桌面/Web 用浏览器 SpeechRecognition（系统语音识别服务，不需要额外模型）。
  */
 
@@ -13,6 +16,8 @@ export interface SpeechInputHandlers {
   onError: (message: string) => void
   /** 会话结束（手动停止或引擎自行结束） */
   onEnd: () => void
+  /** 云端模式下录音已结束、正在转写时回调（用于给用户一个提示） */
+  onProcessing?: () => void
 }
 
 export interface SpeechInputSession {
@@ -51,6 +56,48 @@ function webErrorMessage(code: string): string {
   return '语音识别在当前环境不可用'
 }
 
+/**
+ * 安卓云端听写：原生录音（capacitor-voice-recorder）→ 百炼 qwen3-asr-flash 转写。
+ * 点麦克风开始录音，再点一次（或满 60 秒）停止并转写，文字一次性填入输入框。
+ */
+async function startNativeCloud(h: SpeechInputHandlers): Promise<SpeechInputSession | null> {
+  if (!cloudAsrConfigured()) return null
+  try {
+    const { VoiceRecorder } = await import('capacitor-voice-recorder')
+    const perm = await VoiceRecorder.requestAudioRecordingPermission().catch(() => ({ value: false }))
+    if (!perm.value) {
+      h.onError('麦克风权限被拒绝，请在系统设置中允许后再试')
+      return null
+    }
+    await VoiceRecorder.startRecording()
+    let stopped = false
+    const finish = async () => {
+      if (stopped) return
+      stopped = true
+      window.clearTimeout(maxTimer)
+      try {
+        const res = await VoiceRecorder.stopRecording()
+        const b64 = res.value?.recordDataBase64
+        if (!b64) { h.onError('录音失败，请重试'); h.onEnd(); return }
+        h.onProcessing?.()
+        const rawMime = String(res.value?.mimeType ?? '')
+        const mime = /aac/i.test(rawMime) ? 'audio/mp4' : (rawMime || 'audio/mp4')
+        const text = await transcribeWithDashScope(`data:${mime};base64,${b64}`)
+        if (text) h.onText(text)
+        else h.onError('没有识别到语音内容，请靠近麦克风再说一次')
+      } catch (e) {
+        h.onError(`语音转写失败：${(e as Error)?.message ?? String(e)}`)
+      }
+      h.onEnd()
+    }
+    const maxTimer = window.setTimeout(() => { void finish() }, 60_000)
+    return { stop: () => { void finish() } }
+  } catch {
+    return null
+  }
+}
+
+/** 安卓系统识别（未配置百炼 Key 时的退路）：带 6 秒无结果看门狗，避免静默假死 */
 async function startNative(h: SpeechInputHandlers): Promise<SpeechInputSession | null> {
   try {
     const { SpeechRecognition } = await import('@capacitor-community/speech-recognition')
@@ -66,15 +113,25 @@ async function startNative(h: SpeechInputHandlers): Promise<SpeechInputSession |
       }
     }
     let stopped = false
+    let gotResult = false
     const listener = await SpeechRecognition.addListener('partialResults', (data: { matches: string[] }) => {
       const text = data.matches?.[0] ?? ''
-      if (text) h.onText(text)
+      if (text) { gotResult = true; h.onText(text) }
     })
     await SpeechRecognition.start({ language: 'zh-CN', partialResults: true, popup: false })
+    const watchdog = window.setTimeout(() => {
+      if (stopped || gotResult) return
+      stopped = true
+      void listener.remove().catch(() => {})
+      void SpeechRecognition.stop().catch(() => {})
+      h.onError('本机语音识别服务没有响应（部分国产手机的系统识别服务不可用）。到「语音配置」填好阿里百炼 Key 后，再点麦克风会改走云端识别，就不受本机服务影响了')
+      h.onEnd()
+    }, 6000)
     return {
       stop: () => {
         if (stopped) return
         stopped = true
+        window.clearTimeout(watchdog)
         void listener.remove().catch(() => {})
         void SpeechRecognition.stop().catch(() => {})
         h.onEnd()
@@ -129,6 +186,8 @@ function startWeb(h: SpeechInputHandlers): SpeechInputSession | null {
 /** 开始一次听写会话；引擎不可用时回调 onError 并返回 null */
 export async function startSpeechInput(h: SpeechInputHandlers): Promise<SpeechInputSession | null> {
   if (isNativeApp()) {
+    const cloud = await startNativeCloud(h)
+    if (cloud) return cloud
     const s = await startNative(h)
     if (s) return s
   }
