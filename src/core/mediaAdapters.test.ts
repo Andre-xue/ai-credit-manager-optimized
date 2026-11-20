@@ -94,3 +94,33 @@ describe('模型优缺点知识库与用途过滤', () => {
     expect(vids).not.toContain('Kwai-Kolors/Kolors')
   })
 })
+
+describe('火山方舟 / 百炼视频适配', () => {
+  it('按域名识别两家协议', () => {
+    expect(detectMediaStyle(acct('https://ark.cn-beijing.volces.com/api/v3', 'doubao'))).toBe('volcengine-ark-video')
+    expect(detectMediaStyle(acct('https://dashscope.aliyuncs.com/api/v1', 'qwen'))).toBe('dashscope-video')
+  })
+  it('方舟提交体：content 数组含文本与首帧，状态走 GET 路径', () => {
+    const r = buildVideoRequest('volcengine-ark-video', 'doubao-seedance-1-0-pro', '海浪', { image: 'https://x/y.jpg', duration: 10, ratio: '9:16' })
+    expect(r.submitPath).toBe('/contents/generations/tasks')
+    const content = (r.body as any).content as any[]
+    expect(content[0]).toEqual({ type: 'text', text: '海浪' })
+    expect(content[1].type).toBe('image_url')
+    expect(content[1].role).toBe('first_frame')
+    expect(r.statusGetPath!('tid1')).toBe('/contents/generations/tasks/tid1')
+    expect(extractVideoUrl({ content: { video_url: 'https://v/1.mp4' }, status: 'succeeded' })).toBe('https://v/1.mp4')
+    expect(videoTaskTerminal({ status: 'succeeded' }).done).toBe(true)
+    expect(videoTaskTerminal({ status: 'expired' }).failed).toBe(true)
+  })
+  it('百炼提交体：input/parameters 分离 + 异步头，任务号在 output 里', () => {
+    const r = buildVideoRequest('dashscope-video', 'wan2.2-t2v-plus', '城市夜景', { duration: 5 })
+    expect(r.submitPath).toContain('/services/aigc/video-generation/video-synthesis')
+    expect(r.headers?.['X-DashScope-Async']).toBe('enable')
+    expect((r.body as any).input.prompt).toBe('城市夜景')
+    expect((r.body as any).parameters.duration).toBe(5)
+    expect(extractTaskId({ output: { task_id: 'task-9' } })).toBe('task-9')
+    expect(extractVideoUrl({ output: { task_status: 'SUCCEEDED', video_url: 'https://v/2.mp4' } })).toBe('https://v/2.mp4')
+    expect(videoTaskTerminal({ output: { task_status: 'SUCCEEDED' } }).done).toBe(true)
+    expect(videoTaskTerminal({ output: { task_status: 'FAILED' } }).failed).toBe(true)
+  })
+})

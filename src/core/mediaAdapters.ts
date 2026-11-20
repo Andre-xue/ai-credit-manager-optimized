@@ -6,7 +6,7 @@ import type { Account } from './types'
 import type { ImageOptions, VideoOptions } from './providerCall'
 
 export type MediaKind = 'image' | 'video'
-export type ProviderStyle = 'openai-compatible' | 'siliconflow-video' | 'unknown-openai'
+export type ProviderStyle = 'openai-compatible' | 'siliconflow-video' | 'volcengine-ark-video' | 'dashscope-video' | 'unknown-openai'
 
 export interface MediaModelInfo {
   id: string
@@ -28,6 +28,8 @@ export function detectMediaStyle(account: Account): ProviderStyle {
   const note = (account.note || '').toLowerCase()
   const text = `${base} ${id} ${label} ${note}`
   if (/siliconflow|硅基流动|siliconcloud/.test(text)) return 'siliconflow-video'
+  if (/volces\.com|volcengine|火山方舟|ark\.cn/.test(text)) return 'volcengine-ark-video'
+  if (/dashscope|aliyuncs\.com|通义万相|百炼/.test(text)) return 'dashscope-video'
   // OpenAI 兼容（绝大多数平台：硅基/Ollama/LM Studio/DeepSeek 风格网关等）统一走默认实现
   return 'openai-compatible'
 }
@@ -51,7 +53,7 @@ export function buildImageRequest(style: ProviderStyle, model: string, prompt: s
 }
 
 /** 视频请求描述：硅基流动专用 /video/submit + 状态轮询；其他走 OpenAI 风格兼容端点 */
-export function buildVideoRequest(style: ProviderStyle, model: string, prompt: string, opts?: VideoOptions): { submitPath: string; body: Record<string, unknown>; statusPath?: string; statusBody?: (id: string) => Record<string, unknown> } {
+export function buildVideoRequest(style: ProviderStyle, model: string, prompt: string, opts?: VideoOptions): { submitPath: string; body: Record<string, unknown>; headers?: Record<string, string>; statusPath?: string; statusBody?: (id: string) => Record<string, unknown>; statusGetPath?: (id: string) => string } {
   if (style === 'siliconflow-video') {
     const body: Record<string, unknown> = {
       model, prompt,
@@ -65,6 +67,36 @@ export function buildVideoRequest(style: ProviderStyle, model: string, prompt: s
       statusPath: '/video/status', statusBody: (id: string) => ({ requestId: id }),
     }
   }
+  if (style === 'volcengine-ark-video') {
+    // 火山方舟（Seedance/即梦）：POST /contents/generations/tasks，content 数组承载文本与首尾帧
+    const content: Record<string, unknown>[] = [{ type: 'text', text: prompt }]
+    if (opts?.image) content.push({ type: 'image_url', image_url: { url: opts.image }, role: 'first_frame' })
+    if (opts?.lastFrame) content.push({ type: 'image_url', image_url: { url: opts.lastFrame }, role: 'last_frame' })
+    const body: Record<string, unknown> = {
+      model, content,
+      ratio: opts?.ratio ?? '16:9',
+      duration: opts?.duration ?? 5,
+    }
+    if (opts?.resolution) body.resolution = opts.resolution
+    return {
+      submitPath: '/contents/generations/tasks', body,
+      statusGetPath: (id: string) => `/contents/generations/tasks/${encodeURIComponent(id)}`,
+    }
+  }
+  if (style === 'dashscope-video') {
+    // 阿里百炼/通义万相：POST /api/v1/services/aigc/video-generation/video-synthesis（需异步头），GET /api/v1/tasks/{id}
+    const input: Record<string, unknown> = { prompt }
+    if (opts?.image) input.img_url = opts.image
+    const parameters: Record<string, unknown> = { duration: opts?.duration ?? 5, prompt_extend: true }
+    if (opts?.ratio) parameters.ratio = opts.ratio
+    if (opts?.resolution) parameters.resolution = opts.resolution
+    return {
+      submitPath: '/api/v1/services/aigc/video-generation/video-synthesis',
+      body: { model, input, parameters },
+      headers: { 'X-DashScope-Async': 'enable' },
+      statusGetPath: (id: string) => `/api/v1/tasks/${encodeURIComponent(id)}`,
+    }
+  }
   const body: Record<string, unknown> = { model, prompt, duration: opts?.duration ?? 5 }
   if (opts?.ratio) body.ratio = opts.ratio
   if (opts?.image) body.image = opts.image
@@ -76,7 +108,8 @@ export function extractTaskId(json: unknown): string {
   if (!json || typeof json !== 'object') return ''
   const o = json as Record<string, unknown>
   const d = (o.data ?? {}) as Record<string, unknown>
-  const v = o.requestId ?? o.id ?? o.task_id ?? d.id ?? d.task_id
+  const out = (o.output ?? {}) as Record<string, unknown>
+  const v = o.requestId ?? o.id ?? o.task_id ?? d.id ?? d.task_id ?? out.task_id
   return typeof v === 'string' || typeof v === 'number' ? String(v) : ''
 }
 
@@ -94,6 +127,8 @@ export function extractVideoUrl(json: unknown): string {
     first?.url, d.url, d.video_url,
     results.url, (results.videos as Record<string, unknown> | undefined)?.url,
     (o.output as Record<string, unknown> | undefined)?.url,
+    (o.output as Record<string, unknown> | undefined)?.video_url,
+    (o.content as Record<string, unknown> | undefined)?.video_url,
   ]
   for (const c of candidates) if (typeof c === 'string' && c.startsWith('http')) return c
   return ''
@@ -103,8 +138,9 @@ export function extractVideoUrl(json: unknown): string {
 export function videoTaskTerminal(json: unknown): { done: boolean; failed: boolean; status: string } {
   if (!json || typeof json !== 'object') return { done: false, failed: false, status: '' }
   const o = json as Record<string, unknown>
-  const s = String(o.status ?? '').toUpperCase()
-  const failed = /FAIL|ERROR|REJECT|CANCEL/.test(s)
+  const out = (o.output ?? {}) as Record<string, unknown>
+  const s = String(o.status ?? out.task_status ?? '').toUpperCase()
+  const failed = /FAIL|ERROR|REJECT|CANCEL|EXPIRED/.test(s)
   const done = /SUCCEED|COMPLETED|SUCCESS|FINISHED|DONE/.test(s)
   return { done, failed, status: s }
 }

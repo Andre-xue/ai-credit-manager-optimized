@@ -25,18 +25,19 @@ interface InvokeWindow extends Window {
   __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> }
 }
 
-async function invokeApi(url: string, apiKey: string, body: unknown, method: 'POST' | 'GET' = 'POST'): Promise<string> {
+async function invokeApi(url: string, apiKey: string, body: unknown, method: 'POST' | 'GET' = 'POST', headers?: Record<string, string>): Promise<string> {
   const w = window as unknown as InvokeWindow
   if (!w.__TAURI_INTERNALS__?.invoke) throw Object.assign(new Error('桌面代理不可用'), { cors: true })
   return w.__TAURI_INTERNALS__.invoke!('call_provider_api', {
     url, apiKey, bodyJson: body === undefined ? '{}' : JSON.stringify(body), method,
+    headersJson: JSON.stringify(headers ?? {}),
   })
 }
 
-async function directFetch(url: string, apiKey: string, body: unknown): Promise<string> {
+async function directFetch(url: string, apiKey: string, body: unknown, headers?: Record<string, string>): Promise<string> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(headers ?? {}) },
     body: JSON.stringify(body),
   })
   const text = await res.text()
@@ -326,13 +327,15 @@ export async function callVideo(
   const model = opts?.model || extractModelId(account)
   const req = buildVideoRequest(style, model, prompt, opts)
 
-  const urls = style === 'siliconflow-video'
-    ? [`${base}${req.submitPath}`]
+  // 百炼地址常带 /api/v1 后缀，而提交路径已含该段，先归一化避免拼重
+  const cleanBase = style === 'dashscope-video' ? base.replace(/\/api\/v\d+$/, '') : base
+  const urls = (style === 'siliconflow-video' || style === 'volcengine-ark-video' || style === 'dashscope-video')
+    ? [`${cleanBase}${req.submitPath}`]
     : [`${base}${req.submitPath}`, `${base}/video/generations`, `${base.replace(/\/v\d+$/, '')}/videos/generations`]
   let lastErr = ''
   for (const url of urls) {
     try {
-      const raw = isDesktopApp() ? await invokeApi(url, apiKey, req.body) : await directFetch(url, apiKey, req.body)
+      const raw = isDesktopApp() ? await invokeApi(url, apiKey, req.body, 'POST', req.headers) : await directFetch(url, apiKey, req.body, req.headers)
       const json = JSON.parse(raw)
       const videoUrl = extractVideoUrl(json)
       if (videoUrl) return { ok: true, text: '视频已生成', images: [videoUrl] }
@@ -358,11 +361,24 @@ export async function queryVideoTask(
   if (!base) return { ok: false, text: '', error: '该账户未填写 API 地址' }
   if (!/\/v\d+/.test(base)) base += '/v1'
   const style = detectMediaStyle(account)
+  // 百炼状态路径自带 /api/v1 段，归一化避免与上面补的 /v1 拼重
+  if (style === 'dashscope-video') base = base.replace(/\/api\/v\d+$/, '').replace(/\/v\d+$/, '')
+  const reqDesc = buildVideoRequest(style, '', '')
   try {
     let raw: string
     if (style === 'siliconflow-video') {
       const body = { requestId: taskId }
       raw = isDesktopApp() ? await invokeApi(`${base}/video/status`, apiKey, body) : await directFetch(`${base}/video/status`, apiKey, body)
+    } else if (reqDesc.statusGetPath) {
+      const url = `${base}${reqDesc.statusGetPath(taskId)}`
+      raw = isDesktopApp()
+        ? await invokeApi(url, apiKey, undefined, 'GET')
+        : await (async () => {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+          const text = await res.text()
+          if (!res.ok) throw new Error(`接口返回 ${res.status}：${text.slice(0, 120)}`)
+          return text
+        })()
     } else {
       raw = isDesktopApp()
         ? await invokeApi(`${base}/videos/${encodeURIComponent(taskId)}`, apiKey, undefined, 'GET')

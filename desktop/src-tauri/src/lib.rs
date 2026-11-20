@@ -122,7 +122,7 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
 /// 安全约束：仅 http(s)，且拒绝内网/回环/保留地址（防止开放代理 SSRF 与 Key 外发）；
 /// 不存储任何凭证，Key 仅用于本次请求头。生图/视频的异步任务也用此命令提交与轮询。
 #[tauri::command]
-async fn call_provider_api(url: String, api_key: String, body_json: String, method: String) -> Result<String, String> {
+async fn call_provider_api(url: String, api_key: String, body_json: String, method: String, headers_json: Option<String>) -> Result<String, String> {
     if api_key.trim().is_empty() { return Err("API Key 不能为空".into()) }
     let url = validate_proxy_url(&url)?.to_string();
     let m = method.to_uppercase();
@@ -143,6 +143,16 @@ async fn call_provider_api(url: String, api_key: String, body_json: String, meth
     };
     // 只设 Authorization；Content-Type 由 .json() 唯一提供（GET 无需 Content-Type）。
     req = req.header("Authorization", format!("Bearer {}", api_key));
+    // 附加业务头（如百炼视频的 X-DashScope-Async）：跳过 Authorization/Content-Type，避免覆盖与重复头。
+    if let Some(hj) = headers_json.as_deref() {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(hj) {
+            for (k, v) in map {
+                let lk = k.to_ascii_lowercase();
+                if lk == "authorization" || lk == "content-type" { continue }
+                if let Some(s) = v.as_str() { req = req.header(k, s); }
+            }
+        }
+    }
 
     let resp = req.send().await.map_err(|e| format!("请求失败：{}", e))?;
     let status = resp.status();
