@@ -1,11 +1,30 @@
 // 云同步登录弹窗：手机号验证码 / 邮箱验证码 / 微信扫码 / WorkBuddy 账号
 // 扫码类在桌面 WebView / 安卓 WebView 内可能受限，会给出提示引导用验证码登录。
 
-import { useState } from 'react'
-import { X, Smartphone, Mail, QrCode, ShieldCheck, Loader2, KeyRound } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { X, Smartphone, Mail, QrCode, ShieldCheck, Loader2, KeyRound, Fingerprint } from 'lucide-react'
 import { cloud, type CloudUser } from '../core/cloud'
 import type { PasswordResetChallenge } from '@tencent-ai/workbuddy-cloud-sdk'
 import { isDesktopApp, isNativeApp } from '../core/openExternal'
+import { biometricAvailable, biometricBound, bindBiometricCredentials, readBiometricCredentials, unbindBiometric } from '../core/biometric'
+
+/** 默认记住上次登录的账户（只记账号本身，不记密码/验证码），下次打开弹窗自动预填 */
+const LAST_ACCOUNT_KEY = 'acm.cloud.lastAccount'
+const LAST_METHOD_KEY = 'acm.cloud.lastMethod'
+function loadLastLogin(): { account: string; method: Method } | null {
+  try {
+    const account = localStorage.getItem(LAST_ACCOUNT_KEY)
+    const method = localStorage.getItem(LAST_METHOD_KEY) as Method | null
+    if (account && method) return { account, method }
+  } catch { /* 忽略 */ }
+  return null
+}
+function saveLastLogin(account: string, method: Method): void {
+  try {
+    localStorage.setItem(LAST_ACCOUNT_KEY, account)
+    localStorage.setItem(LAST_METHOD_KEY, method)
+  } catch { /* 忽略 */ }
+}
 
 type Method = 'phone' | 'email' | 'password' | 'wechat' | 'workbuddy'
 const isMail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
@@ -45,7 +64,25 @@ export function CloudLoginModal({ onClose, onSuccess }: {
   const [resetChallenge, setResetChallenge] = useState<PasswordResetChallenge | null>(null)
   const [resetCode, setResetCode] = useState('')
   const [resetNewPwd, setResetNewPwd] = useState('')
+  const [bioReady, setBioReady] = useState(false)
+  const [bioBoundState, setBioBoundState] = useState(false)
   const oauthBlocked = isDesktopApp() || isNativeApp()
+
+  // 打开弹窗：预填上次登录的账户；原生端检测指纹登录可用性（已绑定则默认切到密码页签展示指纹入口）
+  useEffect(() => {
+    const last = loadLastLogin()
+    if (last) {
+      if (last.method === 'password') { setMethod('password'); setAccount(last.account) }
+      else { setMethod(last.method); setIdentifier(last.account) }
+    }
+    if (isNativeApp()) {
+      void biometricAvailable().then(ok => {
+        setBioReady(ok)
+        if (ok && biometricBound()) { setBioBoundState(true); setMethod('password') }
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const isPhone = method === 'phone'
 
@@ -83,22 +120,44 @@ export function CloudLoginModal({ onClose, onSuccess }: {
       } as Parameters<typeof cloud.auth.verifyOtp>[0])
       if (done.error) { setErr(done.error.message); return }
       setRegPassword('')
+      saveLastLogin(pending.target, isPhone ? 'phone' : 'email')
       onSuccess(done.data.user as CloudUser)
     } finally { setBusy(false) }
   }
 
-  const signInPassword = async () => {
+  const signInPassword = async (creds?: { account: string; password: string }) => {
     setErr('')
-    const v = account.trim()
+    const v = (creds?.account ?? account).trim()
+    const pwd = creds?.password ?? password
     if (!isMail(v) && !isMobile(v)) { setErr('请输入邮箱地址或 11 位手机号'); return }
-    if (!password) { setErr('请输入密码'); return }
+    if (!pwd) { setErr('请输入密码'); return }
     setBusy(true)
     try {
       const done = isMobile(v)
-        ? await cloud.auth.signInWithPassword({ phone: v, password })
-        : await cloud.auth.signInWithPassword({ email: v, password })
-      if (done.error) { setErr(friendlyAuthError(done.error.message)); return }
+        ? await cloud.auth.signInWithPassword({ phone: v, password: pwd })
+        : await cloud.auth.signInWithPassword({ email: v, password: pwd })
+      if (done.error) {
+        // 指纹回放的密码已失效（比如改过密码）：解除绑定，避免下次继续拿旧密码撞
+        if (creds) { await unbindBiometric(); setBioBoundState(false); setErr('保存的密码已失效，已解除指纹绑定，请用当前密码登录一次重新绑定'); return }
+        setErr(friendlyAuthError(done.error.message)); return
+      }
+      saveLastLogin(v, 'password')
+      // 原生端且支持指纹：静默把账号密码存进系统钥匙串，下次可指纹登录（密码不落本地存储/云端）
+      if (!creds && bioReady) void bindBiometricCredentials(v, pwd).then(ok => { if (ok) setBioBoundState(true) })
       onSuccess(done.data.user as CloudUser)
+    } finally { setBusy(false) }
+  }
+
+  /** 指纹登录：系统生物识别通过后，从钥匙串取回账号密码自动完成密码登录 */
+  const signInBiometric = async () => {
+    setErr('')
+    setBusy(true)
+    try {
+      const creds = await readBiometricCredentials()
+      if (!creds) { setErr('指纹验证已取消或失败，可改用密码登录'); return }
+      setAccount(creds.username)
+      setPassword(creds.password)
+      await signInPassword({ account: creds.username, password: creds.password })
     } finally { setBusy(false) }
   }
 
@@ -129,6 +188,7 @@ export function CloudLoginModal({ onClose, onSuccess }: {
       setResetChallenge(null)
       setPassword(resetNewPwd)
       setErr('')
+      saveLastLogin(account.trim(), 'password')
       onSuccess(r.data.user as CloudUser)
     } finally { setBusy(false) }
   }
@@ -230,9 +290,19 @@ export function CloudLoginModal({ onClose, onSuccess }: {
               只有设置过密码的账号才能用密码登录。早期用手机号验证码注册的账号没有密码，请切回「手机号」用验证码登录；邮箱账号可点下方「设置 / 找回密码」设好后即可用密码登录。
             </div>
             {err && <div style={{ color: err.startsWith('重置验证码') ? 'var(--green)' : 'var(--red)', fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>{err}</div>}
-            <button className="btn primary" style={{ width: '100%', marginTop: 18, justifyContent: 'center' }} onClick={() => void signInPassword()} disabled={busy}>
+            {bioBoundState && (
+              <button className="btn" style={{ width: '100%', marginTop: 18, justifyContent: 'center' }} onClick={() => void signInBiometric()} disabled={busy}>
+                <Fingerprint size={15} /> 指纹登录
+              </button>
+            )}
+            <button className="btn primary" style={{ width: '100%', marginTop: bioBoundState ? 10 : 18, justifyContent: 'center' }} onClick={() => void signInPassword()} disabled={busy}>
               {busy ? <><Loader2 size={14} className="spin" /> 登录中…</> : '密码登录'}
             </button>
+            {bioReady && !bioBoundState && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
+                本机支持指纹识别：用密码登录成功后将自动绑定，下次可指纹登录（密码只存本机系统钥匙串，不经过本地存储、不上传云端）。
+              </div>
+            )}
             {/* 换了新手机号后用密码登录失败：一键带着号码切到验证码登录 */}
             {isMobile(account.trim()) && (
               <button className="form-link" style={{ marginTop: 10 }} onClick={() => {
