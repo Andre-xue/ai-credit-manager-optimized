@@ -3,6 +3,7 @@
 // 端点与 Key 只能来自开通云服务时返回的配置，切勿硬编码其他值。
 
 import { createWorkBuddyCloud, type CloudUser } from '@tencent-ai/workbuddy-cloud-sdk'
+import { isNativeApp } from './openExternal'
 
 export const PUBLIC_CONFIG = {
   endpoint: 'https://wbapp-uxzyxkkqofad4mwe1lca5e.app.workbuddy.host',
@@ -36,10 +37,43 @@ export function getCloudDeviceId(): string {
   }
 }
 
+/**
+ * 安卓/iOS 原生端专用：云请求改走 CapacitorHttp 原生请求层，并显式带上 WebView 的
+ * Origin（https://localhost，已在网关登记）。
+ *
+ * 背景：原生端 window.fetch 被 CapacitorHttp 接管后，请求以原生栈发出、不带 Origin，
+ * 网关据此把会话判为「issued for another client」：登录能成功，但拉取/续期被拒
+ * （桌面端 WebView 直连带 Origin 则正常；加 X-Device-Id、换登录方式、单网络均已排除）。
+ * 这里把 Origin 与设备标识都写死进原生请求，让签发与后续请求的客户端特征完全一致。
+ */
+async function nativeCloudFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  if (!headers.has('X-Device-Id')) headers.set('X-Device-Id', getCloudDeviceId())
+  if (!headers.has('Origin')) headers.set('Origin', 'https://localhost')
+  const headerObj: Record<string, string> = {}
+  headers.forEach((v, k) => { headerObj[k] = v })
+  let body: unknown = init?.body
+  if (body === undefined && input instanceof Request) {
+    try { body = await (input as Request).clone().text() } catch { /* 无体请求 */ }
+  }
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET') ?? 'GET').toUpperCase()
+  const { CapacitorHttp } = await import('@capacitor/core')
+  const res = await CapacitorHttp.request({
+    url, method, headers: headerObj,
+    data: body === undefined || body === null ? undefined : body,
+    responseType: 'text',
+  })
+  const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '')
+  return new Response(text, { status: res.status, headers: res.headers as Record<string, string> })
+}
+
 const cloudFetch: typeof fetch = (input, init) => {
   try {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
     if (url && url.startsWith(PUBLIC_CONFIG.endpoint)) {
+      // 原生端走显式原生请求（带 Origin）；失败时回退到默认 fetch，不阻断登录
+      if (isNativeApp()) return nativeCloudFetch(input, init).catch(() => fetch(input, init))
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
       if (!headers.has('X-Device-Id')) headers.set('X-Device-Id', getCloudDeviceId())
       if (input instanceof Request && !init) return fetch(new Request(input, { headers }))
