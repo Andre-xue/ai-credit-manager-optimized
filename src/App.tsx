@@ -6,7 +6,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff, Activity, ClipboardList,
+  Bell, CloudOff, Activity, ClipboardList, Upload,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -42,6 +42,8 @@ import {
 import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
 import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, type PriceChange } from './core/priceWatch'
 import { detectSpendAnomalies } from './core/anomaly'
+import { buildMonthlyReport, prevMonthKey } from './core/monthlyReport'
+import { buildBackup, parseBackup, type ParseBackupResult } from './core/backup'
 import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
@@ -739,6 +741,11 @@ function App() {
               .reduce((s, u) => s + u.estimatedCost, 0),
             budget,
           })),
+        monthlyReportSummary: (() => {
+          const lastMonth = prevMonthKey(todayISO().slice(0, 7))
+          const rep = buildMonthlyReport(state, lastMonth)
+          return { month: lastMonth, totalCost: rep.totalCost, recordCount: rep.recordCount, topPlatform: rep.byPlatform[0]?.name, deltaPct: rep.costDeltaPct }
+        })(),
         accountBudgets: Object.entries(state.settings.accountBudgets ?? {})
           .filter(([, b]) => b > 0)
           .map(([accountId, budget]) => {
@@ -1136,6 +1143,13 @@ function App() {
           notify={notify}
           auditEntries={state.audit ?? []}
           onClearAudit={() => { setState(s => ({ ...s, audit: [] })); notify('审计日志已清空') }}
+          onImportBackup={(imported) => {
+            try { localStorage.setItem('acm.state.pre-import-backup', JSON.stringify(state)) } catch { /* 存不下就忽略，不阻断导入 */ }
+            setState(imported)
+            setSessionPwd('')
+            audit('导入完整备份', `账户 ${imported.accounts.length} 个`)
+            notify('备份已导入并覆盖当前数据；保险箱已锁定，请用备份来源的主密码重新解锁')
+          }}
           onOpenVault={() => setVaultOpen(true)}
           onChangePassword={async (oldPwd, newPwd) => {
             const keyAccounts = state.accounts.filter(a => a.encryptedKey)
@@ -3886,12 +3900,13 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
 }
 
 /** 设置中心 */
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup }: {
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
   notify: (m: string) => void
   auditEntries: AppState['audit']
   onClearAudit: () => void
+  onImportBackup: (state: AppState) => void
   onOpenVault: () => void
   onClear: () => void
   onChangePassword: (oldPwd: string, newPwd: string) => Promise<void>
@@ -3921,6 +3936,27 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const [bioSwitchPwd, setBioSwitchPwd] = useState('')
   const [bioSwitchBusy, setBioSwitchBusy] = useState(false)
   const [setTab, setSetTab] = useState<'general' | 'data' | 'security'>('general')
+  // ---- 完整数据备份（导出/导入 JSON 文件） ----
+  const backupInputRef = useRef<HTMLInputElement>(null)
+  const [pendingImport, setPendingImport] = useState<Extract<ParseBackupResult, { ok: true }> | null>(null)
+  const doExportBackup = () => {
+    const blob = new Blob([buildBackup(state, APP_VERSION)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `ai-credit-manager-backup-${todayISO()}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    notify('完整备份已导出（包含全部数据；密钥为加密密文）')
+  }
+  const onBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''
+    if (!f) return
+    const r = parseBackup(await f.text())
+    if (!r.ok) { notify(r.error); return }
+    setPendingImport(r)
+  }
   // ---- 提醒通知（系统通知） ----
   const np = notifyPrefsOf(s)
   const [notifyPerm, setNotifyPerm] = useState<NotificationPermissionState>('prompt')
@@ -4264,6 +4300,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <SettingsRow title="消费异常提醒" desc="某账户单日花费远超近 7 天日均时提醒（防 Key 盗刷/程序跑飞）">
                 <Toggle checked={np.anomaly} onChange={v => patchNotify({ anomaly: v })} />
               </SettingsRow>
+              <SettingsRow title="月度报告推送" desc="进入新月份后推一条上月消费摘要（总消费、最高平台、环比），每月只推一次">
+                <Toggle checked={np.monthlyReport} onChange={v => patchNotify({ monthlyReport: v })} />
+              </SettingsRow>
               <SettingsRow title="测试通知" desc="立即发送一条测试通知，确认系统能收到">
                 <button className="btn sm" onClick={() => void onTestNotification()}>发送测试</button>
               </SettingsRow>
@@ -4382,6 +4421,36 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               ) : <button className="btn sm danger" onClick={() => setConfirmClear(true)}><Trash2 size={13} /> 清空</button>}
             </SettingsRow>
           </SettingsSection>
+
+          <SettingsSection title="数据备份" desc="导出/导入完整数据文件，不依赖云同步" icon={Database} tone="green">
+            <SettingsRow title="导出完整备份" desc="账户、额度、签到、用量与设置导出为一个 JSON 文件；密钥只含加密密文，文件请妥善保管">
+              <button className="btn sm" onClick={doExportBackup}><Download size={13} /> 导出备份</button>
+            </SettingsRow>
+            <SettingsRow title="导入备份" desc="用备份文件覆盖当前全部数据；导入前会自动把当前数据另存到本机（localStorage），后悔了可用那份文件再导回">
+              <button className="btn sm" onClick={() => backupInputRef.current?.click()}><Upload size={13} /> 选择备份文件</button>
+              <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={e => void onBackupFile(e)} />
+            </SettingsRow>
+          </SettingsSection>
+
+          {pendingImport && (
+            <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingImport(null) }}>
+              <div className="modal" style={{ maxWidth: 440 }}>
+                <div className="modal-head"><h3 style={{ margin: 0 }}>确认导入备份</h3><button className="icon-btn" onClick={() => setPendingImport(null)}><X size={18} /></button></div>
+                <div className="modal-body">
+                  <p style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
+                    备份内容：账户 {pendingImport.summary.accounts} 个 · 用量 {pendingImport.summary.usage} 条 · 签到 {pendingImport.summary.checkins} 条 · 额度快照 {pendingImport.summary.quotas} 条。
+                  </p>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: '#dc2626' }}>
+                    导入将覆盖当前全部数据（导入前会自动另存当前数据到本机）。备份里的密钥是密文，导入后请用备份来源设备的同一主密码解锁保险箱。
+                  </p>
+                </div>
+                <div className="modal-foot">
+                  <button className="btn" onClick={() => setPendingImport(null)}>取消</button>
+                  <button className="btn primary" onClick={() => { onImportBackup(pendingImport.state); setPendingImport(null) }}>确认导入并覆盖</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="set-grid-2">
             <SettingsSection title="数据概览" desc="当前本地存储的内容" icon={Database} tone="blue">

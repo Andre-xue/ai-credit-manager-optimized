@@ -14,13 +14,14 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
   budget: true,
   lowBalance: true,
   anomaly: true,
+  monthlyReport: true,
 }
 
 export function notifyPrefsOf(settings: AppSettings): NotifyPrefs {
   return { ...DEFAULT_NOTIFY_PREFS, ...(settings.notify ?? {}) }
 }
 
-export type ReminderKind = 'checkin' | 'expiry' | 'forecast' | 'budget' | 'lowbalance' | 'anomaly'
+export type ReminderKind = 'checkin' | 'expiry' | 'forecast' | 'budget' | 'lowbalance' | 'anomaly' | 'monthlyreport'
 
 export interface ReminderEvent {
   /** 稳定 ID（含日期/月份），用于去重 */
@@ -49,6 +50,8 @@ export interface ReminderInput {
   lowBalances?: Array<{ accountId: string; name: string; remaining: number; symbol: string }>
   /** 消费异常（可选，由 anomaly.detectSpendAnomalies 计算后附上账户名） */
   spendAnomalies?: Array<{ accountId: string; name: string; dateLabel: string; cost: number; avgDaily: number; ratio: number }>
+  /** 上月消费报告摘要（可选）：事件 ID 按月份去重，每月只推一次 */
+  monthlyReportSummary?: { month: string; totalCost: number; recordCount: number; topPlatform?: string; deltaPct?: number | null }
 }
 
 function localDateKey(d: Date): string {
@@ -186,6 +189,17 @@ export function buildReminders(input: ReminderInput): ReminderEvent[] {
         body: `「${sa.name}」${sa.dateLabel}消费 ¥${sa.cost.toFixed(2)}，约为近 7 天日均（¥${sa.avgDaily.toFixed(2)}）的 ${sa.ratio.toFixed(1)} 倍，请确认是否正常。`,
       })
     }
+  }
+
+  if (prefs.monthlyReport && input.monthlyReportSummary && input.monthlyReportSummary.recordCount > 0) {
+    const r = input.monthlyReportSummary
+    const delta = r.deltaPct == null ? '' : `，较前月${r.deltaPct >= 0 ? '增加' : '减少'} ${Math.abs(Math.round(r.deltaPct))}%`
+    out.push({
+      id: `monthlyreport:${r.month}`,
+      kind: 'monthlyreport',
+      title: `${r.month.slice(5)} 月消费报告已生成`,
+      body: `${r.month} 共消费 ¥${r.totalCost.toFixed(2)}（${r.recordCount} 条记录）${r.topPlatform ? `，消费最高：${r.topPlatform}` : ''}${delta}。在「用量」页点「查看月度报告」看详情。`,
+    })
   }
 
   return out

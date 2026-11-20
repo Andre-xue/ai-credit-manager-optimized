@@ -62,6 +62,18 @@ describe('buildReminders', () => {
     expect(ok.filter((x) => x.id.includes('acc:'))).toEqual([])
   })
 
+  it('月度报告推送：有上月记录才产生，ID 按月份去重；开关关闭不产生', () => {
+    const summary = { month: '2026-10', totalCost: 321.5, recordCount: 42, topPlatform: 'DeepSeek', deltaPct: 12.4 }
+    const r = buildReminders({ ...base, monthlyReportSummary: summary })
+    const ev = r.find((x) => x.kind === 'monthlyreport')
+    expect(ev?.id).toBe('monthlyreport:2026-10')
+    expect(ev?.body).toContain('¥321.50')
+    const empty = buildReminders({ ...base, monthlyReportSummary: { ...summary, recordCount: 0 } })
+    expect(empty.some((x) => x.kind === 'monthlyreport')).toBe(false)
+    const off = buildReminders({ ...base, prefs: { ...base.prefs, monthlyReport: false }, monthlyReportSummary: summary })
+    expect(off.some((x) => x.kind === 'monthlyreport')).toBe(false)
+  })
+
   it('单项开关关闭时跳过该类提醒', () => {
     const r = buildReminders({
       ...base,

@@ -156,6 +156,8 @@ export interface NotifyPrefs {
   lowBalance: boolean
   /** 单日消费突增异常提醒 */
   anomaly: boolean
+  /** 每月 1 日起推送上月消费报告摘要 */
+  monthlyReport: boolean
 }
 
 export interface AppSettings {
