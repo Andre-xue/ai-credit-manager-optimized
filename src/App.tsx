@@ -40,7 +40,7 @@ import {
   type AgentTool, type AgentRegion, type AgentCategory, type AgentPlatform,
 } from './data/agentTools'
 import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
-import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES } from './core/value'
+import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
 import { todayISO } from './core/store'
 import {
@@ -2332,22 +2332,35 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         ))}
       </div>
 
-      <div className="section-head"><h2>额度单价校准 <span className="hint">用于资源总估值</span></h2></div>
+      <div className="section-head"><h2>额度单价校准 <span className="hint">用于资源总估值 · 官方参考价 {OFFICIAL_PRICES_AS_OF}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {ownedProviders.length === 0 ? (
           <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可校准对应平台的单价</div>
-        ) : ownedProviders.map(pid => (
+        ) : (<>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button className="btn sm" onClick={() => {
+              let changed = 0
+              for (const pid of ownedProviders) {
+                const off = officialUnitPrice(pid)
+                if (off !== undefined && priceDrifted(effectivePrices[pid] ?? DEFAULT_UNIT_PRICES.default, off)) { onPriceChange(pid, off); changed++ }
+              }
+              notify(changed ? `已按官方参考价校准 ${changed} 个平台` : '所有平台单价已与官方参考价一致')
+            }} title="把已收录平台的单价一键填为官方参考价（不同模型价格差异较大，仅作估值参考）">按官方价自动校准</button>
+          </div>
+          {ownedProviders.map(pid => { const off = officialUnitPrice(pid); const eff = effectivePrices[pid] ?? DEFAULT_UNIT_PRICES.default; const drift = priceDrifted(eff, off); return (
           <div className="settings-row" key={pid}>
             <span style={{ fontSize: 13 }}>{PROVIDER_MAP[pid]?.shortName ?? pid}</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {drift && <span style={{ fontSize: 11.5, color: 'var(--amber, #d97706)' }}>官方参考 ¥{off}</span>}
+              {drift && <button className="btn sm ghost" onClick={() => onPriceChange(pid, off!)}>采用</button>}
               <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>元 / {UNIT_LABEL[state.quotas.find(q => q.accountId === state.accounts.find(a => a.providerId === pid)?.id)?.unit ?? 'credit']}</span>
               <input className="input" type="number" min="0" step="0.0001"
-                value={effectivePrices[pid] ?? DEFAULT_UNIT_PRICES.default}
+                value={eff}
                 onChange={e => onPriceChange(pid, Math.max(0, Number(e.target.value)))}
                 style={{ width: 100 }} />
             </span>
-          </div>
-        ))}
+          </div> ) })}
+        </>)}
       </div>
 
       <div className="section-head"><h2>用量记录 <span className="hint">{monthEvents.length} 条</span></h2></div>

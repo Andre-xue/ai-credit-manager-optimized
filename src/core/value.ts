@@ -23,6 +23,40 @@ export const DEFAULT_UNIT_PRICES: Record<string, number> = {
   figma: 0.5,
 }
 
+/**
+ * 官方参考单价表（元 / 单位）：按各平台公开价格折算的混合参考价，随版本更新。
+ * 与 DEFAULT 的区别：DEFAULT 是估值兜底；本表用于「自动校准」填充与偏差提示。
+ * 注意：同一平台不同模型价格差异很大，本表只作估值参考，不代表官方定价承诺。
+ */
+export const OFFICIAL_PRICES_AS_OF = '2026-11'
+export const OFFICIAL_UNIT_PRICES: Record<string, number> = {
+  openai: 0.01,
+  anthropic: 0.02,
+  gemini: 0.001,
+  deepseek: 0.001,
+  qwen: 0.0005,
+  kim: 0.002,
+  doubao: 0.0008,
+  glm: 0.0005,
+  cursor: 0.5,
+  copilot: 0.5,
+  perplexity: 0.01,
+  elevenlabs: 0.1,
+  midjourney: 1,
+  figma: 0.5,
+}
+
+/** 某平台的官方参考单价；无收录时返回 undefined */
+export function officialUnitPrice(providerId: string): number | undefined {
+  return OFFICIAL_UNIT_PRICES[providerId]
+}
+
+/** 当前生效单价与官方参考价是否明显不一致（相对偏差 > 5%） */
+export function priceDrifted(effective: number, official: number | undefined): boolean {
+  if (official === undefined || official <= 0) return false
+  return Math.abs(effective - official) / official > 0.05
+}
+
 /** 取某平台每单位估值（元） */
 export function unitPrice(state: AppState, providerId: string): number {
   const prices = { ...DEFAULT_UNIT_PRICES, ...(state.settings.unitPrices ?? {}) }
