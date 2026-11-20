@@ -28,6 +28,7 @@
     "@tauri-apps/plugin-process": "^2.4.0",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "@tencent-ai/workbuddy-cloud-sdk": "^0.1.4-dev.71e5d1e.202611161655",
+    "capacitor-voice-recorder": "^6.0.3",
     "docx": "^9.16.0",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.13.0",

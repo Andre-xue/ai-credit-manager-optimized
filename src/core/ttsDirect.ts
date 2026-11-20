@@ -61,6 +61,19 @@ async function httpPostJson(url: string, apiKey: string, body: unknown): Promise
 }
 
 async function httpGetDataUrl(url: string): Promise<string> {
+  // 百炼合成结果是 OSS 的 http:// 明文地址：安卓默认拦截明文流量（Cleartext HTTP traffic
+  // not permitted）、WebView 也拦混合内容，试听/朗读会直接失败。OSS 同主机支持 HTTPS，
+  // 统一升级后再下载；升级失败才回退原地址（桌面 http 本地服务等场景不受影响）。
+  const upgraded = url.startsWith('http://') ? `https://${url.slice(7)}` : url
+  try {
+    return await fetchDataUrl(upgraded)
+  } catch (e) {
+    if (upgraded !== url) return await fetchDataUrl(url)
+    throw e
+  }
+}
+
+async function fetchDataUrl(url: string): Promise<string> {
   if (isNativeApp()) {
     const { CapacitorHttp } = await import('@capacitor/core')
     const res = await CapacitorHttp.request({ url, method: 'GET', responseType: 'blob' })

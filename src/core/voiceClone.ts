@@ -4,6 +4,7 @@
 
 import { getTtsConfig } from './voice-download'
 import { isDirectMode, ttsCloneDirect, voicestudioClone } from './ttsDirect'
+import { isNativeApp } from './openExternal'
 
 const DB_NAME = 'acm-voice-sample-db'
 const STORE = 'samples'
@@ -224,9 +225,33 @@ export function pickRecordMime(): string | undefined {
   return undefined
 }
 
-/** 录音：需要浏览器/原生 WebView 提供 getUserMedia；桌面 Tauri 可用音频文件导入兜底。
+/**
+ * 手机原生录音：走 capacitor-voice-recorder 原生层录制并由插件自己申请录音权限。
+ * 不用 WebView 的 getUserMedia——部分国产 ROM（如 vivo）上系统权限明明已允许，
+ * WebView 仍报 NotAllowedError（实测 2026-11-20），原生层没有这个问题。
+ * 插件在安卓产出 AAC/MPEG-4 容器，类型标为 audio/mp4（即 M4A，百炼可接受）。
+ */
+async function recordVoiceSampleNative(seconds: number): Promise<Blob> {
+  const { VoiceRecorder } = await import('capacitor-voice-recorder')
+  const perm = await VoiceRecorder.requestAudioRecordingPermission().catch(() => ({ value: false }))
+  if (!perm.value) throw new Error('麦克风权限被拒绝，请在系统设置中允许录音后重试')
+  const can = await VoiceRecorder.canDeviceVoiceRecord().catch(() => ({ value: true }))
+  if (!can.value) throw new Error('当前设备不支持录音，请选择音频文件导入')
+  await VoiceRecorder.startRecording()
+  await new Promise(r => setTimeout(r, seconds * 1000))
+  const res = await VoiceRecorder.stopRecording()
+  const b64 = res.value?.recordDataBase64
+  if (!b64) throw new Error('录音失败，未取得音频数据')
+  const mime = String(res.value?.mimeType ?? '')
+  const type = /aac/i.test(mime) ? 'audio/mp4' : (mime || 'audio/mp4')
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  return new Blob([bytes], { type })
+}
+
+/** 录音：桌面/Web 用 WebView 的 getUserMedia；手机原生走插件（见上方说明）。
  *  百炼只接受 WAV/MP3/M4A 且 ≥16kHz，AMR/3gpp 会被拒，因此这里显式挑选安全格式。 */
 export function recordVoiceSample(seconds = 12): Promise<Blob> {
+  if (isNativeApp()) return recordVoiceSampleNative(seconds)
   return new Promise(async (resolve, reject) => {
     const md = navigator.mediaDevices as MediaDevices | undefined
     if (!md?.getUserMedia || typeof MediaRecorder === 'undefined') {
