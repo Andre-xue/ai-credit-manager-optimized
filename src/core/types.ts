@@ -187,6 +187,8 @@ export interface AppSettings {
   theme?: 'system' | 'light' | 'dark'
   /** 分平台月预算（元），key 为 providerId；未设置的平台只受总预算约束 */
   providerBudgets?: Record<string, number>
+  /** 分账户月预算（元），key 为 accountId；比平台预算更细一层，独立提醒 */
+  accountBudgets?: Record<string, number>
   /** 低余额提醒阈值（货币单位剩余额度低于此值时提醒），缺省 10 */
   lowBalanceThreshold?: number
   /** 桌面端图标显示位置：both 两者 / dock 仅 Dock / menubar 仅菜单栏，缺省 both */

@@ -739,6 +739,19 @@ function App() {
               .reduce((s, u) => s + u.estimatedCost, 0),
             budget,
           })),
+        accountBudgets: Object.entries(state.settings.accountBudgets ?? {})
+          .filter(([, b]) => b > 0)
+          .map(([accountId, budget]) => {
+            const acc = state.accounts.find((a) => a.id === accountId)
+            return {
+              accountId,
+              name: acc?.label || (acc ? PROVIDER_MAP[acc.providerId]?.shortName : undefined) || '账户',
+              cost: state.usage
+                .filter((u) => u.date.startsWith(todayISO().slice(0, 7)) && u.accountId === accountId)
+                .reduce((s, u) => s + u.estimatedCost, 0),
+              budget,
+            }
+          }),
       })
       const fresh = filterUnsent(events).slice(0, 3)
       for (const e of fresh) { if (!cancelled) await showNotification(e.title, e.body, e.id) }
@@ -1079,6 +1092,9 @@ function App() {
             onOpenReport={() => openTab('report')}
             onProviderBudget={(providerId, v) => setState(s => ({ ...s, settings: {
               ...s.settings, providerBudgets: { ...(s.settings.providerBudgets ?? {}), [providerId]: v },
+            } }))}
+            onAccountBudget={(accountId, v) => setState(s => ({ ...s, settings: {
+              ...s.settings, accountBudgets: { ...(s.settings.accountBudgets ?? {}), [accountId]: v },
             } }))}
             onBudget={(v) => setState(s => ({ ...s, settings: { ...s.settings, monthlyBudget: v } }))}
             onPriceChange={(providerId, price) => setState(s => ({ ...s, settings: {
@@ -1699,6 +1715,13 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
     setGuideSkipped([])
     setGuideQueue(pendingTools.map(t => t.id))
   }
+  // 一键全部打开待签到页（桌面/Web）：逐个错峰打开，签完回工具页点卡片上的签到按钮登记
+  const openAllCheckins = () => {
+    const urls = pendingTools.map(t => t.checkinUrl ?? t.downloadUrl).filter((u): u is string => !!u)
+    if (!urls.length) { notify('待签到工具暂无可打开的签到页'); return }
+    urls.forEach((u, i) => { window.setTimeout(() => { void openExternal(u) }, i * 350) })
+    notify(`正在打开 ${urls.length} 个签到页面，挨个领取即可（浏览器若拦截多标签，请允许弹窗后重试）`)
+  }
   const endGuide = () => { setGuideQueue(null); setGuideSkipped([]) }
   const q = keyword.trim().toLowerCase()
 
@@ -1744,7 +1767,10 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
                 ? `还有 ${pendingTools.length} 个工具待签到：逐个打开签到页，你点完领取，这边自动跳下一个`
                 : '今日可签到的工具已全部完成 🎉'}</div>
             </div>
-            {pendingTools.length > 0 && <button className="btn primary" onClick={startGuide}>开始签到（{pendingTools.length}）</button>}
+            {pendingTools.length > 0 && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn primary" onClick={startGuide}>开始签到（{pendingTools.length}）</button>
+              {!isNativeApp() && <button className="btn" onClick={openAllCheckins} title="把今天待签到的页面一次全部打开，挨个领取"><ExternalLink size={14} /> 全部打开</button>}
+            </div>}
           </div>
         ) : guideCurrent ? (
           <div className="cg-active">
@@ -2557,13 +2583,14 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
   )
 }
 
-function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onOpenReport, priceAlerts, priceCheckedAt, checkingPrices, onCheckPrices, onAckPriceAlerts }: {
+function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onAccountBudget, onOpenReport, priceAlerts, priceCheckedAt, checkingPrices, onCheckPrices, onAckPriceAlerts }: {
   state: AppState; notify: (m: string) => void; onBudget: (v: number) => void;
   onAddUsage: () => void;
   onDeleteUsage: (ids: string[]) => void;
   onImport: (events: UsageEventInput[]) => void
   onPriceChange: (providerId: string, price: number) => void
   onProviderBudget: (providerId: string, v: number) => void
+  onAccountBudget: (accountId: string, v: number) => void
   onOpenReport: () => void
   priceAlerts: PriceChange[]; priceCheckedAt: string | null; checkingPrices: boolean
   onCheckPrices: () => void; onAckPriceAlerts: () => void
@@ -2672,6 +2699,38 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             </div>
           )
         })}
+      </div>
+
+      <div className="section-head"><h2>分账户预算 <span className="hint">本月 · 给单个 Key/账户单独设上限；留空或 0 表示不限，超 90% 会提醒</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        {state.accounts.length === 0 ? (
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可为单个账户单独设置月预算</div>
+        ) : state.accounts
+          .filter(a => (state.settings.accountBudgets?.[a.id] ?? 0) > 0 || monthEvents.some(u => u.accountId === a.id))
+          .map(a => {
+            const spend = monthEvents.filter(u => u.accountId === a.id).reduce((s, u) => s + u.estimatedCost, 0)
+            const ab = state.settings.accountBudgets?.[a.id] ?? 0
+            const pct = ab > 0 ? Math.min(100, Math.round(spend / ab * 100)) : 0
+            return (
+              <div className="settings-row" key={a.id}>
+                <span style={{ fontSize: 13 }}>{a.label || PROVIDER_MAP[a.providerId]?.shortName || a.providerId}
+                  <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId} · 本月已花 ¥{spend.toFixed(2)}{ab > 0 ? ` · ${pct}%` : ''}</span>
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {ab > 0 && <span className="progress" style={{ width: 90 }}><span style={{ display: 'block', height: '100%', width: `${pct}%`, background: pct >= 100 ? 'var(--red)' : pct >= 90 ? 'var(--amber)' : 'var(--primary)' }} /></span>}
+                  <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>预算 ¥</span>
+                  <input className="input" type="number" min="0" step="10" style={{ width: 96 }}
+                    defaultValue={ab || ''}
+                    placeholder="不限"
+                    key={`${a.id}-${ab}`}
+                    onBlur={e => { const v = Number(e.target.value); if (!isNaN(v) && v >= 0 && v !== ab) { onAccountBudget(a.id, v); notify(v > 0 ? '分账户预算已更新' : '已取消该账户预算') } }} />
+                </span>
+              </div>
+            )
+          })}
+        {state.accounts.length > 0 && state.accounts.every(a => (state.settings.accountBudgets?.[a.id] ?? 0) <= 0 && !monthEvents.some(u => u.accountId === a.id)) && (
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>本月暂无消费的账户不显示；给账户所在行填预算即可单独管控</div>
+        )}
       </div>
 
       <div className="section-head"><h2>价格动态 <span className="hint">官方参考单价变动订阅 · 每 6 小时自动检查</span></h2></div>

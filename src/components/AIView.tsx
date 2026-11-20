@@ -3,8 +3,9 @@
 
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
-  Send, Square, Plus, ChevronDown, Copy, Volume2, VolumeX,
+  Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
+  Search, Download,
 } from 'lucide-react'
 import {
   listModels, loadHistory, saveHistory, rotateConversationId,
@@ -563,6 +564,64 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     notify('已开启新对话')
   }
 
+  // ---- 对话搜索（当前会话内查找，命中高亮 + 上下跳转） ----
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchIdx, setSearchIdx] = useState(0)
+  const searchMatches = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return [] as string[]
+    return messages.filter(m => m.content.toLowerCase().includes(q)).map(m => m.id)
+  }, [messages, searchQuery])
+  const currentMatchId = searchMatches.length ? searchMatches[Math.min(searchIdx, searchMatches.length - 1)] : null
+  const jumpMatch = (dir: 1 | -1) => {
+    if (!searchMatches.length) return
+    const next = (searchIdx + dir + searchMatches.length) % searchMatches.length
+    setSearchIdx(next)
+    document.getElementById(`aimsg-${searchMatches[next]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  useEffect(() => {
+    if (searchMatches.length) {
+      setSearchIdx(0)
+      document.getElementById(`aimsg-${searchMatches[0]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery])
+
+  // ---- 对话导出（Markdown） ----
+  const [exportOpen, setExportOpen] = useState(false)
+  const buildChatMarkdown = () => {
+    const lines = [
+      '# AI 助手对话记录',
+      '',
+      `导出时间：${new Date().toLocaleString('zh-CN')}`,
+      `模型：${currentModel}`,
+      '',
+      '---',
+      '',
+    ]
+    for (const m of messages) {
+      lines.push(`**${m.role === 'user' ? '我' : 'AI 助手'}：**`)
+      lines.push('')
+      lines.push(m.content)
+      lines.push('')
+    }
+    return lines.join('\n')
+  }
+  const downloadChat = () => {
+    const blob = new Blob([buildChatMarkdown()], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const p = (n: number) => String(n).padStart(2, '0')
+    const d = new Date()
+    link.href = url
+    link.download = `AI对话记录-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`
+    link.click()
+    URL.revokeObjectURL(url)
+    setExportOpen(false)
+    notify('对话记录已导出为 Markdown 文件')
+  }
+
   const onInput = (v: string) => {
     setInput(v)
     const el = textareaRef.current
@@ -636,9 +695,43 @@ export function AIView({ notify, accounts, settings, serviceController }: {
             </button>
             <button className="ai-icon-btn call" onClick={() => setCallOpen(true)} disabled={!callEnabled}
               title={callEnabled ? 'AI 语音通话' : '当前分类模型不支持语音通话'}><Phone size={17} /></button>
+            <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} title="搜索对话内容"><Search size={17} /></button>
+            <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} title="导出对话记录（Markdown）"><Download size={17} /></button>
             <button className="ai-icon-btn" onClick={clear} title="新建对话"><RotateCcw size={17} /></button>
           </div>
         </div>
+
+        {/* 对话搜索栏 */}
+        {searchOpen && (
+          <div className="ai-search-bar">
+            <Search size={14} />
+            <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') jumpMatch(e.shiftKey ? -1 : 1); if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery('') } }}
+              placeholder="搜索当前对话内容…" />
+            <span className="ai-search-count">{searchQuery.trim() ? (searchMatches.length ? `${Math.min(searchIdx + 1, searchMatches.length)}/${searchMatches.length}` : '无结果') : ''}</span>
+            <button className="ai-icon-btn" onClick={() => jumpMatch(-1)} disabled={searchMatches.length === 0} title="上一个（Shift+Enter）"><ChevronUp size={15} /></button>
+            <button className="ai-icon-btn" onClick={() => jumpMatch(1)} disabled={searchMatches.length === 0} title="下一个（Enter）"><ChevronDown size={15} /></button>
+            <button className="ai-icon-btn" onClick={() => { setSearchOpen(false); setSearchQuery('') }} title="关闭搜索"><X size={15} /></button>
+          </div>
+        )}
+
+        {/* 对话导出弹窗 */}
+        {exportOpen && (
+          <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setExportOpen(false) }}>
+            <div className="modal" style={{ maxWidth: 520 }}>
+              <div className="modal-head"><h3 style={{ margin: 0 }}>导出对话记录</h3><button className="icon-btn" onClick={() => setExportOpen(false)}><X size={18} /></button></div>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>把当前对话导出为 Markdown 文件存档，或复制全文到剪贴板。共 {messages.length} 条消息。</p>
+                <textarea className="input" readOnly rows={8} value={buildChatMarkdown()} style={{ width: '100%', fontSize: 12, lineHeight: 1.6 }} />
+              </div>
+              <div className="modal-foot">
+                <button className="btn" onClick={() => setExportOpen(false)}>取消</button>
+                <button className="btn" onClick={() => void copyMessage(buildChatMarkdown())}><Copy size={14} /> 复制全文</button>
+                <button className="btn primary" onClick={downloadChat}><Download size={14} /> 下载 .md</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 非对话型模型提示卡 */}
         {selectedOption && !canChat && (
@@ -694,7 +787,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
               {messages.map(m => {
                 const profile = m.role === 'assistant' ? botProfile : userProfile
                 return (
-                <div key={m.id} className={`ai-msg ${m.role}`}>
+                <div key={m.id} id={`aimsg-${m.id}`} className={`ai-msg ${m.role}${searchMatches.includes(m.id) ? ' search-hit' : ''}${currentMatchId === m.id ? ' search-current' : ''}`}>
                   <div className="ai-avatar avatar-click" title={m.role === 'assistant' ? '点击更换 AI 头像/名字/音色' : '点击更换我的头像/昵称/前缀'}
                     style={{ background: avatarBg(profile) }} onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen(m.role === 'assistant' ? 'bot' : 'user') }}>{avatarContent(profile)}</div>
                   <div className="ai-msg-body">

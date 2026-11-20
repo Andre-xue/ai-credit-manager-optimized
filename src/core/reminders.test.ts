@@ -53,6 +53,15 @@ describe('buildReminders', () => {
     expect(ok.filter((x) => x.kind === 'budget')).toEqual([])
   })
 
+  it('分账户预算提醒：90% 预警、超支提醒，ID 带账户且与平台预算互不冲突', () => {
+    const warn = buildReminders({ ...base, accountBudgets: [{ accountId: 'a1', name: '主力', cost: 95, budget: 100 }] })
+    expect(warn.find((x) => x.kind === 'budget' && x.id.includes('acc:a1'))?.id).toBe('budget:2026-11:warn:acc:a1')
+    const over = buildReminders({ ...base, accountBudgets: [{ accountId: 'a1', name: '主力', cost: 120, budget: 100 }] })
+    expect(over.find((x) => x.kind === 'budget' && x.id.includes('acc:a1'))?.id).toBe('budget:2026-11:over:acc:a1')
+    const ok = buildReminders({ ...base, accountBudgets: [{ accountId: 'a1', name: '主力', cost: 50, budget: 100 }] })
+    expect(ok.filter((x) => x.id.includes('acc:'))).toEqual([])
+  })
+
   it('单项开关关闭时跳过该类提醒', () => {
     const r = buildReminders({
       ...base,

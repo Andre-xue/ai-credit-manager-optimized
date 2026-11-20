@@ -646,3 +646,19 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
   .ai-toolbar { flex-wrap: wrap; row-gap: 6px; }
   .engine-panel { width: 100vw; }
 }
+
+/* ===== v0.1.214: AI 对话搜索栏与命中高亮 ===== */
+.ai-search-bar {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 auto 10px; max-width: 860px; width: calc(100% - 32px);
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel); color: var(--text-3);
+}
+.ai-search-bar input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 13.5px; color: var(--text); padding: 4px 2px;
+}
+.ai-search-bar .ai-icon-btn { flex-shrink: 0; }
+.ai-search-count { font-size: 12px; color: var(--text-3); min-width: 44px; text-align: center; }
+.ai-msg.search-hit .ai-bubble { box-shadow: 0 0 0 2px rgba(217, 119, 6, .45); }
+.ai-msg.search-current .ai-bubble { box-shadow: 0 0 0 2.5px var(--amber, #d97706); }

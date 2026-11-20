@@ -43,6 +43,8 @@ export interface ReminderInput {
   monthlyBudget: number
   /** 分平台预算使用情况（可选）：有预算且本月有消费的平台 */
   providerBudgets?: Array<{ providerId: string; name: string; cost: number; budget: number }>
+  /** 分账户预算使用情况（可选）：有预算的账户本月消费 */
+  accountBudgets?: Array<{ accountId: string; name: string; cost: number; budget: number }>
   /** 余额已低于阈值的账户（可选，阈值过滤由调用方完成） */
   lowBalances?: Array<{ accountId: string; name: string; remaining: number; symbol: string }>
   /** 消费异常（可选，由 anomaly.detectSpendAnomalies 计算后附上账户名） */
@@ -136,6 +138,29 @@ export function buildReminders(input: ReminderInput): ReminderEvent[] {
           kind: 'budget',
           title: `${pb.name} 预算接近上限`,
           body: `${pb.name} 本月已花 ¥${pb.cost.toFixed(2)}，达到其月预算的 ${Math.round(ratio * 100)}%。`,
+        })
+      }
+    }
+  }
+
+  if (prefs.budget && input.accountBudgets?.length) {
+    const monthKey = dateKey.slice(0, 7)
+    for (const ab of input.accountBudgets) {
+      if (ab.budget <= 0) continue
+      const ratio = ab.cost / ab.budget
+      if (ratio >= 1) {
+        out.push({
+          id: `budget:${monthKey}:over:acc:${ab.accountId}`,
+          kind: 'budget',
+          title: `「${ab.name}」本月预算已超支`,
+          body: `账户「${ab.name}」本月已花 ¥${ab.cost.toFixed(2)}，超过其月预算 ¥${ab.budget.toFixed(0)}。`,
+        })
+      } else if (ratio >= 0.9) {
+        out.push({
+          id: `budget:${monthKey}:warn:acc:${ab.accountId}`,
+          kind: 'budget',
+          title: `「${ab.name}」预算接近上限`,
+          body: `账户「${ab.name}」本月已花 ¥${ab.cost.toFixed(2)}，达到其月预算的 ${Math.round(ratio * 100)}%。`,
         })
       }
     }
