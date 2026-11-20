@@ -462,7 +462,6 @@ async fn proxy_usage(provider: String, api_key: String) -> Result<serde_json::Va
         "anthropic" => ("https://api.anthropic.com/v1/usage", false),
         "deepseek" => ("https://api.deepseek.com/user/balance", false),
         "kim" => ("https://api.moonshot.cn/v1/users/me/balance", false),
-        "glm" => ("https://open.bigmodel.cn/api/paas/v4/balance", false),
         "siliconflow" => ("https://api.siliconflow.cn/v1/user/info", false),
         "openrouter" => ("https://openrouter.ai/api/v1/auth/key", false),
         _ => return Err(format!("平台 {} 不支持官方只读用量 API", provider)),
@@ -1443,8 +1442,8 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
                     .and_then(|w| w.primary_monitor().ok().flatten())
                     .map(|m| m.scale_factor())
                     .unwrap_or(2.0);
-                let p = rect.position.to_physical(scale);
-                let s = rect.size.to_physical(scale);
+                let p: tauri::PhysicalPosition<i32> = rect.position.to_physical(scale);
+                let s: tauri::PhysicalSize<u32> = rect.size.to_physical(scale);
                 if let Ok(mut g) = tray_rect_store().lock() {
                     *g = Some((p.x, p.y, s.width as i32, s.height as i32));
                 }

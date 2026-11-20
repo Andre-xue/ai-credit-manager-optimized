@@ -5,7 +5,6 @@ import {
   formatUsageBalance,
   getAdapter,
   parseDeepseekBalance,
-  parseGlmBalance,
   parseMoonshotBalance,
   parseOpenrouterKeyInfo,
   parseSiliconflowUserInfo,
@@ -48,15 +47,6 @@ describe('余额接口解析', () => {
     expect(r.detail).toBeUndefined()
   })
 
-  it('GLM：防御式提取 data.balance', () => {
-    expect(parseGlmBalance({ code: 200, data: { balance: 88 } }).remaining).toBe(88)
-    expect(parseGlmBalance({ data: { available_balance: '12.5' } }).remaining).toBe(12.5)
-  })
-
-  it('GLM：未知结构抛带原文的错误', () => {
-    expect(() => parseGlmBalance({ code: 200, data: { foo: 1 } })).toThrow(/无法识别/)
-  })
-
   it('硅基流动：取 data.balance 字符串', () => {
     const r = parseSiliconflowUserInfo({ code: 20000, data: { balance: '25.60', chargeBalance: '100', totalBalance: '125.60' } })
     expect(r.remaining).toBeCloseTo(25.6)
@@ -80,12 +70,15 @@ describe('余额接口解析', () => {
 
 describe('getAdapter.supported（余额可用性只看端点，不看目录 modes）', () => {
   it('已接端点的平台均可用（目录里 modes 为 manual 也不影响）', () => {
-    for (const id of ['deepseek', 'kim', 'glm', 'siliconflow', 'openrouter']) {
+    for (const id of ['deepseek', 'kim', 'siliconflow', 'openrouter']) {
       expect(getAdapter(id).supported, id).toBe(true)
     }
   })
   it('无端点的平台不可用', () => {
     expect(getAdapter('doubao').supported).toBe(false)
+  })
+  it('GLM 不可用：官方 /balance 地址实测 404、未向 API Key 开放余额查询（2026-11-20）', () => {
+    expect(getAdapter('glm').supported).toBe(false)
   })
 })
 

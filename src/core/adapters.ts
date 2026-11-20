@@ -61,14 +61,13 @@ export function parseMoonshotBalance(j: any): ParsedUsage {
   }
 }
 
-/** 智谱 GLM：GET /api/paas/v4/balance（端点存在性已实测；字段名多版本并存，防御式提取） */
-export function parseGlmBalance(j: any): ParsedUsage {
-  const cands = [j?.data?.available_balance, j?.data?.balance, j?.data?.total_balance, j?.data?.amount,
-    j?.available_balance, j?.balance, j?.total_balance]
-  const hit = cands.find(v => v !== undefined && v !== null && Number.isFinite(Number(v)))
-  if (hit === undefined) throw shapeError('GLM 余额', j)
-  const n = Number(hit)
-  return { used: 0, total: n, remaining: n, symbol: '¥' }
+/**
+ * 已实测确认官方未向普通 API Key 开放余额查询的平台（给出明确原因，避免用户对着 404 报错猜）。
+ * GLM：2026-11-20 用真实 Key 实测 GET open.bigmodel.cn/api/paas/v4/balance 返回 404（该地址不存在）；
+ * 此前「假 Key 得 401」只是网关鉴权过滤器先行拦截，并非端点存在。余额只能在智谱控制台看。
+ */
+export const NO_BALANCE_API_NOTE: Record<string, string> = {
+  glm: '智谱 GLM 未向 API Key 开放余额查询接口，请在智谱控制台查看余额后手动录入额度',
 }
 
 /** 硅基流动：GET /v1/user/info → data.balance（字符串，人民币） */
@@ -102,7 +101,6 @@ const API_ENDPOINTS: Record<string, Endpoint> = {
   },
   deepseek: { url: 'https://api.deepseek.com/user/balance', unit: 'currency', parse: parseDeepseekBalance },
   kim: { url: 'https://api.moonshot.cn/v1/users/me/balance', unit: 'currency', parse: parseMoonshotBalance },
-  glm: { url: 'https://open.bigmodel.cn/api/paas/v4/balance', unit: 'currency', parse: parseGlmBalance },
   siliconflow: { url: 'https://api.siliconflow.cn/v1/user/info', unit: 'currency', parse: parseSiliconflowUserInfo },
   openrouter: { url: 'https://openrouter.ai/api/v1/auth/key', unit: 'currency', parse: parseOpenrouterKeyInfo },
 }
@@ -165,7 +163,7 @@ export function getAdapter(providerId: string): DataSourceAdapter {
     supported: !!endpoint,
     usageUrl: p?.usageUrl ?? p?.officialUrl ?? '#',
     async fetchUsage(apiKey: string): Promise<UsageResult> {
-      if (!endpoint) throw new Error(`${p?.name ?? providerId} 无公开只读用量 API，请到官方页面查看后手动录入`)
+      if (!endpoint) throw new Error(NO_BALANCE_API_NOTE[providerId] ?? `${p?.name ?? providerId} 无公开只读用量 API，请到官方页面查看后手动录入`)
 
       let data: any
       if (inTauri()) {
