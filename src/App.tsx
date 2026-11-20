@@ -6,7 +6,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff, Activity, ClipboardList, Upload,
+  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -43,6 +43,8 @@ import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from '.
 import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, type PriceChange } from './core/priceWatch'
 import { detectSpendAnomalies } from './core/anomaly'
 import { buildMonthlyReport, prevMonthKey } from './core/monthlyReport'
+import { detectProviderFromKey, extractKey } from './core/keyDetect'
+import { rankProvidersByValue, rankModelsByValue } from './core/valueRank'
 import { buildBackup, parseBackup, type ParseBackupResult } from './core/backup'
 import { syncWidgetData } from './core/widgetData'
 import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
@@ -174,6 +176,9 @@ function App() {
     setCatalogNews([])
   }, [])
   const [addOpen, setAddOpen] = useState(false)
+  // 智能粘贴：粘贴 Key 识别平台后，带着 Key 直接打开对应平台的添加账户表单
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteSecret, setPasteSecret] = useState('')
   const [formProviderId, setFormProviderId] = useState<string | null>(null)
   const [vaultOpen, setVaultOpen] = useState(false)
   const [quotaTarget, setQuotaTarget] = useState<string | null>(null)
@@ -1059,7 +1064,7 @@ function App() {
 
           {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> 返回 AI 视频</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
-          {tab === 'keys' && <div className="page-action-row"><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
+          {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> 智能粘贴</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify}
             onAudit={audit}
@@ -1238,6 +1243,10 @@ function App() {
           setAddOpen(false); setFormProviderId(pid)
         }}
       />}
+      {pasteOpen && <SmartPasteModal
+        onClose={() => setPasteOpen(false)}
+        onConfirm={(pid, key) => { setPasteOpen(false); setPasteSecret(key); setFormProviderId(pid) }}
+      />}
       {formProviderId && isLocalProvider(formProviderId) && <LocalAccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
         onClose={() => setFormProviderId(null)}
@@ -1251,8 +1260,9 @@ function App() {
       />}
       {formProviderId && !isLocalProvider(formProviderId) && <AccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
+        initialSecret={pasteSecret || undefined}
         groupSuggestions={Array.from(new Set(state.accounts.map(a => a.group).filter((g): g is string => !!g))).sort()}
-        onClose={() => setFormProviderId(null)}
+        onClose={() => { setFormProviderId(null); setPasteSecret('') }}
         onSave={async (data) => {
           setState(s => ({
             ...s,
@@ -1273,7 +1283,7 @@ function App() {
           } else {
             notify(`已添加「${data.account.label}」，已置顶到 API Key 管理列表`)
           }
-          setFormProviderId(null)
+          setFormProviderId(null); setPasteSecret('')
         }}
       />}
       {vaultOpen && <VaultModal
@@ -2614,6 +2624,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
   onCheckPrices: () => void; onAckPriceAlerts: () => void
 }) {
   const [selectedUsage, setSelectedUsage] = useState<Set<string>>(new Set())
+  const [rankTab, setRankTab] = useState<'provider' | 'model'>('provider')
   const month = todayISO().slice(0, 7)
   const monthEvents = state.usage.filter(u => u.date.startsWith(month))
   const [usagePage, setUsagePage] = useState(1)
@@ -2638,6 +2649,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
   const ownedProviders = Array.from(new Set(state.accounts.map(a => a.providerId)))
   const prices = state.settings.unitPrices ?? {}
   const effectivePrices = { ...DEFAULT_UNIT_PRICES, ...prices }
+  const rankRows = rankTab === 'provider' ? rankProvidersByValue(state) : rankModelsByValue(state)
 
   return (
     <>
@@ -2749,6 +2761,23 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         {state.accounts.length > 0 && state.accounts.every(a => (state.settings.accountBudgets?.[a.id] ?? 0) <= 0 && !monthEvents.some(u => u.accountId === a.id)) && (
           <div style={{ color: 'var(--text-3)', fontSize: 13 }}>本月暂无消费的账户不显示；给账户所在行填预算即可单独管控</div>
         )}
+      </div>
+
+      <div className="section-head"><h2>性价比榜 <span className="hint">按你的实际用量统计 · ¥/百万 token，越低越划算（样本需 ≥1 万 token）</span></h2>
+        <div className="row" style={{ gap: 6 }}>
+          <button className={`btn sm ${rankTab === 'provider' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('provider')}>按平台</button>
+          <button className={`btn sm ${rankTab === 'model' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('model')}>按模型</button>
+        </div>
+      </div>
+      <div className="panel" style={{ padding: 18 }}>
+        {rankRows.length === 0
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无足够样本：某个{rankTab === 'provider' ? '平台' : '模型'}的累计用量达到 1 万 token 后会出现在这里。</div>
+          : rankRows.slice(0, 10).map((r, i) => (
+            <div key={r.key} className="row between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 13.5 }}>{i + 1}. {r.name}</span>
+              <span style={{ fontSize: 13.5 }}><b>¥{r.perMillion.toFixed(2)}</b> / 百万 token <span className="hint">共 {(r.tokens / 10000).toFixed(1)} 万 token · 花 ¥{r.cost.toFixed(2)}</span></span>
+            </div>
+          ))}
       </div>
 
       <div className="section-head"><h2>价格动态 <span className="hint">官方参考单价变动订阅 · 每 6 小时自动检查</span></h2></div>
@@ -3144,16 +3173,65 @@ function PlatformPickerModal({ onClose, onPick }: {
 }
 
 /** 第二步：填表 —— 平台名(固定) / API链接(只读可跳转) / 备注 / Key+自动余额 */
-function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggestions }: {
+/** 智能粘贴：粘贴 API Key（可带说明文字）→ 按格式识别平台 → 确认后带着 Key 打开添加账户表单 */
+function SmartPasteModal({ onClose, onConfirm }: {
+  onClose: () => void
+  onConfirm: (providerId: string, key: string) => void
+}) {
+  const [text, setText] = useState('')
+  const [picked, setPicked] = useState('')
+  const detection = useMemo(() => detectProviderFromKey(text), [text])
+  const key = useMemo(() => extractKey(text), [text])
+  useEffect(() => { if (detection) setPicked(detection.providerId) }, [detection?.providerId])
+  const candidates = PROVIDERS.filter(p => !p.id.startsWith('local-'))
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+        <div className="modal-head"><h3 style={{ margin: 0 }}>智能粘贴添加账户</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div style={{ padding: '4px 18px 18px' }}>
+          <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0, color: 'var(--text-2)' }}>把 API Key 粘贴进来（带说明文字也没关系），按格式自动识别平台；识别不准可以在下面改选。</p>
+          <textarea
+            value={text} onChange={e => setText(e.target.value)} rows={3} autoFocus
+            placeholder="粘贴 API Key，例如 sk-… / gsk_… / sk-ant-…"
+            style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 12.5 }}
+          />
+          {text.trim() && !key && <p style={{ fontSize: 12.5, color: 'var(--red)' }}>没识别到像 Key 的内容（需要一段至少 16 位的字母数字串）。</p>}
+          {key && (
+            <div style={{ marginTop: 10 }}>
+              {detection
+                ? <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>识别结果：<b>{PROVIDER_MAP[detection.providerId]?.name ?? detection.providerId}</b>{detection.confidence === 'low' ? '（低置信，请确认）' : ''} · {detection.reason}</p>
+                : <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>这个 Key 的格式没有特征，请手动选择平台：</p>}
+              <div className="row" style={{ gap: 8, marginTop: 10, alignItems: 'center' }}>
+                <span style={{ fontSize: 13 }}>平台</span>
+                <select className="select" value={picked} onChange={e => setPicked(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">请选择平台</option>
+                  {candidates.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+          <div className="row" style={{ gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="btn" onClick={onClose}>取消</button>
+            <button className="btn primary" disabled={!key || !picked} onClick={() => onConfirm(picked, key)}>下一步：填写账户信息</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggestions, initialSecret }: {
   provider: ProviderDefinition; sessionPwd: string;
   onClose: () => void;
   onSave: (data: { account: AppState['accounts'][number]; quota?: QuotaSnapshot; pwd: string }) => void
   groupSuggestions: string[]
+  /** 智能粘贴带入的 Key（预填密钥框） */
+  initialSecret?: string
 }) {
   const [note, setNote] = useState('')
   const [group, setGroup] = useState('')
   const [noteCat, setNoteCat] = useState<NoteCategory>('通用型')
-  const [secret, setSecret] = useState('')
+  const [secret, setSecret] = useState(initialSecret ?? '')
   const [balance, setBalance] = useState<string | null>(null)
   // 已获取的剩余额度（结构化保存，提交时生成初始额度快照；label 型结果无快照）
   const [fetchedQuota, setFetchedQuota] = useState<{ total: number; unit: CreditUnit } | null>(null)

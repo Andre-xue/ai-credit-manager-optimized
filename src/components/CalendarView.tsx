@@ -4,6 +4,7 @@ import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { AppState } from '../core/types'
 import { buildCalendarMonth, checkinHeatmap, checkinStreak, monthGrid, shiftMonth } from '../core/calendar'
 import { predictExhaustion } from '../core/forecast'
+import { buildICalendar } from '../core/ical'
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日']
 
@@ -50,6 +51,15 @@ export function CalendarView({ state }: { state: AppState }) {
           <b style={{ fontSize: 13.5, minWidth: 74, textAlign: 'center' }}>{month.replace('-', ' 年 ')} 月</b>
           <button className="btn sm ghost" onClick={() => setMonth((m) => shiftMonth(m, 1))}><ChevronRight size={14} /></button>
           {month !== curMonth && <button className="btn sm" onClick={() => { setMonth(curMonth); setSelected(today) }}>回到本月</button>}
+          <button className="btn sm" title="把未来 90 天的额度重置/到期日 + 每日签到提醒导出为 .ics 文件，可导入手机/电脑自带日历" onClick={() => {
+            const blob = new Blob([buildICalendar(state, today)], { type: 'text/calendar;charset=utf-8' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `AI积分管家日历-${today}.ics`
+            a.click()
+            setTimeout(() => URL.revokeObjectURL(url), 5000)
+          }}>导出日历</button>
         </div>
       </div>
 
