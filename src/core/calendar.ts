@@ -70,6 +70,44 @@ export function monthGrid(month: string): Array<string | null> {
   return cells
 }
 
+/* ---------------- 签到热力图 / 连续天数 ---------------- */
+
+function shiftDateISO(iso: string, deltaDays: number): string {
+  const d = new Date(iso + 'T00:00:00')
+  d.setDate(d.getDate() + deltaDays)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+export interface HeatmapDay { date: string; count: number }
+
+/** 最近 weeks 周（含今天所在周的已过天数）每天的已签到工具数，按日期升序 */
+export function checkinHeatmap(state: AppState, today: string, weeks = 18): HeatmapDay[] {
+  const counts = new Map<string, number>()
+  for (const c of state.checkins) {
+    if (c.done) counts.set(c.date, (counts.get(c.date) ?? 0) + 1)
+  }
+  const totalDays = weeks * 7
+  const out: HeatmapDay[] = []
+  for (let i = totalDays - 1; i >= 0; i--) {
+    const date = shiftDateISO(today, -i)
+    out.push({ date, count: counts.get(date) ?? 0 })
+  }
+  return out
+}
+
+/** 连续签到天数：从今天（今天还没签则从昨天）往前数，每天至少 1 个工具已签到 */
+export function checkinStreak(state: AppState, today: string): number {
+  const days = new Set(state.checkins.filter(c => c.done).map(c => c.date))
+  let cursor = days.has(today) ? today : shiftDateISO(today, -1)
+  let streak = 0
+  while (days.has(cursor)) {
+    streak++
+    cursor = shiftDateISO(cursor, -1)
+  }
+  return streak
+}
+
 export function shiftMonth(month: string, delta: number): string {
   const [y, m] = month.split('-').map(Number)
   const d = new Date(y, m - 1 + delta, 1)

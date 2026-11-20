@@ -407,8 +407,8 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   }, [currentAccount, engines])
 
   /** 统一取回复：用户自己的账户走其 API，否则走平台免费模型 */
-  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false): Promise<string> => {
-    const opt = allOptions.find(o => o.key === model)
+  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false, optKey?: string): Promise<string> => {
+    const opt = allOptions.find(o => o.key === (optKey ?? model))
     const isFirstReply = !history.some(m => m.role === 'assistant')
     const systemPrompt = voiceMode
       ? buildVoiceSystemPrompt(botProfile, userProfile)
@@ -459,12 +459,15 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     return streamChat(model || 'auto', voiceHistory, content, delta => setStreamingText(prev => prev + delta), signal, images, effectiveReasoning, systemPrompt)
   }
 
-  const send = async (text?: string) => {
+  // 报错自动换 Key：调用失败（鉴权/额度类）时，若同平台还有别的可用账户，给出「一键切换重试」
+  const [pendingRetry, setPendingRetry] = useState<{ text: string; altKey: string; altLabel: string } | null>(null)
+
+  const send = async (text?: string, optKey?: string) => {
     const content = (text ?? input).trim()
     const hasAttach = attachments.length > 0
     if ((!content && !hasAttach) || generating) return
     const effectiveText = content || '请分析这些附件'
-    if (!model) { notify('模型尚未就绪，请稍候'); return }
+    if (!model && !optKey) { notify('模型尚未就绪，请稍候'); return }
     // 生图型/视频型：允许发送提示词，交给 callByCategory 调用生图/视频接口（不再拦截）
     // 自有模型需要先有解密凭据：给出持久可见的对话提示，避免"打字没反应"
     if (needPwd) {
@@ -495,7 +498,8 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      const answer = await getReply(aiText, messages, controller.signal, imageUrls)
+      const answer = await getReply(aiText, messages, controller.signal, imageUrls, false, optKey)
+      setPendingRetry(null)
       setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: answer || '（无回复内容）', at: Date.now() }])
       // 自动朗读：AI 回复完成且未被中止时，朗读清洗后的纯文字
       if (autoSpeak && answer && !controller.signal.aborted) {
@@ -511,6 +515,15 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       const msg = friendlyAiError(e)
       // needPwd 的情况：不重复 toast（顶部已有常驻解锁条），但仍需在对话里给出可见提示
       if (!need && msg !== '已停止生成' && !String(msg).includes('NEED_AI_PWD')) notify(msg)
+      // 鉴权/额度类失败且同平台有备用账户 → 提供一键换 Key 重试（密码未验证/用户中止不触发）
+      if (!need && msg !== '已停止生成') {
+        const raw = `${(e as Error)?.message ?? ''} ${msg}`
+        if (/401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期/i.test(raw)) {
+          const failed = allOptions.find(o => o.key === (optKey ?? model))?.account
+          const alt = failed ? ownOptions.find(o => o.account && o.account.providerId === failed.providerId && o.account.id !== failed.id) : undefined
+          if (failed && alt?.account) setPendingRetry({ text: aiText, altKey: alt.key, altLabel: alt.account.label })
+        }
+      }
       setStreamingText(prev => {
         if (prev) setMessages(p => [...p, { id: `${Date.now()}-a`, role: 'assistant', content: prev, at: Date.now() }])
         else {
@@ -654,6 +667,17 @@ export function AIView({ notify, accounts, settings, serviceController }: {
             <button className="btn sm primary" disabled={aiPwdBusy || !aiPwdInput} onClick={() => void verifyAiPwd()}>
               {aiPwdBusy ? <><Loader2 size={13} className="spin" /> 验证</> : '验证'}
             </button>
+          </div>
+        </div>}
+
+        {/* 报错换 Key 重试：当前账户调用失败且同平台有备用账户时出现 */}
+        {pendingRetry && <div className="ai-retry-bar">
+          <span className="ai-pwd-gate-label"><Info size={13} /> 当前 Key 调用失败（可能失效或额度不足），同平台还有备用账户。</span>
+          <div className="ai-pwd-gate-row">
+            <button className="btn sm primary" onClick={() => { const r = pendingRetry; setPendingRetry(null); setModel(r.altKey); void send(r.text, r.altKey) }}>
+              切换到「{pendingRetry.altLabel}」重试
+            </button>
+            <button className="btn sm ghost" onClick={() => setPendingRetry(null)}>不用了</button>
           </div>
         </div>}
 

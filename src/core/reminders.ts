@@ -12,13 +12,15 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
   expiry: true,
   forecast: true,
   budget: true,
+  lowBalance: true,
+  anomaly: true,
 }
 
 export function notifyPrefsOf(settings: AppSettings): NotifyPrefs {
   return { ...DEFAULT_NOTIFY_PREFS, ...(settings.notify ?? {}) }
 }
 
-export type ReminderKind = 'checkin' | 'expiry' | 'forecast' | 'budget'
+export type ReminderKind = 'checkin' | 'expiry' | 'forecast' | 'budget' | 'lowbalance' | 'anomaly'
 
 export interface ReminderEvent {
   /** 稳定 ID（含日期/月份），用于去重 */
@@ -41,6 +43,10 @@ export interface ReminderInput {
   monthlyBudget: number
   /** 分平台预算使用情况（可选）：有预算且本月有消费的平台 */
   providerBudgets?: Array<{ providerId: string; name: string; cost: number; budget: number }>
+  /** 余额已低于阈值的账户（可选，阈值过滤由调用方完成） */
+  lowBalances?: Array<{ accountId: string; name: string; remaining: number; symbol: string }>
+  /** 消费异常（可选，由 anomaly.detectSpendAnomalies 计算后附上账户名） */
+  spendAnomalies?: Array<{ accountId: string; name: string; dateLabel: string; cost: number; avgDaily: number; ratio: number }>
 }
 
 function localDateKey(d: Date): string {
@@ -132,6 +138,28 @@ export function buildReminders(input: ReminderInput): ReminderEvent[] {
           body: `${pb.name} 本月已花 ¥${pb.cost.toFixed(2)}，达到其月预算的 ${Math.round(ratio * 100)}%。`,
         })
       }
+    }
+  }
+
+  if (prefs.lowBalance && input.lowBalances?.length) {
+    for (const lb of input.lowBalances) {
+      out.push({
+        id: `lowbalance:${lb.accountId}:${dateKey}`,
+        kind: 'lowbalance',
+        title: '余额不足提醒',
+        body: `「${lb.name}」余额仅剩 ${lb.symbol}${lb.remaining.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}，记得及时充值。`,
+      })
+    }
+  }
+
+  if (prefs.anomaly && input.spendAnomalies?.length) {
+    for (const sa of input.spendAnomalies) {
+      out.push({
+        id: `anomaly:${sa.accountId}:${dateKey}`,
+        kind: 'anomaly',
+        title: '消费异常提醒',
+        body: `「${sa.name}」${sa.dateLabel}消费 ¥${sa.cost.toFixed(2)}，约为近 7 天日均（¥${sa.avgDaily.toFixed(2)}）的 ${sa.ratio.toFixed(1)} 倍，请确认是否正常。`,
+      })
     }
   }
 

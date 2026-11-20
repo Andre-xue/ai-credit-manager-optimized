@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { latestQuota, loadState, todayISO } from '../core/store'
+import { predictExhaustion } from '../core/forecast'
 import { CHECKIN_TOOLS } from '../data/agentTools'
 import { PROVIDER_MAP } from '../data/providers'
 import type { AppState } from '../core/types'
@@ -58,7 +59,13 @@ export function MiniView() {
         .map((a) => {
           const q = latestQuota(state.quotas, a.id)
           if (!q || q.unit !== 'currency') return null
-          return { id: a.id, name: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId, remaining: Math.max(0, q.total - q.used) }
+          const remaining = Math.max(0, q.total - q.used)
+          const fc = predictExhaustion(state, a.id)
+          return {
+            id: a.id, name: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId, remaining,
+            low: remaining < (state.settings.lowBalanceThreshold ?? 10),
+            daysLeft: fc.level !== 'insufficient' ? fc.daysLeft : undefined,
+          }
         })
         .filter((x): x is NonNullable<typeof x> => !!x)
         .sort((x, y) => y.remaining - x.remaining),
@@ -107,9 +114,14 @@ export function MiniView() {
         </div>
         <div style={{ marginTop: 8, display: 'grid', gap: 5 }}>
           {balances.slice(0, 5).map((b) => (
-            <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-              <span style={{ color: c.sub }}>{b.name}</span>
-              <b>¥{fmt(b.remaining)}</b>
+            <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12.5, gap: 8 }}>
+              <span style={{ color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.name}</span>
+              <span style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <b style={b.low ? { color: '#dc2626' } : undefined}>¥{fmt(b.remaining)}</b>
+                {b.daysLeft !== undefined && b.daysLeft <= 60 && (
+                  <span style={{ display: 'block', fontSize: 10.5, color: b.daysLeft <= 7 ? '#dc2626' : c.faint }}>约 {Math.max(0, Math.ceil(b.daysLeft))} 天后耗尽</span>
+                )}
+              </span>
             </div>
           ))}
           {balances.length === 0 && <div style={{ fontSize: 12, color: c.faint }}>暂无额度数据，去主窗口添加账户或刷新余额</div>}

@@ -152,6 +152,10 @@ export interface NotifyPrefs {
   expiry: boolean
   forecast: boolean
   budget: boolean
+  /** 余额低于阈值时提醒（配合余额自动巡检） */
+  lowBalance: boolean
+  /** 单日消费突增异常提醒 */
+  anomaly: boolean
 }
 
 export interface AppSettings {
@@ -183,6 +187,8 @@ export interface AppSettings {
   theme?: 'system' | 'light' | 'dark'
   /** 分平台月预算（元），key 为 providerId；未设置的平台只受总预算约束 */
   providerBudgets?: Record<string, number>
+  /** 低余额提醒阈值（货币单位剩余额度低于此值时提醒），缺省 10 */
+  lowBalanceThreshold?: number
   /** 桌面全局快捷键总开关（默认开；仅桌面端生效） */
   shortcutsEnabled?: boolean
   /** 自定义快捷键·呼出 AI 助手（Tauri accelerator，如 CommandOrControl+Shift+A；缺省即默认） */

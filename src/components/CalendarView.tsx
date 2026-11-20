@@ -2,7 +2,8 @@
 import { useMemo, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { AppState } from '../core/types'
-import { buildCalendarMonth, monthGrid, shiftMonth } from '../core/calendar'
+import { buildCalendarMonth, checkinHeatmap, checkinStreak, monthGrid, shiftMonth } from '../core/calendar'
+import { predictExhaustion } from '../core/forecast'
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日']
 
@@ -20,11 +21,29 @@ export function CalendarView({ state }: { state: AppState }) {
   const monthCheckinDays = [...cal.days.values()].filter((d) => d.checkins.length > 0).length
   const monthCost = [...cal.days.values()].reduce((s, d) => s + d.cost, 0)
 
+  const streak = useMemo(() => checkinStreak(state, today), [state, today])
+  const heat = useMemo(() => checkinHeatmap(state, today, 18), [state, today])
+  const heatLead = heat.length ? (new Date(heat[0].date + 'T00:00:00').getDay() + 6) % 7 : 0
+  /** 各账户预计耗尽日（按当前消耗速度预测）→ 日期 → 账户名 */
+  const exhaustMarks = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const a of state.accounts) {
+      const fc = predictExhaustion(state, a.id)
+      if (fc.exhaustDate) {
+        const arr = m.get(fc.exhaustDate) ?? []
+        arr.push(a.label || a.providerId)
+        m.set(fc.exhaustDate, arr)
+      }
+    }
+    return m
+  }, [state])
+  const selExhaust = exhaustMarks.get(selected)
+
   return (
     <div>
       <div className="section-head">
         <h2><CalendarDays size={17} style={{ verticalAlign: -3, marginRight: 6 }} />额度日历
-          <span className="hint">本月签到 {monthCheckinDays} 天 · 用量 ¥{monthCost.toFixed(2)}</span>
+          <span className="hint">本月签到 {monthCheckinDays} 天 · 用量 ¥{monthCost.toFixed(2)}{streak > 0 ? ` · 🔥 连续签到 ${streak} 天` : ''}</span>
         </h2>
         <div className="row" style={{ gap: 6 }}>
           <button className="btn sm ghost" onClick={() => setMonth((m) => shiftMonth(m, -1))}><ChevronLeft size={14} /></button>
@@ -49,6 +68,7 @@ export function CalendarView({ state }: { state: AppState }) {
                   {d?.checkins.length ? <i className="cal-dot checkin" title="已签到" /> : null}
                   {d?.cost ? <i className="cal-dot usage" title="有用量" /> : null}
                   {d?.resets.length ? <i className="cal-dot reset" title="额度重置/到期" /> : null}
+                  {exhaustMarks.get(date)?.length ? <i className="cal-dot exhaust" title="预计额度耗尽" /> : null}
                 </span>
                 {d?.cost ? <span className="cal-cost">¥{d.cost.toFixed(0)}</span> : null}
               </button>
@@ -59,17 +79,35 @@ export function CalendarView({ state }: { state: AppState }) {
           <span><i className="cal-dot checkin" /> 已签到</span>
           <span><i className="cal-dot usage" /> 有用量</span>
           <span><i className="cal-dot reset" /> 额度重置/到期</span>
+          <span><i className="cal-dot exhaust" /> 预计耗尽</span>
+        </div>
+      </div>
+
+      <div className="panel" style={{ padding: 16, marginTop: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <b style={{ fontSize: 13.5 }}>签到热力图</b>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>最近 18 周{streak > 0 ? ` · 🔥 已连续签到 ${streak} 天` : ''}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            少 <i className="heat-cell lv0" /><i className="heat-cell lv1" /><i className="heat-cell lv2" /><i className="heat-cell lv3" /><i className="heat-cell lv4" /> 多
+          </span>
+        </div>
+        <div className="heatmap" style={{ marginTop: 10 }}>
+          {Array.from({ length: heatLead }).map((_, i) => <i key={`b-${i}`} className="heat-cell blank" />)}
+          {heat.map((d) => (
+            <i key={d.date} className={`heat-cell lv${Math.min(4, d.count)}`} title={`${d.date} · 签到 ${d.count} 个工具`} />
+          ))}
         </div>
       </div>
 
       <div className="panel" style={{ padding: 16, marginTop: 14 }}>
         <b style={{ fontSize: 13.5 }}>{selected} 明细</b>
-        {!sel || (!sel.checkins.length && !sel.cost && !sel.resets.length)
+        {(!sel || (!sel.checkins.length && !sel.cost && !sel.resets.length)) && !selExhaust?.length
           ? <div style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 8 }}>这一天没有签到、用量或额度事件。</div>
           : <div style={{ marginTop: 8, display: 'grid', gap: 6, fontSize: 13 }}>
-              {sel.checkins.length > 0 && <div>✅ 已签到：{sel.checkins.join('、')}</div>}
-              {sel.cost > 0 && <div>💰 用量：¥{sel.cost.toFixed(2)} · {sel.tokens.toLocaleString()} Tokens</div>}
-              {sel.resets.length > 0 && <div>⏰ 额度重置/到期：{sel.resets.join('、')}</div>}
+              {sel && sel.checkins.length > 0 && <div>✅ 已签到：{sel.checkins.join('、')}</div>}
+              {sel && sel.cost > 0 && <div>💰 用量：¥{sel.cost.toFixed(2)} · {sel.tokens.toLocaleString()} Tokens</div>}
+              {sel && sel.resets.length > 0 && <div>⏰ 额度重置/到期：{sel.resets.join('、')}</div>}
+              {selExhaust && selExhaust.length > 0 && <div>🔻 预计额度耗尽：{selExhaust.join('、')}（按当前消耗速度预测）</div>}
             </div>}
       </div>
     </div>

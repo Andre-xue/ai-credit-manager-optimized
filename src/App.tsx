@@ -41,6 +41,8 @@ import {
 } from './data/agentTools'
 import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
 import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, type PriceChange } from './core/priceWatch'
+import { detectSpendAnomalies } from './core/anomaly'
+import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
 import { predictExhaustion, forecastText } from './core/forecast'
 import { todayISO } from './core/store'
@@ -665,6 +667,32 @@ function App() {
     void runPriceCheck(false, true)
   }, [runPriceCheck])
 
+  // ---- 余额自动巡检：保险箱解锁后（sessionPwd 就绪）静默刷新可查余额平台的官方余额 ----
+  // 6 小时节流（localStorage 时间戳）；失败静默，不打扰；无总额度上限的结果（仅 label）不落快照。
+  const balancePatrolRef = useRef(false)
+  useEffect(() => {
+    if (!sessionPwd || balancePatrolRef.current) return
+    const KEY = 'acm_balance_patrol_at'
+    const last = Number(localStorage.getItem(KEY) ?? 0)
+    if (Date.now() - last < 6 * 3600 * 1000) return
+    balancePatrolRef.current = true
+    localStorage.setItem(KEY, String(Date.now()))
+    void (async () => {
+      for (const a of stateRef.current.accounts) {
+        if (!a.encryptedKey) continue
+        const adapter = getAdapter(a.providerId)
+        if (!adapter.supported) continue
+        try {
+          const plain = await decryptSecret(a.encryptedKey, sessionPwd)
+          const r = await adapter.fetchUsage!(plain)
+          const total = r.total
+          if (total === undefined) continue
+          setState(s => upsertQuota(s, { accountId: a.id, used: r.used, total, unit: r.unit, source: 'api' }))
+        } catch { /* 巡检失败静默：单账户问题不打扰用户，手动刷新仍会给出明确报错 */ }
+      }
+    })()
+  }, [sessionPwd])
+
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
   useEffect(() => {
@@ -685,6 +713,13 @@ function App() {
           .map((v) => ({ accountId: v.account.id, name: v.account.label || v.provider?.name || '账户', daysLeft: v.forecast?.daysLeft ?? 0 })),
         monthCost,
         monthlyBudget: state.settings.monthlyBudget,
+        lowBalances: views
+          .filter((v) => v.quota?.unit === 'currency' && (v.quota.total - v.quota.used) >= 0 && (v.quota.total - v.quota.used) < (state.settings.lowBalanceThreshold ?? 10))
+          .map((v) => ({ accountId: v.account.id, name: v.account.label || v.provider?.name || '账户', remaining: (v.quota!.total - v.quota!.used), symbol: '¥' })),
+        spendAnomalies: detectSpendAnomalies(state, todayISO()).map((sa) => {
+          const acc = state.accounts.find((a) => a.id === sa.accountId)
+          return { ...sa, name: acc?.label || (acc ? PROVIDER_MAP[acc.providerId]?.name : undefined) || '账户' }
+        }),
         providerBudgets: Object.entries(state.settings.providerBudgets ?? {})
           .filter(([, b]) => b > 0)
           .map(([providerId, budget]) => ({
@@ -1833,6 +1868,8 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [groupFilter, setGroupFilter] = useState('__all__')
   const [page, setPage] = useState(1)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [toolExportOpen, setToolExportOpen] = useState(false)
+  const [toolExportFormat, setToolExportFormat] = useState<'env' | 'json'>('env')
   const [revealKeyTarget, setRevealKeyTarget] = useState<{ id: string; label: string; plain: string } | null>(null)
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set())
   // Key 健康检查：结果存本地（healthCheck.ts），逐个/全部探测 /v1/models
@@ -2114,14 +2151,17 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           setSelectedKeys(next)
         }}
         onClear={() => setSelectedKeys(new Set())}
-        actions={<button className="btn sm danger" disabled={selectedKeys.size === 0} onClick={() => {
-          const ids = Array.from(selectedKeys)
-          onRequestBackup(ids, '删除前必须备份', '确认删除', () => {
-            onRemoveKeys(ids)
-            setRevealed(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n })
-            setSelectedKeys(new Set())
-          })
-        }}><Trash2 size={13} /> 批量删除账户</button>}
+        actions={<>
+          <button className="btn sm" disabled={selectedKeys.size === 0} onClick={() => setToolExportOpen(true)}><Download size={13} /> 导出工具配置</button>
+          <button className="btn sm danger" disabled={selectedKeys.size === 0} onClick={() => {
+            const ids = Array.from(selectedKeys)
+            onRequestBackup(ids, '删除前必须备份', '确认删除', () => {
+              onRemoveKeys(ids)
+              setRevealed(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n })
+              setSelectedKeys(new Set())
+            })
+          }}><Trash2 size={13} /> 批量删除账户</button>
+        </>}
       />
       <Pager total={filtered.length} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
 
@@ -2148,6 +2188,54 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           }}
           notify={notify}
         />
+      })()}
+
+      {toolExportOpen && (() => {
+        const items: ToolExportItem[] = []
+        const missing: string[] = []
+        for (const id of selectedKeys) {
+          const a = state.accounts.find(x => x.id === id)
+          if (!a) continue
+          const plain = revealed[a.id]
+          if (plain) items.push({ providerId: a.providerId, label: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId, apiKey: plain, apiUrl: a.apiUrl || PROVIDER_MAP[a.providerId]?.apiBaseUrl || undefined })
+          else missing.push(a.label || a.providerId)
+        }
+        const doExport = () => {
+          const content = toolExportFormat === 'env' ? buildEnvExport(items) : buildJsonExport(items)
+          const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = toolExportFormat === 'env' ? 'ai-keys.env' : 'ai-keys.json'
+          link.click()
+          URL.revokeObjectURL(url)
+          onAudit('导出工具配置', `${items.length} 个 Key · ${toolExportFormat === 'env' ? '.env' : 'JSON'}`)
+          notify(`已导出 ${items.length} 个 Key 的配置（明文，请妥善保管）`)
+          setToolExportOpen(false)
+        }
+        return (
+          <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setToolExportOpen(false) }}>
+            <div className="modal" style={{ maxWidth: 460 }}>
+              <div className="modal-head"><h3 style={{ margin: 0 }}>导出工具配置</h3><button className="icon-btn" onClick={() => setToolExportOpen(false)}><X size={18} /></button></div>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>把所选 Key 生成其他工具（如 Cursor、各类 CLI / SDK）能直接使用的配置文件。</p>
+                <div className="form-row">
+                  <label className="form-label">格式</label>
+                  <div className="row" style={{ gap: 8 }}>
+                    <button className={`btn sm ${toolExportFormat === 'env' ? 'primary' : ''}`} onClick={() => setToolExportFormat('env')}>.env 环境变量</button>
+                    <button className={`btn sm ${toolExportFormat === 'json' ? 'primary' : ''}`} onClick={() => setToolExportFormat('json')}>JSON</button>
+                  </div>
+                </div>
+                <p style={{ fontSize: 12.5, color: '#dc2626', lineHeight: 1.6 }}>⚠️ 导出文件包含明文 Key，请妥善保管，不要发给他人或提交到代码仓库。</p>
+                <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>可导出 {items.length} 个{missing.length ? `；${missing.length} 个未解锁/无 Key 已跳过（${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' 等' : ''}）` : ''}</p>
+              </div>
+              <div className="modal-foot">
+                <button className="btn" onClick={() => setToolExportOpen(false)}>取消</button>
+                <button className="btn primary" disabled={items.length === 0} onClick={doExport}><Download size={14} /> 生成并下载</button>
+              </div>
+            </div>
+          </div>
+        )
       })()}
 
       {unlockOpen && !vaultPwd && <UnlockModal
@@ -4096,6 +4184,17 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </SettingsRow>
               <SettingsRow title="预算提醒" desc="本月花费达到预算 90% 以及超支时提醒">
                 <Toggle checked={np.budget} onChange={v => patchNotify({ budget: v })} />
+              </SettingsRow>
+              <SettingsRow title="低余额提醒" desc="账户余额低于阈值时提醒（余额由自动巡检与手动刷新更新）">
+                <Toggle checked={np.lowBalance} onChange={v => patchNotify({ lowBalance: v })} />
+              </SettingsRow>
+              <SettingsRow title="低余额阈值（元）" desc="货币额度账户的剩余额度低于此值时触发低余额提醒">
+                <input className="input" type="number" min="0" step="1" value={s.lowBalanceThreshold ?? 10}
+                       onChange={e => onChange({ lowBalanceThreshold: Math.max(0, Number(e.target.value)) })}
+                       style={{ width: 100 }} />
+              </SettingsRow>
+              <SettingsRow title="消费异常提醒" desc="某账户单日花费远超近 7 天日均时提醒（防 Key 盗刷/程序跑飞）">
+                <Toggle checked={np.anomaly} onChange={v => patchNotify({ anomaly: v })} />
               </SettingsRow>
               <SettingsRow title="测试通知" desc="立即发送一条测试通知，确认系统能收到">
                 <button className="btn sm" onClick={() => void onTestNotification()}>发送测试</button>
