@@ -86,7 +86,12 @@ export function MiniView() {
   const fmt = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 
   return (
-    <div style={{ minHeight: '100vh', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
+    <div
+      onMouseEnter={() => void invoke?.('mini_hover', { inside: true })}
+      onMouseLeave={() => void invoke?.('mini_hover', { inside: false })}
+      onPointerDownCapture={() => void invoke?.('mini_interacted')}
+      onKeyDownCapture={() => void invoke?.('mini_interacted')}
+      style={{ minHeight: '100vh', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 26, height: 26, borderRadius: 8, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
         <b style={{ fontSize: 14 }}>AI 积分管家</b>

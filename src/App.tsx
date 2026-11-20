@@ -640,6 +640,15 @@ function App() {
     }).catch(() => { /* 旧版本桌面壳没有此命令时忽略，壳内默认快捷键仍生效 */ })
   }, [state.settings.shortcutsEnabled, state.settings.shortcutAi, state.settings.shortcutMini])
 
+  // ---- 桌面端：图标显示位置（Dock / 菜单栏）下发给 Tauri 壳 ----
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    void w.__TAURI_INTERNALS__?.invoke?.('icon_display_apply', {
+      mode: state.settings.iconDisplay ?? 'both',
+    }).catch(() => { /* 旧版本桌面壳没有此命令时忽略 */ })
+  }, [state.settings.iconDisplay])
+
   // ---- 价格变动订阅：启动时（6 小时节流）拉取仓库价格表与本地快照对比，变动记入提醒 ----
   const [priceAlerts, setPriceAlerts] = useState<PriceChange[]>(() => loadPriceAlerts())
   const [priceCheckedAt, setPriceCheckedAt] = useState<string | null>(() => lastPriceCheckAt())
@@ -4203,6 +4212,13 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           </SettingsSection>
 
           {desktopShell && <SettingsSection title="桌面端" desc="菜单栏常驻、全局快捷键与开机自启（仅桌面客户端）" icon={Monitor} tone="indigo">
+            <SettingsRow title="应用图标显示" desc="仅菜单栏：不在 Dock 显示；仅 Dock：无菜单栏图标，关闭主窗口即退出应用；迷你窗打开后无操作且鼠标移开约 5 秒会自动收起">
+              <div style={{ display: 'flex', gap: 6 }}>
+                {([['both', '两者都显示'], ['dock', '仅 Dock'], ['menubar', '仅菜单栏']] as const).map(([v, label]) => (
+                  <button key={v} className={`btn sm ${((s.iconDisplay ?? 'both') === v) ? 'primary' : ''}`} onClick={() => onChange({ iconDisplay: v })}>{label}</button>
+                ))}
+              </div>
+            </SettingsRow>
             <SettingsRow title="开机自启（登录系统后常驻菜单栏）" desc="开启后开机自动启动，点菜单栏图标打开迷你窗">
               {autostart === null
                 ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>不可用</span>

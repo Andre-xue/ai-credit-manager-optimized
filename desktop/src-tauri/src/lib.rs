@@ -1261,6 +1261,92 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 const TRAY_ID: &str = "acm-tray";
 const MINI_LABEL: &str = "mini";
 
+/// 图标显示模式：both（Dock+菜单栏）/ dock（仅 Dock，关主窗即退出）/ menubar（仅菜单栏）
+static ICON_MODE: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+
+fn icon_mode() -> String {
+    ICON_MODE
+        .get_or_init(|| std::sync::Mutex::new("both".to_string()))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "both".to_string())
+}
+
+fn set_icon_mode(mode: &str) {
+    if let Ok(mut g) = ICON_MODE.get_or_init(|| std::sync::Mutex::new("both".to_string())).lock() {
+        *g = mode.to_string();
+    }
+}
+
+/// 迷你窗闲置自动关闭：代次（每次显示 +1，旧计时作废）/ 鼠标悬停中 / 已有交互
+static MINI_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MINI_HOVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MINI_INTERACTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 迷你窗显示后启动闲置计时：无任何交互、且鼠标不在窗口上时，约 5 秒后自动隐藏。
+/// 鼠标悬停会清零计时；一旦有交互（前端上报）本次显示不再自动关闭。
+fn arm_mini_autohide(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    let gen = MINI_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    MINI_INTERACTED.store(false, Ordering::SeqCst);
+    MINI_HOVER.store(false, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let mut idle_ms: u64 = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if MINI_GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            if MINI_INTERACTED.load(Ordering::SeqCst) {
+                return;
+            }
+            let Some(w) = app.get_webview_window(MINI_LABEL) else { return };
+            if !w.is_visible().unwrap_or(false) {
+                return;
+            }
+            if MINI_HOVER.load(Ordering::SeqCst) {
+                idle_ms = 0;
+                continue;
+            }
+            idle_ms += 250;
+            if idle_ms >= 5000 {
+                let _ = w.hide();
+                return;
+            }
+        }
+    });
+}
+
+/// 前端上报：鼠标是否悬停在迷你窗上
+#[tauri::command]
+fn mini_hover(inside: bool) {
+    MINI_HOVER.store(inside, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 前端上报：用户在迷你窗内有操作（点击/按键），本次显示取消自动关闭
+#[tauri::command]
+fn mini_interacted() {
+    MINI_INTERACTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 前端下发图标显示模式：both / dock / menubar
+#[tauri::command]
+fn icon_display_apply(app: tauri::AppHandle, mode: String) {
+    set_icon_mode(&mode);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_visible(mode != "dock");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if mode == "menubar" {
+            tauri::ActivationPolicy::Accessory
+        } else {
+            tauri::ActivationPolicy::Regular
+        };
+        let _ = app.set_activation_policy(policy);
+    }
+}
+
 /// 最近一次托盘图标的物理矩形（x, y, w, h）：迷你窗据此定位到图标正下方弹出
 static TRAY_RECT: OnceLock<std::sync::Mutex<Option<(i32, i32, i32, i32)>>> = OnceLock::new();
 
@@ -1282,6 +1368,7 @@ fn show_main_window(app: &tauri::AppHandle, section: Option<&str>) {
 fn toggle_mini_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window(MINI_LABEL) {
         if w.is_visible().unwrap_or(false) {
+            MINI_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = w.hide();
         } else {
             // 定位：优先贴托盘图标正下方弹出（与图标水平居中对齐）；从未点过托盘
@@ -1310,6 +1397,7 @@ fn toggle_mini_window(app: &tauri::AppHandle) {
             }
             let _ = w.show();
             let _ = w.set_focus();
+            arm_mini_autohide(app.clone());
         }
     }
 }
@@ -1360,6 +1448,7 @@ fn show_main(app: tauri::AppHandle, section: Option<String>) {
 
 #[tauri::command]
 fn mini_hide(app: tauri::AppHandle) {
+    MINI_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(MINI_LABEL) {
         let _ = w.hide();
     }
@@ -1384,13 +1473,18 @@ fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
 
-    // 主窗口关闭 = 隐藏到托盘（菜单栏常驻应用的标准行为；退出走托盘菜单/迷你窗）
+    // 主窗口关闭行为随图标模式：菜单栏常驻（both/menubar）时隐藏到托盘；仅 Dock 时关窗即退出
     if let Some(main) = app.get_webview_window("main") {
         let main_for_event = main.clone();
+        let handle_for_event = handle.clone();
         main.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = main_for_event.hide();
+                if icon_mode() == "dock" {
+                    handle_for_event.exit(0);
+                } else {
+                    api.prevent_close();
+                    let _ = main_for_event.hide();
+                }
             }
         });
     }
@@ -1485,7 +1579,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

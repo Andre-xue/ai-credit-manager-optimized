@@ -189,6 +189,8 @@ export interface AppSettings {
   providerBudgets?: Record<string, number>
   /** 低余额提醒阈值（货币单位剩余额度低于此值时提醒），缺省 10 */
   lowBalanceThreshold?: number
+  /** 桌面端图标显示位置：both 两者 / dock 仅 Dock / menubar 仅菜单栏，缺省 both */
+  iconDisplay?: 'both' | 'dock' | 'menubar'
   /** 桌面全局快捷键总开关（默认开；仅桌面端生效） */
   shortcutsEnabled?: boolean
   /** 自定义快捷键·呼出 AI 助手（Tauri accelerator，如 CommandOrControl+Shift+A；缺省即默认） */
