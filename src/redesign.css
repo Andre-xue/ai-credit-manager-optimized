@@ -605,3 +605,36 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 @media (max-width: 680px) {
   .tr-target-row .tr-field { flex: 1 1 100%; min-width: 100%; }
 }
+
+/* ===== API Key 管理：筛选下拉宽度（原内联 150px 改类名，方便手机端自适应） ===== */
+.keys-filter-select { width: 150px; }
+
+/* ===== API Key 管理手机布局（Ethan 录屏 2026-11-20：表格 8 列定宽合计约 960px，
+   手机上只能横滚、操作列够不着，观感混乱）。≤680px 时：工具区纵向收紧；
+   表格变卡片——每行一张卡，名称+健康状态一行、余额/Key 一行、链接整行、操作整行平铺，
+   备注列手机隐藏（编辑弹窗里可看）。规则只作用于 .key-table-wrap 内的主表，
+   导入预览弹窗里的 .key-table 不受影响。 ===== */
+@media (max-width: 680px) {
+  .keys-header { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 12px; }
+  .keys-header-tools { gap: 8px; }
+  .keys-filter-select { width: auto; flex: 1 1 150px; }
+  .keys-unlock-group { padding-left: 0; border-left: none; flex-wrap: wrap; }
+  .key-table-wrap { overflow-x: visible; }
+  .key-table-wrap .key-table { display: block; }
+  .key-table-wrap .key-table thead { display: none; }
+  .key-table-wrap .key-table tbody { display: block; }
+  .key-table-wrap .key-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px; border-bottom: 1px solid var(--border); }
+  .key-table-wrap .key-table tbody tr:last-child { border-bottom: none; }
+  .key-table-wrap .key-table td { display: block; padding: 0; border-bottom: none; }
+  .key-table-wrap .key-table td:nth-child(1) { order: 1; }
+  .key-table-wrap .key-table td:nth-child(2) { order: 2; flex: 1 1 auto; min-width: 0; }
+  .key-table-wrap .key-table td:nth-child(6) { order: 3; }
+  .key-table-wrap .key-table td:nth-child(3) { order: 4; flex: 1 1 40%; min-width: 0; }
+  .key-table-wrap .key-table td:nth-child(5) { order: 5; flex: 1 1 40%; min-width: 0; }
+  .key-table-wrap .key-table td:nth-child(4) { order: 6; flex: 1 1 100%; min-width: 0; }
+  .key-table-wrap .key-table td:nth-child(7) { display: none; }
+  .key-table-wrap .key-table td:nth-child(8) { order: 8; flex: 1 1 100%; }
+  .key-table-wrap .key-name { max-width: 160px; }
+  .key-table-wrap .key-link { max-width: 100%; }
+  .key-table-wrap .key-actions .key-action { flex: 1 1 auto; justify-content: center; }
+}

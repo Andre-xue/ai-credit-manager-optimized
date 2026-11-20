@@ -1958,12 +1958,12 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
             <Activity size={14} /> {checking.size > 0 ? `检查中（剩 ${checking.size}）` : '健康检查'}
           </button>
           {categories.length > 0 && (
-            <select className="select" style={{ width: 150 }} value={category} onChange={e => setCategory(e.target.value)}>
+            <select className="select keys-filter-select" value={category} onChange={e => setCategory(e.target.value)}>
               <option value="__all__">全部分类 ({keyAccounts.length})</option>
               {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
             </select>
           )}
-          <select className="select" style={{ width: 150 }} value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选（在编辑条目里给 Key 填分组）">
+          <select className="select keys-filter-select" value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选（在编辑条目里给 Key 填分组）">
             <option value="__all__">全部分组 ({keyAccounts.length})</option>
             {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
             <option value="__none__">未分组 ({keyAccounts.filter(a => !a.group).length})</option>
