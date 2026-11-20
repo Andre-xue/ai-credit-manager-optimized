@@ -23,6 +23,7 @@ import {
   CATEGORY_META, categoryForModel, isVoiceConfigAccount, type ModelCategory,
 } from '../core/modelCategories'
 import { detectModelCapability, capabilityChatCapable } from '../core/modelCapability'
+import { dedupeSameKeyAccounts } from '../core/adapters'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import type { Account } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -248,7 +249,10 @@ export function AIView({ notify, accounts, settings, serviceController }: {
 
   // 免费模型 + 用户自己的账户模型，按分类联动过滤
   const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined })), [models])
-  const ownOptions = useMemo(() => accounts
+  const ownOptions = useMemo(() => dedupeSameKeyAccounts(accounts
+    // 无密钥的影子账户（多由早期导入/合并产生）不能调用，与翻译/图片等模块一致不展示；
+    // Key 管理页按密钥计数同样不含它们，所以会出现「管理页 1 个、助手里 2 个」的假重复
+    .filter(a => !!a.encryptedKey))
     // 语音配置(APP)账户只服务语音模块，不在 AI 聊天列表展示、不参与调用
     .filter(a => !isVoiceConfigAccount(a.providerId, a.note))
     // 嵌入/图像/音频模型不能聊天，自动隐藏。

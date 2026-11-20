@@ -108,6 +108,20 @@ const API_ENDPOINTS: Record<string, Endpoint> = {
 }
 
 /**
+ * 选择器去重：同一物理 Key（同平台 + 同密钥指纹）被重复添加时只保留第一条。
+ * 无指纹的条目按自身 id 区分，永不误伤不同账户。
+ */
+export function dedupeSameKeyAccounts<T extends { id: string; providerId: string; keyFingerprint?: string }>(list: T[]): T[] {
+  const seen = new Set<string>()
+  return list.filter(a => {
+    const k = a.keyFingerprint ? `${a.providerId}|${a.keyFingerprint}` : `id|${a.id}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
+/**
  * 把未知异常转成可读文案。Tauri 命令失败时 invoke 以「纯字符串」reject，
  * e.message 取不到会把真实原因吞掉只剩兜底文案（实测踩坑），这里统一兼容。
  */

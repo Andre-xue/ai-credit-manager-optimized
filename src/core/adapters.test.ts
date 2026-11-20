@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  dedupeSameKeyAccounts,
   errorText,
   formatUsageBalance,
   getAdapter,
@@ -85,6 +86,14 @@ describe('getAdapter.supported（余额可用性只看端点，不看目录 mode
   })
   it('无端点的平台不可用', () => {
     expect(getAdapter('doubao').supported).toBe(false)
+  })
+})
+
+describe('dedupeSameKeyAccounts（同平台同指纹只留一条）', () => {
+  const acc = (id: string, providerId: string, keyFingerprint?: string) => ({ id, providerId, keyFingerprint })
+  it('同平台 + 同指纹去重；不同平台同指纹不误伤；无指纹按 id 保留', () => {
+    const list = [acc('1', 'kim', 'fp-a'), acc('2', 'kim', 'fp-a'), acc('3', 'glm', 'fp-a'), acc('4', 'kim'), acc('5', 'kim')]
+    expect(dedupeSameKeyAccounts(list).map(a => a.id)).toEqual(['1', '3', '4', '5'])
   })
 })
 
