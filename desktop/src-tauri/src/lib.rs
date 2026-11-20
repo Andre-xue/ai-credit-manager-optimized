@@ -1500,10 +1500,31 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
         .visible(false)
         .build()?;
     let mini_for_event = mini.clone();
+    let handle_for_mini = handle.clone();
     mini.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let _ = mini_for_event.hide();
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = mini_for_event.hide();
+            }
+            // 点击窗口之外（桌面 / 其他应用 / 主窗口）→ 收起，原生弹出层行为。
+            // 延迟 200ms 并校验代次：点托盘图标切换时由切换逻辑先处理，避免刚关又开。
+            tauri::WindowEvent::Focused(false) => {
+                let gen = MINI_GEN.load(std::sync::atomic::Ordering::SeqCst);
+                let app = handle_for_mini.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if MINI_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    if let Some(w) = app.get_webview_window(MINI_LABEL) {
+                        if w.is_visible().unwrap_or(false) && !w.is_focused().unwrap_or(false) {
+                            let _ = w.hide();
+                        }
+                    }
+                });
+            }
+            _ => {}
         }
     });
 
