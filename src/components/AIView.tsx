@@ -783,7 +783,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
             {serviceController && <span className="ai-toolbar-service" onClick={e => e.stopPropagation()}><ServiceSwitch controller={serviceController} serviceKey="ollama" compact /></span>}
             {categoryDropdown}
             {modelDropdown}
-            {currentAccount && hasCatalog(currentAccount.providerId) && (
+            {currentAccount && (hasCatalog(currentAccount.providerId) || engines.length > 0 || loadingEngines) && (
               <button className="ai-model-btn ai-engine-btn" onClick={() => setEnginePanelOpen(v => !v)} title="选择该平台的模型引擎">
                 <Cpu size={13} /> 引擎 <ChevronDown size={13} />
               </button>

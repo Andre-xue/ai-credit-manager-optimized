@@ -638,3 +638,11 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
   .key-table-wrap .key-link { max-width: 100%; }
   .key-table-wrap .key-actions .key-action { flex: 1 1 auto; justify-content: center; }
 }
+
+/* ===== AI 助手手机端补回「引擎」入口（Ethan 2026-11-20 要求）=====
+   styles.css 的手机精简曾把 .ai-engine-btn 隐藏，手机上只能用默认旗舰引擎、无法切换；
+   现恢复显示：工具行允许换行防溢出，引擎面板手机上改为全宽抽屉。 */
+@media (max-width: 680px) {
+  .ai-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  .engine-panel { width: 100vw; }
+}

@@ -1152,7 +1152,7 @@ tbody tr:hover { background: var(--panel-2); }
   .ai-brand-title { font-size: 14px; }
   .ai-topbar { padding: 2px 0 12px; gap: 8px; }
   .ai-top-actions { gap: 5px; }
-  .ai-engine-btn, .ai-clear-btn { display: none !important; }
+  .ai-clear-btn { display: none !important; }
   .ai-model-btn { padding: 6px 8px; font-size: 11.5px; max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ai-icon-btn { width: 32px; height: 32px; }
   /* 欢迎区精简：缩小图标与留白，隐藏冗余说明 */
