@@ -1173,6 +1173,7 @@ function App() {
       />}
       {formProviderId && !isLocalProvider(formProviderId) && <AccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
+        groupSuggestions={Array.from(new Set(state.accounts.map(a => a.group).filter((g): g is string => !!g))).sort()}
         onClose={() => setFormProviderId(null)}
         onSave={async (data) => {
           setState(s => ({
@@ -1916,13 +1917,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
             </select>
           )}
-          {groups.length > 0 && (
-            <select className="select" style={{ width: 150 }} value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选">
-              <option value="__all__">全部分组 ({keyAccounts.length})</option>
-              {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
-              <option value="__none__">未分组 ({keyAccounts.filter(a => !a.group).length})</option>
-            </select>
-          )}
+          <select className="select" style={{ width: 150 }} value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选（在编辑条目里给 Key 填分组）">
+            <option value="__all__">全部分组 ({keyAccounts.length})</option>
+            {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
+            <option value="__none__">未分组 ({keyAccounts.filter(a => !a.group).length})</option>
+          </select>
           <div className="keys-unlock-group">
             <label className="btn sm" style={{ cursor: 'pointer' }} title="导入备份">
               <Download size={14} style={{ transform: 'rotate(180deg)' }} /> 导入
@@ -1941,6 +1940,12 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         </div>
       </div>
 
+      {groups.length === 0 && keyAccounts.length > 0 && (
+        <div className="group-stats">
+          <span className="group-stats-label">保险箱分组</span>
+          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后这里会按组统计剩余额度，表头下拉可按组筛选。</span>
+        </div>
+      )}
       {groups.length > 0 && (
         <div className="group-stats">
           <span className="group-stats-label">分组额度</span>
@@ -2965,12 +2970,14 @@ function PlatformPickerModal({ onClose, onPick }: {
 }
 
 /** 第二步：填表 —— 平台名(固定) / API链接(只读可跳转) / 备注 / Key+自动余额 */
-function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
+function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggestions }: {
   provider: ProviderDefinition; sessionPwd: string;
   onClose: () => void;
   onSave: (data: { account: AppState['accounts'][number]; quota?: QuotaSnapshot; pwd: string }) => void
+  groupSuggestions: string[]
 }) {
   const [note, setNote] = useState('')
+  const [group, setGroup] = useState('')
   const [noteCat, setNoteCat] = useState<NoteCategory>('通用型')
   const [secret, setSecret] = useState('')
   const [balance, setBalance] = useState<string | null>(null)
@@ -3037,6 +3044,7 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
         mode: 'api',
         encryptedKey: enc, keyFingerprint: fp, apiUrl: apiUrl || undefined,
         note: isVoiceCfg ? `[语音配置(APP)] ${chosenVoice?.short ?? ''}${note.trim() ? ' · ' + note.trim() : ''}` : buildNote(noteCat, note),
+        group: group.trim() || undefined,
         voiceProvider: isVoiceCfg ? voiceProvider : undefined,
         createdAt: now, updatedAt: now,
       }
@@ -3099,6 +3107,13 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
                 <div className="form-hint">分类按该模型的官方真实用途选择；AI 助手将按此分类展示与调用</div>
               </>
             )}
+          </div>
+          {/* 行3.5：保险箱分组（可选） */}
+          <div className="form-row">
+            <label className="form-label">保险箱分组（可选）</label>
+            <input className="input" list="acm-group-list-add" placeholder="如：工作 / 个人 / 项目（留空 = 未分组）" value={group} onChange={e => setGroup(e.target.value)} />
+            <datalist id="acm-group-list-add">{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
+            <div className="form-hint">按用途分组管理；Key 管理页可按组筛选与统计剩余额度</div>
           </div>
           {/* 行4：API Key 输入（语音配置无需余额） */}
           <div className="form-row">
