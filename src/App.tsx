@@ -122,7 +122,9 @@ function App() {
   const isPhone = isNativeApp() || phonePreview
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
-    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'voice', 'docs', 'settings'].includes(t)) return t as Tab
+    // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
+    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'voice', 'docs', 'settings'].includes(t)
+      && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
     return isPhone ? 'ai' : 'dashboard'
   })
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(() => {
@@ -134,6 +136,8 @@ function App() {
   const toggleSidebar = () => setSidebarVisible(v => !v)
   // 统一导航：Claude 风格下"设置"走居中弹窗，其余模块正常切 tab
   const openTab = (id: Tab) => {
+    // 手机客户端已移除文档问答与本地生成：任何残留入口跳到这些页时回落到 AI 页
+    if (isPhone && (id === 'docs' || id === 'local-image' || id === 'local-video')) id = 'ai'
     if (id === 'settings') { setSettingsOpen(true); if (isPhone) setSidebarVisible(false); return }
     setTab(id)
     if (isPhone) setSidebarVisible(false)
@@ -678,8 +682,9 @@ function App() {
     keys: '密钥', usage: '用量', voice: '语音', docs: '文档', settings: '设置',
   }
 
-  // 手机端侧栏：与桌面端使用同一分组顺序
-  const drawerTabs: Tab[] = ['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'checkin', 'voice', 'settings']
+  // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'checkin', 'voice', 'settings'] as Tab[])
+    .filter(id => !(isPhone && id === 'docs'))
 
   // 界面风格：全平台统一极简留白风（已移除其他风格选项，强制 claude）
   const motionOn = state.settings.uiMotion !== false
@@ -767,7 +772,7 @@ function App() {
         {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
-          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={serviceController} />}
+          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
             <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title="不再显示"><X size={15} /></button>
@@ -866,17 +871,17 @@ function App() {
             catalogNews={catalogNews} onCatalogNewsAck={ackCatalogNews}
           />}
 
-          {tab === 'benefits' && <TranslationView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={serviceController} onOpenChat={() => openTab('chat-translate')} />}
+          {tab === 'benefits' && <TranslationView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onOpenChat={() => openTab('chat-translate')} />}
 
-          {tab === 'chat-translate' && <ChatTranslateView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={serviceController} onBack={() => openTab('benefits')} />}
+          {tab === 'chat-translate' && <ChatTranslateView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onBack={() => openTab('benefits')} />}
 
-          {tab === 'image' && <ImageView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={() => openTab('local-image')} />}
+          {tab === 'image' && <ImageView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={isPhone ? undefined : () => openTab('local-image')} />}
 
-          {tab === 'video' && <VideoView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={() => openTab('local-video')} />}
+          {tab === 'video' && <VideoView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={isPhone ? undefined : () => openTab('local-video')} />}
 
-          {tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('image')}><X size={15} /> 返回 AI 图像</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('image')}><X size={15} /> 返回 AI 图像</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
 
-          {tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> 返回 AI 视频</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> 返回 AI 视频</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
           {tab === 'keys' && <div className="page-action-row"><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
           {tab === 'keys' && <KeysView
@@ -931,7 +936,7 @@ function App() {
             </SettingsSection>
           </div>}
 
-          {tab === 'docs' && <div className="set-content">
+          {!isPhone && tab === 'docs' && <div className="set-content">
             <SettingsSection title="本地文档问答" desc="导入文档，基于本机模型问答 · 文档与向量只存此设备" icon={FileText} tone="indigo">
               <div style={{ padding: '4px 2px 2px' }}>
                 <DocQAView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} thinkingMode={state.settings.thinkingMode} settings={state.settings} serviceController={serviceController} />
@@ -3452,6 +3457,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   useEffect(() => { let alive = true; void getSystemMemoryGb().then(g => { if (alive) setMemGb(g) }); return () => { alive = false } }, [])
   const memTier: MemoryTier = s.memoryTierOverride ?? memoryToTier(memGb)
   const memDetected = memGb > 0
+  // 手机客户端没有本机服务概念：「本地模型服务」整段不渲染（判定与 App 壳 isPhone 一致）
+  const phoneShell = isNativeApp() || (typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone')))
 
   // 各服务实时运行状态（null=未检测/非桌面端，字符串=运行中的地址，''=未运行）
   const [serviceStatus, setServiceStatus] = useState<Partial<Record<LocalServiceKey, string | null>>>({})
@@ -3596,7 +3603,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
           </SettingsSection>
 
-          <SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">
+          {!phoneShell && (<SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">
             <div className="local-mem-info">
               <span className="local-mem-badge">
                 {memDetected ? `已检测物理内存 ${memGb.toFixed(1)} GB` : '未获取到系统内存（请在下方选择档位）'}
@@ -3660,7 +3667,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <div className="local-mem-note">
               「允许 App 使用」开启会拉起服务进程，关闭会停止该服务端口上的进程（含其他软件启动的）并释放内存；「启动/停止」单独管理服务进程（不开图形界面、不改系统自启）。LM Studio 无 CLI 后台启动方式，需在其应用内手动开启。
             </div>
-          </SettingsSection>
+          </SettingsSection>)}
 
           <SettingsSection title="通用" desc="提醒与预警行为" icon={Settings} tone="indigo">
             <SettingsRow title="签到提醒" desc="在看板与侧栏显示 AI Agent 工具今日待签到数量">

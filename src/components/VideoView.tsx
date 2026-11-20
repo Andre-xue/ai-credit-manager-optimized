@@ -81,7 +81,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
 
   const generate = async () => {
     if (!prompt.trim()) { notify('请先输入画面描述'); return }
-    if (!account) { notify('请先在「API Key 管理」添加带视频 API 地址的账户；本地生成请点右上角「本地生成」'); return }
+    if (!account) { notify(onOpenLocal ? '请先在「API Key 管理」添加带视频 API 地址的账户；本地生成请点右上角「本地生成」' : '请先在「API Key 管理」添加带视频 API 地址的账户'); return }
     const pwd = getBiometricPassword() || sessionPwd
     if (!pwd) { notify('请先解锁密钥库（本页下方输入主密码）'); return }
     setBusy(true); setResults([]); setTaskText('正在提交生成任务…')
@@ -225,7 +225,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
               {busy ? <><Loader2 size={16} className="spin" /> 生成中…</> : <><Sparkles size={16} /> 生成视频</>}
             </button>
             <GenProgressBar progress={progress} />
-            <div className="gen-tip"><Info size={13} /> 视频多为异步任务制，提交后会尝试自动查询进度；若平台为私有协议无法自动拿到结果，界面会给出引导。本地生成请点右上角「本地生成」进入专业页面。</div>
+            <div className="gen-tip"><Info size={13} /> 视频多为异步任务制，提交后会尝试自动查询进度；若平台为私有协议无法自动拿到结果，界面会给出引导。{onOpenLocal ? '本地生成请点右上角「本地生成」进入专业页面。' : ''}</div>
           </div>
         </section>
 
