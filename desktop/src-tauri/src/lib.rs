@@ -31,7 +31,7 @@ fn shared_provider_client() -> &'static reqwest::Client {
 /// 云 LLM 代理：桌面 WebView 直连云端 SSE 会被 CORS 拦截（POST /chat/completions 预检失败），
 /// 由 Rust 后端带 publishableKey 头转发，收集 SSE 的 content delta 后返回完整文本。
 #[tauri::command]
-async fn call_cloud_llm(endpoint: String, publishable_key: String, body_json: String, conversation_id: Option<String>) -> Result<String, String> {
+async fn call_cloud_llm(endpoint: String, publishable_key: String, body_json: String, conversation_id: Option<String>, access_token: Option<String>) -> Result<String, String> {
     let url = format!("{}/.cloud/llm/chat/completions", endpoint.trim_end_matches('/'));
     let client = shared_http_client();
     let _: serde_json::Value = serde_json::from_str(&body_json).map_err(|e| format!("请求体非法：{}", e))?;
@@ -40,6 +40,8 @@ async fn call_cloud_llm(endpoint: String, publishable_key: String, body_json: St
         .header("Accept", "text/event-stream")
         .header("Content-Type", "application/json");
     if let Some(cid) = &conversation_id { req = req.header("X-Conversation-ID", cid); }
+    // 网关 LLM 能力要求登录：前端已登录时传入会话 token
+    if let Some(token) = &access_token { if !token.is_empty() { req = req.header("Authorization", format!("Bearer {}", token)); } }
     let resp = req.body(body_json).send().await.map_err(|e| format!("请求失败：{}", e))?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("读取响应失败：{}", e))?;

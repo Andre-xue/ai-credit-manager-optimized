@@ -2,7 +2,7 @@
 // 对话历史仅存本机 localStorage，不纳入账单数据的云同步——聊天是私密且高频的内容，
 // 与额度数据分离可避免同步载荷膨胀，也符合用户对对话隐私的预期。
 
-import { LLM_PROXY_CONFIG } from './cloud'
+import { LLM_PROXY_CONFIG, cloud } from './cloud'
 import { isDesktopApp, isNativeApp } from './openExternal'
 import type { ChatCompletionContentPart } from '@tencent-ai/workbuddy-cloud-sdk'
 
@@ -32,17 +32,24 @@ export const SYSTEM_PROMPT = [
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
+/** 当前云登录的 access token（未登录/取不到时返回 undefined）。 */
+async function cloudAccessToken(): Promise<string | undefined> {
+  try { return await cloud.auth.getAccessToken() } catch { return undefined }
+}
+
 /**
  * 拉取可用模型列表（过滤 disabled），空列表交给 UI 处理。
- * 关键：模型目录是公开接口，只能带 publishableKey，绝不能带登录态 Authorization。
- * 云 SDK 的 fetch 在登录后会自动附加用户 token，导致该接口 401 —— 这正是
- * "未登录有模型、登录后模型消失并报请先登录" 的根因，所以这里绕开 SDK 直连。
+ * 注意：网关现已要求登录（2026-11-20 实测：匿名请求返回 401 login_required），
+ * 已登录时必须带上会话 Authorization，否则明明已登录也会报「请先登录」。
+ * 这里直接向共享 cloud 实例取 token 后直连，不走 SDK 的自动 fetch。
  */
 export async function listModels(): Promise<AiModel[]> {
   const url = `${LLM_PROXY_CONFIG.endpoint}/.cloud/llm/models`
+  const token = await cloudAccessToken()
   const headers: Record<string, string> = {
     Accept: 'application/json',
     'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
   let text: string
   if (isNativeApp()) {
@@ -156,6 +163,9 @@ export async function streamChat(
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   }
 
+  // 网关 LLM 能力现要求登录：已登录时把会话 token 一并带上（未登录则匿名调用，由网关 401 后给出登录提示）
+  const accessToken = await cloudAccessToken()
+
   // 桌面端：WebView 直连云端 SSE 会被 CORS 拦截，改走 Rust 代理
   if (isDesktopApp()) {
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
@@ -165,6 +175,7 @@ export async function streamChat(
       publishableKey: LLM_PROXY_CONFIG.publishableKey,
       bodyJson: JSON.stringify(body),
       conversationId,
+      accessToken: accessToken ?? null,
     })
     onDelta(full)
     return full
@@ -181,6 +192,7 @@ export async function streamChat(
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
         'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       data: { ...body, conversationId },
       responseType: 'text',
@@ -193,7 +205,7 @@ export async function streamChat(
     return full
   }
 
-  // Web：登录后 SDK 会自动带用户 token 导致免费模型接口 401，这里显式只带 publishableKey
+  // Web：直连并显式带 publishableKey +（已登录时）会话 token
   const res = await fetch(`${LLM_PROXY_CONFIG.endpoint}/.cloud/llm/chat/completions`, {
     method: 'POST',
     headers: {
@@ -201,6 +213,7 @@ export async function streamChat(
       'Accept': 'text/event-stream',
       'x-wb-webapp-access-key': LLM_PROXY_CONFIG.publishableKey,
       'X-Conversation-ID': conversationId,
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
     body: JSON.stringify({ ...body, conversationId }),
     signal,

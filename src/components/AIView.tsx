@@ -74,6 +74,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
   const [models, setModels] = useState<AiModel[]>([])
+  const [needLogin, setNeedLogin] = useState(false)
   const [model, setModel] = useState<string>('')
   const [modelOpen, setModelOpen] = useState(false)
   const [category, setCategory] = useState<ModelCategory>('免费模型')
@@ -187,12 +188,19 @@ export function AIView({ notify, accounts, settings, serviceController }: {
     let alive = true
     listModels().then(list => {
       if (!alive) return
+      setNeedLogin(false)
       setModels(list)
       const saved = loadModel()
       if (saved?.startsWith('own:')) return  // 恢复的是自己的账户，由 allOptions 匹配（下方 effect）
       const picked = saved && list.some(m => m.id === saved) ? saved : list[0]?.id
       if (picked) setModel(picked)
-    }).catch(e => { if (alive) notify(`模型加载失败：${friendlyAiError(e)}`) })
+    }).catch(e => {
+      if (!alive) return
+      const msg = String((e as Error)?.message ?? e)
+      // 未登录云同步时免费模型不可用：不弹错误 toast，只在模型菜单里给登录提示
+      if (msg.includes('401') || msg.toLowerCase().includes('login')) { setNeedLogin(true); return }
+      notify(`模型加载失败：${friendlyAiError(e)}`)
+    })
     return () => { alive = false }
   }, [notify])
 
@@ -556,7 +564,7 @@ export function AIView({ notify, accounts, settings, serviceController }: {
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
-      {visibleOptions.length === 0 && <div className="ai-model-empty">该分类暂无模型，请到 API Key 管理页添加</div>}
+      {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? '免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录' : '该分类暂无模型，请到 API Key 管理页添加'}</div>}
       {visibleOptions.map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
           onClick={() => { setModel(o.key); saveModel(o.key); setModelOpen(false) }}>
