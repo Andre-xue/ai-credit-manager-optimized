@@ -23,6 +23,13 @@
     </view>
   </view>
 
+  <view class="card" style="padding:24rpx 28rpx" bindtap="goUsage">
+    <view class="row between">
+      <view style="font-size:27rpx;font-weight:600">📈 用量统计</view>
+      <view class="hint">本月费用 · Tokens · 按平台 ›</view>
+    </view>
+  </view>
+
   <view class="section-head">
     <view class="title">账户额度</view>
     <view class="btn primary" bindtap="openAdd">+ 添加</view>

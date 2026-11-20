@@ -31,6 +31,7 @@ Page({
     })
   },
 
+  goUsage() { wx.navigateTo({ url: '/pages/usage/usage' }) },
   onToggleReminder(e) { this.apply({ checkinReminder: e.detail.value }) },
   onToggleBackup(e) { this.apply({ backupReminder: e.detail.value }) },
   onAlertDays(e) { this.apply({ alertDays: ALERT_DAYS[Number(e.detail.value)] }) },

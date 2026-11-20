@@ -39,6 +39,13 @@
       </view>
       <input class="budget-input" type="number" value="{{settings.monthlyBudget}}" bindinput="onBudget" />
     </view>
+    <view class="row between setting-row" bindtap="goUsage">
+      <view>
+        <view style="font-size:27rpx">用量统计</view>
+        <view class="hint" style="margin-top:6rpx">本月费用、Tokens 与按平台消费，可手动记一笔</view>
+      </view>
+      <view class="btn">查看 ›</view>
+    </view>
   </view>
 
   <view class="card">

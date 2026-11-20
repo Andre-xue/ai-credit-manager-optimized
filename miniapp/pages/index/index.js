@@ -218,4 +218,5 @@ Page({
   },
 
   goCheckin() { wx.switchTab({ url: '/pages/detail/detail' }) },
+  goUsage() { wx.navigateTo({ url: '/pages/usage/usage' }) },
 })
