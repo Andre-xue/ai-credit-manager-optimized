@@ -107,6 +107,17 @@ const API_ENDPOINTS: Record<string, Endpoint> = {
   openrouter: { url: 'https://openrouter.ai/api/v1/auth/key', unit: 'currency', parse: parseOpenrouterKeyInfo },
 }
 
+/**
+ * 把未知异常转成可读文案。Tauri 命令失败时 invoke 以「纯字符串」reject，
+ * e.message 取不到会把真实原因吞掉只剩兜底文案（实测踩坑），这里统一兼容。
+ */
+export function errorText(e: unknown, fallback: string): string {
+  if (typeof e === 'string' && e.trim()) return e
+  if (e instanceof Error && e.message) return e.message
+  const m = (e as { message?: unknown })?.message
+  return typeof m === 'string' && m ? m : fallback
+}
+
 /** 把 fetchUsage 的结果格式化成一行可读文案（添加账户弹窗 / Key 列表刷新共用） */
 export function formatUsageBalance(r: UsageResult): string {
   if (r.label) return r.label
@@ -152,7 +163,10 @@ export function getAdapter(providerId: string): DataSourceAdapter {
           method: 'GET',
           headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         })
-        if (!res.ok) throw new Error(`官方接口返回 ${res.status}。请确认 Key 正确；Web 端受 CORS 限制时建议使用桌面端或手动录入`)
+        if (!res.ok) {
+          const snippet = (await res.text().catch(() => '')).slice(0, 140)
+          throw new Error(`官方接口返回 ${res.status}${snippet ? `：${snippet}` : ''}。请确认 Key 正确；Web 端受 CORS 限制时建议使用桌面端或手动录入`)
+        }
         data = await res.json()
       }
       const parsed = endpoint.parse(data)

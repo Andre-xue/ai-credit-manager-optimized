@@ -47,7 +47,7 @@ import {
   isVaultInitialized, initVault, verifyVault, encryptSecret, decryptSecret, fingerprint, resetVault,
   changeMasterPassword, saveBiometricPassword, getBiometricPassword, clearBiometricPassword,
 } from './core/crypto'
-import { getAdapter, formatUsageBalance } from './core/adapters'
+import { getAdapter, formatUsageBalance, errorText } from './core/adapters'
 import { parseUsageCsv, type UsageEventInput } from './core/csv'
 import {
   type ExportFormat, type ServiceEntry, exportByFormat, detectCsvKind, isJsonImport,
@@ -1927,7 +1927,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                             const r = await adapter.fetchUsage!(plain)
                             onQuotaFetched(a.id, r.used, r.total, r.unit)
                             notify(`余额已更新：${formatUsageBalance(r)}`)
-                          } catch (e: any) { notify(e.message ?? '获取官方余额失败') }
+                          } catch (e: any) { notify(errorText(e, '获取官方余额失败')) }
                           finally { setRefreshing(s => { const n = new Set(s); n.delete(a.id); return n }) }
                         }}><RefreshCw size={13} style={refreshing.has(a.id) ? { animation: 'acm-spin 1s linear infinite' } : undefined} /></button>}
                     </div>
@@ -1976,7 +1976,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           const r = await adapter.fetchUsage!(plain)
                           onQuotaFetched(a.id, r.used, r.total, r.unit)
                           notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
-                        } catch (e: any) { notify(e.message ?? '查询失败') }
+                        } catch (e: any) { notify(errorText(e, '查询失败')) }
                       }}><RefreshCw size={13} /> 查询</button>}
                       <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
                         onRemoveKeys([a.id])
@@ -2862,7 +2862,7 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave }: {
       if (r.label) setFetchedQuota(null)
       else if (r.remaining !== undefined) setFetchedQuota({ total: r.remaining, unit: 'currency' })
       else setFetchedQuota({ total: Math.max(0, (r.total ?? r.used) - r.used), unit: r.unit })
-    } catch (e: any) { setErr(e.message ?? '获取余额失败'); setBalance(null); setFetchedQuota(null) }
+    } catch (e: any) { setErr(errorText(e, '获取余额失败')); setBalance(null); setFetchedQuota(null) }
     finally { setFetching(false) }
   }
 

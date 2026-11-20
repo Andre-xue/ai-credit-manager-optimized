@@ -481,7 +481,10 @@ async fn proxy_usage(provider: String, api_key: String) -> Result<serde_json::Va
     let resp = req.send().await.map_err(|e| format!("请求官方接口失败：{}", e))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("官方接口返回 {}，请检查 Key 权限与账户类型", status.as_u16()))
+        // 带上平台返回体片段（如 {"message":"Token is invalid."}），用户一眼能看出是 Key 无效还是权限问题
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(140).collect();
+        return Err(format!("官方接口返回 {}：{}", status.as_u16(), snippet))
     }
     resp.json::<serde_json::Value>()
         .await

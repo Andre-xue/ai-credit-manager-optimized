@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  errorText,
   formatUsageBalance,
   getAdapter,
   parseDeepseekBalance,
@@ -84,6 +85,17 @@ describe('getAdapter.supported（余额可用性只看端点，不看目录 mode
   })
   it('无端点的平台不可用', () => {
     expect(getAdapter('doubao').supported).toBe(false)
+  })
+})
+
+describe('errorText（Tauri 字符串型 reject 不能被吞掉）', () => {
+  it('纯字符串原样返回', () => {
+    expect(errorText('官方接口返回 401：Token is invalid.', '兜底')).toBe('官方接口返回 401：Token is invalid.')
+  })
+  it('Error 取 message；未知形状走兜底', () => {
+    expect(errorText(new Error('网络失败'), '兜底')).toBe('网络失败')
+    expect(errorText(undefined, '兜底')).toBe('兜底')
+    expect(errorText('', '兜底')).toBe('兜底')
   })
 })
 
