@@ -39,6 +39,8 @@ export interface ReminderInput {
   forecastAlerts: Array<{ accountId: string; name: string; daysLeft: number }>
   monthCost: number
   monthlyBudget: number
+  /** 分平台预算使用情况（可选）：有预算且本月有消费的平台 */
+  providerBudgets?: Array<{ providerId: string; name: string; cost: number; budget: number }>
 }
 
 function localDateKey(d: Date): string {
@@ -107,6 +109,29 @@ export function buildReminders(input: ReminderInput): ReminderEvent[] {
         title: '本月预算接近上限',
         body: `本月已花 ¥${input.monthCost.toFixed(2)}，达到月预算的 ${Math.round(ratio * 100)}%。`,
       })
+    }
+  }
+
+  if (prefs.budget && input.providerBudgets?.length) {
+    const monthKey = dateKey.slice(0, 7)
+    for (const pb of input.providerBudgets) {
+      if (pb.budget <= 0) continue
+      const ratio = pb.cost / pb.budget
+      if (ratio >= 1) {
+        out.push({
+          id: `budget:${monthKey}:over:${pb.providerId}`,
+          kind: 'budget',
+          title: `${pb.name} 本月预算已超支`,
+          body: `${pb.name} 本月已花 ¥${pb.cost.toFixed(2)}，超过其月预算 ¥${pb.budget.toFixed(0)}。`,
+        })
+      } else if (ratio >= 0.9) {
+        out.push({
+          id: `budget:${monthKey}:warn:${pb.providerId}`,
+          kind: 'budget',
+          title: `${pb.name} 预算接近上限`,
+          body: `${pb.name} 本月已花 ¥${pb.cost.toFixed(2)}，达到其月预算的 ${Math.round(ratio * 100)}%。`,
+        })
+      }
     }
   }
 

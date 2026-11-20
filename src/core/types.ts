@@ -118,6 +118,17 @@ export interface BenefitMark {
 }
 
 /** 应用整体状态 */
+/** 操作审计条目：只记敏感动作与对象，不记任何密钥内容 */
+export interface AuditEntry {
+  id: string
+  /** ISO 时间 */
+  at: string
+  /** 动作（如 查看Key / 复制Key / 删除账户 / 导出备份 / 修改主密码 / 云登录 / 云登出） */
+  action: string
+  /** 对象说明（如账户名），可空 */
+  detail?: string
+}
+
 export interface AppState {
   version: number
   accounts: Account[]
@@ -126,6 +137,8 @@ export interface AppState {
   usage: UsageEvent[]
   benefitMarks: BenefitMark[]
   settings: AppSettings
+  /** 操作审计日志（跨端同步时按 id 合并，保留最近 500 条） */
+  audit?: AuditEntry[]
 }
 
 /** 系统通知提醒偏好（签到/到期/告急/预算） */
@@ -164,6 +177,10 @@ export interface AppSettings {
   unitPrices: Record<string, number>
   /** 是否把本地模型账户（Ollama/ComfyUI 等）也纳入云同步，默认否（仅本机） */
   syncLocalProviders?: boolean
+  /** 界面主题：system 跟随系统 / light 浅色 / dark 深色（缺省 system） */
+  theme?: 'system' | 'light' | 'dark'
+  /** 分平台月预算（元），key 为 providerId；未设置的平台只受总预算约束 */
+  providerBudgets?: Record<string, number>
   /** 上次导出备份时间 ISO */
   lastExportAt?: string
   /** 上次同步时间（预留云同步） */

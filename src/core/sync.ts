@@ -8,6 +8,7 @@ import type { AppState } from './types'
 import { isLocalProvider } from './types'
 import type { KeyBackupFile } from './keyBackup'
 import { getVaultSyncMaterial, applyVaultSyncMaterial, type VaultSyncMaterial } from './crypto'
+import { mergeAudit } from './auditLog'
 
 const TABLE = 'user_data'
 const LAST_SYNC_KEY = 'acm.sync.lastAt'
@@ -169,6 +170,9 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
 export function applyPayload(payload: SyncPayload, local: AppState): AppState {
   if (payload.vault) applyVaultSyncMaterial(payload.vault)
   try { localStorage.setItem(LAST_SYNC_KEY, payload.clientAt) } catch { /* 忽略 */ }
+  // 审计日志跨端合并（不能被覆盖丢失）：先把本地与云端按 id 并集，后面统一挂回结果
+  const audit = mergeAudit(local.audit, payload.appState.audit)
+  payload = { ...payload, appState: { ...payload.appState, audit } }
   // 云端默认不含本地模型：把本机已有的本地模型账户与其关联数据保留下来；
   // 若云端已包含同一账户（用户开启了「同步本地模型账户」），以云端为准，不重复保留
   const remoteIds = new Set(payload.appState.accounts.map(a => a.id))

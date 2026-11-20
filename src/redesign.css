@@ -429,3 +429,89 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .health-badge.network .health-dot{background:#d97706}
 .health-badge.error .health-dot{background:#dc2626}
 .health-badge.skipped .health-dot{background:#b6b0c8}
+
+/* ===== A 批新增：全局搜索 / 日历 / 审计 / 分段控件 ===== */
+.cmdk-trigger{display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);color:var(--text-3);font-size:12.5px;cursor:pointer;width:calc(100% - 24px)}
+.cmdk-trigger:hover{border-color:var(--border-strong);color:var(--text-2)}
+.cmdk-trigger kbd{margin-left:auto;font-size:10.5px;border:1px solid var(--border);border-radius:5px;padding:1px 5px;background:var(--panel)}
+.sidebar-collapsed .cmdk-trigger{justify-content:center;padding:8px 0}
+.sidebar-collapsed .cmdk-trigger .cmdk-trigger-label,.sidebar-collapsed .cmdk-trigger kbd{display:none}
+.cmdk-overlay{align-items:flex-start;padding-top:12vh}
+.cmdk-panel{width:min(560px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden}
+.cmdk-input-row{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);color:var(--text-3)}
+.cmdk-input-row input{flex:1;border:none;outline:none;background:transparent;font-size:15px;color:var(--text)}
+.cmdk-input-row kbd{font-size:10.5px;border:1px solid var(--border);border-radius:5px;padding:1px 6px;color:var(--text-3)}
+.cmdk-list{max-height:46vh;overflow-y:auto;padding:6px}
+.cmdk-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 10px;border:none;background:transparent;border-radius:9px;cursor:pointer;font-size:13.5px;color:var(--text)}
+.cmdk-item.active{background:var(--primary-soft)}
+.cmdk-group{flex:none;font-size:10.5px;color:var(--text-3);border:1px solid var(--border);border-radius:999px;padding:1px 7px}
+.cmdk-title{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmdk-hint{font-size:11.5px;color:var(--text-3)}
+.cmdk-empty{padding:22px;text-align:center;color:var(--text-3);font-size:13px}
+.cmdk-foot{padding:8px 15px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3)}
+.cal-panel{padding:16px}
+.cal-week{display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:11.5px;color:var(--text-3);margin-bottom:6px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.cal-cell{position:relative;min-height:64px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);padding:6px;cursor:pointer;text-align:left;font:inherit;color:var(--text)}
+.cal-cell:hover{border-color:var(--border-strong)}
+.cal-cell.empty{border:none;background:transparent;cursor:default}
+.cal-cell.today{border-color:var(--primary)}
+.cal-cell.selected{background:var(--primary-soft);border-color:var(--primary)}
+.cal-daynum{font-size:12.5px;font-weight:600}
+.cal-marks{position:absolute;top:8px;right:8px;display:flex;gap:3px}
+.cal-dot{display:inline-block;width:7px;height:7px;border-radius:50%}
+.cal-dot.checkin{background:var(--green)}
+.cal-dot.usage{background:var(--primary)}
+.cal-dot.reset{background:var(--amber)}
+.cal-cost{position:absolute;left:6px;bottom:5px;font-size:10.5px;color:var(--text-2)}
+.cal-legend{display:flex;gap:16px;margin-top:10px;font-size:11.5px;color:var(--text-2);align-items:center}
+.cal-legend .cal-dot{margin-right:4px}
+.audit-list{display:grid;gap:2px;max-height:300px;overflow-y:auto}
+.audit-row{display:flex;gap:10px;align-items:baseline;font-size:12.5px;padding:5px 2px;border-bottom:1px dashed var(--border)}
+.audit-time{color:var(--text-3);font-size:11.5px;flex:none}
+.audit-action{font-weight:600;flex:none}
+.audit-detail{color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg-control{display:inline-flex;border:1px solid var(--border-strong);border-radius:9px;overflow:hidden}
+.seg-btn{border:none;background:transparent;padding:6px 12px;font-size:12.5px;cursor:pointer;color:var(--text-2)}
+.seg-btn.active{background:var(--primary);color:#fff}
+
+/* ===== A 批新增：深色模式（data-theme=dark 由设置/系统驱动） ===== */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0f1115; --panel:#171a21; --panel-2:#1b1f28; --border:#262b36; --border-strong:#343b4a;
+  --text:#e6e8ec; --text-2:#9aa3b2; --text-3:#69707e;
+  --primary:#8b7cf6; --primary-soft:#28224a; --primary-hover:#a394ff;
+  --green:#34d399; --green-soft:#0d2b21; --amber:#fbbf24; --amber-soft:#2e230a;
+  --red:#f87171; --red-soft:#33151a; --blue:#60a5fa; --blue-soft:#12263f;
+  --shadow:0 1px 2px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.5);
+  --shadow-lg:0 12px 34px rgba(0,0,0,.6);
+}
+:root[data-theme="dark"] body{background:var(--bg);color:var(--text)}
+:root[data-theme="dark"] .sidebar,
+:root[data-theme="dark"] .panel,
+:root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .bento-tile,
+:root[data-theme="dark"] .gen-panel,
+:root[data-theme="dark"] .sd-block,
+:root[data-theme="dark"] .set-card,
+:root[data-theme="dark"] .ai-quick-card,
+:root[data-theme="dark"] .cmdk-panel,
+:root[data-theme="dark"] .ai-model-menu,
+:root[data-theme="dark"] .toast,
+:root[data-theme="dark"] .phone-shell .sidebar{background:var(--panel)!important;color:var(--text)}
+:root[data-theme="dark"] .btn{background:var(--panel-2);color:var(--text);border-color:var(--border-strong)}
+:root[data-theme="dark"] .btn.primary,
+:root[data-theme="dark"] .btn.hero-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+:root[data-theme="dark"] .input,
+:root[data-theme="dark"] .select,
+:root[data-theme="dark"] textarea.input,
+:root[data-theme="dark"] input.input,
+:root[data-theme="dark"] select.select{background:var(--panel-2)!important;color:var(--text);border-color:var(--border-strong)}
+:root[data-theme="dark"] .topbar-pill,
+:root[data-theme="dark"] .desktop-sidebar-restore{background:var(--panel-2);color:var(--text-2)}
+:root[data-theme="dark"] .nav-item:hover .nav-item-icon{background:var(--panel-2);color:var(--primary)}
+:root[data-theme="dark"] table th{color:var(--text-2)}
+:root[data-theme="dark"] .catalog-news-bar button{background:var(--panel-2);color:var(--primary);border-color:var(--border-strong)}
+:root[data-theme="dark"] .cal-cell{background:var(--panel-2)}
+:root[data-theme="dark"] .cal-cell.selected{background:var(--primary-soft)}
+:root[data-theme="dark"] .cmdk-trigger{background:var(--panel-2)}

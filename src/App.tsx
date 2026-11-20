@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import {
-  LayoutDashboard, CalendarCheck2, KeyRound, BarChart3, Plus, ShieldCheck,
+  LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff, Activity,
+  Bell, CloudOff, Activity, ClipboardList,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -63,6 +63,10 @@ import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from 
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult, type SyncPayload } from './core/sync'
 import { useServiceController } from './core/useServiceController'
 import { CloudLoginModal } from './components/CloudLogin'
+import { CommandPalette, type PaletteItem } from './components/CommandPalette'
+import { CalendarView } from './components/CalendarView'
+import { ReportView } from './components/ReportView'
+import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
 import {
@@ -76,7 +80,7 @@ type CsvImportPreview =
   | { kind: 'quotas'; quotas: ReturnType<typeof parseQuotasCsv> }
   | { kind: 'usage'; events: UsageEventInput[] }
 
-type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'voice' | 'docs' | 'settings'
+type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings'
 
 const UNIT_LABEL: Record<CreditUnit, string> = {
   credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天',
@@ -124,7 +128,7 @@ function App() {
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
-    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'voice', 'docs', 'settings'].includes(t)
+    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'docs', 'settings'].includes(t)
       && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
     return isPhone ? 'ai' : 'dashboard'
   })
@@ -448,6 +452,7 @@ function App() {
 
   const handleCloudLogin = useCallback(async (user: CloudUser) => {
     setLoginOpen(false)
+    setState(s => appendAudit(s, makeAuditEntry('云登录', user.name ?? undefined)))
     notify(`已登录：${user.name ?? '用户'}`)
     await bootstrapCloud(user)
   }, [notify, bootstrapCloud])
@@ -458,6 +463,7 @@ function App() {
     cloudUserRef.current = null
     syncReady.current = false
     setSyncError(null)
+    setState(s => appendAudit(s, makeAuditEntry('云登出')))
     notify('已退出云同步，数据仍保存在本机')
   }, [notify])
 
@@ -534,6 +540,7 @@ function App() {
       URL.revokeObjectURL(url)
     }
     if (format === 'json') setState(prev => updateSettings(prev, { lastExportAt: new Date().toISOString() }))
+    setState(prev => appendAudit(prev, makeAuditEntry(format === 'json' ? '导出备份' : '导出数据', format.toUpperCase())))
   }, [notify])
 
   /** 立即把本地数据推送云端（备份横幅/手动备份用） */
@@ -612,6 +619,21 @@ function App() {
     .reduce((s, u) => s + u.estimatedCost, 0)
   const portfolioValue = totalPortfolioValue(state)
 
+  // ---- 主题（深色模式）：system 跟随系统，其余按设置固定；写入 <html data-theme> ----
+  const themePref = state.settings.theme ?? 'system'
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => {
+      const dark = themePref === 'dark' || (themePref === 'system' && mq.matches)
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+    }
+    apply()
+    if (themePref === 'system') {
+      mq.addEventListener('change', apply)
+      return () => mq.removeEventListener('change', apply)
+    }
+  }, [themePref])
+
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
   useEffect(() => {
@@ -632,6 +654,16 @@ function App() {
           .map((v) => ({ accountId: v.account.id, name: v.account.label || v.provider?.name || '账户', daysLeft: v.forecast?.daysLeft ?? 0 })),
         monthCost,
         monthlyBudget: state.settings.monthlyBudget,
+        providerBudgets: Object.entries(state.settings.providerBudgets ?? {})
+          .filter(([, b]) => b > 0)
+          .map(([providerId, budget]) => ({
+            providerId,
+            name: PROVIDER_MAP[providerId]?.shortName ?? providerId,
+            cost: state.usage
+              .filter((u) => u.date.startsWith(todayISO().slice(0, 7)) && state.accounts.find((a) => a.id === u.accountId)?.providerId === providerId)
+              .reduce((s, u) => s + u.estimatedCost, 0),
+            budget,
+          })),
       })
       const fresh = filterUnsent(events).slice(0, 3)
       for (const e of fresh) { if (!cancelled) await showNotification(e.title, e.body, e.id) }
@@ -662,6 +694,7 @@ function App() {
     { id: 'video', label: 'AI 视频', icon: Film },
     { id: 'keys', label: 'API Key 管理', icon: KeyRound },
     { id: 'usage', label: '用量与费用', icon: BarChart3 },
+    { id: 'calendar', label: '额度日历', icon: CalendarDays },
     { id: 'voice', label: '语音配置', icon: Volume2 },
     { id: 'docs', label: '文档问答', icon: FileText },
     { id: 'settings', label: '设置', icon: Settings },
@@ -671,7 +704,7 @@ function App() {
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
     { label: '概览', ids: ['ai', 'dashboard'] },
     { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs'] },
-    { label: '资产管理', ids: ['keys', 'usage', 'checkin'] },
+    { label: '资产管理', ids: ['keys', 'usage', 'calendar', 'checkin'] },
     { label: '系统', ids: ['voice', 'settings'] },
   ]
 
@@ -680,11 +713,49 @@ function App() {
   const shortLabel: Record<Tab, string> = {
     ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
     'local-image': '本地图像', 'local-video': '本地视频',
-    keys: '密钥', usage: '用量', voice: '语音', docs: '文档', settings: '设置',
+    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置',
   }
 
+  // ---- 全局搜索（Cmd/Ctrl+K） ----
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); setPaletteOpen(v => !v) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  const paletteItems: PaletteItem[] = useMemo(() => {
+    const pages: PaletteItem[] = tabs.map(t => ({ id: `page-${t.id}`, group: '页面', title: t.label, keywords: t.id, run: () => openTab(t.id) }))
+    pages.push({ id: 'page-report', group: '页面', title: '月度报告', keywords: 'report month 月度 报告 汇总', run: () => openTab('report') })
+    const actions: PaletteItem[] = [
+      { id: 'act-add', group: '操作', title: '添加账户', keywords: 'add account new 添加 账户 新建 key', run: () => setAddOpen(true) },
+    ]
+    const accounts: PaletteItem[] = state.accounts.map(a => ({
+      id: `acc-${a.id}`, group: '账户',
+      title: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId,
+      hint: PROVIDER_MAP[a.providerId]?.shortName,
+      keywords: `${a.providerId} ${a.note ?? ''}`,
+      run: () => openTab('keys'),
+    }))
+    let tools: PaletteItem[] = []
+    try {
+      tools = currentCatalog().tools.map(t => ({
+        id: `tool-${t.id}`, group: 'AI 工具', title: t.name, hint: t.nameEn,
+        keywords: `${t.id} ${t.nameEn} ${t.category}`, run: () => openTab('checkin'),
+      }))
+    } catch { /* 工具目录不可用时跳过 */ }
+    return [...pages, ...actions, ...accounts, ...tools]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.accounts])
+
+  // ---- 审计日志快捷写入 ----
+  const audit = useCallback((action: string, detail?: string) => {
+    setState(s => appendAudit(s, makeAuditEntry(action, detail)))
+  }, [])
+
   // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
-  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'checkin', 'voice', 'settings'] as Tab[])
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'calendar', 'checkin', 'voice', 'settings'] as Tab[])
     .filter(id => !(isPhone && id === 'docs'))
 
   // 界面风格：全平台统一极简留白风（已移除其他风格选项，强制 claude）
@@ -736,6 +807,11 @@ function App() {
             )
           })}
         </nav>
+        <button className="cmdk-trigger" onClick={() => setPaletteOpen(true)} title="全局搜索（Ctrl/⌘ + K）">
+          <Search size={15} />
+          <span className="cmdk-trigger-label">搜索页面 / 账户 / 工具</span>
+          <kbd>⌘K</kbd>
+        </button>
         <button
           className="sync-status-bar"
           onClick={() => {
@@ -887,6 +963,7 @@ function App() {
           {tab === 'keys' && <div className="page-action-row"><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify}
+            onAudit={audit}
             onImportFile={handleImportFile}
             onExport={() => setExportOpen(true)}
             onOpenVault={() => setVaultOpen(true)}
@@ -894,6 +971,7 @@ function App() {
               setState(s => upsertQuota(s, { accountId, used, total: total ?? used, unit, source: 'api' }))
             }}
             onRemoveKeys={(ids) => {
+              audit('删除账户', ids.length === 1 ? (state.accounts.find(a => a.id === ids[0])?.label ?? '账户') : `${ids.length} 个账户`)
               scheduleUndo(stateRef.current, ids.length === 1
                 ? `已删除「${state.accounts.find(a => a.id === ids[0])?.label ?? '账户'}」`
                 : `已删除 ${ids.length} 个账户`)
@@ -915,7 +993,15 @@ function App() {
             bioLabel={bioLabel}
           />}
 
+          {tab === 'calendar' && <CalendarView state={state} />}
+
+          {tab === 'report' && <ReportView state={state} notify={notify} />}
+
           {tab === 'usage' && <UsageView state={state} notify={notify}
+            onOpenReport={() => openTab('report')}
+            onProviderBudget={(providerId, v) => setState(s => ({ ...s, settings: {
+              ...s.settings, providerBudgets: { ...(s.settings.providerBudgets ?? {}), [providerId]: v },
+            } }))}
             onBudget={(v) => setState(s => ({ ...s, settings: { ...s.settings, monthlyBudget: v } }))}
             onPriceChange={(providerId, price) => setState(s => ({ ...s, settings: {
               ...s.settings, unitPrices: { ...s.settings.unitPrices, [providerId]: price },
@@ -954,6 +1040,8 @@ function App() {
           state={state}
           onChange={(patch) => setState(s => updateSettings(s, patch))}
           notify={notify}
+          auditEntries={state.audit ?? []}
+          onClearAudit={() => { setState(s => ({ ...s, audit: [] })); notify('审计日志已清空') }}
           onOpenVault={() => setVaultOpen(true)}
           onChangePassword={async (oldPwd, newPwd) => {
             const keyAccounts = state.accounts.filter(a => a.encryptedKey)
@@ -964,6 +1052,7 @@ function App() {
             })
             if (state.settings.unlockMethod === 'biometric') saveBiometricPassword(newPwd)
             setSessionPwd(newPwd)
+            audit('修改主密码')
           }}
           onResetVault={() => {
             clearBiometricPassword()
@@ -1168,6 +1257,7 @@ function App() {
         }}
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
+      {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
       {syncConflict && <div className="set-modal-backdrop" onClick={() => { conflictDismissedRef.current = syncConflict.version; setSyncConflict(null) }}>
         <div className="set-modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
           <div className="set-modal-head">
@@ -1647,7 +1737,7 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel }: {
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit }: {
   state: AppState; notify: (m: string) => void; onOpenVault: () => void;
   onImportFile: (file?: File) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
@@ -1657,6 +1747,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   onUnlocked: (pwd: string) => void;
   initialPwd?: string;
   bioLabel?: string
+  onAudit: (action: string, detail?: string) => void
 }) {
   const [unlockPwd, setUnlockPwd] = useState('')
   const [vaultPwd, setVaultPwd] = useState('')
@@ -1855,6 +1946,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                       <button className="icon-btn" title="查看完整 Key（可复制）"
                         onClick={() => {
                           if (!plain) { notify('请先解锁保险箱'); return }
+                          onAudit('查看Key', a.label)
                           setRevealKeyTarget({ id: a.id, label: a.label, plain })
                         }}><Eye size={13} /></button>
                     </div>
@@ -1874,7 +1966,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                       <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={13} /> 编辑</button>
                       <button className="key-action" title="复制 Key" onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
-                        try { await navigator.clipboard.writeText(plain); notify('API Key 已复制（注意保管）') }
+                        try { await navigator.clipboard.writeText(plain); onAudit('复制Key', a.label); notify('API Key 已复制（注意保管）') }
                         catch { notify('复制失败，请检查浏览器权限') }
                       }}><Copy size={13} /> 复制</button>
                       <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={13} /> 备份</button>
@@ -2247,12 +2339,14 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify }
   )
 }
 
-function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage }: {
+function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onOpenReport }: {
   state: AppState; notify: (m: string) => void; onBudget: (v: number) => void;
   onAddUsage: () => void;
   onDeleteUsage: (ids: string[]) => void;
   onImport: (events: UsageEventInput[]) => void
   onPriceChange: (providerId: string, price: number) => void
+  onProviderBudget: (providerId: string, v: number) => void
+  onOpenReport: () => void
 }) {
   const [selectedUsage, setSelectedUsage] = useState<Set<string>>(new Set())
   const month = todayISO().slice(0, 7)
@@ -2314,6 +2408,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }}>
             <span>已用 ¥{totalCost.toFixed(2)}</span><span>预算 ¥{budget.toFixed(0)}</span>
           </div>
+          <button className="btn sm" style={{ marginTop: 12 }} onClick={onOpenReport}>查看月度报告 →</button>
         </div>
       </div>
 
@@ -2330,6 +2425,33 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             <div className="progress"><div style={{ width: `${Math.max(2, p.share * 100)}%`, background: 'var(--primary)' }} /></div>
           </div>
         ))}
+      </div>
+
+      <div className="section-head"><h2>分平台预算 <span className="hint">本月 · 留空或 0 表示不限；超 90% 会提醒</span></h2></div>
+      <div className="panel" style={{ padding: 18 }}>
+        {ownedProviders.length === 0 ? (
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可为各平台单独设置月预算</div>
+        ) : Array.from(new Set([...ownedProviders, ...Object.keys(state.settings.providerBudgets ?? {})])).map(pid => {
+          const spend = spendByPlatform.find(p => p.providerId === pid)?.cost ?? 0
+          const pb = state.settings.providerBudgets?.[pid] ?? 0
+          const pct = pb > 0 ? Math.min(100, Math.round(spend / pb * 100)) : 0
+          return (
+            <div className="settings-row" key={pid}>
+              <span style={{ fontSize: 13 }}>{PROVIDER_MAP[pid]?.shortName ?? pid}
+                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>本月已花 ¥{spend.toFixed(2)}{pb > 0 ? ` · ${pct}%` : ''}</span>
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {pb > 0 && <span className="progress" style={{ width: 90 }}><span style={{ display: 'block', height: '100%', width: `${pct}%`, background: pct >= 100 ? 'var(--red)' : pct >= 90 ? 'var(--amber)' : 'var(--primary)' }} /></span>}
+                <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>预算 ¥</span>
+                <input className="input" type="number" min="0" step="10" style={{ width: 96 }}
+                  defaultValue={pb || ''}
+                  placeholder="不限"
+                  key={`${pid}-${pb}`}
+                  onBlur={e => { const v = Number(e.target.value); if (!isNaN(v) && v >= 0 && v !== pb) { onProviderBudget(pid, v); notify(v > 0 ? '分平台预算已更新' : '已取消该平台预算') } }} />
+              </span>
+            </div>
+          )
+        })}
       </div>
 
       <div className="section-head"><h2>额度单价校准 <span className="hint">用于资源总估值 · 官方参考价 {OFFICIAL_PRICES_AS_OF}</span></h2></div>
@@ -3446,10 +3568,12 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
 }
 
 /** 设置中心 */
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit }: {
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
   notify: (m: string) => void
+  auditEntries: AppState['audit']
+  onClearAudit: () => void
   onOpenVault: () => void
   onClear: () => void
   onChangePassword: (oldPwd: string, newPwd: string) => Promise<void>
@@ -3641,6 +3765,13 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       <div className="set-content" key={setTab}>
         {setTab === 'general' && <>
           <SettingsSection title="外观设计" desc="界面风格与动态效果" icon={Palette} tone="indigo">
+            <SettingsRow title="主题" desc="深色模式护眼省电；跟随系统时随系统外观自动切换">
+              <div className="seg-control">
+                {([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] as const).map(([v, label]) => (
+                  <button key={v} className={`seg-btn ${(s.theme ?? 'system') === v ? 'active' : ''}`} onClick={() => onChange({ theme: v })}>{label}</button>
+                ))}
+              </div>
+            </SettingsRow>
             <SettingsRow title="动态效果" desc="抽屉滑入、卡片渐入、光斑浮动等动效">
               <Toggle checked={s.uiMotion !== false} onChange={v => onChange({ uiMotion: v })} />
             </SettingsRow>
@@ -3862,6 +3993,24 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
         </>}
 
         {setTab === 'security' && <>
+          <SettingsSection title="操作审计日志" desc="查看/复制/删除 Key、导出、改密码、云登录等敏感操作的时间线（只记动作，不记密钥内容；随云同步跨端合并）" icon={ClipboardList} tone="indigo">
+            {(auditEntries ?? []).length === 0
+              ? <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '6px 2px' }}>暂无审计记录。进行查看 Key、导出备份等敏感操作后会出现在这里。</div>
+              : <>
+                <div className="audit-list">
+                  {[...(auditEntries ?? [])].slice(-30).reverse().map(e => (
+                    <div key={e.id} className="audit-row">
+                      <span className="audit-time">{new Date(e.at).toLocaleString()}</span>
+                      <span className="audit-action">{e.action}</span>
+                      {e.detail && <span className="audit-detail">{e.detail}</span>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <button className="btn sm ghost" onClick={onClearAudit}>清空日志</button>
+                </div>
+              </>}
+          </SettingsSection>
           <SettingsSection title="密钥保险箱" desc="本地 AES-256-GCM 加密存储" icon={ShieldCheck} tone="green">
             <SettingsRow title="保险箱状态" desc={s.vaultInitialized ? '已启用 · API Key 加密保存' : '未创建 · API Key 将无法加密保存'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
