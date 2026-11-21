@@ -967,8 +967,26 @@ fn is_service_app_managed(key: String) -> bool {
 /// Ollama: ollama serve；ComfyUI: venv python main.py --listen 127.0.0.1 --port 8188。
 /// 成功启动后记录 PID，仅这些由 App 启动的进程可被 stop_local_service 停止。
 #[tauri::command]
-fn start_local_service(key: String) -> Result<String, String> {
+fn start_local_service(key: String, launch_desktop: bool) -> Result<String, String> {
     use std::process::{Command, Stdio};
+    // Comfy Desktop 拉起模式（设置开关）：不走命令行 venv 路径，改为打开桌面应用，
+    // 实例由用户在应用内点开；不记录 managed PID（没有可管理的子进程）。
+    if key == "comfyui" && launch_desktop {
+        #[cfg(target_os = "macos")]
+        {
+            for app_name in ["Comfy Desktop", "ComfyUI"] {
+                let ok = Command::new("open").args(["-a", app_name]).status().map(|s| s.success()).unwrap_or(false);
+                if ok {
+                    return Ok(format!("已打开 {}，请在其中打开你的实例；实例启动后本 App 会自动识别", app_name));
+                }
+            }
+            return Err("未找到 Comfy Desktop 应用（已尝试 Comfy Desktop / ComfyUI 两个名称）".to_string());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err("拉起 Comfy Desktop 仅支持 macOS".to_string());
+        }
+    }
     // 若已在运行（无论谁启动），不重复启动
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let (program, args, work_dir, guide): (String, Vec<String>, String, &str) = match key.as_str() {

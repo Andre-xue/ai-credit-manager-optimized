@@ -43,6 +43,17 @@ export function setComfyScanDesktop(on: boolean): void {
   try { localStorage.setItem(SCAN_DESKTOP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
 }
 
+const LAUNCH_DESKTOP_KEY = 'acm.comfyui.launchDesktop'
+
+/** ComfyUI 启动方式：开启后改为拉起 Comfy Desktop 应用（本机偏好，默认关） */
+export function comfyLaunchDesktopEnabled(): boolean {
+  try { return localStorage.getItem(LAUNCH_DESKTOP_KEY) === '1' } catch { return false }
+}
+
+export function setComfyLaunchDesktop(on: boolean): void {
+  try { localStorage.setItem(LAUNCH_DESKTOP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+}
+
 /** 拉取本地服务已加载/已安装的模型列表（供选择式输入） */
 export async function fetchLocalModels(key: 'ollama' | 'comfyui' | 'lmstudio', url: string): Promise<{ ok: boolean; models: string[]; error?: string }> {
   if (!isDesktopApp()) return { ok: false, models: [], error: '仅桌面端支持拉取本地模型列表' }
@@ -94,7 +105,7 @@ export async function startLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'):
     }
     const invoke = w.__TAURI_INTERNALS__?.invoke
     if (!invoke) return { ok: false, message: '桌面接口不可用' }
-    const message = await invoke('start_local_service', { key })
+    const message = await invoke('start_local_service', { key, launchDesktop: key === 'comfyui' && comfyLaunchDesktopEnabled() })
     return { ok: true, message }
   } catch (e) {
     return { ok: false, message: (e as Error)?.message ?? String(e) }

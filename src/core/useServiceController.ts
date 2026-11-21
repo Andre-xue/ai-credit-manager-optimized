@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppSettings, LocalServiceKey, MemoryTier } from './types'
 import {
-  checkLocalService, startLocalService, stopServiceByPort,
+  checkLocalService, startLocalService, stopServiceByPort, comfyLaunchDesktopEnabled,
 } from './localServices'
 import {
   LOCAL_SERVICE_KEYS, isServiceEnabled, planServiceToggle, notifyLocalServiceChanged,
@@ -101,11 +101,17 @@ export function useServiceController(
                 if (addr) { setStatus(prev => ({ ...prev, [key]: addr })); window.clearInterval(poll) }
                 else if (++tries >= 15) {
                   window.clearInterval(poll)
-                  // 启动命令返回成功但服务始终没起来 → 回滚开关，避免"已开启却连不上"的状态脱节
-                  patchSettings({ localServices: { ...(settings?.localServices ?? {}), [key]: false } })
-                  setStatus(prev => ({ ...prev, [key]: null }))
-                  notifyLocalServiceChanged(key, false)
-                  notify(`${name} 启动后未能正常监听端口，已自动关闭开关。请确认本机 ${key} 可正常运行后重试`)
+                  if (key === 'comfyui' && comfyLaunchDesktopEnabled()) {
+                    // Desktop 拉起模式：应用已打开但实例还没由用户点开，不算失败——
+                    // 不回滚开关，等实例启动后探测会自动识别（状态刷新/进页面时会更新）
+                    notify('已打开 Comfy Desktop，请在其中打开你的实例，启动后会自动识别')
+                  } else {
+                    // 启动命令返回成功但服务始终没起来 → 回滚开关，避免"已开启却连不上"的状态脱节
+                    patchSettings({ localServices: { ...(settings?.localServices ?? {}), [key]: false } })
+                    setStatus(prev => ({ ...prev, [key]: null }))
+                    notifyLocalServiceChanged(key, false)
+                    notify(`${name} 启动后未能正常监听端口，已自动关闭开关。请确认本机 ${key} 可正常运行后重试`)
+                  }
                 }
               })
             }, 2000)
