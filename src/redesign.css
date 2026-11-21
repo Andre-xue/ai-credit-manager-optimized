@@ -693,6 +693,8 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
   .ai-compare-chip { flex: 0 0 auto; }
   .claude-ui .ai-topbar { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
   .toast { max-width: calc(100vw - 32px); bottom: 88px; }
+  /* 底部导航恢复显示后，AI 页底部留白避免导航遮住输入区 */
+  .phone-shell .content-ai { padding-bottom: 82px !important; }
 }
 
 /* 链接地址列 Key 页图标按钮（v0.1.236） */

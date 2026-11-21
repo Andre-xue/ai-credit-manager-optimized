@@ -1367,8 +1367,8 @@ function App() {
         )
       })()}
 
-      {/* 移动端底部导航：手机原生端改用侧栏抽屉，此处仅 Web/其他端显示 */}
-      {!isPhone && <nav className="bottom-nav">
+      {/* 移动端底部导航：手机原生端同样显示（用户反馈侧栏抽屉不易发现、导航像消失了）；完整菜单与历史会话仍在左上角抽屉里 */}
+      <nav className="bottom-nav">
         {bottomTabs.map(id => {
           const t = tabs.find(x => x.id === id)!
           const Icon = t.icon
@@ -1379,7 +1379,7 @@ function App() {
             </button>
           )
         })}
-      </nav>}
+      </nav>
 
       {addOpen && <PlatformPickerModal
         onClose={() => setAddOpen(false)}
