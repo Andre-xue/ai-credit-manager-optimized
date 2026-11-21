@@ -671,6 +671,13 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 额度看板筛选条（v0.1.241） */
+.dash-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 12px; }
+.dash-search { display: inline-flex; align-items: center; gap: 7px; flex: 1 1 190px; max-width: 300px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 0 10px; height: 34px; color: var(--text-3); }
+.dash-search input { flex: 1; min-width: 0; border: none; outline: none; background: none; font-size: 13px; color: var(--text); height: 100%; }
+.dash-search-clear { border: none; background: none; color: var(--text-3); cursor: pointer; display: inline-flex; padding: 2px; }
+.dash-filter-select { height: 34px; border-radius: 10px; font-size: 13px; width: auto; }
+
 /* AI 页顶栏功能菜单（v0.1.240）：单图标入口，点开列出全部功能，选中关闭、开关项变色；仅 AI 页 */
 .ai-top-actions { position: relative; }
 .ai-tools-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 216px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; z-index: 90; display: grid; gap: 2px; animation: rise .16s ease; }

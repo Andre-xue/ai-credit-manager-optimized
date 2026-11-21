@@ -1733,9 +1733,37 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const PAGE_SIZE = 6
-  useEffect(() => { setPage(1) }, [views.length])
-  const cur = Math.min(page, Math.max(1, Math.ceil(views.length / PAGE_SIZE)))
-  const pageViews = views.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
+  // 筛选机制（v0.1.241）：搜索名称/平台、按额度状态、按分组、排序
+  const [query, setQuery] = useState('')
+  const [statusF, setStatusF] = useState<'all' | 'has' | 'none' | 'low'>('all')
+  const [groupF, setGroupF] = useState('all')
+  const [sortBy, setSortBy] = useState<'default' | 'remainDesc' | 'remainAsc' | 'percentDesc' | 'name'>('default')
+  const dashGroups = Array.from(new Set(views.map(v => v.account.group).filter((g): g is string => !!g))).sort()
+  const filtering = query.trim() !== '' || statusF !== 'all' || groupF !== 'all'
+  const filtered = (() => {
+    const q = query.trim().toLowerCase()
+    const list = views.filter(v => {
+      if (q && !`${v.account.label} ${v.provider.name}`.toLowerCase().includes(q)) return false
+      if (statusF === 'has' && !v.quota) return false
+      if (statusF === 'none' && v.quota) return false
+      if (statusF === 'low' && !(v.quota && v.usagePercent >= 70)) return false
+      if (groupF === '__none' && v.account.group) return false
+      if (groupF !== 'all' && groupF !== '__none' && v.account.group !== groupF) return false
+      return true
+    })
+    const remain = (v: AccountView) => (v.quota ? v.quota.total - v.quota.used : -1)
+    switch (sortBy) {
+      case 'remainDesc': list.sort((a, b) => remain(b) - remain(a)); break
+      case 'remainAsc': list.sort((a, b) => remain(a) - remain(b)); break
+      case 'percentDesc': list.sort((a, b) => b.usagePercent - a.usagePercent); break
+      case 'name': list.sort((a, b) => a.account.label.localeCompare(b.account.label, 'zh')); break
+      default: break
+    }
+    return list
+  })()
+  useEffect(() => { setPage(1) }, [views.length, query, statusF, groupF, sortBy])
+  const cur = Math.min(page, Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)))
+  const pageViews = filtered.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
   if (views.length === 0) {
     return (
       <div className="empty me-stack">
@@ -1749,9 +1777,41 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
   return (
     <>
       <div className="section-head">
-        <h2>账户额度 <span className="hint">{views.length} 个账户</span></h2>
+        <h2>账户额度 <span className="hint">{filtering ? `${filtered.length} / ${views.length} 个账户` : `${views.length} 个账户`}</span></h2>
         <button className="btn sm" onClick={onAdd}><Plus size={14} /> 添加</button>
       </div>
+      <div className="dash-filters">
+        <label className="dash-search">
+          <Search size={14} />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索账户名 / 平台…" />
+          {query && <button className="dash-search-clear" onClick={() => setQuery('')} title="清除搜索"><X size={13} /></button>}
+        </label>
+        <select className="select dash-filter-select" value={statusF} onChange={e => setStatusF(e.target.value as typeof statusF)} title="按额度状态筛选">
+          <option value="all">全部状态</option>
+          <option value="has">已录入额度</option>
+          <option value="none">未录入额度</option>
+          <option value="low">额度告急（已用 ≥70%）</option>
+        </select>
+        <select className="select dash-filter-select" value={groupF} onChange={e => setGroupF(e.target.value)} title="按分组筛选">
+          <option value="all">全部分组</option>
+          {dashGroups.map(g => <option key={g} value={g}>{g}</option>)}
+          <option value="__none">未分组</option>
+        </select>
+        <select className="select dash-filter-select" value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)} title="排序方式">
+          <option value="default">默认排序</option>
+          <option value="remainDesc">剩余：高 → 低</option>
+          <option value="remainAsc">剩余：低 → 高</option>
+          <option value="percentDesc">已用占比：高 → 低</option>
+          <option value="name">名称 A–Z</option>
+        </select>
+        {filtering && <button className="btn sm ghost" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>清除筛选</button>}
+      </div>
+      {filtered.length === 0 && (
+        <div className="empty" style={{ padding: '28px 0' }}>
+          <p>当前筛选下没有账户</p>
+          <button className="btn sm" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>清除筛选</button>
+        </div>
+      )}
       <SelectionBar
         selectedCount={selected.size} totalOnPage={pageViews.length}
         allSelected={pageViews.length > 0 && pageViews.every(v => selected.has(v.account.id))}
@@ -1835,7 +1895,7 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
           )
         })}
       </div>
-      <Pager total={views.length} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
+      <Pager total={filtered.length} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
     </>
   )
 }
