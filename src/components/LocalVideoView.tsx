@@ -21,14 +21,14 @@ import { t, locale } from '../core/i18n'
 
 const RESOLUTIONS = ['480p', '576p', '720p', '768p', '1080p']
 const RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9', '21:9']
-const DEFAULT_BASE = 'http://127.0.0.1:11434'
+const DEFAULT_BASE = 'http://127.0.0.1:8188'  // ComfyUI 默认端口（旧版误用 Ollama 的 11434）
 
 export function LocalVideoView({ notify, serviceController }: { notify: (m: string) => void; serviceController?: ServiceController }) {
+  // 地址自愈：11434 是 Ollama 对话服务端口，存量值一律纠正为 ComfyUI 8188
   const [base, setBase] = useState(() => {
-    if (localStorage.getItem('acm.local.vid.migrated')) return localStorage.getItem('acm.local.vid.base') || DEFAULT_BASE
     const old = localStorage.getItem('acm.local.vid.base')
     const next = !old || old.includes('11434') ? DEFAULT_BASE : old
-    localStorage.setItem('acm.local.vid.base', next)
+    if (next !== old) localStorage.setItem('acm.local.vid.base', next)
     localStorage.setItem('acm.local.vid.migrated', '1')
     return next
   })
@@ -70,13 +70,18 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
     return () => window.removeEventListener(LOCAL_SERVICE_CHANGED_EVENT, onChanged)
   }, [])
 
-  // 进入页面自动探测本机服务（优先非 ComfyUI 的 OpenAI 兼容视频服务）
+  // 进入页面自动探测本机服务：只认 ComfyUI（探测不到保留当前地址；
+  // 旧版优先选非 ComfyUI 服务，会把 Ollama 对话服务误设进来，聊天模型随之混进视频下拉）
   const autoDetect = async (silent = false) => {
     if (!silent) setDetecting(true)
     try {
       const r = await detectLocalServices()
       if (!r.ok || r.services.length === 0) { if (!silent) notify(r.error ?? t('未探测到本机运行的服务')); return }
-      const pick = r.services.find(s => !/comfy/i.test(s.service)) ?? r.services[0]
+      const pick = r.services.find(s => /comfy/i.test(s.service))
+      if (!pick) {
+        if (!silent) notify(t('未探测到 ComfyUI，请先启动 ComfyUI，或在上方手动填写服务地址'))
+        return
+      }
       setBase(pick.url)
       if (!silent) notify(t('已自动探测到 {service}：{url}', { service: pick.service, url: pick.url }))
     } catch (e) { if (!silent) notify(t('探测失败：{msg}', { msg: errTextSafe(e) })) }
@@ -85,6 +90,12 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   useEffect(() => { void autoDetect(true) }, [])
 
   const loadModels = async () => {
+    // 地址纠错：Ollama（11434）是对话服务，不能生成视频；自动改回 ComfyUI 默认地址
+    if (/:11434\b/.test(base)) {
+      setBase(DEFAULT_BASE)
+      notify(t('当前地址是 Ollama 的对话服务地址，不能用来生成媒体；已自动改回 ComfyUI 默认地址，请再点一次连接'))
+      return
+    }
     // 服务总闸：ComfyUI 地址且开关关闭时禁止连接，避免关了服务还能拉到模型
     if (isComfyUIBase(base) && serviceController && !serviceController.enabled('comfyui')) {
       setModels([]); setModel('')

@@ -1281,3 +1281,9 @@ Object.assign(D, {
   '下移': { 'zh-TW': '下移', en: 'Move down', ja: '下へ移動', ko: '아래로 이동' },
   'AI 助手右上角「全部功能」菜单里的工具：逐个开关显隐，用上下箭头调整顺序': { 'zh-TW': 'AI 助手右上角「全部功能」選單裡的工具：逐個開關顯隱，用上下箭頭調整順序', en: 'Tools in the "All features" menu at the top right of the AI assistant: toggle each one on or off, and reorder them with the up/down arrows', ja: 'AIアシスタント右上の「すべての機能」メニュー内のツール：表示を個別に切り替え、上下矢印で順序を変更できます', ko: 'AI 어시스턴트 오른쪽 위 "모든 기능" 메뉴의 도구: 각각 표시를 켜고 끄고, 위/아래 화살표로 순서를 조정합니다' },
 })
+
+// ---- 补齐批次 14：本地媒体页地址纠错（v0.1.268） ----
+Object.assign(D, {
+  '未探测到 ComfyUI，请先启动 ComfyUI，或在上方手动填写服务地址': { 'zh-TW': '未探測到 ComfyUI，請先啟動 ComfyUI，或在上方手動填寫服務地址', en: 'ComfyUI was not detected. Start ComfyUI first, or enter the service address manually above', ja: 'ComfyUIが検出されませんでした。先にComfyUIを起動するか、上の欄にサービスアドレスを手動で入力してください', ko: 'ComfyUI가 감지되지 않았습니다. 먼저 ComfyUI를 시작하거나 위에 서비스 주소를 직접 입력하세요' },
+  '当前地址是 Ollama 的对话服务地址，不能用来生成媒体；已自动改回 ComfyUI 默认地址，请再点一次连接': { 'zh-TW': '目前地址是 Ollama 的對話服務地址，不能用來生成媒體；已自動改回 ComfyUI 預設地址，請再點一次連接', en: 'This address belongs to Ollama, a chat service that cannot generate media. It has been reset to the default ComfyUI address — please click Connect again', ja: 'このアドレスはOllamaのチャットサービスのもので、メディア生成には使えません。ComfyUIの既定アドレスに戻しましたので、もう一度「接続」を押してください', ko: '이 주소는 Ollama 채팅 서비스의 주소라 미디어 생성에 사용할 수 없습니다. ComfyUI 기본 주소로 되돌렸으니 연결을 다시 눌러 주세요' },
+})

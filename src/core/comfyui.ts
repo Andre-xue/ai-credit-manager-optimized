@@ -13,7 +13,7 @@ export interface ComfyResult {
 
 export function isComfyUIBase(base: string): boolean {
   const b = base.toLowerCase()
-  return /:8188\b|comfyui/.test(b)
+  return /:8188\b|:8189\b|:8288\b|comfyui/.test(b)
 }
 
 /** UI 采样器显示名 → ComfyUI sampler_name 合法枚举值 */

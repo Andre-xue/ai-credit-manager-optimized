@@ -27,12 +27,11 @@ const RATIOS = [
 const DEFAULT_BASE = 'http://127.0.0.1:8188'  // ComfyUI 默认端口
 
 export function LocalImageView({ notify, serviceController }: { notify: (m: string) => void; serviceController?: ServiceController }) {
-  // 一次性迁移：旧版默认 11434（Ollama 端口）导致连不上 ComfyUI，升级后自动切到 8188
+  // 地址自愈：11434 是 Ollama 对话服务端口，存量值（含被旧版自动探测误写的值）一律纠正为 ComfyUI 8188
   const [base, setBase] = useState(() => {
-    if (localStorage.getItem('acm.local.img.migrated')) return localStorage.getItem('acm.local.img.base') || DEFAULT_BASE
     const old = localStorage.getItem('acm.local.img.base')
     const next = !old || old.includes('11434') ? DEFAULT_BASE : old
-    localStorage.setItem('acm.local.img.base', next)
+    if (next !== old) localStorage.setItem('acm.local.img.base', next)
     localStorage.setItem('acm.local.img.migrated', '1')
     return next
   })
@@ -82,10 +81,13 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
         if (!silent) notify(r.error ?? t('未探测到本机运行的服务，请先启动 ComfyUI'))
         return
       }
-      // 生图优先 ComfyUI，其次 LM Studio / Ollama（这些可能 OpenAI 兼容）
+      // 生图只认 ComfyUI：探测不到就保留当前地址（绝不回退到 Ollama/LM Studio 这类对话服务，
+      // 否则会把聊天模型误列进生图下拉，且错误地址会被持久化）
       const pick = r.services.find(s => /comfy/i.test(s.service))
-        ?? r.services.find(s => /lm studio/i.test(s.service))
-        ?? r.services[0]
+      if (!pick) {
+        if (!silent) notify(t('未探测到 ComfyUI，请先启动 ComfyUI，或在上方手动填写服务地址'))
+        return
+      }
       setBase(pick.url)
       if (!silent) notify(t('已自动探测到 {service}：{url}', { service: pick.service, url: pick.url }))
     } catch (e) { if (!silent) notify(t('探测失败：{msg}', { msg: errTextSafe(e) })) }
@@ -94,6 +96,12 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
   useEffect(() => { void autoDetect(true) }, [])
 
   const loadModels = async () => {
+    // 地址纠错：Ollama（11434）是对话服务，列不出图像模型；自动改回 ComfyUI 默认地址
+    if (/:11434\b/.test(base)) {
+      setBase(DEFAULT_BASE)
+      notify(t('当前地址是 Ollama 的对话服务地址，不能用来生成媒体；已自动改回 ComfyUI 默认地址，请再点一次连接'))
+      return
+    }
     // 服务开关是功能总闸：ComfyUI 关闭时禁止连接/拉取，避免关了服务还能加载模型
     if (isComfyUIBase(base) && serviceController && !serviceController.enabled('comfyui')) {
       setModels([]); setModel('')
