@@ -86,24 +86,45 @@ function readCache(): UpstreamModel[] | null {
   } catch { return null }
 }
 
-/** 拉取两个上游的免费模型清单（单个上游失败不影响另一个）；force 跳过缓存 */
+/**
+ * 拉取失败/为空时的重试节奏（v0.1.292）：第 attempt 次（0 起）失败后隔多久再试，
+ * 返回 null 表示放弃。背景：旧版只拉一次且失败静默——App 启动瞬间网络/代理还没就绪
+ * 时拉空，整个会话都不会再试，用户只看到「开关开了但免费模型没出现」（2026-11-21 实测）。
+ */
+export function upstreamRetryDelayMs(attempt: number): number | null {
+  const delays = [4000, 12000, 30000]
+  return attempt >= 0 && attempt < delays.length ? delays[attempt] : null
+}
+
+// 会话级缓存与在途去重：视图卸载/重挂时不必重拉，且先前在途的拉取结果不会被丢弃
+let lastGoodModels: UpstreamModel[] | null = null
+let inflightModels: Promise<UpstreamModel[]> | null = null
+
+/** 拉取两个上游的免费模型清单（单个上游失败不影响另一个）；force 跳过缓存并重新拉取 */
 export async function fetchUpstreamFreeModels(force = false): Promise<UpstreamModel[]> {
   if (!force) {
+    if (lastGoodModels) return lastGoodModels
     const cached = readCache()
-    if (cached) return cached
+    if (cached) { lastGoodModels = cached; return cached }
+    if (inflightModels) return inflightModels
   }
-  const load = async (source: UpstreamSource): Promise<UpstreamModel[]> => {
-    try {
-      const r = await httpAny(`${UPSTREAM_BASE[source]}/models`, { method: 'GET', headers: sourceHeaders(source) })
-      if (r.status < 200 || r.status >= 300) return []
-      return parseUpstreamModels(source, JSON.parse(r.text))
-    } catch { return [] }
-  }
-  const models = [...(await load('zen')), ...(await load('kilo'))]
-  if (models.length) {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), models } satisfies CacheShape)) } catch { /* 忽略 */ }
-  }
-  return models
+  const run = (async () => {
+    const load = async (source: UpstreamSource): Promise<UpstreamModel[]> => {
+      try {
+        const r = await httpAny(`${UPSTREAM_BASE[source]}/models`, { method: 'GET', headers: sourceHeaders(source) })
+        if (r.status < 200 || r.status >= 300) return []
+        return parseUpstreamModels(source, JSON.parse(r.text))
+      } catch { return [] }
+    }
+    const models = [...(await load('zen')), ...(await load('kilo'))]
+    if (models.length) {
+      lastGoodModels = models
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), models } satisfies CacheShape)) } catch { /* 忽略 */ }
+    }
+    return models
+  })()
+  inflightModels = run
+  try { return await run } finally { if (inflightModels === run) inflightModels = null }
 }
 
 /** 组装对话请求体：思考强度映射为网关认的 reasoning_effort（minimal 并入 low） */

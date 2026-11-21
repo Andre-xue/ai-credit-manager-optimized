@@ -33,7 +33,7 @@ import { t, locale } from '../core/i18n'
 import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
-import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
+import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDelayMs, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -285,14 +285,42 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return () => { alive = false }
   }, [notify])
 
-  // 内置免费通道（Zen / Kilo）：清单跟随上游拉取，失败静默（不影响其他模型来源）
+  // 内置免费通道（Zen / Kilo）：清单跟随上游拉取。拉空/失败自动重试（启动瞬间网络/代理
+  // 未就绪是最常见的一次性失败，旧版只拉一次且静默，会整会话都缺这批模型——2026-11-21 实测）；
+  // 重试耗尽仍为空则在模型菜单里明示并给手动重试入口，不再静默消失。
   const upstreamFreeOn = settings?.upstreamFree !== false
+  const [upstreamErr, setUpstreamErr] = useState(false)
   useEffect(() => {
-    if (!upstreamFreeOn) { setUpstreamModels([]); return }
+    if (!upstreamFreeOn) { setUpstreamModels([]); setUpstreamErr(false); return }
     let alive = true
-    fetchUpstreamFreeModels().then(list => { if (alive) setUpstreamModels(list) }).catch(() => { /* 静默 */ })
-    return () => { alive = false }
+    let timer: number | undefined
+    let attempt = 0
+    const load = () => {
+      fetchUpstreamFreeModels(attempt > 0).then(list => {
+        if (!alive) return
+        if (list.length) { setUpstreamModels(list); setUpstreamErr(false); return }
+        const delay = upstreamRetryDelayMs(attempt)
+        if (delay !== null) { attempt++; timer = window.setTimeout(load, delay) }
+        else setUpstreamErr(true)
+      }).catch(() => {
+        if (!alive) return
+        const delay = upstreamRetryDelayMs(attempt)
+        if (delay !== null) { attempt++; timer = window.setTimeout(load, delay) }
+        else setUpstreamErr(true)
+      })
+    }
+    load()
+    return () => { alive = false; if (timer) window.clearTimeout(timer) }
   }, [upstreamFreeOn])
+
+  /** 免费通道手动重试（菜单里点「重试」）：强制跳过缓存重拉 */
+  const retryUpstream = () => {
+    setUpstreamErr(false)
+    fetchUpstreamFreeModels(true).then(list => {
+      if (list.length) setUpstreamModels(list)
+      else setUpstreamErr(true)
+    }).catch(() => setUpstreamErr(true))
+  }
 
   // 持久化历史 + 自动滚动到底部
   // 多会话：messages 变化时同步回当前会话并持久化全部会话
@@ -1002,6 +1030,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
+      {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {visibleOptions.map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}

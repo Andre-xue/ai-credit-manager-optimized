@@ -1378,3 +1378,9 @@ Object.assign(D, {
 Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
+
+// ---- 补齐批次 26：免费通道拉取失败提示（v0.1.292） ----
+Object.assign(D, {
+  'Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。': { 'zh-TW': 'Zen / Kilo 免費通道清單沒拉到（網路或上游問題），自動重試後仍失敗。', en: 'Could not load the Zen / Kilo free channel list (network or upstream issue); automatic retries also failed.', ja: 'Zen / Kilo無料チャンネルのリストを取得できませんでした（ネットワークまたは上流の問題）。自動リトライも失敗しました。', ko: 'Zen / Kilo 무료 채널 목록을 가져오지 못했습니다(네트워크 또는 업스트림 문제). 자동 재시도도 실패했습니다.' },
+  '重试': { 'zh-TW': '重試', en: 'Retry', ja: 'リトライ', ko: '재시도' },
+})

@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import {
   isZenFreeModel, isKiloFreeModel, parseUpstreamModels, buildUpstreamChatBody, parseUpstreamChatText,
+  upstreamRetryDelayMs,
 } from './upstreamFree'
+
+describe('清单拉取重试节奏（v0.1.292）', () => {
+  it('前三次失败递增等待，之后放弃', () => {
+    expect(upstreamRetryDelayMs(0)).toBe(4000)
+    expect(upstreamRetryDelayMs(1)).toBe(12000)
+    expect(upstreamRetryDelayMs(2)).toBe(30000)
+    expect(upstreamRetryDelayMs(3)).toBeNull()
+    expect(upstreamRetryDelayMs(9)).toBeNull()
+  })
+})
 
 describe('免费模型识别', () => {
   it('Zen：-free 结尾才算免费', () => {
