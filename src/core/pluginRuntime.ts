@@ -221,7 +221,9 @@ function createFrame(plugin: InstalledPlugin, visible: boolean): FrameHandle {
     else if (d.kind === 'acm-rpc' && typeof d.id === 'string') {
       void hostRpc(plugin, String(d.method), (d.args ?? {}) as Record<string, unknown>).then(
         v => iframe.contentWindow?.postMessage({ kind: 'acm-rpc-result', nonce, id: d.id, ok: true, value: v }, '*'),
-        (e: Error) => iframe.contentWindow?.postMessage({ kind: 'acm-rpc-result', nonce, id: d.id, ok: false, error: e.message }, '*'),
+        // Tauri invoke 失败时 reject 的是 Rust 返回的字符串而非 Error 对象，
+        // 取 e.message 会得到 undefined、真错误被吞成 'RPC failed'（v0.1.287 修复）
+        (e: unknown) => iframe.contentWindow?.postMessage({ kind: 'acm-rpc-result', nonce, id: d.id, ok: false, error: String((e as { message?: unknown })?.message ?? e) }, '*'),
       )
     } else if (d.kind === 'acm-call-result' && typeof d.id === 'string') {
       const p = pendingCalls.get(d.id)

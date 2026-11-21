@@ -115,7 +115,9 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
                 || (o[0] == 172 && (16..=31).contains(&o[1]))
                 || (o[0] == 192 && o[1] == 168)
                 || (o[0] == 100 && (64..=127).contains(&o[1]))
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 基准测试段
+                // 注意：198.18.0.0/15（基准测试段）刻意不拦——Clash/Surge/sing-box 的
+                // fake-IP 模式会把真实域名解析到该段，拦了会让这类用户的所有外网请求全灭
+                // （v0.1.286 实测：汇率面板 RPC 被误杀）；该段也不可路由到局域网设备，非 SSRF 目标。
                 || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
                 || (o[0] == 192 && o[1] == 0 && o[2] == 2) // 文档示例段 TEST-NET-1/2/3
                 || (o[0] == 198 && o[1] == 51 && o[2] == 100)
@@ -134,7 +136,8 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
 }
 
 /// 对已通过 validate_proxy_url 的 URL 再做一次 DNS 解析校验：域名解析结果只要含任一
-/// 非公网地址即拒绝（防 *.nip.io 式域名与静态重绑定把请求引到内网/云元数据）。
+/// 明确的内网/本机地址（见 is_internal_ip）即拒绝（防 *.nip.io 式域名与静态重绑定
+/// 把请求引到内网/云元数据）；特殊保留段不在此列，避免误杀 fake-IP 代理用户。
 /// 说明：reqwest 发请求时会再次解析，校验与连接之间仍有极小的动态重绑定窗口，
 /// 但静态解析到内网的域名（现实中的绝大多数情况）会被这里拦下（v0.1.285）。
 async fn validate_resolved_public(u: &reqwest::Url) -> Result<(), String> {
@@ -145,10 +148,40 @@ async fn validate_resolved_public(u: &reqwest::Url) -> Result<(), String> {
     let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port).to_socket_addrs()
         .map_err(|_| "域名解析失败".to_string())?.collect();
     if addrs.is_empty() { return Err("域名无有效解析结果".into()) }
-    if addrs.iter().any(|a| !is_public_ip(&a.ip())) {
+    if addrs.iter().any(|a| is_internal_ip(&a.ip())) {
         return Err("域名解析到内网或保留地址，已拒绝".into())
     }
     Ok(())
+}
+
+/// DNS 解析结果专用判定：是否为「明确的内网/本机目标」（回环、RFC1918 私有段、
+/// 链路本地含云元数据段、ULA、组播）。与 is_public_ip 的区别：解析校验只拦这些
+/// 真正能到达局域网/本机/元数据的地址——fake-IP 代理（Clash/Surge/sing-box）会把
+/// 所有真实域名解析到 198.18.0.0/15 等特殊段、连接由用户自己的代理接管，
+/// 若按「非公网即拒绝」会把这类用户的全部外网请求误杀（v0.1.286 实测：
+/// api.siliconflow.cn 与 open.er-api.com 在公共 DNS 均为正常公网 IP，
+/// 在用户机器上被本地代理改写解析后遭误拒，模型拉取与汇率面板同时中招）。
+fn is_internal_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            o[0] == 10
+                || o[0] == 127
+                || o[0] == 0
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] >= 224)
+        }
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            v.is_loopback() || v.is_unspecified() || v.is_multicast()
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xfe00) == 0xfc00
+                || v.to_ipv4().map(|x| is_internal_ip(&IpAddr::V4(x))).unwrap_or(false)
+        }
+    }
 }
 
 /// 主机是否为本机/局域网地址（localhost、回环、私有段、链路本地、ULA；
