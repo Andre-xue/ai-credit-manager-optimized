@@ -84,8 +84,15 @@ const cloudFetch: typeof fetch = (input, init) => {
   try {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
     if (url && url.startsWith(PUBLIC_CONFIG.endpoint)) {
-      // 原生端走显式原生请求（带 Origin）；失败时回退到默认 fetch，不阻断登录
-      if (isNativeApp()) return nativeCloudFetch(input, init).catch(() => fetch(input, init))
+      // 原生端走显式原生请求（带 Origin）；失败时回退到默认 fetch，不阻断登录。
+      // 回退也必须补会话绑定头（Origin/X-Device-Id），否则网关会把会话判为另一客户端签发，
+      // 把「原生层故障」伪装成「登录失效」误导排障（v0.1.285）。
+      if (isNativeApp()) return nativeCloudFetch(input, init).catch(() => {
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+        for (const [k, v] of Object.entries(cloudClientHeaders())) if (!headers.has(k)) headers.set(k, v)
+        if (input instanceof Request && !init) return fetch(new Request(input, { headers }))
+        return fetch(input, { ...init, headers })
+      })
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
       if (!headers.has('X-Device-Id')) headers.set('X-Device-Id', getCloudDeviceId())
       if (input instanceof Request && !init) return fetch(new Request(input, { headers }))

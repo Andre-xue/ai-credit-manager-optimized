@@ -38,10 +38,10 @@ jobs:
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           workspaces: 'desktop/src-tauri -> target'
 
@@ -68,17 +68,18 @@ jobs:
           node -e "const fs=require('fs');const p='desktop/src-tauri/Cargo.toml';let s=fs.readFileSync(p,'utf8');s=s.replace(/^version\s*=\s*\"[^\"]+\"/m,'version = \"$V\"');fs.writeFileSync(p,s)"
           node -e "const fs=require('fs');const p='desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p,'utf8'));d.version='$V';fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')"
 
-      # 缺少签名密钥时禁用 updater 产物生成，避免 tauri build 直接失败；
-      # 此时仍能产出正常安装包，应用更新页会自动改为「前往 GitHub 下载」。
+      # v0.1.285 起：签名密钥缺失直接终止构建。历史上该密钥长期未配置、此步只发警告，
+      # 结果一百多版都没有签名更新产物、自动更新静默失效——拒绝再重演。
       - name: Prepare updater config
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY 未配置，本次构建无签名更新包（更新页提示手动下载）"
-            node -e "const fs=require('fs');const p='desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p,'utf8'));d.bundle.createUpdaterArtifacts=false;fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')"
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY 未配置，终止构建（无签名更新包的版本不允许发布）"
+            exit 1
           fi
+          echo "updater 签名密钥已配置，将生成签名更新产物"
 
       - name: Install Tauri CLI & build installer
         working-directory: desktop
@@ -159,8 +160,14 @@ jobs:
             echo "No signed artifacts; skipping latest.json (updater unavailable this release)"
           fi
 
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-files
+          find . -type f ! -name "SHA256SUMS.txt" -exec sha256sum {} + | sed 's| \./|  |' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Create Release with assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ github.ref_name }}
           files: release-files/*

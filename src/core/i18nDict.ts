@@ -1359,6 +1359,14 @@ Object.assign(D, {
   '添加本地模型时，磁盘扫描除 ~/ComfyUI/models 外，同时覆盖 Comfy Desktop 各实例的模型目录与 extra_model_paths.yaml 指向的目录（仅本机设置）': { 'zh-TW': '加入本地模型時，磁碟掃描除 ~/ComfyUI/models 外，同時覆蓋 Comfy Desktop 各實例的模型目錄與 extra_model_paths.yaml 指向的目錄（僅本機設定）', en: 'When adding a local model, the disk scan also covers each Comfy Desktop instance\'s models folder and directories from extra_model_paths.yaml, in addition to ~/ComfyUI/models (device-local setting)', ja: 'ローカルモデル追加時、ディスクスキャンは ~/ComfyUI/models に加えて Comfy Desktop の各インスタンスのモデルフォルダと extra_model_paths.yaml のディレクトリも対象にします（このデバイスのみの設定）', ko: '로컬 모델 추가 시 디스크 스캔이 ~/ComfyUI/models 외에 Comfy Desktop 각 인스턴스의 모델 폴더와 extra_model_paths.yaml이 가리키는 폴더도 포함합니다(이 기기만의 설정)' },
 })
 
+// ---- 补齐批次 24：插件安全收口（v0.1.285） ----
+Object.assign(D, {
+  '确认更新插件': { 'zh-TW': '確認更新外掛', en: 'Confirm plugin update', ja: 'プラグインの更新を確認', ko: '플러그인 업데이트 확인' },
+  '打开外链': { 'zh-TW': '開啟外鏈', en: 'Open external links', ja: '外部リンクを開く', ko: '외부 링크 열기' },
+  '注意：这是余额适配器插件。启用后，App 会在保险箱解锁时把下列平台账户的明文 API Key 交给它查询余额（包括自动巡检）：{providers}': { 'zh-TW': '注意：這是餘額適配器外掛。啟用後，App 會在保險箱解鎖時把下列平台帳戶的明文 API Key 交給它查詢餘額（包括自動巡檢）：{providers}', en: 'Warning: this is a balance adapter plugin. Once enabled, the app hands it the plaintext API keys of accounts on these providers to query balances whenever the vault is unlocked (including automatic checks): {providers}', ja: '注意：これは残高アダプタープラグインです。有効にすると、保管庫のロック解除時に次のプロバイダーのアカウントの API キー（平文）が残高照会のために渡されます（自動チェックを含む）：{providers}', ko: '주의: 잔액 어댑터 플러그인입니다. 활성화하면 보관함이 잠금 해제될 때 다음 플랫폼 계정의 API 키(평문)가 잔액 조회용으로 전달됩니다(자동 점검 포함): {providers}' },
+  '本次更新扩大了访问范围（新增权限、域名或适配平台），安装后将默认停用，请核对后在列表里手动启用。': { 'zh-TW': '本次更新擴大了存取範圍（新增權限、域名或適配平台），安裝後將預設停用，請核對後在清單裡手動啟用。', en: 'This update expands what the plugin can access (new permissions, hosts or providers). It will be installed disabled; review it and enable it manually in the list.', ja: 'この更新でアクセス範囲が広がります（新しい権限・ドメイン・対応プラットフォーム）。インストール後は無効状態になります。確認のうえリストから手動で有効にしてください', ko: '이번 업데이트로 접근 범위가 넓어집니다(새 권한, 도메인 또는 플랫폼). 설치 후 기본적으로 비활성화되니 확인 후 목록에서 직접 활성화하세요' },
+})
+
 // ---- 补齐批次 23：ComfyUI 拉起 Comfy Desktop 开关（v0.1.281） ----
 Object.assign(D, {
   'ComfyUI 启动时拉起 Comfy Desktop': { 'zh-TW': 'ComfyUI 啟動時開啟 Comfy Desktop', en: 'Open Comfy Desktop when starting ComfyUI', ja: 'ComfyUI起動時にComfy Desktopを開く', ko: 'ComfyUI 시작 시 Comfy Desktop 열기' },

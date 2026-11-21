@@ -79,11 +79,11 @@ describe('本地保险箱', () => {
 
   it('短主密码被拒绝', async () => {
     resetVault()
-    await expect(initVault('123')).rejects.toThrow(/至少 6 位/)
+    await expect(initVault('123')).rejects.toThrow(/至少 8 位/)
   })
 
   it('重置后保险箱不可用', async () => {
-    await initVault('abcdef')
+    await initVault('abcdef99')
     resetVault()
     expect(isVaultInitialized()).toBe(false)
     expect(await verifyVault('abcdef')).toBe(false)
@@ -93,13 +93,13 @@ describe('本地保险箱', () => {
 describe('changeMasterPassword', () => {
   it('修改密码后用新密码可解密，旧密码失效', async () => {
     resetVault()
-    await initVault('oldpass')
-    const cipher = await encryptSecret('sk-secret-value', 'oldpass')
-    const [newCipher] = await changeMasterPassword('oldpass', 'newpass', [cipher])
-    expect(await verifyVault('newpass')).toBe(true)
-    expect(await verifyVault('oldpass')).toBe(false)
-    expect(await decryptSecret(newCipher, 'newpass')).toBe('sk-secret-value')
-    await expect(decryptSecret(newCipher, 'oldpass')).rejects.toThrow()
+    await initVault('oldpass8')
+    const cipher = await encryptSecret('sk-secret-value', 'oldpass8')
+    const [newCipher] = await changeMasterPassword('oldpass8', 'newpass8', [cipher])
+    expect(await verifyVault('newpass8')).toBe(true)
+    expect(await verifyVault('oldpass8')).toBe(false)
+    expect(await decryptSecret(newCipher, 'newpass8')).toBe('sk-secret-value')
+    await expect(decryptSecret(newCipher, 'oldpass8')).rejects.toThrow()
   })
 
   it('原密码错误时抛错且不改动保险箱', async () => {
@@ -114,16 +114,16 @@ describe('changeMasterPassword', () => {
 
   it('新密码过短被拒绝', async () => {
     resetVault()
-    await initVault('oldpass')
-    await expect(changeMasterPassword('oldpass', '123', [])).rejects.toThrow(/至少 6 位/)
+    await initVault('oldpass8')
+    await expect(changeMasterPassword('oldpass8', '123', [])).rejects.toThrow(/至少 8 位/)
   })
 
   it('可批量重加密多条密钥', async () => {
     resetVault()
-    await initVault('oldpass')
-    const ciphers = await Promise.all(['key1', 'key2', 'key3'].map(k => encryptSecret(k, 'oldpass')))
-    const renewed = await changeMasterPassword('oldpass', 'newpass', ciphers)
-    const plains = await Promise.all(renewed.map(c => decryptSecret(c, 'newpass')))
+    await initVault('oldpass8')
+    const ciphers = await Promise.all(['key1', 'key2', 'key3'].map(k => encryptSecret(k, 'oldpass8')))
+    const renewed = await changeMasterPassword('oldpass8', 'newpass8', ciphers)
+    const plains = await Promise.all(renewed.map(c => decryptSecret(c, 'newpass8')))
     expect(plains).toEqual(['key1', 'key2', 'key3'])
   })
 })

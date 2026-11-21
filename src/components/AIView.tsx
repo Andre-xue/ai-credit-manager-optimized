@@ -13,6 +13,7 @@ import {
   type ChatMessage, type AiModel,
 } from '../core/ai'
 import { saveExportFile } from '../core/saveFile'
+import { openExternal } from '../core/openExternal'
 import { speakAsync, stopSpeak, getSavedVoice, cleanForAutoSpeech } from '../core/tts'
 import { startSpeechInput, type SpeechInputSession } from '../core/speechInput'
 import { listClonedVoices, type ClonedVoice } from '../core/voiceClone'
@@ -1191,7 +1192,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             </div>
             <button className="btn sm ghost" onClick={() => {
               const url = PROVIDER_MAP[selectedOption.account!.providerId]?.officialUrl
-              if (url) window.open(url, '_blank', 'noopener')
+              if (url) void openExternal(url)
               else notify(t('暂无官方地址'))
             }}><ExternalLink size={13} /> {t('官方')}</button>
           </div>

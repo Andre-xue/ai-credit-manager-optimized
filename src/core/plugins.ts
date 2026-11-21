@@ -7,8 +7,8 @@
 // 桌面端额外支持进程插件：清单声明本地命令，由用户在本机启动/停止。
 // ============================================================
 
-export type PluginPermission = 'network' | 'data' | 'notify' | 'storage'
-export const PLUGIN_PERMISSIONS: PluginPermission[] = ['network', 'data', 'notify', 'storage']
+export type PluginPermission = 'network' | 'data' | 'notify' | 'storage' | 'openUrl'
+export const PLUGIN_PERMISSIONS: PluginPermission[] = ['network', 'data', 'notify', 'storage', 'openUrl']
 
 /** 插件设置项声明：App 据此为每个插件生成独立设置页，值存插件私有存储，插件经 acm.getSettings() 读取 */
 export type PluginSettingType = 'text' | 'password' | 'number' | 'switch' | 'select' | 'textarea'
@@ -79,14 +79,34 @@ function savePlugins(list: InstalledPlugin[]): void {
   emitPluginsChanged()
 }
 
+/** 更新一个已装插件时，新版相对旧版扩大的访问面（新增权限 / 新增域名 / 新增适配平台 / 新增进程命令） */
+export function pluginAccessExpansion(
+  oldM: PluginManifest,
+  newM: PluginManifest,
+): { permissions: string[]; hosts: string[]; providers: string[]; processAdded: boolean } {
+  const diff = (a: string[] | undefined, b: string[] | undefined) => (a ?? []).filter(x => !(b ?? []).includes(x))
+  return {
+    permissions: diff(newM.permissions, oldM.permissions),
+    hosts: diff(newM.hosts, oldM.hosts),
+    providers: diff(newM.providers, oldM.providers),
+    processAdded: !!newM.process && !oldM.process,
+  }
+}
+
 export function installPlugin(pkg: PluginPackage, source: InstalledPlugin['source']): InstalledPlugin {
   const list = loadPlugins()
   const existing = list.find(p => p.manifest.id === pkg.manifest.id)
+  // 更新时若新版扩大了权限/域名/适配范围，默认停用，等用户核对后手动启用（v0.1.285）
+  let enabled = existing ? existing.enabled : true
+  if (existing) {
+    const ex = pluginAccessExpansion(existing.manifest, pkg.manifest)
+    if (ex.permissions.length || ex.hosts.length || ex.providers.length || ex.processAdded) enabled = false
+  }
   const rec: InstalledPlugin = {
     manifest: pkg.manifest,
     code: pkg.code,
     html: pkg.html,
-    enabled: existing ? existing.enabled : true,
+    enabled,
     installedAt: existing ? existing.installedAt : Date.now(),
     source,
   }
@@ -148,11 +168,17 @@ export function validatePluginPackage(pkg: unknown): string | null {
   return null
 }
 
-/** 网络白名单匹配：请求域名等于清单域名，或是其子域名 */
+/** 网络白名单匹配：请求域名等于清单域名，或是其子域名。
+ *  v0.1.285 起同时校验协议：只允许 https，明文 http 仅放行本机地址——
+ *  防止适配器插件把账户 Key 经 http 明文发往白名单域名。 */
 export function isHostAllowed(url: string, hosts: string[] | undefined): boolean {
   if (!hosts || hosts.length === 0) return false
-  let host: string
-  try { host = new URL(url).hostname.toLowerCase() } catch { return false }
+  let u: URL
+  try { u = new URL(url) } catch { return false }
+  const host = u.hostname.toLowerCase()
+  if (u.protocol === 'http:') {
+    if (!(host === 'localhost' || host === '127.0.0.1' || host === '::1')) return false
+  } else if (u.protocol !== 'https:') return false
   return hosts.some(h => {
     const d = h.toLowerCase()
     return host === d || host.endsWith('.' + d)

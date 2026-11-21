@@ -57,7 +57,7 @@ export interface Account {
   providerId: string
   label: string
   mode: AccountMode
-  /** 加密后的 API Key（仅 api 模式），密文；永不上传 */
+  /** 加密后的 API Key（仅 api 模式），密文；云同步/备份只传密文，明文永不离开本机解密 */
   encryptedKey?: string
   /** 密钥指纹（用于识别是否已配置，不泄露原文） */
   keyFingerprint?: string

@@ -4,13 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::OnceLock;
 
 /// 进程级共享 HTTP Client：复用 TLS 连接池，避免每次调用重新握手（性能）。
-/// 官方端点用默认重定向策略；用户自定义 API 端点用禁用重定向的版本（SSRF 防护）。
+/// v0.1.285 起禁用重定向：云端请求带会话令牌/自定义头，reqwest 跟随重定向时不会剥离
+/// 自定义头，3xx 跳到内网/第三方会同时构成 SSRF 与凭据外泄面；官方端点本就不应重定向。
 fn shared_http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .user_agent("ai-credit-manager/0.1")
             .timeout(std::time::Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("初始化 HTTP 客户端失败")
     })
@@ -72,7 +74,8 @@ async fn call_cloud_llm(endpoint: String, publishable_key: String, body_json: St
 }
 
 /// 校验代理目标 URL，防止 SSRF 与 API Key 外泄。
-/// - https：允许公网域名，但拒绝解析到内网/回环/链路本地/云元数据地址的主机
+/// - https：允许公网域名；字面量的内网/回环/链路本地/云元数据地址拒绝，
+///   域名解析结果由 validate_resolved_public 在请求前另行校验（防解析到内网的域名）
 /// - http：仅允许本机（localhost / 127.0.0.0/8 / ::1），供本地 Ollama 等模型使用
 fn validate_proxy_url(raw: &str) -> Result<reqwest::Url, String> {
     let u = reqwest::Url::parse(raw).map_err(|_| "URL 格式不合法".to_string())?;
@@ -81,10 +84,9 @@ fn validate_proxy_url(raw: &str) -> Result<reqwest::Url, String> {
         return Err("仅允许 http(s) 协议".into())
     }
     let host = u.host_str().ok_or_else(|| "URL 缺少主机".to_string())?;
+    // 本机判定必须基于解析后的 IP，禁止用 "127." 前缀匹配域名（127.0.0.1.evil.com 不是本机）
     let is_local = host == "localhost"
-        || host == "::1"
-        || host == "[::1]"
-        || host.starts_with("127.")
+        || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
         || host == "0.0.0.0";
     if scheme == "http" {
         if !is_local {
@@ -113,14 +115,84 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
                 || (o[0] == 172 && (16..=31).contains(&o[1]))
                 || (o[0] == 192 && o[1] == 168)
                 || (o[0] == 100 && (64..=127).contains(&o[1]))
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 基准测试段
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2) // 文档示例段 TEST-NET-1/2/3
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)
                 || (o[0] >= 224))
         }
         IpAddr::V6(v) => {
+            let s = v.segments();
             !v.is_loopback() && !v.is_unspecified() && !v.is_multicast()
+                && (s[0] & 0xffc0) != 0xfe80 // fe80::/10 链路本地
+                && (s[0] & 0xfe00) != 0xfc00 // fc00::/7 ULA
                 // 拒绝 IPv4 映射的内网地址
                 && v.to_ipv4().map(|x| is_public_ip(&IpAddr::V4(x))).unwrap_or(true)
         }
     }
+}
+
+/// 对已通过 validate_proxy_url 的 URL 再做一次 DNS 解析校验：域名解析结果只要含任一
+/// 非公网地址即拒绝（防 *.nip.io 式域名与静态重绑定把请求引到内网/云元数据）。
+/// 说明：reqwest 发请求时会再次解析，校验与连接之间仍有极小的动态重绑定窗口，
+/// 但静态解析到内网的域名（现实中的绝大多数情况）会被这里拦下（v0.1.285）。
+async fn validate_resolved_public(u: &reqwest::Url) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    let host = match u.host_str() { Some(h) => h.to_string(), None => return Ok(()) };
+    if host == "localhost" || host.parse::<std::net::IpAddr>().is_ok() { return Ok(()) }
+    let port = u.port_or_known_port().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port).to_socket_addrs()
+        .map_err(|_| "域名解析失败".to_string())?.collect();
+    if addrs.is_empty() { return Err("域名无有效解析结果".into()) }
+    if addrs.iter().any(|a| !is_public_ip(&a.ip())) {
+        return Err("域名解析到内网或保留地址，已拒绝".into())
+    }
+    Ok(())
+}
+
+/// 主机是否为本机/局域网地址（localhost、回环、私有段、链路本地、ULA；
+/// 但云元数据段 169.254.0.0/16 永不视为本地服务）
+fn is_local_host(host: &str) -> bool {
+    if host == "localhost" { return true }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v)) => {
+            let o = v.octets();
+            if o[0] == 169 && o[1] == 254 { return false }
+            v.is_loopback() || o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+        }
+        Ok(std::net::IpAddr::V6(v)) => {
+            let s = v.segments();
+            v.is_loopback()
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xfe00) == 0xfc00
+                || v.to_ipv4().map(|x| is_local_host(&x.to_string())).unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
+
+/// 本地服务专用校验（ComfyUI / Ollama / LM Studio）：只允许 http(s) + 本机/局域网地址，
+/// 拒绝公网域名与公网 IP——这类服务按定义就在用户自己的网络里（v0.1.285 SSRF 收口）。
+fn validate_local_service_url(raw: &str) -> Result<String, String> {
+    let u = reqwest::Url::parse(raw).map_err(|_| "URL 格式不合法".to_string())?;
+    if u.scheme() != "https" && u.scheme() != "http" { return Err("仅允许 http(s) 协议".into()) }
+    let host = u.host_str().ok_or_else(|| "URL 缺少主机".to_string())?;
+    if !is_local_host(host) { return Err("本地服务地址只允许本机或局域网地址".into()) }
+    Ok(u.to_string().trim_end_matches('/').to_string())
+}
+
+/// 通用服务地址校验（VoiceStudio 等用户自填端点）：本机/局域网走本地规则，公网走 validate_proxy_url。
+fn validate_service_url(raw: &str) -> Result<String, String> {
+    let u = reqwest::Url::parse(raw).map_err(|_| "URL 格式不合法".to_string())?;
+    let host = u.host_str().ok_or_else(|| "URL 缺少主机".to_string())?;
+    if is_local_host(host) {
+        if u.scheme() != "https" && u.scheme() != "http" { return Err("仅允许 http(s) 协议".into()) }
+        return Ok(u.to_string().trim_end_matches('/').to_string())
+    }
+    Ok(validate_proxy_url(raw)?.to_string().trim_end_matches('/').to_string())
 }
 
 /// 通用模型 API 代理：让「用自己 Key 调用」绕过桌面 CORS。
@@ -129,7 +201,9 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
 #[tauri::command]
 async fn call_provider_api(url: String, api_key: String, body_json: String, method: String, headers_json: Option<String>) -> Result<String, String> {
     if api_key.trim().is_empty() { return Err("API Key 不能为空".into()) }
-    let url = validate_proxy_url(&url)?.to_string();
+    let parsed = validate_proxy_url(&url)?;
+    validate_resolved_public(&parsed).await?;
+    let url = parsed.to_string();
     let m = method.to_uppercase();
     if m != "POST" && m != "GET" { return Err("仅支持 POST / GET".into()) }
 
@@ -186,7 +260,9 @@ mod req {
 /// 状态码与响应体原样回传给插件自行判断。
 #[tauri::command]
 async fn plugin_http(url: String, method: String, headers_json: Option<String>, body: Option<String>) -> Result<String, String> {
-    let url = validate_proxy_url(&url)?.to_string();
+    let parsed = validate_proxy_url(&url)?;
+    validate_resolved_public(&parsed).await?;
+    let url = parsed.to_string();
     let m = method.to_uppercase();
     let parsed_method = reqwest::Method::from_bytes(m.as_bytes())
         .map_err(|_| format!("不支持的请求方法：{}", m))?;
@@ -223,6 +299,7 @@ fn plugin_frames() -> &'static std::sync::Mutex<std::collections::HashMap<String
 
 #[tauri::command]
 fn plugin_frame_put(id: String, html: String) -> Result<(), String> {
+    if html.len() > 5_000_000 { return Err("插件面板文档过大".into()) }
     plugin_frames().lock().map_err(|_| "面板表锁定失败".to_string())?.insert(id, html);
     Ok(())
 }
@@ -442,7 +519,9 @@ fn biometric_helper_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         let p2 = dir.join("acm-biometric-aarch64-apple-darwin");
         if p2.exists() { return Some(p2) }
     }
-    // 开发态：从 exe 目录向上找 src-tauri/binaries
+    // 开发态：从 exe 目录向上找 src-tauri/binaries（仅 debug 构建；发布构建只认 resource_dir，
+    // 防止同名文件被预置到 exe 上层目录后被抢注执行，v0.1.285）
+    #[cfg(debug_assertions)]
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent();
         while let Some(d) = dir {
@@ -502,9 +581,20 @@ async fn choose_save_dir() -> Result<Option<String>, String> {
 
 /// 将文本文件写入指定目录
 #[tauri::command]
+/// 导出文件名净化（v0.1.285）：文件名来自文档标题/AI 生成名等不可信数据，
+/// 只允许单个文件名——拒绝路径分隔符、.. 与绝对路径，防止写出目标目录之外。
+fn safe_filename(filename: &str) -> Result<String, String> {
+    let name = filename.trim();
+    if name.is_empty() || name == "." || name == ".."
+        || name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err("文件名不合法".into())
+    }
+    Ok(name.to_string())
+}
+
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
     use std::io::Write;
-    let path = std::path::Path::new(&dir).join(&filename);
+    let path = std::path::Path::new(&dir).join(safe_filename(&filename)?);
     let mut f = std::fs::File::create(&path).map_err(|e| format!("创建文件失败：{}", e))?;
     f.write_all(content.as_bytes()).map_err(|e| format!("写入失败：{}", e))?;
     Ok(path.to_string_lossy().to_string())
@@ -515,7 +605,7 @@ async fn write_file_to_dir(dir: String, filename: String, content: String) -> Re
 async fn write_binary_to_dir(dir: String, filename: String, content_base64: String) -> Result<String, String> {
     use std::io::Write;
     let bytes = base64_decode(&content_base64)?;
-    let path = std::path::Path::new(&dir).join(&filename);
+    let path = std::path::Path::new(&dir).join(safe_filename(&filename)?);
     let mut f = std::fs::File::create(&path).map_err(|e| format!("创建文件失败：{}", e))?;
     f.write_all(&bytes).map_err(|e| format!("写入失败：{}", e))?;
     Ok(path.to_string_lossy().to_string())
@@ -1289,6 +1379,8 @@ async fn tts_synthesize_direct(api_key: String, voice: String, text: String) -> 
     if !status.is_success() { return Err(format!("合成失败（HTTP {}）：{}", status.as_u16(), resp_text.chars().take(200).collect::<String>())) }
     let json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|_| "合成响应格式异常".to_string())?;
     let audio_url = parse_synthesize_url(&json).ok_or_else(|| format!("合成未返回音频地址：{}", resp_text.chars().take(200).collect::<String>()))?;
+    // 音频地址来自官方接口响应，下载前仍过一遍 SSRF 校验（v0.1.285）
+    let audio_url = validate_proxy_url(&audio_url)?.to_string();
     let audio = client.get(&audio_url).send().await.map_err(|e| format!("下载音频失败：{}", e))?;
     if !audio.status().is_success() { return Err(format!("下载音频失败（HTTP {}）", audio.status().as_u16())) }
     let bytes = audio.bytes().await.map_err(|e| format!("读取音频失败：{}", e))?;
@@ -1301,6 +1393,11 @@ async fn tts_synthesize_direct(api_key: String, voice: String, text: String) -> 
 fn vs_base(endpoint: &str) -> String {
     let e = endpoint.trim();
     if e.is_empty() { "http://127.0.0.1:3900".to_string() } else { e.trim_end_matches('/').to_string() }
+}
+
+/// VoiceStudio 基址校验（v0.1.285 SSRF 收口）：本机/局域网或公网 https 才放行
+fn vs_base_checked(endpoint: &str) -> Result<String, String> {
+    validate_service_url(&vs_base(endpoint))
 }
 
 /// 解析 data URI 为 (mime, bytes)
@@ -1317,7 +1414,7 @@ fn parse_data_uri(uri: &str) -> Result<(String, Vec<u8>), String> {
 async fn voicestudio_test(endpoint: String, api_key: String) -> Result<String, String> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    let mut req = client.get(format!("{}/health", vs_base(&endpoint)));
+    let mut req = client.get(format!("{}/health", vs_base_checked(&endpoint)?));
     if !api_key.trim().is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key.trim())) }
     let resp = req.send().await.map_err(|e| format!("连接失败（请确认 VoiceStudio 已启动）：{}", e))?;
     let status = resp.status();
@@ -1331,7 +1428,7 @@ async fn voicestudio_test(endpoint: String, api_key: String) -> Result<String, S
 async fn voicestudio_list(endpoint: String, api_key: String) -> Result<Vec<serde_json::Value>, String> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    let mut req = client.get(format!("{}/profiles", vs_base(&endpoint)));
+    let mut req = client.get(format!("{}/profiles", vs_base_checked(&endpoint)?));
     if !api_key.trim().is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key.trim())) }
     let resp = req.send().await.map_err(|e| format!("请求失败：{}", e))?;
     let status = resp.status();
@@ -1364,7 +1461,7 @@ async fn voicestudio_clone(endpoint: String, api_key: String, name: String, audi
     body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    let mut req = client.post(format!("{}/profiles", vs_base(&endpoint)))
+    let mut req = client.post(format!("{}/profiles", vs_base_checked(&endpoint)?))
         .header("Content-Type", format!("multipart/form-data; boundary={}", boundary));
     if !api_key.trim().is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key.trim())) }
     let resp = req.body(body).send().await.map_err(|e| format!("克隆请求失败：{}", e))?;
@@ -1391,7 +1488,7 @@ async fn voicestudio_synthesize(endpoint: String, api_key: String, voice: String
     });
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    let mut req = client.post(format!("{}/v1/audio/speech", vs_base(&endpoint)))
+    let mut req = client.post(format!("{}/v1/audio/speech", vs_base_checked(&endpoint)?))
         .header("Content-Type", "application/json");
     if !api_key.trim().is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key.trim())) }
     let resp = req.json(&body).send().await.map_err(|e| format!("合成请求失败：{}", e))?;
@@ -1547,17 +1644,16 @@ fn scan_comfyui_models_extended() -> Vec<String> {
 
 /// ComfyUI 原生 API 桥接：endpoint 为相对路径（如 "prompt" / "history/<id>" / "view?filename=...&type=output"）。
 /// method=POST 时 body_json 为请求体；want_image=true 时把响应二进制转 base64 返回（用于 /view 取图）。
-/// 仅允许本机地址（复用 validate_proxy_url 的 SSRF 校验）。
+/// 仅允许本机/局域网地址（validate_local_service_url，v0.1.285 起收紧：此前公网 https 也可达）。
 #[tauri::command]
 async fn comfyui_api(base_url: String, endpoint: String, method: String, body_json: String, want_image: bool) -> Result<String, String> {
-    // Url 序列化会给裸主机名补尾斜杠（http://127.0.0.1:8188/），再拼 /endpoint 会变成双斜杠；
-    // ComfyUI 的 aiohttp 对 // 路径返回 404（实测），故序列化后必须再去掉尾斜杠
-    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string().trim_end_matches('/').to_string();
+    let base = validate_local_service_url(base_url.trim().trim_end_matches('/'))?;
     // endpoint 只允许简单路径与查询串，禁止 //、.. 防止路径穿越
     if endpoint.contains("..") || endpoint.starts_with("//") { return Err("非法端点".into()) }
     let url = format!("{}/{}", base, endpoint.trim_start_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(if want_image { 60 } else { 30 }))
+        .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e| format!("客户端错误：{}", e))?;
     let m = method.to_uppercase();
     let mut req = if m == "POST" {
@@ -1582,10 +1678,11 @@ async fn comfyui_api(base_url: String, endpoint: String, method: String, body_js
 /// 从 ComfyUI /object_info/CheckpointLoaderSimple 获取实时可用的 checkpoint 列表（比扫目录准确）。
 #[tauri::command]
 async fn comfyui_checkpoints(base_url: String) -> Result<Vec<String>, String> {
-    // 同 comfyui_api：去掉 Url 序列化补的尾斜杠，避免拼出 //object_info 双斜杠被 aiohttp 404
-    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string().trim_end_matches('/').to_string();
+    // validate_local_service_url 已处理尾斜杠（Url 序列化补的尾斜杠会拼出 //object_info 双斜杠被 aiohttp 404）
+    let base = validate_local_service_url(base_url.trim().trim_end_matches('/'))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e| format!("客户端错误：{}", e))?;
     let resp = client.get(format!("{}/object_info/CheckpointLoaderSimple", base)).send().await
         .map_err(|e| format!("连接 ComfyUI 失败：{}", e))?;
@@ -1621,6 +1718,7 @@ async fn fetch_local_models(key: String, url: String, scan_extra: bool) -> Resul
         }
         return Ok(models)
     }
+    let base = validate_local_service_url(base)?;
     let (path, parser): (&str, fn(&serde_json::Value) -> Vec<String>) = match key.as_str() {
         "ollama" => ("/api/tags", parse_ollama_models),
         "lmstudio" => ("/v1/models", parse_openai_models),
@@ -1651,6 +1749,7 @@ fn parse_embed_vector(json: &serde_json::Value) -> Option<Vec<f64>> {
 async fn ollama_embed(base_url: String, model: String, input: String) -> Result<Vec<f64>, String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() { return Err("未配置 Ollama 服务地址".to_string()) }
+    let base = validate_local_service_url(base)?;
     if input.trim().is_empty() { return Err("待嵌入文本为空".to_string()) }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -1834,6 +1933,7 @@ fn gateway_blocking_client() -> &'static reqwest::blocking::Client {
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
             .user_agent("ai-credit-manager-gateway/0.1")
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(180))
             .build()

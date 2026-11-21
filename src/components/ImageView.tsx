@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { callImage, extractModelId, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
+import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { GenProgressBar, useGenProgress } from './GenProgressBar'
 import { SafeThumb } from './SafeThumb'
@@ -222,7 +223,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                     <div className="gen-hist-prompt">{h.prompt}</div>
                     <div className="gen-hist-meta">{h.accountLabel} · {h.params}</div>
                     <div className="gen-thumbs">
-                      {h.results.map((u, i) => <SafeThumb key={i} src={h.thumbs?.[i] || u} fallbackSrc={u} className="gen-thumb" onClick={() => window.open(u, '_blank', 'noopener')} />)}
+                      {h.results.map((u, i) => <SafeThumb key={i} src={h.thumbs?.[i] || u} fallbackSrc={u} className="gen-thumb" onClick={() => void openExternal(u)} />)}
                     </div>
                   </div>
                 ))}

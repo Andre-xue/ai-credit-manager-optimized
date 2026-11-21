@@ -48,6 +48,22 @@ def main():
         print('injected', len(lines), 'permissions')
     else:
         print('permissions already present')
+    # 关闭应用数据备份（v0.1.285）：模板默认 allowBackup=true，adb backup/云备份可带走
+    # 保险箱密文与本地数据；显式置 false（幂等：已有该属性则改值）。
+    app_m = re.search(r'<application\b[^>]*>', content)
+    if app_m:
+        tag = app_m.group(0)
+        if 'android:allowBackup' in tag:
+            new_tag = re.sub(r'android:allowBackup="[^"]*"', 'android:allowBackup="false"', tag)
+        else:
+            new_tag = tag.replace('<application', '<application android:allowBackup="false"', 1)
+        if new_tag != tag:
+            content = content[:app_m.start()] + new_tag + content[app_m.end():]
+            changed = True
+            print('allowBackup set to false')
+    else:
+        print('application tag not found')
+        sys.exit(1)
     # 语音识别服务可见性声明（幂等：已有 RecognitionService 则跳过）
     if 'android.speech.RecognitionService' not in content:
         queries = ('\n    <queries>\n'

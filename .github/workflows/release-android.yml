@@ -116,28 +116,34 @@ jobs:
           fi
           echo "统一图标已应用（已移除 adaptive icon 覆盖）"
 
-      - name: Build debug APK
+      # v0.1.285 起改走 release 构建（同一固定密钥签名，证书指纹不变、可覆盖安装），
+      # 不再分发带 android:debuggable=true 的 debug 包。
+      - name: Build release APK
         working-directory: android
         run: |
           GRADLEW=$(find . -name gradlew -type f | head -1)
           if [ -z "$GRADLEW" ]; then echo "gradlew not found"; exit 1; fi
           chmod +x "$GRADLEW"
           GRADLE_DIR=$(dirname "$GRADLEW")
-          cd "$GRADLE_DIR" && ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
+          cd "$GRADLE_DIR" && ./gradlew assembleRelease --no-daemon 2>&1 | tail -30
 
       - name: Locate APK
         id: apk
         run: |
-          APK=$(find . -name "*.apk" -type f | grep -i debug | head -1)
+          APK=$(find . -name "*.apk" -type f | grep -i release | grep -v unsigned | head -1)
           if [ -z "$APK" ]; then echo "No APK produced"; exit 1; fi
           echo "path=$APK" >> $GITHUB_OUTPUT
           ls -lh "$APK"
           echo "=== APK 签名证书（应与固定密钥指纹一致）==="
           keytool -printcert -jarfile "$APK" | grep -i "SHA256:" || true
+          sha256sum "$APK" | awk '{print $1"  app-release.apk"}' > "$GITHUB_WORKSPACE/SHA256SUMS-android.txt"
+          cat "$GITHUB_WORKSPACE/SHA256SUMS-android.txt"
 
       - name: Upload APK to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: ${{ steps.apk.outputs.path }}
+          files: |
+            ${{ steps.apk.outputs.path }}
+            SHA256SUMS-android.txt
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false

@@ -165,6 +165,7 @@ async function hostRpc(plugin: InstalledPlugin, method: string, args: Record<str
       return hostHttp(plugin, String(args.url ?? ''), (args.opts ?? {}) as HttpOpts)
     }
     case 'openUrl': {
+      if (!plugin.manifest.permissions.includes('openUrl')) throw new Error('插件未声明 openUrl 权限')
       const url = String(args.url ?? '')
       if (!/^https?:\/\//i.test(url)) throw new Error('只允许打开 http(s) 链接')
       if (isDesktopShell()) {
@@ -193,7 +194,10 @@ interface FrameHandle {
 }
 
 function createFrame(plugin: InstalledPlugin, visible: boolean): FrameHandle {
-  const nonce = `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  // nonce 用密码学随机（128 位），不用时间戳+Math.random（v0.1.285 加固）
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const nonce = `n${Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')}`
   const iframe = document.createElement('iframe')
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.setAttribute('title', plugin.manifest.name)

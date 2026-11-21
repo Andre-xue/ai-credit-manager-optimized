@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { callVideo, extractModelId, queryVideoTask, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
+import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { GenProgressBar, useGenProgress } from './GenProgressBar'
 import { PROVIDER_MAP } from '../data/providers'
@@ -250,7 +251,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                     <div className="gen-hist-meta">{h.accountLabel} · {h.params}</div>
                     {h.results.length > 0 ? (
                       <div className="gen-thumbs">
-                        {h.results.map((u, i) => <video key={i} src={u} className="gen-thumb" controls={false} muted onClick={() => window.open(u, '_blank', 'noopener')} />)}
+                        {h.results.map((u, i) => <video key={i} src={u} className="gen-thumb" controls={false} muted onClick={() => void openExternal(u)} />)}
                       </div>
                     ) : h.note ? <div className="gen-hist-note">{h.note}</div> : null}
                   </div>

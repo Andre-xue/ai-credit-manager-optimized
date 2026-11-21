@@ -7,11 +7,17 @@
 
 import { isNativeApp, isDesktopApp } from './openExternal'
 
+// v0.1.285 安全收口：以下三类敏感项**不再镜像**到明文文件/Preferences——
+// - acm.vault.bioPwd：指纹解锁存的主密码副本（可逆混淆），与密文+盐同文件即等于保险箱全量泄露；
+// - workbuddy-cloud.session：云登录会话令牌，泄露即账号被接管；
+// - acm.volc.config.v1：旧版火山语音 Token（混淆存储，明文等价）。
+// 代价：WebView 存储被清后需重输一次主密码、重登一次云端，远小于全量泄露风险。
+// 旧镜像文件里已有的这些键在 restore 时也不会再被读回（下方恢复逻辑只认 KEYS），
+// 且下一次 backup 写出的新文件不再包含它们，旧文件会被整体覆盖。
 const KEYS = [
   'acm.state.v1',
   'acm.vault.salt',
   'acm.vault.verify',
-  'acm.vault.bioPwd',
   'acm.ai.history.v1',
   'acm.ai.conversationId',
   'acm.ai.model',
@@ -20,11 +26,8 @@ const KEYS = [
   'acm.sync.clientId',
   // 语音配置：不在云同步内，更新后必须保留
   'acm.tts.provider.config',
-  'acm.volc.config.v1',
   'acm.tts.clonedVoice',
   'acm.tts.clonedVoices.v2',
-  // 云登录会话：避免重装后云账户丢失（敏感，仅存本机文件，不进云同步）
-  'workbuddy-cloud.session',
 ] as const
 
 const BACKUP_FILE = 'acm-local-backup.json'
@@ -48,11 +51,6 @@ async function backupToDesktop(): Promise<void> {
       const val = localStorage.getItem(key)
       if (val !== null) data[key] = val
     }
-    // 云 session 的 key 带后缀，需按前缀收集
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i) ?? ''
-      if (k.startsWith('workbuddy-cloud.session') && !(k in data)) data[k] = localStorage.getItem(k) ?? ''
-    }
     // 确保目录存在再写（appDataDir 一般已存在）
     try { await fs.mkdir(paths.dir, { recursive: true }) } catch { /* 已存在 */ }
     await fs.writeTextFile(paths.file, JSON.stringify(data))
@@ -70,12 +68,6 @@ async function restoreFromDesktop(): Promise<void> {
     for (const key of KEYS) {
       if (localStorage.getItem(key) !== null) continue  // 本地已有，不覆盖
       if (typeof data[key] === 'string') localStorage.setItem(key, data[key])
-    }
-    // 恢复云 session 前缀键
-    for (const k of Object.keys(data)) {
-      if (k.startsWith('workbuddy-cloud.session') && localStorage.getItem(k) === null) {
-        localStorage.setItem(k, data[k])
-      }
     }
   } catch { /* 忽略 */ }
 }
@@ -97,13 +89,6 @@ async function backupToCapacitor(): Promise<void> {
       const val = localStorage.getItem(key)
       if (val !== null) await Preferences.set({ key, value: val })
     }
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i) ?? ''
-      if (k.startsWith('workbuddy-cloud.session')) {
-        const v = localStorage.getItem(k)
-        if (v !== null) await Preferences.set({ key: k, value: v })
-      }
-    }
     await Preferences.set({ key: 'acm.backup.at', value: new Date().toISOString() })
   } catch { /* 忽略 */ }
 }
@@ -115,14 +100,6 @@ async function restoreFromCapacitor(): Promise<void> {
       if (localStorage.getItem(key) !== null) continue
       const { value } = await Preferences.get({ key })
       if (value != null) localStorage.setItem(key, value)
-    }
-    // 云 session 前缀键：Capacitor Preferences 用 keys() 枚举
-    const keyList = (await Preferences.keys()).keys
-    for (const k of keyList) {
-      if (k.startsWith('workbuddy-cloud.session') && localStorage.getItem(k) === null) {
-        const { value } = await Preferences.get({ key: k })
-        if (value != null) localStorage.setItem(k, value)
-      }
     }
   } catch { /* 忽略 */ }
 }

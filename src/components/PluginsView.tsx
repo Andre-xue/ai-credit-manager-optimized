@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { t } from '../core/i18n'
 import {
-  loadPlugins, installPlugin, uninstallPlugin, setPluginEnabled, validatePluginPackage,
+  loadPlugins, installPlugin, uninstallPlugin, setPluginEnabled, validatePluginPackage, pluginAccessExpansion,
   isDesktopShell, pluginProcessStart, pluginProcessStop, pluginProcessRunning, pluginProcessOutput,
   pluginHttpDesktop, pluginSettingsValues, savePluginSettings, PLUGINS_EVENT, EXAMPLE_PLUGINS,
   type InstalledPlugin, type PluginPackage, type PluginSettingField,
@@ -39,7 +39,7 @@ function JellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: bo
   )
 }
 
-const PERM_LABEL: Record<string, string> = { network: '网络', data: '读取数据', notify: '通知', storage: '私有存储' }
+const PERM_LABEL: Record<string, string> = { network: '网络', data: '读取数据', notify: '通知', storage: '私有存储', openUrl: '打开外链' }
 const PROVIDE_LABEL: Record<string, string> = { panel: '面板', adapter: '余额适配器', process: '进程' }
 
 interface Draft {
@@ -253,7 +253,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
       {pendingInstall && (
         <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingInstall(null) }}>
           <div className="modal" style={{ maxWidth: 480 }}>
-            <div className="modal-head"><h3 style={{ margin: 0 }}>{t('确认安装插件')}</h3><button className="icon-btn" onClick={() => setPendingInstall(null)}><X size={18} /></button></div>
+            <div className="modal-head"><h3 style={{ margin: 0 }}>{plugins.some(p => p.manifest.id === pendingInstall.manifest.id) ? t('确认更新插件') : t('确认安装插件')}</h3><button className="icon-btn" onClick={() => setPendingInstall(null)}><X size={18} /></button></div>
             <div className="modal-body">
               <div style={{ fontWeight: 600 }}>{pendingInstall.manifest.name} <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 12 }}>v{pendingInstall.manifest.version}{pendingInstall.manifest.author ? ` · ${pendingInstall.manifest.author}` : ''}</span></div>
               {pendingInstall.manifest.description && <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>{pendingInstall.manifest.description}</p>}
@@ -262,6 +262,23 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
                 {pendingInstall.manifest.permissions.map(v => <span key={v} className="plugin-chip warn">{t('权限')} · {t(PERM_LABEL[v])}</span>)}
                 {(pendingInstall.manifest.hosts ?? []).map(h => <span key={h} className="plugin-chip">{h}</span>)}
               </div>
+              {pendingInstall.manifest.provides.includes('adapter') && (
+                <p style={{ fontSize: 12.5, color: 'var(--red)', lineHeight: 1.6 }}>
+                  {t('注意：这是余额适配器插件。启用后，App 会在保险箱解锁时把下列平台账户的明文 API Key 交给它查询余额（包括自动巡检）：{providers}', { providers: (pendingInstall.manifest.providers ?? []).join('、') || '—' })}
+                </p>
+              )}
+              {pendingInstall.manifest.process && (
+                <p style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6 }}>
+                  {t('启动命令')}：<code>{pendingInstall.manifest.process.command} {(pendingInstall.manifest.process.args ?? []).join(' ')}</code>
+                </p>
+              )}
+              {(() => {
+                const old = plugins.find(p => p.manifest.id === pendingInstall.manifest.id)
+                if (!old) return null
+                const ex = pluginAccessExpansion(old.manifest, pendingInstall.manifest)
+                if (!ex.permissions.length && !ex.hosts.length && !ex.providers.length && !ex.processAdded) return null
+                return <p style={{ fontSize: 12.5, color: 'var(--red)', lineHeight: 1.6 }}>{t('本次更新扩大了访问范围（新增权限、域名或适配平台），安装后将默认停用，请核对后在列表里手动启用。')}</p>
+              })()}
               <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.6 }}>{t('请只安装来源可信的插件。插件代码会在沙箱中运行，但其声明域名内的数据请求由你授权。')}</p>
             </div>
             <div className="modal-foot">

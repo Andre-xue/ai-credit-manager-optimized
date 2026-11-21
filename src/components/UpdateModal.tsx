@@ -121,7 +121,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
                       <Smartphone size={16} /> {t('下载最新 APK')}
                     </button>
                   ) : (
-                    <button className="btn" style={{ width: '100%' }} onClick={() => void openExternal(releaseUrl || 'https://github.com/Andre-xue/ai-credit-manager/releases/latest')}>
+                    <button className="btn" style={{ width: '100%' }} onClick={() => void openExternal(releaseUrl || 'https://github.com/Andre-xue/ai-credit-manager-optimized/releases/latest')}>
                       <ExternalLink size={16} /> {t('前往下载页')}
                     </button>
                   )}
@@ -169,7 +169,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
                   <div className="upd-hint">{fallback
                     ? t('检查瞬间新版本的安装包可能尚未上传完。下面提供最近一个可直接安装的稳定版本；稍等几分钟再检查更新，即可升级到最新版。下载覆盖安装不会丢失数据。')
                     : t('可到 GitHub 下载页获取最新安装包，下载后覆盖安装即可，数据不会丢失。')}</div>
-                  <button className="btn primary" style={{ width: '100%' }} onClick={() => void openExternal(releaseUrl || 'https://github.com/Andre-xue/ai-credit-manager/releases/latest')}>
+                  <button className="btn primary" style={{ width: '100%' }} onClick={() => void openExternal(releaseUrl || 'https://github.com/Andre-xue/ai-credit-manager-optimized/releases/latest')}>
                     <ExternalLink size={16} /> {fallback ? t('前往下载 {version}', { version: versionText }) : t('前往下载页')}
                   </button>
                 </>

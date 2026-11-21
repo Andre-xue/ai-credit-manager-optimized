@@ -107,6 +107,12 @@ describe('isHostAllowed', () => {
     expect(isHostAllowed('https://example.com/', [])).toBe(false)
     expect(isHostAllowed('https://example.com/', undefined)).toBe(false)
   })
+  it('协议收口（v0.1.285）：公网域名只许 https，本机才许 http', () => {
+    expect(isHostAllowed('http://api.example.com/v1', ['example.com'])).toBe(false)
+    expect(isHostAllowed('ftp://example.com/', ['example.com'])).toBe(false)
+    expect(isHostAllowed('http://127.0.0.1:11434/api/tags', ['127.0.0.1'])).toBe(true)
+    expect(isHostAllowed('http://localhost:1234/v1', ['localhost'])).toBe(true)
+  })
 })
 
 describe('插件安装与私有存储', () => {
@@ -132,5 +138,16 @@ describe('插件安装与私有存储', () => {
     expect(p.code).toBe('v2')
     expect(p.enabled).toBe(false)
     expect(p.source).toBe('file')
+  })
+
+  it('更新时扩大权限/域名会默认停用（v0.1.285），无扩大则保留启用状态', () => {
+    installPlugin(validPkg, 'editor')
+    expect(loadPlugins()[0].enabled).toBe(true)
+    // 仅改代码：保留启用
+    installPlugin({ ...validPkg, code: 'v2' }, 'file')
+    expect(loadPlugins()[0].enabled).toBe(true)
+    // 新增域名：默认停用
+    installPlugin({ ...validPkg, manifest: { ...validPkg.manifest, hosts: [...(validPkg.manifest.hosts ?? []), 'evil.example.com'] } }, 'file')
+    expect(loadPlugins()[0].enabled).toBe(false)
   })
 })

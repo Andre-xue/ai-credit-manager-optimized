@@ -12,7 +12,10 @@ import sys
 MARKER = "// ACM-STABLE-DEBUG-SIGNING"
 BLOCK = f"""
 {MARKER}
-// 固定 debug 签名：storeFile 由 CI 环境变量显式指定，保证每版签名一致、可覆盖安装
+// 固定签名：storeFile 由 CI 环境变量显式指定，保证每版签名一致、可覆盖安装。
+// v0.1.285 起改走 release 构建：同一把固定密钥同时注入 debug 与 release 两套 signingConfig，
+// release 构建的证书指纹与此前 debug 包完全一致（同一 keystore），老用户可直接覆盖安装，
+// 且 release 构建不再带 android:debuggable=true。
 android {{
     signingConfigs {{
         debug {{
@@ -20,6 +23,17 @@ android {{
             storePassword "android"
             keyAlias "androiddebugkey"
             keyPassword "android"
+        }}
+        release {{
+            storeFile file(System.getenv("ACM_DEBUG_KEYSTORE"))
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }}
+    }}
+    buildTypes {{
+        release {{
+            signingConfig signingConfigs.release
         }}
     }}
 }}

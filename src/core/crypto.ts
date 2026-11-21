@@ -39,7 +39,7 @@ export function isVaultInitialized(): boolean {
 
 /** 首次设置主密码。校验位用于 subsequent 验证，但不能反推密码。 */
 export async function initVault(password: string): Promise<void> {
-  if (password.length < 6) throw new Error('主密码至少 6 位')
+  if (password.length < 8) throw new Error('主密码至少 8 位（云同步后密文可被离线猜测，建议用更长的密码）')
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const key = await deriveKey(password, salt)
   const verifyIv = crypto.getRandomValues(new Uint8Array(12))
@@ -104,7 +104,7 @@ export async function changeMasterPassword(
   newPassword: string,
   ciphertexts: string[],
 ): Promise<string[]> {
-  if (newPassword.length < 6) throw new Error('新密码至少 6 位')
+  if (newPassword.length < 8) throw new Error('新密码至少 8 位（云同步后密文可被离线猜测，建议用更长的密码）')
   if (!(await verifyVault(oldPassword))) throw new Error('原主密码错误')
 
   // 先用旧密码解密全部（失败则中止，不改动保险箱）

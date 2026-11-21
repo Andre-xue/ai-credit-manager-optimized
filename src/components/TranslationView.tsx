@@ -16,6 +16,7 @@ import { HoldToConfirm } from './HoldToConfirm'
 import { t } from '../core/i18n'
 import { chooseBackupFolder } from '../core/keyBackup'
 import { isDesktopApp } from '../core/openExternal'
+import { saveExportFile } from '../core/saveFile'
 import {
   readFilesFromPaths, readFilesFromDataTransfer, readOneFile, onTauriFileDrop,
   type ImportedFile,
@@ -267,7 +268,8 @@ export function TranslationView({ accounts, notify, settings, serviceController,
   // 图片译文图跟随当前布局选择
   const activeLayoutsForImage: BilingualLayout[] = bilingual ? layouts : ['side-by-side']
 
-  // 保存文件：桌面指定目录走 Tauri 写入，否则浏览器下载
+  // 保存文件：桌面指定目录走 Tauri 写入；桌面未指定目录走统一导出（弹目录选择，
+  // WKWebView 里锚点下载点了没落地也无报错，v0.1.285）；其余端浏览器下载
   const saveFile = async (filename: string, content: string) => {
     if (isDesktopApp() && exportDir) {
       const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
@@ -277,6 +279,10 @@ export function TranslationView({ accounts, notify, settings, serviceController,
         return path
       }
     }
+    if (isDesktopApp()) {
+      const r = await saveExportFile(filename, '\ufeff' + content)
+      return r.where ?? filename
+    }
     const blob = new Blob(['\ufeff' + content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
@@ -284,9 +290,13 @@ export function TranslationView({ accounts, notify, settings, serviceController,
     return filename
   }
 
-  // 保存二进制文件（docx / 图片）：桌面走 write_binary_to_dir，否则 Blob 下载
+  // 保存二进制文件（docx / 图片）：桌面走 write_binary_to_dir / 统一导出，否则 Blob 下载
   const saveBinary = async (filename: string, data: Uint8Array | ArrayBuffer, mime: string) => {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data
+    if (isDesktopApp() && !exportDir) {
+      await saveExportFile(filename, new Blob([bytes as BlobPart], { type: mime }))
+      return
+    }
     if (isDesktopApp() && exportDir) {
       const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
       const invoke = w.__TAURI_INTERNALS__?.invoke
@@ -303,8 +313,12 @@ export function TranslationView({ accounts, notify, settings, serviceController,
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  // 下载图片译文图（Canvas 生成，data URL）
+  // 下载图片译文图（Canvas 生成，data URL）；桌面端走统一导出（锚点下载在 WKWebView 里可能无声失败）
   const downloadImage = (dataUrl: string, filename: string) => {
+    if (isDesktopApp()) {
+      void fetch(dataUrl).then(r => r.blob()).then(b => saveExportFile(filename, b))
+      return
+    }
     const a = document.createElement('a'); a.href = dataUrl; a.download = filename; a.click()
   }
 
