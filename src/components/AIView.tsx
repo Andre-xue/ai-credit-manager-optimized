@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, Pencil,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, Pencil, ArrowLeft,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -781,17 +781,25 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setProbing(false)
     notify(`引擎探测完成（共 ${targets.length} 个）`)
   }
-  // ---- 提示词库 ----
+  // ---- 提示词库（完整页面） ----
   const [promptsOpen, setPromptsOpen] = useState(false)
   const [promptTitle, setPromptTitle] = useState('')
+  const [promptBody, setPromptBody] = useState('')
+  const [promptQuery, setPromptQuery] = useState('')
   const promptList = prompts ?? []
-  const savePromptFromInput = () => {
-    const body = input.trim()
-    if (!body) { notify('输入框是空的，先写好提示词再存为模板'); return }
+  const openPromptsPage = () => {
+    // 打开整页时把聊天输入框里已写的内容带进新建表单，方便直接存为模板
+    setPromptBody(input)
+    setPromptsOpen(true)
+  }
+  const savePrompt = () => {
+    const body = promptBody.trim()
+    if (!body) { notify('先写好提示词正文再保存'); return }
     if (!onPromptsChange) return
     const title = promptTitle.trim() || body.slice(0, 18)
     onPromptsChange([{ id: `pt-${Date.now()}`, title, body, createdAt: new Date().toISOString() }, ...promptList])
     setPromptTitle('')
+    setPromptBody('')
     notify(`已存为模板「${title}」`)
   }
   const insertPrompt = (body: string) => {
@@ -888,6 +896,59 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     </div>}
   </div>
 
+  // ---- 提示词库整页：点「提示词」后整页打开，不再是小弹层 ----
+  const shownPrompts = promptQuery.trim()
+    ? promptList.filter(p => p.title.toLowerCase().includes(promptQuery.trim().toLowerCase()) || p.body.toLowerCase().includes(promptQuery.trim().toLowerCase()))
+    : promptList
+  if (promptsOpen) {
+    return (
+      <div className="ai-page prompts-page">
+        <div className="prompts-page-inner">
+          <div className="prompts-page-head">
+            <button className="btn sm" onClick={() => setPromptsOpen(false)}><ArrowLeft size={15} /> 返回聊天</button>
+            <div className="prompts-page-title">
+              <h2>提示词库</h2>
+              <span>共 {promptList.length} 个模板 · 随云同步，跨设备可用 · 点「插入」放回聊天输入框，正文里的 {'{变量}'} 插入后自己改</span>
+            </div>
+          </div>
+
+          <div className="prompts-new">
+            <div className="prompts-new-title">新建模板</div>
+            <input className="input" placeholder="模板标题（留空取正文前 18 字）" value={promptTitle} onChange={e => setPromptTitle(e.target.value)} />
+            <textarea className="input prompts-new-body" rows={5} placeholder="提示词正文，例如：你是一位资深翻译，把下面的内容翻译成英文：{内容}" value={promptBody} onChange={e => setPromptBody(e.target.value)} />
+            <div className="prompts-new-foot">
+              <span>打开本页时已自动带入聊天输入框里写好的内容，可直接修改后保存</span>
+              <button className="btn primary" onClick={savePrompt}>保存模板</button>
+            </div>
+          </div>
+
+          <div className="prompts-search">
+            <Search size={15} />
+            <input className="input" placeholder="搜索模板标题或正文…" value={promptQuery} onChange={e => setPromptQuery(e.target.value)} />
+          </div>
+
+          {promptList.length === 0 && <div className="prompts-empty">还没有模板。在上方写好标题和正文，点「保存模板」就会出现在这里。</div>}
+          {promptList.length > 0 && shownPrompts.length === 0 && <div className="prompts-empty">没有匹配「{promptQuery}」的模板。</div>}
+          <div className="prompts-grid">
+            {shownPrompts.map(p => (
+              <div key={p.id} className="prompt-card">
+                <div className="prompt-card-title">{p.title}</div>
+                <div className="prompt-card-body">{p.body}</div>
+                <div className="prompt-card-foot">
+                  <span className="prompt-card-date">{p.createdAt?.slice(0, 10) ?? ''}</span>
+                  <span className="prompt-card-actions">
+                    <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(p.body).then(() => notify('已复制模板正文')).catch(() => notify('复制失败，请手动复制')) }}><Copy size={13} /> 复制</button>
+                    <button className="btn sm primary" onClick={() => insertPrompt(p.body)}>插入</button>
+                    <button className="icon-btn" title="删除模板" onClick={() => onPromptsChange?.(promptList.filter(x => x.id !== p.id))}><Trash2 size={14} /></button>
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`ai-page ai-layout-${layoutMode}`}>
       {/* 手机端底部弹层遮罩：任一下拉打开时出现，点空白处关闭（桌面端 CSS 隐藏） */}
@@ -1151,7 +1212,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 <Cpu size={13} /> 引擎 <ChevronDown size={13} />
               </button>
             )}
-            <button className="ai-model-btn" onClick={() => setPromptsOpen(v => !v)} title="提示词库：常用提示词存成模板，一键插入（可跨设备同步）">
+            <button className="ai-model-btn" onClick={openPromptsPage} title="提示词库：常用提示词存成模板，一键插入（可跨设备同步）">
               <BookMarked size={13} /> 提示词
             </button>
           </div>
@@ -1159,29 +1220,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         </div>
       </div>
       {/* 右侧引擎选择面板 */}
-      {promptsOpen && (
-        <div className="ai-prompts-panel">
-          <div className="ai-prompts-head">
-            <b>提示词库</b>
-            <span className="hint">点模板插入输入框；正文里的 {'{变量}'} 插入后自己改</span>
-            <button className="icon-btn" onClick={() => setPromptsOpen(false)}><X size={15} /></button>
-          </div>
-          {promptList.length === 0 && <div className="ai-prompts-empty">还没有模板。在下面写好标题，把输入框里的内容存为模板。</div>}
-          {promptList.map(p => (
-            <div key={p.id} className="ai-prompt-item">
-              <button className="ai-prompt-main" onClick={() => insertPrompt(p.body)} title={p.body}>
-                <b>{p.title}</b>
-                <span>{p.body.slice(0, 60)}{p.body.length > 60 ? '…' : ''}</span>
-              </button>
-              <button className="icon-btn" title="删除模板" onClick={() => onPromptsChange?.(promptList.filter(x => x.id !== p.id))}><Trash2 size={14} /></button>
-            </div>
-          ))}
-          <div className="ai-prompts-add">
-            <input className="input" placeholder="模板标题（留空取正文前 18 字）" value={promptTitle} onChange={e => setPromptTitle(e.target.value)} />
-            <button className="btn sm primary" onClick={savePromptFromInput}>把当前输入存为模板</button>
-          </div>
-        </div>
-      )}
       {enginePanelOpen && currentAccount && (
         <>
           <div className="engine-backdrop" onClick={() => setEnginePanelOpen(false)} />
