@@ -671,6 +671,17 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* Key 管理手机端卡片（v0.1.248）：替代表格渲染，纵向排布、字段带标签、操作在卡底 */
+.key-cards { display: flex; flex-direction: column; gap: 12px; }
+.key-cards-empty { text-align: center; color: var(--text-3); padding: 40px 16px; font-size: 13px; }
+.key-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; }
+.key-card-head { display: flex; align-items: center; gap: 9px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.key-card-title { flex: 1; min-width: 0; }
+.key-card-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--border); }
+.key-card-label { font-size: 12px; color: var(--text-3); flex: none; }
+.key-card-actions { display: flex; gap: 8px; padding-top: 10px; }
+.key-card-actions .key-action { width: 34px; height: 34px; }
+
 /* 手机 AI 页三修 + 底部栏联动（v0.1.247）：
    ① 顶部固定胶囊原为三键设计、现只剩宫格一键 → 收窄为只包住按钮，消除空白标题栏；
    ② AI 页高度锁定：主区不滚、空对话页面不再滑动、消息不被胶囊遮挡；

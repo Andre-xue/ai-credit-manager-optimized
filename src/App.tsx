@@ -1261,7 +1261,7 @@ function App() {
 
           {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> 智能粘贴</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
           {tab === 'keys' && <KeysView
-            state={state} notify={notify}
+            state={state} notify={notify} isPhone={isPhone}
             onAudit={audit}
             onImportFile={handleImportFile}
             onExport={() => setExportOpen(true)}
@@ -2195,8 +2195,8 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit }: {
-  state: AppState; notify: (m: string) => void; onOpenVault: () => void;
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone }: {
+  state: AppState; notify: (m: string) => void; onOpenVault: () => void; isPhone?: boolean;
   onImportFile: (file?: File) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
   onRequestBackup: (ids: string[], title: string, confirmLabel: string, after: () => void, backupOnly?: boolean) => void;
@@ -2306,6 +2306,106 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const currentPage = Math.min(page, totalPages)
   const pageItems = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
 
+  /** 手机端账户卡片：与桌面表格同一套数据/操作，纵向排布（表格在窄屏会被挤压错位，故手机端不用表格） */
+  const renderKeyCard = (a: AppState['accounts'][number]) => {
+    const provider = PROVIDER_MAP[a.providerId]
+    const plain = revealed[a.id]
+    const q = latestQuota(state.quotas, a.id)
+    const balance = q ? `${(q.total - q.used).toLocaleString()} ${UNIT_LABEL[q.unit]}` : '未录入'
+    const adapter = getAdapter(a.providerId)
+    const h = health[a.id]
+    const busyH = checking.has(a.id)
+    return (
+      <div className="key-card" key={a.id}>
+        <div className="key-card-head">
+          <input type="checkbox" checked={selectedKeys.has(a.id)} onChange={e => {
+            const next = new Set(selectedKeys)
+            if (e.target.checked) next.add(a.id); else next.delete(a.id)
+            setSelectedKeys(next)
+          }} />
+          <ProviderLogo provider={provider} size={30} />
+          <div className="key-card-title">
+            <div className="key-name" title={a.label}>{a.label}</div>
+            <div className="key-sub">{provider?.shortName ?? a.providerId}</div>
+          </div>
+          <button className={`health-badge ${busyH ? 'checking' : h ? h.status : 'none'}`} disabled={busyH}
+            title={busyH ? '正在检查…' : h ? `${HEALTH_LABEL[h.status]}：${h.message}${h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : ''}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '未检查 · 点击检查该 Key 是否可用'}
+            onClick={() => void runHealthCheck([a])}>
+            {busyH ? <Loader2 size={16} style={{ animation: 'acm-spin 1s linear infinite' }} /> : <HeartPulse size={16} />}
+          </button>
+        </div>
+        <div className="key-card-row">
+          <span className="key-card-label">余额</span>
+          <div className="row" style={{ gap: 5 }}>
+            {showBalance[a.id] && <span className="mono" style={{ fontSize: 12 }}>{balance}</span>}
+            <button className="icon-btn" title={showBalance[a.id] ? '隐藏余额' : '显示余额（需先解锁保险箱）'}
+              onClick={() => {
+                if (showBalance[a.id]) { setShowBalance(s => ({ ...s, [a.id]: false })); return }
+                if (vaultPwd) { setShowBalance(s => ({ ...s, [a.id]: true })); return }
+                setPendingView({ kind: 'balance', id: a.id })
+                setUnlockOpen(true)
+              }}>{showBalance[a.id] ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+            {adapter.supported && <button className="icon-btn" title="刷新官方余额"
+              disabled={refreshing.has(a.id)}
+              onClick={async () => {
+                if (!plain) { notify('请先解锁保险箱'); return }
+                setRefreshing(s => new Set(s).add(a.id))
+                try {
+                  const r = await adapter.fetchUsage!(plain)
+                  onQuotaFetched(a.id, r.used, r.total, r.unit)
+                  notify(`余额已更新：${formatUsageBalance(r)}`)
+                } catch (e: any) { notify(errorText(e, '获取官方余额失败')) }
+                finally { setRefreshing(s => { const n = new Set(s); n.delete(a.id); return n }) }
+              }}><RefreshCw size={14} style={refreshing.has(a.id) ? { animation: 'acm-spin 1s linear infinite' } : undefined} /></button>}
+          </div>
+        </div>
+        <div className="key-card-row">
+          <span className="key-card-label">API Key</span>
+          <button className="icon-btn" title="查看完整 Key（需先解锁保险箱）"
+            onClick={() => {
+              if (plain) { onAudit('查看Key', a.label); setRevealKeyTarget({ id: a.id, label: a.label, plain }); return }
+              setPendingView({ kind: 'key', id: a.id })
+              setUnlockOpen(true)
+            }}><Eye size={14} /></button>
+        </div>
+        <div className="key-card-row">
+          <span className="key-card-label">官方 Key 页</span>
+          <KeyPageButton provider={provider.id === 'voice-config' && a.voiceProvider && VOICE_KEY_PROVIDER[a.voiceProvider]
+            ? (PROVIDER_MAP[VOICE_KEY_PROVIDER[a.voiceProvider]] ?? provider)
+            : provider} notify={notify} />
+        </div>
+        {a.note && <div className="key-card-row"><span className="key-card-label">备注</span><span className="key-note">{a.note}</span></div>}
+        <div className="key-card-row">
+          <span className="key-card-label">分组</span>
+          {a.group ? <span className="group-chip">{a.group}</span> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>未分组</span>}
+        </div>
+        <div className="key-card-actions">
+          <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
+          <button className="key-action" title="复制 Key" onClick={async () => {
+            if (!plain) { notify('请先解锁保险箱'); return }
+            const okCopy = await copyKeyWithAutoClear(plain)
+            if (okCopy) { onAudit('复制Key', a.label); notify('API Key 已复制（30 秒后自动清除剪贴板）') }
+            else notify('复制失败，请检查浏览器权限')
+          }}><Copy size={15} /></button>
+          <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
+          {adapter.supported && <button className="key-action" title="查询官方用量" onClick={async () => {
+            if (!plain) { notify('请先解锁保险箱'); return }
+            try {
+              const r = await adapter.fetchUsage!(plain)
+              onQuotaFetched(a.id, r.used, r.total, r.unit)
+              notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
+            } catch (e: any) { notify(errorText(e, '查询失败')) }
+          }}><RefreshCw size={15} /></button>}
+          <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
+            onRemoveKeys([a.id])
+            setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
+            setRevealed(prev => { const n = { ...prev }; delete n[a.id]; return n })
+          })} />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="keys-header">
@@ -2378,6 +2478,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         </div>
       )}
 
+      {isPhone ? (
+        <div className="key-cards">
+          {pageItems.length === 0
+            ? <div className="key-cards-empty">{keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前筛选下没有密钥'}</div>
+            : pageItems.map(a => renderKeyCard(a))}
+        </div>
+      ) : (
       <div className="panel key-table-wrap">
         <table className="key-table">
           <thead>
@@ -2519,6 +2626,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           </tbody>
         </table>
       </div>
+      )}
 
       <SelectionBar
         selectedCount={selectedKeys.size} totalOnPage={pageItems.length}
