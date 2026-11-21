@@ -3625,7 +3625,7 @@ function PlatformPickerModal({ onClose, onPick }: {
     .filter(g => g.items.length > 0)
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="modal" style={{ maxWidth: 640 }}>
+      <div className="modal picker-modal" style={{ maxWidth: 640 }}>
         <div className="modal-head"><h3>选择平台</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 12 }}>按模型功能分类 · 共 {PROVIDERS.length} 个平台</div>

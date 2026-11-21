@@ -671,6 +671,14 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 弹窗头尾固定（v0.1.251）：此前整个弹窗一起滚，标题/关闭/取消会随滚动消失；
+   改为弹窗纵向 flex、中间 body 独立滚动，头尾常驻。选平台弹窗再进一步：搜索与分类固定，只滚平台网格 */
+.modal:has(> .modal-body) { display: flex; flex-direction: column; overflow: hidden; }
+.modal:has(> .modal-body) > .modal-head, .modal:has(> .modal-body) > .modal-foot { flex: none; }
+.modal:has(> .modal-body) > .modal-body { overflow-y: auto; min-height: 0; }
+.modal.picker-modal .modal-body { display: flex; flex-direction: column; overflow: hidden; }
+.modal.picker-modal .platform-groups { overflow-y: auto; min-height: 0; }
+
 /* 工具页筛选折叠下拉（v0.1.249）：四组收起为胶囊按钮，点开面板多选 */
 .agent-filter-bar { position: relative; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 2px 0 12px; }
 .agent-filter-chip { display: inline-flex; align-items: center; gap: 5px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); font-size: 13px; font-weight: 600; color: var(--text-2); cursor: pointer; }
