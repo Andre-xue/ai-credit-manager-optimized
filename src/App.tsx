@@ -4504,7 +4504,7 @@ function SelectionBar({ selectedCount, totalOnPage, allSelected, onToggleAll, on
 }
 
 /** 开关组件 */
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, danger }: { checked: boolean; onChange: (v: boolean) => void; danger?: boolean }) {
   // 果冻动画：null=静态，'on'/'off'=正在向对应方向滑动
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
   const prevChecked = useRef(checked)
@@ -4520,7 +4520,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
     <button
       role="switch" aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`jelly-toggle ${checked ? 'is-on' : ''}`}
+      className={`jelly-toggle ${checked ? 'is-on' : ''} ${danger ? 'danger' : ''}`}
       aria-label={checked ? '关闭' : '开启'}
     >
       <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
@@ -4532,16 +4532,19 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 function SettingsSection({ title, desc, icon: Icon, tone = 'indigo', children }: {
   title: string; desc?: string; icon?: typeof Settings; tone?: 'indigo' | 'green' | 'amber' | 'blue' | 'red'; children: React.ReactNode
 }) {
+  // 分段可折叠：点标题栏收起/展开，设置项多时不用长滚（v0.1.259）
+  const [open, setOpen] = useState(true)
   return (
-    <section className="set-card">
-      <div className="set-card-head">
+    <section className={`set-card ${open ? '' : 'collapsed'}`}>
+      <div className="set-card-head collapsible" onClick={() => setOpen(o => !o)} title={open ? '点击收起' : '点击展开'}>
         {Icon && <span className={`set-card-icon ${tone}`}><Icon size={17} /></span>}
         <div className="set-card-heading">
           <h3>{title}</h3>
           {desc && <p>{desc}</p>}
         </div>
+        <ChevronDown size={16} className={`set-card-chevron ${open ? 'open' : ''}`} />
       </div>
-      <div className="set-card-body">{children}</div>
+      {open && <div className="set-card-body">{children}</div>}
     </section>
   )
 }
@@ -5178,10 +5181,10 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
             <div className="clear-cat-list">
               {CLEAR_CATS.map(c => (
-                <label key={c.key} className="clear-cat">
-                  <input type="checkbox" checked={clearSel.includes(c.key)} onChange={() => toggleClearCat(c.key)} />
-                  {c.label}<span>{c.hint}</span>
-                </label>
+                <div key={c.key} className="clear-cat">
+                  <div className="clear-cat-text"><span>{c.label}</span><small>{c.hint}</small></div>
+                  <Toggle danger checked={clearSel.includes(c.key)} onChange={() => toggleClearCat(c.key)} />
+                </div>
               ))}
             </div>
           </SettingsSection>
