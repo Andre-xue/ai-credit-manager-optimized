@@ -80,3 +80,20 @@ describe('删除前密钥备份', () => {
     }
   })
 })
+
+describe('桌面二进制写入参数名契约（v0.1.309 回归）', () => {
+  it('所有 write_binary_to_dir 调用都传 contentBase64（驼峰），不传 content_base64', async () => {
+    const { readFileSync } = await import('node:fs')
+    const files = [
+      'src/core/keyBackup.ts',
+      'src/core/mediaGeneration.ts',
+      'src/core/saveFile.ts',
+      'src/components/TranslationView.tsx',
+    ]
+    for (const f of files) {
+      const src = readFileSync(f, 'utf8')
+      expect(src, f).not.toContain('content_base64')
+      if (src.includes('write_binary_to_dir')) expect(src, f).toContain('contentBase64')
+    }
+  })
+})

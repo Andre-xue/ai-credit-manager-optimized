@@ -119,7 +119,7 @@ export async function saveMedia(url: string, kind: MediaKind, filenameBase: stri
     }
     if (!dir) throw new Error('已取消保存')
     const base64 = await toBase64(blob)
-    await invoke('write_binary_to_dir', { dir, filename, content_base64: base64 })
+    await invoke('write_binary_to_dir', { dir, filename, contentBase64: base64 })
     return `${dir}/${filename}`
   }
 

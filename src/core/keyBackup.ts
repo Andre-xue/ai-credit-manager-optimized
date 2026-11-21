@@ -452,7 +452,7 @@ export async function backupToLocalFile(backup: KeyBackupFile, dir?: string | nu
         const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
         const invoke = w.__TAURI_INTERNALS__?.invoke
         if (!invoke) throw new Error('桌面接口不可用')
-        const path = await invoke('write_binary_to_dir', { dir, filename, content_base64: base64 })
+        const path = await invoke('write_binary_to_dir', { dir, filename, contentBase64: base64 })
         return { ok: true, location: path }
       }
       if (isNativeApp()) {

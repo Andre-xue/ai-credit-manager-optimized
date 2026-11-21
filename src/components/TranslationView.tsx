@@ -303,7 +303,7 @@ export function TranslationView({ accounts, notify, settings, serviceController,
       if (invoke) {
         let bin = ''
         for (const b of bytes) bin += String.fromCharCode(b)
-        await invoke('write_binary_to_dir', { dir: exportDir, filename, content_base64: btoa(bin) })
+        await invoke('write_binary_to_dir', { dir: exportDir, filename, contentBase64: btoa(bin) })
         return
       }
     }

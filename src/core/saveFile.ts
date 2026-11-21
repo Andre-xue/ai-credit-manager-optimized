@@ -54,7 +54,7 @@ export async function saveExportFile(filename: string, data: string | Blob, kind
           return { ok: true, where: path }
         }
         const base64 = await blobToBase64(blob)
-        const path = (await invoke('write_binary_to_dir', { dir, filename, content_base64: base64 })) as string
+        const path = (await invoke('write_binary_to_dir', { dir, filename, contentBase64: base64 })) as string
         return { ok: true, where: path }
       } catch (e) {
         return { ok: false, error: (e as Error)?.message ?? String(e) }
