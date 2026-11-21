@@ -3587,6 +3587,24 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
   }
   useEffect(() => { void detect() }, [])
 
+  // 一键启动：探测不到服务时直接在弹窗内拉起本机服务，起来后自动重新探测并选中
+  const [starting, setStarting] = useState(false)
+  const startService = async () => {
+    setStarting(true)
+    try {
+      const r = await startLocalService(serviceKey)
+      if (!r.ok) { notify(r.message); return }
+      notify(t('正在启动 {service}…', { service: expectService || provider.shortName }))
+      // 轮询等待服务真正开始监听（最多约 21 秒），命中后自动重新探测
+      for (let i = 0; i < 14; i++) {
+        await new Promise(res => setTimeout(res, 1500))
+        const url = await checkLocalService(serviceKey).catch(() => null)
+        if (url) { await detect(); return }
+      }
+      notify(t('启动命令已执行，但仍未探测到 {service}，请确认本机已正确安装后点「重新探测」', { service: expectService || provider.shortName }))
+    } finally { setStarting(false) }
+  }
+
   const submit = async () => {
     if (!selected) { notify('请先选择本机探测到的服务'); return }
     if (!path.trim()) { notify('请选择或输入模型'); return }
@@ -3642,7 +3660,14 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
                   </button>
                 ))}
               </div>}
-            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => void detect()} disabled={detecting}>{t('重新探测')}</button>
+            <div className="row" style={{ gap: 8, marginTop: 8 }}>
+              <button className="btn sm" onClick={() => void detect()} disabled={detecting || starting}>{t('重新探测')}</button>
+              {services.length === 0 && serviceKey !== 'lmstudio' && isDesktopApp() && (
+                <button className="btn sm primary" onClick={() => void startService()} disabled={detecting || starting}>
+                  {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
+                </button>
+              )}
+            </div>
           </div>
           <div className="form-row" style={{ marginTop: 12 }}>
             <label className="form-label">{t('选择模型')}

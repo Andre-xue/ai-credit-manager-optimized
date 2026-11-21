@@ -1287,3 +1287,11 @@ Object.assign(D, {
   '未探测到 ComfyUI，请先启动 ComfyUI，或在上方手动填写服务地址': { 'zh-TW': '未探測到 ComfyUI，請先啟動 ComfyUI，或在上方手動填寫服務地址', en: 'ComfyUI was not detected. Start ComfyUI first, or enter the service address manually above', ja: 'ComfyUIが検出されませんでした。先にComfyUIを起動するか、上の欄にサービスアドレスを手動で入力してください', ko: 'ComfyUI가 감지되지 않았습니다. 먼저 ComfyUI를 시작하거나 위에 서비스 주소를 직접 입력하세요' },
   '当前地址是 Ollama 的对话服务地址，不能用来生成媒体；已自动改回 ComfyUI 默认地址，请再点一次连接': { 'zh-TW': '目前地址是 Ollama 的對話服務地址，不能用來生成媒體；已自動改回 ComfyUI 預設地址，請再點一次連接', en: 'This address belongs to Ollama, a chat service that cannot generate media. It has been reset to the default ComfyUI address — please click Connect again', ja: 'このアドレスはOllamaのチャットサービスのもので、メディア生成には使えません。ComfyUIの既定アドレスに戻しましたので、もう一度「接続」を押してください', ko: '이 주소는 Ollama 채팅 서비스의 주소라 미디어 생성에 사용할 수 없습니다. ComfyUI 기본 주소로 되돌렸으니 연결을 다시 눌러 주세요' },
 })
+
+// ---- 补齐批次 15：添加本地账户弹窗一键启动（v0.1.270） ----
+Object.assign(D, {
+  '一键启动 {service}': { 'zh-TW': '一鍵啟動 {service}', en: 'Start {service}', ja: '{service}を起動', ko: '{service} 시작' },
+  '正在启动…': { 'zh-TW': '正在啟動…', en: 'Starting…', ja: '起動中…', ko: '시작 중…' },
+  '正在启动 {service}…': { 'zh-TW': '正在啟動 {service}…', en: 'Starting {service}…', ja: '{service}を起動しています…', ko: '{service} 시작 중…' },
+  '启动命令已执行，但仍未探测到 {service}，请确认本机已正确安装后点「重新探测」': { 'zh-TW': '啟動命令已執行，但仍未探測到 {service}，請確認本機已正確安裝後點「重新探測」', en: 'The start command ran, but {service} is still not detected. Make sure it is installed correctly, then tap "Detect again"', ja: '起動コマンドは実行されましたが、{service}がまだ検出されません。正しくインストールされているか確認してから「再検出」を押してください', ko: '시작 명령은 실행되었지만 {service}가 여전히 감지되지 않습니다. 올바르게 설치되었는지 확인한 뒤 "다시 감지"를 눌러 주세요' },
+})
