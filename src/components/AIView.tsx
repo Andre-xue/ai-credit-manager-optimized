@@ -12,6 +12,7 @@ import {
   loadModel, saveModel, streamChat, friendlyAiError,
   type ChatMessage, type AiModel,
 } from '../core/ai'
+import { saveExportFile } from '../core/saveFile'
 import { speakAsync, stopSpeak, getSavedVoice, cleanForAutoSpeech } from '../core/tts'
 import { startSpeechInput, type SpeechInputSession } from '../core/speechInput'
 import { listClonedVoices, type ClonedVoice } from '../core/voiceClone'
@@ -886,18 +887,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     return lines.join('\n')
   }
-  const downloadChat = () => {
-    const blob = new Blob([buildChatMarkdown()], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
+  const downloadChat = async () => {
     const p = (n: number) => String(n).padStart(2, '0')
     const d = new Date()
-    link.href = url
-    link.download = `AI对话记录-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`
-    link.click()
-    URL.revokeObjectURL(url)
+    const r = await saveExportFile(`AI对话记录-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`, buildChatMarkdown())
+    if (r.cancelled) return
     setExportOpen(false)
-    notify('对话记录已导出为 Markdown 文件')
+    notify(r.ok ? `对话记录已导出到：${r.where}` : `导出失败：${r.error ?? '未知错误'}`)
   }
 
   const onInput = (v: string) => {

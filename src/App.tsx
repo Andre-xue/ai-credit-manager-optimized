@@ -48,6 +48,7 @@ import { buildGatewayRoutes, gatewaySetRoutes, gatewayStart, gatewayStop, gatewa
 import { bindVaultPasswordNative, resolveBiometricVaultPassword, unbindVaultPasswordNative } from './core/biometric'
 import { copyKeyWithAutoClear } from './core/clipboard'
 import { buildBackup, parseBackup, type ParseBackupResult } from './core/backup'
+import { saveExportFile } from './core/saveFile'
 import { syncWidgetData } from './core/widgetData'
 import { buildEnvExport, buildJsonExport, type ToolExportItem } from './core/toolExport'
 import { totalPortfolioValue, monthlySpendByPlatform, DEFAULT_UNIT_PRICES, OFFICIAL_PRICES_AS_OF, officialUnitPrice, priceDrifted } from './core/value'
@@ -2527,17 +2528,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           if (plain) items.push({ providerId: a.providerId, label: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId, apiKey: plain, apiUrl: a.apiUrl || PROVIDER_MAP[a.providerId]?.apiBaseUrl || undefined })
           else missing.push(a.label || a.providerId)
         }
-        const doExport = () => {
+        const doExport = async () => {
           const content = toolExportFormat === 'env' ? buildEnvExport(items) : buildJsonExport(items)
-          const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-          const url = URL.createObjectURL(blob)
-          const link = document.createElement('a')
-          link.href = url
-          link.download = toolExportFormat === 'env' ? 'ai-keys.env' : 'ai-keys.json'
-          link.click()
-          URL.revokeObjectURL(url)
+          const r = await saveExportFile(toolExportFormat === 'env' ? 'ai-keys.env' : 'ai-keys.json', content)
+          if (r.cancelled) return
+          if (!r.ok) { notify(`导出失败：${r.error ?? '未知错误'}`); return }
           onAudit('导出工具配置', `${items.length} 个 Key · ${toolExportFormat === 'env' ? '.env' : 'JSON'}`)
-          notify(`已导出 ${items.length} 个 Key 的配置（明文，请妥善保管）`)
+          notify(`已导出到：${r.where}（${items.length} 个 Key 的配置，明文请妥善保管）`)
           setToolExportOpen(false)
         }
         return (
@@ -3238,13 +3235,11 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             e.target.value = ''
           }} />
         </label>
-        <button className="btn sm ghost" onClick={() => {
+        <button className="btn sm ghost" onClick={async () => {
           const csv = 'date,account,inputTokens,outputTokens,cost,model\n2026-01-01,我的账户,1000,500,0.15,gpt-4o\n'
-          const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
-          const url = URL.createObjectURL(blob)
-          const a = document.createElement('a'); a.href = url; a.download = 'usage-template.csv'; a.click()
-          URL.revokeObjectURL(url)
-          notify('模板已下载')
+          const r = await saveExportFile('usage-template.csv', '\ufeff' + csv)
+          if (r.cancelled) return
+          notify(r.ok ? `模板已保存到：${r.where}` : `导出失败：${r.error ?? '未知错误'}`)
         }}><Download size={13} /> CSV 模板</button>
         <span style={{ fontSize: 11.5, color: 'var(--text-3)', alignSelf: 'center' }}>列：date, account, inputTokens, outputTokens, cost, model</span>
       </div>
@@ -4361,15 +4356,10 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   // ---- 完整数据备份（导出/导入 JSON 文件） ----
   const backupInputRef = useRef<HTMLInputElement>(null)
   const [pendingImport, setPendingImport] = useState<Extract<ParseBackupResult, { ok: true }> | null>(null)
-  const doExportBackup = () => {
-    const blob = new Blob([buildBackup(state, APP_VERSION)], { type: 'application/json;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `ai-credit-manager-backup-${todayISO()}.json`
-    link.click()
-    URL.revokeObjectURL(url)
-    notify('完整备份已导出（包含全部数据；密钥为加密密文）')
+  const doExportBackup = async () => {
+    const r = await saveExportFile(`ai-credit-manager-backup-${todayISO()}.json`, buildBackup(state, APP_VERSION))
+    if (r.cancelled) return
+    notify(r.ok ? `完整备份已导出到：${r.where}（包含全部数据；密钥为加密密文）` : `导出失败：${r.error ?? '未知错误'}`)
   }
   const onBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
