@@ -141,7 +141,7 @@ async fn validate_resolved_public(u: &reqwest::Url) -> Result<(), String> {
     use std::net::ToSocketAddrs;
     let host = match u.host_str() { Some(h) => h.to_string(), None => return Ok(()) };
     if host == "localhost" || host.parse::<std::net::IpAddr>().is_ok() { return Ok(()) }
-    let port = u.port_or_known_port().unwrap_or(443);
+    let port = u.port().unwrap_or(if u.scheme() == "http" { 80 } else { 443 });
     let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port).to_socket_addrs()
         .map_err(|_| "域名解析失败".to_string())?.collect();
     if addrs.is_empty() { return Err("域名无有效解析结果".into()) }
@@ -579,8 +579,6 @@ async fn choose_save_dir() -> Result<Option<String>, String> {
     { Err("当前平台暂不支持选择保存目录，请使用默认下载".into()) }
 }
 
-/// 将文本文件写入指定目录
-#[tauri::command]
 /// 导出文件名净化（v0.1.285）：文件名来自文档标题/AI 生成名等不可信数据，
 /// 只允许单个文件名——拒绝路径分隔符、.. 与绝对路径，防止写出目标目录之外。
 fn safe_filename(filename: &str) -> Result<String, String> {
@@ -592,6 +590,8 @@ fn safe_filename(filename: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
+/// 将文本文件写入指定目录
+#[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
     use std::io::Write;
     let path = std::path::Path::new(&dir).join(safe_filename(&filename)?);
