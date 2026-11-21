@@ -3538,6 +3538,8 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
   // 就地输入主密码（无会话解锁/生物识别时）
   const [formPwd, setFormPwd] = useState('')
   const pwdRef = useRef<HTMLInputElement>(null)
+  // 探测序号：只有最新一次探测的结果可以落盘，避免旧探测晚返回覆盖新状态
+  const detectSeq = useRef(0)
   const setPwdFocus = () => pwdRef.current?.focus()
   const needInlinePwd = !sessionPwd && !getBiometricPassword()
   // 从本地服务拉取的已加载模型列表（选择式输入主入口）
@@ -3565,10 +3567,12 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
   const expectService = provider.id === 'local-ollama' ? 'Ollama'
     : provider.id === 'local-comfyui' ? 'ComfyUI' : ''
   const detect = async () => {
+    const seq = ++detectSeq.current
     setDetecting(true); setDetectErr('')
     // 先直查期望服务的默认端口（单服务指纹校验，命中即返回，不必跑全端口扫描）
     if (expectService) {
       const url = await checkLocalService(serviceKey).catch(() => null)
+      if (seq !== detectSeq.current) return
       if (url) {
         const port = Number(new URL(url).port) || (serviceKey === 'ollama' ? 11434 : serviceKey === 'comfyui' ? 8188 : 1234)
         const svc: LocalService = { service: expectService, host: '127.0.0.1', port, url }
@@ -3577,6 +3581,7 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
       }
     }
     const r = await detectLocalServices()
+    if (seq !== detectSeq.current) return
     // 按 provider 精确匹配：如添加 Ollama 只显示识别为 Ollama 的服务
     const matched = expectService ? r.services.filter(s => s.service === expectService) : r.services
     setServices(matched)
@@ -3591,6 +3596,9 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
   const [starting, setStarting] = useState(false)
   const startService = async () => {
     setStarting(true)
+    // 作废进行中的探测并退出「正在探测」状态：启动与探测互不阻塞，按钮点下去立刻有反馈
+    detectSeq.current++
+    setDetecting(false)
     try {
       const r = await startLocalService(serviceKey)
       if (!r.ok) { notify(r.message); return }
@@ -3663,7 +3671,7 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
             <div className="row" style={{ gap: 8, marginTop: 8 }}>
               <button className="btn sm" onClick={() => void detect()} disabled={detecting || starting}>{t('重新探测')}</button>
               {services.length === 0 && serviceKey !== 'lmstudio' && isDesktopApp() && (
-                <button className="btn sm primary" onClick={() => void startService()} disabled={detecting || starting}>
+                <button className="btn sm primary" onClick={() => void startService()} disabled={starting}>
                   {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
                 </button>
               )}

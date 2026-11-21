@@ -833,18 +833,31 @@ async fn check_local_service(key: String) -> Option<String> {
         .connect_timeout(Duration::from_millis(250))
         .build()
         .ok()?;
+    // 各端口并行探测：旧版顺序逐个敲，服务未启动时要挨个等超时（最坏 6 秒以上），
+    // 弹窗会长时间停在「正在探测」。并行后按端口优先级取第一个命中。
+    let mut handles = Vec::new();
     for &port in ports {
-        for host in ["127.0.0.1", "localhost"] {
-            let url = format!("http://{}:{}{}", host, port, path);
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if check(&json) {
-                            return Some(format!("http://127.0.0.1:{}", port))
+        let client = client.clone();
+        let path = path.to_string();
+        handles.push(tauri::async_runtime::spawn(async move {
+            for host in ["127.0.0.1", "localhost"] {
+                let url = format!("http://{}:{}{}", host, port, path);
+                if let Ok(resp) = client.get(&url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            if check(&json) {
+                                return Some(port);
+                            }
                         }
                     }
                 }
             }
+            None
+        }));
+    }
+    for h in handles {
+        if let Ok(Some(port)) = h.await {
+            return Some(format!("http://127.0.0.1:{}", port));
         }
     }
     None
