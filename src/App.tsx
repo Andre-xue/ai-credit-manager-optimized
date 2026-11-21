@@ -32,7 +32,7 @@ import {
 import { HoldToConfirm } from './components/HoldToConfirm'
 import {
   AGENT_TOOLS, CHECKIN_TOOLS, CATEGORY_TAGS, PLATFORM_TAGS,
-  type AgentTool, type AgentRegion, type AgentCategory, type AgentPlatform,
+  type AgentTool,
 } from './data/agentTools'
 import { currentCatalog, fetchCatalog, getUnseenTools, markCatalogSeen } from './core/agentCatalog'
 import { checkPriceUpdates, loadPriceAlerts, savePriceAlerts, lastPriceCheckAt, type PriceChange } from './core/priceWatch'
@@ -1963,10 +1963,27 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   const [tools, setTools] = useState<AgentTool[]>(initial.tools)
   const [updatedAt, setUpdatedAt] = useState<string | null>(initial.updatedAt)
   const [syncing, setSyncing] = useState(false)
-  const [region, setRegion] = useState<'all' | AgentRegion>('all')
-  const [checkin, setCheckin] = useState<'all' | 'yes' | 'no'>('all')
-  const [category, setCategory] = useState<'all' | AgentCategory>('all')
-  const [platform, setPlatform] = useState<'all' | AgentPlatform>('all')
+  // 筛选改为多选集合（空集 = 全部）：四组默认收起为按钮，点开下拉多选（v0.1.249）
+  const [regionSel, setRegionSel] = useState<Set<string>>(new Set())
+  const [signSel, setSignSel] = useState<Set<string>>(new Set())
+  const [catSel, setCatSel] = useState<Set<string>>(new Set())
+  const [platSel, setPlatSel] = useState<Set<string>>(new Set())
+  const [filterOpen, setFilterOpen] = useState<'region' | 'sign' | 'cat' | 'plat' | null>(null)
+  const filterBarRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!filterOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (filterBarRef.current && !filterBarRef.current.contains(e.target as Node)) setFilterOpen(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [filterOpen])
+  const toggleSel = (sel: Set<string>, setter: (s: Set<string>) => void, v: string) => {
+    const n = new Set(sel)
+    if (n.has(v)) n.delete(v); else n.add(v)
+    setter(n)
+    setPage(1)
+  }
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
   const [installed, setInstalled] = useState<Set<string>>(new Set())
@@ -2043,24 +2060,27 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
 
   // 多级筛选：地区 → 签到 → 功能 → 平台 → 关键词；再按使用量由高到低排序
   const filtered = useMemo(() => tools.filter(t =>
-    (region === 'all' || t.region === region) &&
-    (checkin === 'all' || (checkin === 'yes' ? t.canCheckin : !t.canCheckin)) &&
-    (category === 'all' || t.category === category) &&
-    (platform === 'all' || t.platforms.includes(platform)) &&
+    (regionSel.size === 0 || regionSel.has(t.region)) &&
+    (signSel.size === 0 || signSel.has(t.canCheckin ? 'yes' : 'no')) &&
+    (catSel.size === 0 || catSel.has(t.category)) &&
+    (platSel.size === 0 || t.platforms.some(p => platSel.has(p))) &&
     (!q || t.name.toLowerCase().includes(q) || t.nameEn.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q)),
-  ).sort((a, b) => b.usage - a.usage), [tools, region, checkin, category, platform, q])
+  ).sort((a, b) => b.usage - a.usage), [tools, regionSel, signSel, catSel, platSel, q])
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, pages)
   const pageItems = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   // 任一筛选变化时回到第一页
-  const reset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1) }
-  const setRegionP = reset(setRegion)
-  const setCheckinP = reset(setCheckin)
-  const setCategoryP = reset(setCategory)
-  const setPlatformP = reset(setPlatform)
   const setKeywordP = (v: string) => { setKeyword(v); setPage(1) }
+  const filterGroups = [
+    { key: 'region' as const, label: '地区', sel: regionSel, setter: setRegionSel, options: [{ v: 'cn', label: '🇨🇳 国内' }, { v: 'global', label: '🌍 海外' }] },
+    { key: 'sign' as const, label: '签到', sel: signSel, setter: setSignSel, options: [{ v: 'yes', label: '可签到' }, { v: 'no', label: '不可签到' }] },
+    { key: 'cat' as const, label: '功能', sel: catSel, setter: setCatSel, options: CATEGORY_TAGS.map(c => ({ v: c, label: c })) },
+    { key: 'plat' as const, label: '平台', sel: platSel, setter: setPlatSel, options: PLATFORM_TAGS.map(p => ({ v: p, label: p })) },
+  ]
+  const anyFilter = regionSel.size + signSel.size + catSel.size + platSel.size > 0
+  const clearAllFilters = () => { setRegionSel(new Set()); setSignSel(new Set()); setCatSel(new Set()); setPlatSel(new Set()); setPage(1) }
 
   const handleToggle = useCallback((id: string) => onToggle(id), [onToggle])
   const updatedLabel = updatedAt
@@ -2134,45 +2154,35 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
         <span className="agent-sync-time" title="目录数据最后更新时间">更新于 {updatedLabel}</span>
       </div>
 
-      {/* ① 地区 */}
-      <div className="agent-filter-row">
-        <span className="agent-filter-label">地区</span>
-        <div className="agent-filter">
-          {(['all', 'cn', 'global'] as const).map(r => (
-            <button key={r} className={`agent-filter-btn ${region === r ? 'active' : ''}`} onClick={() => setRegionP(r)}>
-              {r === 'all' ? '全部' : r === 'cn' ? '🇨🇳 国内' : '🌍 海外'}
-            </button>
-          ))}
-        </div>
-      </div>
-      {/* ② 可签到 / 不可签到 */}
-      <div className="agent-filter-row">
-        <span className="agent-filter-label">签到</span>
-        <div className="agent-filter">
-          {([['all', '全部'], ['yes', '可签到'], ['no', '不可签到']] as const).map(([v, label]) => (
-            <button key={v} className={`agent-filter-btn ${checkin === v ? 'active' : ''}`} onClick={() => setCheckinP(v)}>{label}</button>
-          ))}
-        </div>
-      </div>
-      {/* ③ 功能分类 */}
-      <div className="agent-filter-row">
-        <span className="agent-filter-label">功能</span>
-        <div className="agent-filter agent-filter-wrap">
-          <button className={`agent-filter-btn ${category === 'all' ? 'active' : ''}`} onClick={() => setCategoryP('all')}>全部</button>
-          {CATEGORY_TAGS.map(c => (
-            <button key={c} className={`agent-filter-btn ${category === c ? 'active' : ''}`} onClick={() => setCategoryP(c)}>{c}</button>
-          ))}
-        </div>
-      </div>
-      {/* ④ 平台分类 */}
-      <div className="agent-filter-row">
-        <span className="agent-filter-label">平台</span>
-        <div className="agent-filter agent-filter-wrap">
-          <button className={`agent-filter-btn ${platform === 'all' ? 'active' : ''}`} onClick={() => setPlatformP('all')}>全部</button>
-          {PLATFORM_TAGS.map(p => (
-            <button key={p} className={`agent-filter-btn ${platform === p ? 'active' : ''}`} onClick={() => setPlatformP(p)}>{p}</button>
-          ))}
-        </div>
+      {/* 筛选：四组默认收起为一颗按钮，点开下拉多选（与 AI 助手工具菜单同样的呈现方式） */}
+      <div className="agent-filter-bar" ref={filterBarRef}>
+        {filterGroups.map(g => (
+          <button key={g.key} className={`agent-filter-chip ${g.sel.size ? 'active' : ''} ${filterOpen === g.key ? 'open' : ''}`}
+            onClick={() => setFilterOpen(filterOpen === g.key ? null : g.key)}>
+            {g.label}
+            {g.sel.size > 0 && <span className="agent-filter-count">{g.sel.size}</span>}
+            <ChevronDown size={13} style={filterOpen === g.key ? { transform: 'rotate(180deg)' } : undefined} />
+          </button>
+        ))}
+        {anyFilter && <button className="agent-filter-clear" onClick={clearAllFilters}>清除筛选</button>}
+        {filterOpen && (() => {
+          const g = filterGroups.find(x => x.key === filterOpen)!
+          return (
+            <div className="agent-filter-menu">
+              <div className="agent-filter-menu-head">
+                <span>{g.label} · 可多选（不选 = 全部）</span>
+                {g.sel.size > 0 && <button onClick={() => { g.setter(new Set()); setPage(1) }}>清除本组</button>}
+              </div>
+              <div className="agent-filter-options">
+                {g.options.map(o => (
+                  <button key={o.v} className={`agent-filter-btn ${g.sel.has(o.v) ? 'active' : ''}`} onClick={() => toggleSel(g.sel, g.setter, o.v)}>
+                    {o.label}{g.sel.has(o.v) && <Check size={13} style={{ marginLeft: 4 }} />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
       </div>
 
       <div className="agent-result-head">
