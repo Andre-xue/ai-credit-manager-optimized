@@ -9,11 +9,11 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, EyeOff, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
-  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
+  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight, ChevronUp,
   Archive, ArchiveRestore, Puzzle,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
-import { isLocalProvider } from './core/types'
+import { isLocalProvider, mergeToolbarOrder } from './core/types'
 import { detectLocalServices, getSystemMemoryGb, checkLocalService, startLocalService, stopLocalService, stopServiceByPort, isServiceAppManaged, fetchLocalModels, chooseModelFile, type LocalService } from './core/localServices'
 import { buildReminders, filterUnsent, markSent, notifyPrefsOf } from './core/reminders'
 import { getNotificationPermission, requestNotificationPermission, showNotification, scheduleDailyCheckin, cancelDailyCheckin, type NotificationPermissionState } from './core/notifications'
@@ -4628,6 +4628,12 @@ const CLEAR_CATS: { key: ClearCat; label: string; hint: string }[] = [
   { key: 'calendar', label: '签到与日历数据', hint: '签到记录与福利标记' },
 ]
 
+/** AI 助手工具栏：工具键 → 设置页显示名（顺序由 mergeToolbarOrder 决定） */
+const AI_TOOLBAR_LABELS: Record<string, string> = {
+  autoSpeak: '自动朗读', voiceCall: '语音通话', chatSearch: '搜索对话', chatExport: '导出对话',
+  myData: '引用我的数据', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
+}
+
 function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone, onClearData }: {
   onClearData?: (cats: ClearCat[]) => void
   isPhone?: boolean
@@ -4957,19 +4963,14 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
           </SettingsSection>
 
-          <SettingsSection title="AI 助手工具栏" desc="AI 助手右上角工具按钮逐个开关（悬停按钮可看名称）；关掉的按钮不在页面上显示" icon={Wrench} tone="indigo">
-            {([
-              ['autoSpeak', '自动朗读'],
-              ['voiceCall', '语音通话'],
-              ['chatSearch', '搜索对话'],
-              ['chatExport', '导出对话'],
-              ['myData', '引用我的数据'],
-              ['compare', '多模型对比'],
-              ['sessions', '会话列表'],
-              ['clearChat', '清空对话'],
-            ] as const).map(([key, label]) => (
-              <SettingsRow key={key} title={label}>
-                <Toggle checked={s.aiToolbar?.[key] !== false} onChange={v => onChange({ aiToolbar: { ...(s.aiToolbar ?? {}), [key]: v } })} />
+          <SettingsSection title="AI 助手工具栏" desc="AI 助手右上角「全部功能」菜单里的工具：逐个开关显隐，用上下箭头调整顺序" icon={Wrench} tone="indigo">
+            {mergeToolbarOrder(s.aiToolbarOrder).map((key, idx, arr) => (
+              <SettingsRow key={key} title={AI_TOOLBAR_LABELS[key]}>
+                <div className="row" style={{ gap: 4, alignItems: 'center' }}>
+                  <button className="icon-btn" title={t('上移')} disabled={idx === 0} onClick={() => { const next = [...arr]; [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]; onChange({ aiToolbarOrder: next as string[] }) }}><ChevronUp size={15} /></button>
+                  <button className="icon-btn" title={t('下移')} disabled={idx === arr.length - 1} onClick={() => { const next = [...arr]; [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]]; onChange({ aiToolbarOrder: next as string[] }) }}><ChevronDown size={15} /></button>
+                  <Toggle checked={s.aiToolbar?.[key] !== false} onChange={v => onChange({ aiToolbar: { ...(s.aiToolbar ?? {}), [key]: v } })} />
+                </div>
               </SettingsRow>
             ))}
           </SettingsSection>

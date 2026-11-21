@@ -34,6 +34,7 @@ import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHis
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
+import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
@@ -886,6 +887,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
   // ---- 顶栏工具显隐（设置「AI 助手工具栏」逐个开关，缺省显示） ----
   const tbShow = (k: keyof AiToolbarPrefs) => settings?.aiToolbar?.[k] !== false
+  // 工具顺序：设置页可调序，菜单按此顺序渲染（CSS order）
+  const toolbarOrder = useMemo(() => mergeToolbarOrder(settings?.aiToolbarOrder), [settings?.aiToolbarOrder])
+  const toolOrder = (k: keyof AiToolbarPrefs) => toolbarOrder.indexOf(k)
   // 顶栏功能菜单（v0.1.240）：只保留一个入口图标，点开列出全部功能；选中后关闭，开关型功能变色
   const [toolsOpen, setToolsOpen] = useState(false)
   const toolsRef = useRef<HTMLDivElement>(null)
@@ -1077,42 +1081,47 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             {toolsOpen && (
               <div className="ai-tools-menu" role="menu">
                 {tbShow('autoSpeak') && (
-                  <button className={`ai-tools-item ${autoSpeak ? 'active' : ''}`} onClick={() => { toggleAutoSpeak(); setToolsOpen(false) }}>
+                  <button className={`ai-tools-item ${autoSpeak ? 'active' : ''}`} style={{ order: toolOrder('autoSpeak') }} onClick={() => { toggleAutoSpeak(); setToolsOpen(false) }}>
                     <Volume2 size={16} /><span>{t('自动朗读')}</span>{autoSpeak && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('voiceCall') && (
-                  <button className="ai-tools-item" disabled={!callEnabled} onClick={() => { setCallOpen(true); setToolsOpen(false) }}>
+                  <button className="ai-tools-item" style={{ order: toolOrder('voiceCall') }} disabled={!callEnabled} onClick={() => { setCallOpen(true); setToolsOpen(false) }}>
                     <Phone size={16} /><span>{t('语音通话')}{callEnabled ? '' : t('（当前模型不支持）')}</span>
                   </button>
                 )}
                 {tbShow('chatSearch') && (
-                  <button className={`ai-tools-item ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(''); setToolsOpen(false) }}>
+                  <button className={`ai-tools-item ${searchOpen ? 'active' : ''}`} style={{ order: toolOrder('chatSearch') }} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(''); setToolsOpen(false) }}>
                     <Search size={16} /><span>{t('搜索对话')}</span>{searchOpen && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('chatExport') && (
-                  <button className="ai-tools-item" disabled={messages.length === 0} onClick={() => { setExportOpen(true); setToolsOpen(false) }}>
+                  <button className="ai-tools-item" style={{ order: toolOrder('chatExport') }} disabled={messages.length === 0} onClick={() => { setExportOpen(true); setToolsOpen(false) }}>
                     <Download size={16} /><span>{t('导出对话')}</span>
                   </button>
                 )}
                 {tbShow('myData') && (
-                  <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
+                  <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} style={{ order: toolOrder('myData') }} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
                     <Database size={16} /><span>{t('引用我的数据')}</span>{useMyData && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('compare') && (
-                  <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
+                  <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} style={{ order: toolOrder('compare') }} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
                     <Columns2 size={16} /><span>{t('多模型对比')}</span>{compareMode && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('sessions') && (
-                  <button className="ai-tools-item" onClick={() => { requestToggleHistory(); setToolsOpen(false) }}>
+                  <button className="ai-tools-item" style={{ order: toolOrder('sessions') }} onClick={() => { requestToggleHistory(); setToolsOpen(false) }}>
                     <MessagesSquare size={16} /><span>{t('会话列表')}</span>
                   </button>
                 )}
+                {tbShow('prompts') && (
+                  <button className="ai-tools-item" style={{ order: toolOrder('prompts') }} onClick={() => { openPromptsPage(); setToolsOpen(false) }}>
+                    <BookMarked size={16} /><span>{t('提示词')}</span>
+                  </button>
+                )}
                 {tbShow('clearChat') && (
-                  <button className="ai-tools-item" onClick={() => { clear(); setToolsOpen(false) }}>
+                  <button className="ai-tools-item" style={{ order: toolOrder('clearChat') }} onClick={() => { clear(); setToolsOpen(false) }}>
                     <RotateCcw size={16} /><span>{t('清空对话')}</span>
                   </button>
                 )}
@@ -1335,9 +1344,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 <Cpu size={13} /> {t('引擎')} <ChevronDown size={13} />
               </button>
             )}
-            <button className="ai-model-btn" onClick={openPromptsPage} title={t('提示词库：常用提示词存成模板，一键插入（可跨设备同步）')}>
-              <BookMarked size={13} /> {t('提示词')}
-            </button>
           </div>
           {resolvingKey && <div className="ai-hint-inline"><Loader2 size={12} className="spin" /> {t('正在解锁密钥…')}</div>}
         </div>

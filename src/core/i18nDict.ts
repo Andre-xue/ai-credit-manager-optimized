@@ -1274,3 +1274,10 @@ Object.assign(D, {
   '请填写服务地址': { 'zh-TW': '請填寫服務地址', en: 'Please enter the service address', ja: 'サービスアドレスを入力してください', ko: '서비스 주소를 입력하세요' },
   '服务地址需以 http:// 或 https:// 开头': { 'zh-TW': '服務地址需以 http:// 或 https:// 開頭', en: 'The service address must start with http:// or https://', ja: 'サービスアドレスは http:// または https:// で始めてください', ko: '서비스 주소는 http:// 또는 https://로 시작해야 합니다' },
 })
+
+// ---- 补齐批次 13：提示词进顶栏菜单 + 工具栏可调序（v0.1.267） ----
+Object.assign(D, {
+  '上移': { 'zh-TW': '上移', en: 'Move up', ja: '上へ移動', ko: '위로 이동' },
+  '下移': { 'zh-TW': '下移', en: 'Move down', ja: '下へ移動', ko: '아래로 이동' },
+  'AI 助手右上角「全部功能」菜单里的工具：逐个开关显隐，用上下箭头调整顺序': { 'zh-TW': 'AI 助手右上角「全部功能」選單裡的工具：逐個開關顯隱，用上下箭頭調整順序', en: 'Tools in the "All features" menu at the top right of the AI assistant: toggle each one on or off, and reorder them with the up/down arrows', ja: 'AIアシスタント右上の「すべての機能」メニュー内のツール：表示を個別に切り替え、上下矢印で順序を変更できます', ko: 'AI 어시스턴트 오른쪽 위 "모든 기능" 메뉴의 도구: 각각 표시를 켜고 끄고, 위/아래 화살표로 순서를 조정합니다' },
+})

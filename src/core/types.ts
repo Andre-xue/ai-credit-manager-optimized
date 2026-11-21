@@ -241,6 +241,8 @@ export interface AppSettings {
   autoLockMinutes?: number
   /** AI 助手顶栏工具显隐（缺省/true = 显示；在设置「AI 助手工具栏」逐个开关） */
   aiToolbar?: AiToolbarPrefs
+  /** AI 助手工具栏顺序（工具键数组；缺省用 AI_TOOLBAR_DEFAULT_ORDER） */
+  aiToolbarOrder?: string[]
   /** AI 记忆：开启后对话会带上全部历史会话的近期上下文（缺省关闭） */
   aiMemory?: boolean
   /** 内置免费模型通道（Zen / Kilo 公共网关，免 Key）：缺省开启；关闭后 AI 助手不再加载这批免费模型 */
@@ -251,7 +253,7 @@ export interface AppSettings {
   language?: 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
 }
 
-/** AI 助手顶栏 8 个工具的显隐偏好 */
+/** AI 助手顶栏工具的显隐偏好 */
 export interface AiToolbarPrefs {
   autoSpeak?: boolean
   voiceCall?: boolean
@@ -260,7 +262,19 @@ export interface AiToolbarPrefs {
   myData?: boolean
   compare?: boolean
   sessions?: boolean
+  prompts?: boolean
   clearChat?: boolean
+}
+
+/** 工具键默认顺序（设置页可调序，结果存 AppSettings.aiToolbarOrder） */
+export const AI_TOOLBAR_DEFAULT_ORDER: (keyof AiToolbarPrefs)[] = [
+  'autoSpeak', 'voiceCall', 'chatSearch', 'chatExport', 'myData', 'compare', 'sessions', 'prompts', 'clearChat',
+]
+
+/** 合并用户排序与默认顺序：用户排过的在前，后来新增的工具自动补到末尾 */
+export function mergeToolbarOrder(saved?: string[]): (keyof AiToolbarPrefs)[] {
+  const valid = (saved ?? []).filter(k => (AI_TOOLBAR_DEFAULT_ORDER as string[]).includes(k)) as (keyof AiToolbarPrefs)[]
+  return [...valid, ...AI_TOOLBAR_DEFAULT_ORDER.filter(k => !valid.includes(k))]
 }
 
 /** 本地模型服务类型 */
