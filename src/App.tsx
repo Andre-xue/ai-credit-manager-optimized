@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
+import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT } from './core/keyUrls'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, EyeOff, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
-  Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
+  Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
@@ -168,6 +169,9 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
 
 function App() {
   const [state, setState] = useState<AppState>(() => loadState())
+
+  // 启动时拉取最新官方 Key 页地址表（平台改版地址后无需发版即可生效；失败则用内置地址）
+  useEffect(() => { void refreshKeyUrls() }, [])
 
   // 本机物理内存 GB（供内存档位判断与服务联动开关共用）
   const [memGb, setMemGb] = useState(0)
@@ -1591,6 +1595,28 @@ function ProviderLogo({ provider, size = 38 }: { provider: ProviderDefinition; s
   )
 }
 
+/** 链接地址列的图标按钮：点击直达该平台官方「创建 / 管理 Key」页面（地址自动保持最新，见 core/keyUrls） */
+function KeyPageButton({ provider, notify }: { provider: ProviderDefinition; notify: (m: string) => void }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const h = () => setTick(t => t + 1)
+    window.addEventListener(KEYURLS_EVENT, h)
+    return () => window.removeEventListener(KEYURLS_EVENT, h)
+  }, [])
+  const url = getKeyPageUrl(provider)
+  const isLocal = provider.id.startsWith('local-')
+  return (
+    <button className="icon-btn key-page-btn" title={isLocal ? `打开官网：${url}` : `前往官方创建 / 管理 Key：${url}`}
+      onClick={async () => {
+        const ok = await openExternal(url)
+        if (!ok) notify(`打开失败，请手动访问：${url}`)
+        else if (!isDesktopApp()) notify(isLocal ? '已在新标签页打开官网' : '已在新标签页打开官方 Key 页面')
+      }}>
+      {isLocal ? <Globe size={15} /> : <KeyRound size={15} />}
+    </button>
+  )
+}
+
 /** 官方外链按钮：桌面端用系统浏览器打开，Web 端开新标签；失败给出可复制的链接提示 */
 function OutLink({ url, label, className = 'btn sm ghost', title, notify, style }: {
   url: string; label: React.ReactNode; className?: string; title?: string;
@@ -2274,7 +2300,6 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               const plain = revealed[a.id]
               const q = latestQuota(state.quotas, a.id)
               const balance = q ? `${(q.total - q.used).toLocaleString()} ${UNIT_LABEL[q.unit]}` : '未录入'
-              const apiUrl = a.apiUrl || provider?.apiBaseUrl || ''
               const adapter = getAdapter(a.providerId)
               return (
                 <tr key={a.id}>
@@ -2322,9 +2347,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                     </div>
                   </td>
                   <td>
-                    {apiUrl
-                      ? <button className="key-link" title={apiUrl} onClick={() => { navigator.clipboard.writeText(apiUrl); notify('API 地址已复制') }}>{apiUrl}</button>
-                      : <button className="key-link muted" onClick={() => setEditing(a.id)}>+ 添加地址</button>}
+                    <KeyPageButton provider={provider} notify={notify} />
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
@@ -2339,11 +2362,12 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   </td>
                   <td>
                     {(() => { const h = health[a.id]; const busyH = checking.has(a.id); return (
-                      <button className={`health-badge ${h ? h.status : 'none'}`} disabled={busyH}
-                        title={h ? `${h.message}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '点击检查该 Key 是否可用'}
+                      <button className={`health-badge ${busyH ? 'checking' : h ? h.status : 'none'}`} disabled={busyH}
+                        title={busyH ? '正在检查…' : h ? `${HEALTH_LABEL[h.status]}：${h.message}${h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : ''}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '未检查 · 点击检查该 Key 是否可用'}
                         onClick={() => void runHealthCheck([a])}>
-                        <span className="health-dot" />
-                        {busyH ? '检查中…' : h ? `${HEALTH_LABEL[h.status]}${h.status === 'ok' && h.latencyMs ? ` ${h.latencyMs}ms` : ''}` : '未检查'}
+                        {busyH
+                          ? <Loader2 size={16} style={{ animation: 'acm-spin 1s linear infinite' }} />
+                          : <HeartPulse size={16} />}
                       </button> ) })()}
                   </td>
                   <td><span className="key-note" title={a.note ?? ''}>{a.note ?? '—'}</span></td>
@@ -3494,7 +3518,7 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
 
   const apiUrl = provider.apiBaseUrl ?? ''
   // 语音配置：API 链接用所选服务商官方文档；其余用平台默认
-  const keyUrl = isVoiceCfg ? (chosenVoice?.docs ?? provider.officialUrl) : (provider.apiKeyUrl ?? provider.usageUrl ?? provider.officialUrl)
+  const keyUrl = isVoiceCfg ? (chosenVoice?.docs ?? provider.officialUrl) : getKeyPageUrl(provider)
 
   const fetchBalance = async () => {
     setErr('')
