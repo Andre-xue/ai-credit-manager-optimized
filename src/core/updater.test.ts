@@ -66,7 +66,7 @@ describe('检查更新：桌面安装包齐全性判断与回退', () => {
     const info = await checkReleaseUpdate(false)
     expect(info?.latest).toBe('0.1.69')
     // v0.1.311 起先试 latest.json 直链（此处桩返回的不是清单格式，解析失败回退 API）；关键仍是不拉 releases 列表
-    expect(fetchMock.mock.calls.every(c => !String(c[0]).includes('/releases?'))).toBe(true)
+    expect((fetchMock.mock.calls as unknown[][]).every(c => !String(c[0]).includes('/releases?'))).toBe(true)
   })
 
   it('GitHub 403 限流给出明确错误', async () => {
