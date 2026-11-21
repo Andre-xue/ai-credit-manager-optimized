@@ -982,7 +982,7 @@ async fn send_notification(title: String, body: String) -> Result<(), String> {
     // 转义双引号与反斜杠，防止 AppleScript 注入。
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        "display notification \"{}\" with title \"AI 积分管家\" subtitle \"{}\"",
+        "display notification \"{}\" with title \"AI 魔方\" subtitle \"{}\"",
         esc(&body), esc(&title)
     );
     #[cfg(target_os = "macos")]
@@ -2746,7 +2746,7 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
 
     // 迷你窗：隐藏创建，点托盘图标或快捷键时在右上角切换显隐
     let mini = tauri::WebviewWindowBuilder::new(app.handle(), MINI_LABEL, tauri::WebviewUrl::App("index.html#/mini".into()))
-        .title("AI 积分管家 · 速览")
+        .title("AI 魔方 · 速览")
         .inner_size(348.0, 470.0)
         .resizable(false)
         .decorations(false)
@@ -2789,13 +2789,13 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
         .item(&MenuItem::with_id(app.handle(), "open-ai", "AI 助手", true, None::<&str>)?)
         .item(&MenuItem::with_id(app.handle(), "open-checkin", "今日签到", true, None::<&str>)?)
         .separator()
-        .item(&MenuItem::with_id(app.handle(), "quit", "退出 AI 积分管家", true, None::<&str>)?)
+        .item(&MenuItem::with_id(app.handle(), "quit", "退出 AI 魔方", true, None::<&str>)?)
         .build()?;
 
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("AI 积分管家")
+        .tooltip("AI 魔方")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open-main" => show_main_window(app, None),
             "open-ai" => show_main_window(app, Some("ai")),

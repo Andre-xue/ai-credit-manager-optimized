@@ -1255,7 +1255,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         <div className="ai-messages">
           {!enteredChat ? (
             <div className="ai-welcome">
-              <div className="ai-welcome-mark" onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen('bot') }} title={t('点击更换 AI 头像、名字与音色')}><img src={`${import.meta.env.BASE_URL}pwa-512.png`} alt={t('AI 积分管家')} className="app-mark-img" /></div>
+              <div className="ai-welcome-mark" onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen('bot') }} title={t('点击更换 AI 头像、名字与音色')}><img src={`${import.meta.env.BASE_URL}pwa-512.png`} alt={t('AI 魔方')} className="app-mark-img" /></div>
               <h2>{welcomeText(userProfile.nickname)}</h2>
             </div>
           ) : (

@@ -139,7 +139,7 @@ export function serializeKeyBackup(backup: KeyBackupFile, fileFormat: MachineBac
   }
 
   const lines = [
-    '# AI 积分管家密钥备份（文本格式，可导入）',
+    '# AI 魔方密钥备份（文本格式，可导入）',
     `kind=${JSON.stringify(backup.kind)}`,
     `version=${JSON.stringify(backup.version)}`,
     `backupId=${JSON.stringify(backup.backupId)}`,
@@ -201,7 +201,7 @@ export function serializeKeyBackupReadable(backup: KeyBackupFile, format: 'md' |
   const stamp = backup.createdAt.replace('T', ' ').slice(0, 19)
   if (format === 'md') {
     return [
-      '# AI 积分管家密钥备份',
+      '# AI 魔方密钥备份',
       '',
       `> 形式：${modeLabel} · 生成于 ${stamp} · 共 ${rows.length} 个`,
       '',
@@ -217,10 +217,10 @@ export function serializeKeyBackupReadable(backup: KeyBackupFile, format: 'md' |
   return [
     '<!DOCTYPE html>',
     '<html lang="zh-CN"><head><meta charset="utf-8">',
-    '<title>AI 积分管家密钥备份</title>',
+    '<title>AI 魔方密钥备份</title>',
     '<style>body{font-family:system-ui,sans-serif;margin:24px;color:#1f2023}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d0d5dd;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top}th{background:#f4f4f5}.k{word-break:break-all;font-family:ui-monospace,monospace;font-size:12px}.meta{color:#667085;font-size:12.5px}</style>',
     '</head><body>',
-    '<h2>AI 积分管家密钥备份</h2>',
+    '<h2>AI 魔方密钥备份</h2>',
     `<p class="meta">形式：${escHtmlCell(modeLabel)} · 生成于 ${escHtmlCell(stamp)} · 共 ${rows.length} 个</p>`,
     '<table><thead><tr><th>名称</th><th>余额</th><th>链接地址</th><th>API Key</th><th>分组</th></tr></thead>',
     `<tbody>\n${trs}\n</tbody></table>`,
@@ -317,7 +317,7 @@ export function parseKeyBackup(text: string): KeyBackupFile | null {
     }
   }
 
-  if (raw.includes('[account]') || raw.startsWith('# AI 积分管家密钥备份')) {
+  if (raw.includes('[account]') || raw.startsWith('# AI 魔方密钥备份') || raw.startsWith('# AI 积分管家密钥备份')) {
     const meta: Record<string, unknown> = {}
     let vault: VaultSyncMaterial | undefined
     const accounts: KeyBackupItem[] = []
@@ -518,7 +518,7 @@ export async function backupToNotes(backup: KeyBackupFile, fileFormat: BackupFil
   const nav = navigator as Navigator & { share?: (data: { title?: string; text?: string }) => Promise<void> }
   if (typeof nav.share === 'function') {
     try {
-      await nav.share({ title: 'AI 积分管家密钥备份', text })
+      await nav.share({ title: 'AI 魔方密钥备份', text })
       return { ok: true, shared: true }
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return { ok: false, error: '已取消分享，未执行删除' }

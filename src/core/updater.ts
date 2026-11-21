@@ -223,7 +223,7 @@ export async function relaunchApp(): Promise<void> {
 /** Docker 更新指令：拉新镜像 → 停旧容器 → 删旧容器 → 起新实例（数据卷保留） */
 export function dockerUpdateCommands(): string {
   return [
-    '# 更新 AI 积分管家 Docker 实例（保留数据卷）',
+    '# 更新 AI 魔方 Docker 实例（保留数据卷）',
     'docker pull Andre-xue/ai-credit-manager:latest',
     'docker stop ai-credit-manager 2>/dev/null || true',
     'docker rm ai-credit-manager 2>/dev/null || true',

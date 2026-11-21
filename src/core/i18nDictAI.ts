@@ -18,7 +18,7 @@ export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
   '朋友': { 'zh-TW': '朋友', en: 'friend', ja: '友達', ko: '친구' },
   '{greet}，{name}': { 'zh-TW': '{greet}，{name}', en: '{greet}, {name}', ja: '{greet}、{name}', ko: '{greet}, {name}' },
   '头像': { 'zh-TW': '頭像', en: 'Avatar', ja: 'アバター', ko: '아바타' },
-  'AI 积分管家': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
+  'AI 魔方': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
 
   // ---- 通知 / 错误 / 对话逻辑文案 ----
   '录音结束，正在转写成文字…': { 'zh-TW': '錄音結束，正在轉寫成文字…', en: 'Recording ended, transcribing…', ja: '録音が終了しました。文字起こし中…', ko: '녹음이 끝났습니다. 텍스트로 변환 중…' },

@@ -102,7 +102,7 @@ export async function scheduleDailyCheckin(hour: number, minute: number): Promis
       notifications: [{
         id: CHECKIN_SCHEDULE_ID,
         title: '今日签到提醒',
-        body: '打开 AI 积分管家看看今天的待签到，领取免费额度，别让它过期。',
+        body: '打开 AI 魔方看看今天的待签到，领取免费额度，别让它过期。',
         schedule: { on: { hour, minute }, allowWhileIdle: true },
       }],
     })

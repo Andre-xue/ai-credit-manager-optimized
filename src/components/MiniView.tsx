@@ -95,7 +95,7 @@ export function MiniView() {
       style={{ minHeight: '100vh', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 26, height: 26, borderRadius: 8, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
-        <b style={{ fontSize: 14 }}>{t('AI 积分管家')}</b>
+        <b style={{ fontSize: 14 }}>{t('AI 魔方')}</b>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>{t('更新于 {time}', { time: updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })}</span>
         <button onClick={hide} title={t('收起')} style={{ ...btn, padding: '2px 8px', fontSize: 13 }}>×</button>
       </div>

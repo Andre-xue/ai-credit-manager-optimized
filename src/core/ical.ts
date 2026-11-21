@@ -57,7 +57,7 @@ export function buildICalendar(state: AppState, today: string = todayISO(), now:
       `DTSTART;VALUE=DATE:${fmtDate(today)}`,
       `DTEND;VALUE=DATE:${fmtDate(addDays(today, 1))}`,
       `RRULE:FREQ=DAILY;UNTIL=${fmtDate(horizon)}`,
-      `SUMMARY:${esc(`AI 平台签到提醒（共 ${CHECKIN_TOOLS.length} 个可签到平台，打开 AI 积分管家处理）`)}`,
+      `SUMMARY:${esc(`AI 平台签到提醒（共 ${CHECKIN_TOOLS.length} 个可签到平台，打开 AI 魔方处理）`)}`,
       'END:VEVENT',
     ].join('\r\n'))
   }

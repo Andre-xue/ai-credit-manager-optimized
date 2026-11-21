@@ -385,5 +385,5 @@ export function resumeSpeak(): void {
 
 /** 试听一句示例 */
 export function previewVoice(voiceURI: string | null): boolean {
-  return speak('你好，我是 AI 积分管家的语音助手，很高兴为你服务。', voiceURI)
+  return speak('你好，我是 AI 魔方的语音助手，很高兴为你服务。', voiceURI)
 }

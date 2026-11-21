@@ -16,7 +16,7 @@ export const DICT = D
 
 // ---- 通用 / 框架 ----
 Object.assign(D, {
-  'AI 积分管家': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
+  'AI 魔方': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
   '搜索页面 / 账户 / 工具': { 'zh-TW': '搜尋頁面 / 帳戶 / 工具', en: 'Search pages / accounts / tools', ja: 'ページ / アカウント / ツールを検索', ko: '페이지 / 계정 / 도구 검색' },
   '关闭菜单': { 'zh-TW': '關閉選單', en: 'Close menu', ja: 'メニューを閉じる', ko: '메뉴 닫기' },
   '打开菜单': { 'zh-TW': '開啟選單', en: 'Open menu', ja: 'メニューを開く', ko: '메뉴 열기' },
@@ -116,7 +116,7 @@ Object.assign(D, {
   '数据只保存在此设备': { 'zh-TW': '資料只保存在此裝置', en: 'Data stays on this device', ja: 'データはこの端末にのみ保存', ko: '데이터는 이 기기에만 저장됩니다' },
   '仅只读官方接口 · 签到跳转官方页本人操作': { 'zh-TW': '僅唯讀官方介面 · 簽到跳轉官方頁本人操作', en: 'Read-only official APIs · Check-ins open official pages', ja: '公式APIは読み取り専用 · チェックインは公式ページで本人が操作', ko: '공식 API는 읽기 전용 · 체크인은 공식 페이지에서 본인이 직접 수행' },
   '不再显示': { 'zh-TW': '不再顯示', en: "Don't show again", ja: '今後表示しない', ko: '다시 표시 안 함' },
-  '三步上手 AI 积分管家': { 'zh-TW': '三步上手 AI 積分管家', en: 'Get started in 3 steps', ja: '3ステップで始める', ko: '3단계로 시작하기' },
+  '三步上手 AI 魔方': { 'zh-TW': '三步上手 AI 積分管家', en: 'Get started in 3 steps', ja: '3ステップで始める', ko: '3단계로 시작하기' },
   '1 · 添加账户': { 'zh-TW': '1 · 新增帳戶', en: '1 · Add accounts', ja: '1 · アカウント追加', ko: '1 · 계정 추가' },
   '把你在用的 AI 平台账户（DeepSeek、Kimi、智谱等）加进来。': { 'zh-TW': '把你在用的 AI 平台帳戶（DeepSeek、Kimi、智譜等）加進來。', en: 'Add the AI platform accounts you use (DeepSeek, Kimi, Zhipu, etc.).', ja: '使っているAIプラットフォームのアカウント（DeepSeek、Kimi、智譜など）を追加します。', ko: '사용 중인 AI 플랫폼 계정(DeepSeek, Kimi, 즈푸 등)을 추가하세요.' },
   '添加账户': { 'zh-TW': '新增帳戶', en: 'Add account', ja: 'アカウント追加', ko: '계정 추가' },
@@ -1377,6 +1377,12 @@ Object.assign(D, {
 // ---- 补齐批次 25：服务开关即权威（v0.1.291） ----
 Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
+})
+
+// ---- 补齐批次 41：品牌更名 AI 魔方（v0.1.314） ----
+Object.assign(D, {
+  'AI 魔方': { 'zh-TW': 'AI 魔方', en: 'AI Cube', ja: 'AIキューブ', ko: 'AI 큐브' },
+  '三步上手 AI 魔方': { 'zh-TW': '三步上手 AI 魔方', en: 'Get started with AI Cube in 3 steps', ja: '3ステップで始めるAIキューブ', ko: '3단계로 시작하는 AI 큐브' },
 })
 
 // ---- 补齐批次 40：文档问答免费模型 + 会话镜像（v0.1.311） ----

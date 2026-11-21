@@ -1175,9 +1175,9 @@ function App() {
       {isPhone && sidebarVisible && <button className="phone-scrim" aria-label={t('关闭菜单')} onClick={() => setSidebarVisible(false)} />}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 积分管家')} className="app-mark-img" /></div>
+          <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 魔方')} className="app-mark-img" /></div>
           <div className="brand-text">
-            <div className="brand-name">{t('AI 积分管家')}</div>
+            <div className="brand-name">{t('AI 魔方')}</div>
             <div className="brand-sub">AI CREDIT MANAGER</div>
           </div>
           {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title={t('关闭菜单')}><X size={19} /></button>}
@@ -1265,7 +1265,7 @@ function App() {
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
             <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title={t('不再显示')}><X size={15} /></button>
-            <h3>{t('三步上手 AI 积分管家')}</h3>
+            <h3>{t('三步上手 AI 魔方')}</h3>
             <div className="onboarding-steps">
               <div className="onboarding-step">
                 <b>{t('1 · 添加账户')}</b>
@@ -4964,7 +4964,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     let perm = await getNotificationPermission()
     if (perm !== 'granted') { perm = await requestNotificationPermission(); setNotifyPerm(perm) }
     if (perm !== 'granted') { notify('未获得通知权限，无法发送测试通知'); return }
-    const ok = await showNotification(t('AI 积分管家'), t('这是一条测试通知，提醒功能工作正常。'), 'acm-test')
+    const ok = await showNotification(t('AI 魔方'), t('这是一条测试通知，提醒功能工作正常。'), 'acm-test')
     notify(ok ? '测试通知已发送，请留意系统通知' : '当前平台不支持系统通知')
   }
   // ---- 桌面外壳（仅 Tauri 桌面端）：开机自启开关 ----

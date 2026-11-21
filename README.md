@@ -4,7 +4,7 @@
 
 ---
 
-# AI 积分管家（AI Credit Manager）
+# AI 魔方（AI Credit Manager）
 
 统一管理你在各家 AI 平台的**积分、额度、用量与 API Key** 的合规工具。
 
@@ -148,7 +148,7 @@ Tauri 配置在 `desktop/src-tauri/tauri.conf.json`，`beforeBuildCommand` 会�
   cd desktop/src-tauri/target/release/bundle
   STAGE=/tmp/acm-stage && rm -rf $STAGE && mkdir -p $STAGE
   cp -R "macos/AI Credit Manager.app" "$STAGE/" && ln -s /Applications "$STAGE/Applications"
-  hdiutil create -volname "AI 积分管家" -srcfolder "$STAGE" -ov -format UDZO "AI Credit Manager_0.1.0_aarch64.dmg"
+  hdiutil create -volname "AI 魔方" -srcfolder "$STAGE" -ov -format UDZO "AI Credit Manager_0.1.0_aarch64.dmg"
   ```
   ）
 - **Windows**：`desktop/src-tauri/target/release/bundle/msi/*.msi`

@@ -48,13 +48,13 @@ export function serializeApiKeyRows(rows: ApiKeyRow[], mode: 'cipher' | 'plain',
   const stamp = now.toLocaleString('zh-CN', { hour12: false })
   const modeLabel = mode === 'plain' ? '明文' : '密文（保险箱加密，未解锁不可读）'
   if (format === 'json') {
-    return JSON.stringify({ app: 'AI 积分管家', kind: 'apikey-storage', mode, exportedAt: now.toISOString(), keys: rows }, null, 2)
+    return JSON.stringify({ app: 'AI 魔方', kind: 'apikey-storage', mode, exportedAt: now.toISOString(), keys: rows }, null, 2)
   }
   if (format === 'md') {
     const lines = [
       '# API Key 清单',
       '',
-      `> 由 AI 积分管家自动维护 · ${modeLabel} · 更新于 ${stamp}`,
+      `> 由 AI 魔方自动维护 · ${modeLabel} · 更新于 ${stamp}`,
       '',
       '| 平台 | 名称 | API Key | 接口地址 | 备注 |',
       '| --- | --- | --- | --- | --- |',
@@ -65,7 +65,7 @@ export function serializeApiKeyRows(rows: ApiKeyRow[], mode: 'cipher' | 'plain',
   }
   if (format === 'txt') {
     const lines = [
-      'API Key 清单（AI 积分管家自动维护）',
+      'API Key 清单（AI 魔方自动维护）',
       `形式：${modeLabel}`,
       `更新于：${stamp}`,
       '',
@@ -87,7 +87,7 @@ export function serializeApiKeyRows(rows: ApiKeyRow[], mode: 'cipher' | 'plain',
     '<style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;margin:32px;color:#1f2023}h1{font-size:20px}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{border:1px solid #d9dce3;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top}th{background:#f2f3f7}.k{font-family:ui-monospace,Menlo,monospace;word-break:break-all}.meta{color:#667085;font-size:12.5px}</style>',
     '</head><body>',
     '<h1>API Key 清单</h1>',
-    `<p class="meta">由 AI 积分管家自动维护 · ${escHtml(modeLabel)} · 更新于 ${escHtml(stamp)}</p>`,
+    `<p class="meta">由 AI 魔方自动维护 · ${escHtml(modeLabel)} · 更新于 ${escHtml(stamp)}</p>`,
     '<table><thead><tr><th>平台</th><th>名称</th><th>API Key</th><th>接口地址</th><th>备注</th></tr></thead>',
     `<tbody>\n${trs}\n</tbody></table>`,
     '</body></html>',

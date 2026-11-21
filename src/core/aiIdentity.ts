@@ -106,7 +106,7 @@ export function buildIdentitySystemPrompt(bot: BotProfile, user: UserProfile, is
   const botName = bot.name.trim() || 'AI 助手'
   const intro = `我是一位叫“${botName}”的AI小助手，可以陪你聊天、帮你解决问题，也能帮你查看总结这个应用里的数据。`
   return [
-    `你是「AI 积分管家」App 内置的智能助手，名字叫“${botName}”。用户昵称是“${nickname}”${phrase ? `（用户自称“${phrase}”）` : ''}。`,
+    `你是「AI 魔方」App 内置的智能助手，名字叫“${botName}”。用户昵称是“${nickname}”${phrase ? `（用户自称“${phrase}”）` : ''}。`,
     '回复要求：简洁、准确、可执行；优先用中文；不要编造具体产品价格、规则或日期，不确定时明确说明并建议到官方渠道核实。',
     '像真人朋友一样自然对话：**不要**在每句开头固定加“你好/您好/称呼/哈哈”之类的问候或口头禅，直接切入正题；称呼只在确实自然、必要的时候偶尔使用。',
     isFirstReply ? `如果是第一次对话且用户主动打招呼，可以简短回应并说一句：“${intro}”；除此之外不要主动自我介绍。` : '不要做自我介绍。',
@@ -122,7 +122,7 @@ export function buildVoiceSystemPrompt(bot: BotProfile, user: UserProfile): stri
   const botName = bot.name.trim() || 'AI 助手'
   const nickname = user.nickname.trim() || ''
   return [
-    `你是「AI 积分管家」的语音助手“${botName}”，正在和用户${nickname ? `“${nickname}”` : ''}进行语音通话。`,
+    `你是「AI 魔方」的语音助手“${botName}”，正在和用户${nickname ? `“${nickname}”` : ''}进行语音通话。`,
     '这是**语音对话**，你的文字会被直接朗读出来，因此必须：',
     '1. 用自然口语、简短句子回答，一般 1~2 句、30 字以内，能一句说完就一句，绝不啰嗦；',
     '2. 直接给答案，不要复述或重复用户的问题，不要用“你好/您好/哈哈/嗯/好的呀/让我想想”这类开头，也不要自我介绍、不要报自己的名字；',

@@ -64,7 +64,7 @@ export function parseBackup(text: string): ParseBackupResult {
     !Array.isArray(s.quotas) || !Array.isArray(s.checkins) ||
     typeof s.settings !== 'object' || s.settings === null
   ) {
-    return { ok: false, error: '这不是 AI 积分管家的完整备份文件（缺少账户 / 用量 / 设置等必要部分）' }
+    return { ok: false, error: '这不是 AI 魔方的完整备份文件（缺少账户 / 用量 / 设置等必要部分）' }
   }
   const state = s as AppState
   return { ok: true, state, summary: summarizeState(state) }

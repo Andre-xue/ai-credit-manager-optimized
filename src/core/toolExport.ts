@@ -20,7 +20,7 @@ export function envVarName(providerId: string, taken: Set<string>): string {
 export function buildEnvExport(items: ToolExportItem[], now = new Date()): string {
   const taken = new Set<string>()
   const lines = [
-    '# AI 积分管家导出 · 请妥善保管，勿提交到代码仓库',
+    '# AI 魔方导出 · 请妥善保管，勿提交到代码仓库',
     `# 导出时间：${now.toLocaleString('zh-CN')}`,
     '',
   ]
@@ -34,7 +34,7 @@ export function buildEnvExport(items: ToolExportItem[], now = new Date()): strin
 
 export function buildJsonExport(items: ToolExportItem[], now = new Date()): string {
   return JSON.stringify({
-    exportedBy: 'AI 积分管家',
+    exportedBy: 'AI 魔方',
     exportedAt: now.toISOString(),
     keys: items.map(it => ({
       provider: it.providerId,

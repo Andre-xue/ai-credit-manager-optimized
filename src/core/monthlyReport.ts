@@ -88,7 +88,7 @@ export function buildMonthlyReport(state: AppState, month: string): MonthlyRepor
 /** 报告的一段可复制文本（Markdown 风格） */
 export function reportToText(r: MonthlyReport): string {
   const lines = [
-    `# AI 积分管家 · ${r.month} 月度报告`,
+    `# AI 魔方 · ${r.month} 月度报告`,
     `总消费 ¥${r.totalCost.toFixed(2)}（上月 ¥${r.prevCost.toFixed(2)}${r.costDeltaPct !== null ? `，环比 ${r.costDeltaPct >= 0 ? '+' : ''}${(r.costDeltaPct * 100).toFixed(0)}%` : ''}）`,
     `总 Tokens ${r.totalTokens.toLocaleString()} · 记录 ${r.recordCount} 条 · 活跃 ${r.activeDays} 天`,
     `签到 ${r.checkinCount} 次（${r.checkinDays} 天）`,
@@ -161,7 +161,7 @@ export function buildYearReport(state: AppState, year: string): YearReport {
 
 export function yearReportToText(r: YearReport): string {
   const lines = [
-    `# AI 积分管家 · ${r.year} 年度总结`,
+    `# AI 魔方 · ${r.year} 年度总结`,
     `总消费 ¥${r.totalCost.toFixed(2)} · 总 Tokens ${r.totalTokens.toLocaleString()} · 记录 ${r.recordCount} 条 · 活跃 ${r.activeDays} 天`,
     `签到 ${r.checkinCount} 次（${r.checkinDays} 天）· 账户 ${r.accountCount} 个`,
   ]

@@ -183,7 +183,7 @@ export const PART_MISC: Record<string, Partial<Record<Lang, string>>> = {
   '⏰ 额度重置/到期：{list}': { 'zh-TW': '⏰ 額度重置/到期：{list}', en: '⏰ Quota reset/expiry: {list}', ja: '⏰ クォータリセット/有効期限：{list}', ko: '⏰ 할당량 초기화/만료: {list}' },
   '🔻 预计额度耗尽：{list}（按当前消耗速度预测）': { 'zh-TW': '🔻 預計額度耗盡：{list}（按目前消耗速度預測）', en: '🔻 Estimated quota exhaustion: {list} (based on the current burn rate)', ja: '🔻 クォータ枯渇予測：{list}（現在の消費ペースによる予測）', ko: '🔻 할당량 소진 예상: {list}(현재 소모 속도 기준 예측)' },
   // ---- MiniView ----
-  'AI 积分管家': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
+  'AI 魔方': { 'zh-TW': 'AI 積分管家', en: 'AI Credit Manager', ja: 'AIクレジット管家', ko: 'AI 크레딧 매니저' },
   '更新于 {time}': { 'zh-TW': '更新於 {time}', en: 'Updated {time}', ja: '{time} 更新', ko: '{time} 업데이트' },
   '个工具今日待签到': { 'zh-TW': '個工具今日待簽到', en: 'tools to check in today', ja: '件のツールが本日チェックイン待ち', ko: '개 도구 오늘 출석 대기' },
   '等 {count} 个': { 'zh-TW': '等 {count} 個', en: 'and {count} more', ja: 'ほか {count} 件', ko: '외 {count}개' },

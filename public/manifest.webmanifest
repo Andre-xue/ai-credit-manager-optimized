@@ -1,5 +1,5 @@
 {
-  "name": "AI 积分管家",
+  "name": "AI 魔方",
   "short_name": "积分管家",
   "description": "统一管理各家 AI 平台的积分、额度、用量与 API Key",
   "start_url": "./",
