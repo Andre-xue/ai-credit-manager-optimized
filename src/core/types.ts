@@ -241,6 +241,8 @@ export interface AppSettings {
   autoLockMinutes?: number
   /** AI 助手顶栏工具显隐（缺省/true = 显示；在设置「AI 助手工具栏」逐个开关） */
   aiToolbar?: AiToolbarPrefs
+  /** AI 记忆：开启后对话会带上全部历史会话的近期上下文（缺省关闭） */
+  aiMemory?: boolean
 }
 
 /** AI 助手顶栏 8 个工具的显隐偏好 */

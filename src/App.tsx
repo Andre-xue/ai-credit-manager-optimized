@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
+import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
@@ -6,7 +7,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench,
+  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -111,6 +112,60 @@ const CATEGORY_ICON: Record<ProviderDefinition['category'], typeof Code2> = {
   search: Search, design: PenTool, embedding: Layers, local: HardDrive, 'voice-config': Volume2, other: CircleHelp,
 }
 
+/** 左侧边栏「历史会话」区：挂在 AI 助手导航项下方，默认隐藏，点「展示更多」展开（新→旧排序）。
+ *  数据来自 AI 助手的会话存储（localStorage），点击某条整页打开该会话并可继续聊。 */
+function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggle: () => void; onNavigate: () => void }) {
+  const [list, setList] = useState(loadSessionList)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
+  useEffect(() => {
+    const refresh = () => setList(loadSessionList())
+    window.addEventListener(SESSIONS_EVENT, refresh)
+    window.addEventListener('storage', refresh)
+    return () => { window.removeEventListener(SESSIONS_EVENT, refresh); window.removeEventListener('storage', refresh) }
+  }, [])
+  useEffect(() => { if (open) setList(loadSessionList()) }, [open ])
+  const fmtTime = (ts: number) => {
+    const d = new Date(ts)
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+  return (
+    <div className="side-history">
+      <button className="side-history-head" onClick={onToggle} title="AI 助手的历史会话">
+        <History size={13} />
+        <span>历史会话</span>
+        <span className="side-history-more">{open ? '收起' : '展示更多'}</span>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      {open && (
+        <div className="side-history-list">
+          <button className="side-history-new" onClick={() => { onNavigate(); requestNewSession() }}>
+            <Plus size={13} /> 新建会话
+          </button>
+          {list.sessions.length === 0 && <div className="side-history-empty">暂无历史会话</div>}
+          {list.sessions.map(s => (
+            <div key={s.id} className={`side-history-item ${s.id === list.activeId ? 'active' : ''}`}>
+              {renaming === s.id ? (
+                <input className="input side-history-rename" autoFocus value={renameText} onChange={e => setRenameText(e.target.value)}
+                  onBlur={() => { if (renameText.trim()) updateSessionTitle(s.id, renameText.trim()); setRenaming(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }} />
+              ) : (
+                <button className="side-history-main" onClick={() => { onNavigate(); requestOpenSession(s.id) }} title={s.title}>
+                  <b>{s.title}</b>
+                  <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                </button>
+              )}
+              <button className="icon-btn side-history-act" title="重命名" onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
+              <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const [state, setState] = useState<AppState>(() => loadState())
 
@@ -155,6 +210,13 @@ function App() {
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const toggleSidebar = () => setSidebarVisible(v => !v)
+  // AI 助手历史会话区（侧边栏 AI 助手下方）：顶栏「会话列表」按钮经事件切换展开/收起
+  const [historyOpen, setHistoryOpen] = useState(false)
+  useEffect(() => {
+    const onToggle = () => { setSidebarVisible(true); setHistoryOpen(v => !v) }
+    window.addEventListener(TOGGLE_HISTORY_EVENT, onToggle)
+    return () => window.removeEventListener(TOGGLE_HISTORY_EVENT, onToggle)
+  }, [])
   // 统一导航：Claude 风格下"设置"走居中弹窗，其余模块正常切 tab
   const openTab = (id: Tab) => {
     // 手机客户端已移除文档问答与本地生成：任何残留入口跳到这些页时回落到 AI 页
@@ -946,13 +1008,18 @@ function App() {
                   const Icon = t.icon
                   const badge = id === 'dashboard' && runningOut.length > 0 ? runningOut.length : id === 'checkin' && pendingCheckins.length > 0 ? pendingCheckins.length : null
                   return (
-                    <button key={t.id} className={`nav-item ${tab === t.id ? 'active' : ''}`}
-                      onClick={() => openTab(t.id)} title={t.label}>
-                      <span className="nav-item-icon"><Icon size={17} /></span>
-                      <span className="nav-item-label">{t.label}</span>
-                      {id === 'checkin' && catalogNews.length > 0 ? <span className="nav-new-dot" title={`目录新增 ${catalogNews.length} 款工具`} /> : null}
-                      {badge ? <span className="badge nav-badge">{badge}</span> : null}
-                    </button>
+                    <Fragment key={t.id}>
+                      <button className={`nav-item ${tab === t.id ? 'active' : ''}`}
+                        onClick={() => openTab(t.id)} title={t.label}>
+                        <span className="nav-item-icon"><Icon size={17} /></span>
+                        <span className="nav-item-label">{t.label}</span>
+                        {id === 'checkin' && catalogNews.length > 0 ? <span className="nav-new-dot" title={`目录新增 ${catalogNews.length} 款工具`} /> : null}
+                        {badge ? <span className="badge nav-badge">{badge}</span> : null}
+                      </button>
+                      {id === 'ai' && sidebarVisible && (
+                        <SidebarHistory open={historyOpen} onToggle={() => setHistoryOpen(v => !v)} onNavigate={() => openTab('ai')} />
+                      )}
+                    </Fragment>
                   )
                 })}
               </div>
@@ -4442,6 +4509,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           <SettingsSection title="AI 行为" desc="对话推理与思考偏好，全局生效" icon={Sparkles} tone="indigo">
             <SettingsRow title="AI 思考模式" desc="开启后 AI 对话默认深度推理（答案更严谨，但更慢、消耗更高）；仍可在聊天框单独调整等级。文档问答等模块同步生效。">
               <Toggle checked={!!s.thinkingMode} onChange={v => onChange({ thinkingMode: v })} />
+            </SettingsRow>
+            <SettingsRow title="AI 记忆" desc="开启后，AI 在任何会话里都会带上全部历史会话的近期上下文，能记住你之前聊过的内容；关闭则每个会话互相独立。开启会多消耗一些 token。">
+              <Toggle checked={!!s.aiMemory} onChange={v => onChange({ aiMemory: v })} />
             </SettingsRow>
           </SettingsSection>
 

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, Pencil, ArrowLeft,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -28,6 +28,7 @@ import { detectModelCapability, capabilityChatCapable } from '../core/modelCapab
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { buildDataDigest } from '../core/dataDigest'
+import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -286,40 +287,53 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         : s),
     }))
   }, [messages])
-  useEffect(() => { saveSessionStore(sessionStore) }, [sessionStore])
-  const [sessionsOpen, setSessionsOpen] = useState(false)
-  const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameText, setRenameText] = useState('')
-  const switchSession = (id: string) => {
-    const target = sessionStore.sessions.find(s => s.id === id)
-    if (!target) return
-    setSessionStore(store => ({ ...store, activeId: id }))
-    setMessages(target.messages)
-    setSessionsOpen(false)
-    setCompareRuns(null)
-  }
-  const newSession = () => {
-    const s: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
-    setSessionStore(store => ({ sessions: [s, ...store.sessions], activeId: s.id }))
-    setMessages([])
-    setSessionsOpen(false)
-    rotateConversationId()
-  }
-  const deleteSession = (id: string) => {
-    const rest = sessionStore.sessions.filter(s => s.id !== id)
-    if (!rest.length) {
-      const fresh: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
-      setSessionStore({ sessions: [fresh], activeId: fresh.id })
-      setMessages([])
-      return
+  // 保存会话并广播给左侧边栏历史列表；lastSavedRawRef 防止把自己广播的事件当外部变更重载
+  const lastSavedRawRef = useRef('')
+  useEffect(() => {
+    saveSessionStore(sessionStore)
+    try { lastSavedRawRef.current = localStorage.getItem(SESSIONS_KEY) ?? '' } catch { /* 忽略 */ }
+    window.dispatchEvent(new Event(SESSIONS_EVENT))
+  }, [sessionStore])
+  // 边栏（或其他端）改动了会话存储 → 重载到内存；边栏的打开/新建请求 → 消费 pending 并执行（切换/新建逻辑在 consumePending 内）
+  const sessionStoreRef = useRef(sessionStore)
+  sessionStoreRef.current = sessionStore
+  useEffect(() => {
+    const reloadExternal = () => {
+      let raw = ''
+      try { raw = localStorage.getItem(SESSIONS_KEY) ?? '' } catch { return }
+      if (!raw || raw === lastSavedRawRef.current) return
+      lastSavedRawRef.current = raw
+      const next = loadSessionStore()
+      setSessionStore(next)
+      setMessages(next.sessions.find(s => s.id === next.activeId)?.messages ?? [])
     }
-    if (sessionStore.activeId === id) {
-      setSessionStore({ sessions: rest, activeId: rest[0].id })
-      setMessages(rest[0].messages)
-    } else {
-      setSessionStore(store => ({ ...store, sessions: rest }))
+    const consumePending = () => {
+      const { openId, wantNew } = consumePendingSessionActions()
+      if (openId) {
+        const target = sessionStoreRef.current.sessions.find(s => s.id === openId)
+        if (target) {
+          setSessionStore(store => ({ ...store, activeId: openId }))
+          setMessages(target.messages)
+          setCompareRuns(null)
+        }
+      } else if (wantNew) {
+        const s: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
+        setSessionStore(store => ({ sessions: [s, ...store.sessions], activeId: s.id }))
+        setMessages([])
+        rotateConversationId()
+      }
     }
-  }
+    consumePending()
+    window.addEventListener(SESSIONS_EVENT, reloadExternal)
+    window.addEventListener(OPEN_SESSION_EVENT, consumePending)
+    window.addEventListener(NEW_SESSION_EVENT, consumePending)
+    return () => {
+      window.removeEventListener(SESSIONS_EVENT, reloadExternal)
+      window.removeEventListener(OPEN_SESSION_EVENT, consumePending)
+      window.removeEventListener(NEW_SESSION_EVENT, consumePending)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamingText])
 
   // 本地型：Ollama 服务开启时自动拉取本机可用模型（文本+视觉，排除嵌入/生图/视频/语音）
@@ -503,6 +517,19 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     let effectiveSystemPrompt = systemPrompt
     if (useMyData && !voiceMode) {
       try { effectiveSystemPrompt = `${systemPrompt}\n\n${buildDataDigest(loadState())}` } catch { /* 摘要生成失败不阻断对话 */ }
+    }
+    // AI 记忆（设置开启）：把其他历史会话的近期上下文附加进 system 提示，让助手记得之前聊过什么（语音通话不附）
+    if (settings?.aiMemory && !voiceMode) {
+      try {
+        const others = [...sessionStoreRef.current.sessions]
+          .filter(s => s.id !== sessionStoreRef.current.activeId && s.messages.length > 0)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, 6)
+        if (others.length) {
+          const parts = others.map(s => `【历史会话：${s.title}】\n${s.messages.slice(-8).map(m => `${m.role === 'user' ? '用户' : 'AI'}：${m.content.slice(0, 300)}`).join('\n')}`)
+          effectiveSystemPrompt += `\n\n以下是用户在其他历史会话中聊过的内容（AI 记忆），回答时可参考这些背景，但不要主动复述无关内容：\n${parts.join('\n\n')}`.slice(0, 6500)
+        }
+      } catch { /* 记忆拼装失败不阻断对话 */ }
     }
     // 语音模式：关闭推理、只带最近 2 条上下文，最大限度缩短首字延迟
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
@@ -1004,7 +1031,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               <button className={`ai-icon-btn ${compareMode ? 'active' : ''}`} onClick={() => setCompareMode(v => !v)} data-tip="多模型对比"><Columns2 size={17} /></button>
             )}
             {tbShow('sessions') && (
-              <button className={`ai-icon-btn ${sessionsOpen ? 'active' : ''}`} onClick={() => setSessionsOpen(v => !v)} data-tip="会话列表"><MessagesSquare size={17} /></button>
+              <button className="ai-icon-btn" onClick={() => requestToggleHistory()} data-tip="会话列表（在左侧边栏展开）"><MessagesSquare size={17} /></button>
             )}
             {tbShow('clearChat') && (
               <button className="ai-icon-btn" onClick={clear} data-tip="清空对话"><RotateCcw size={17} /></button>
@@ -1026,32 +1053,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         )}
 
         {/* 会话列表面板 */}
-        {sessionsOpen && (
-          <div className="ai-sessions-panel">
-            <div className="ai-sessions-head">
-              <b>会话列表</b>
-              <span className="hint">共 {sessionStore.sessions.length} 个 · 保存在本机</span>
-              <button className="btn sm primary" onClick={newSession}><Plus size={13} /> 新建会话</button>
-              <button className="ai-icon-btn" onClick={() => setSessionsOpen(false)} title="关闭"><X size={15} /></button>
-            </div>
-            {[...sessionStore.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map(s => (
-              <div key={s.id} className={`ai-session-item ${s.id === sessionStore.activeId ? 'active' : ''}`}>
-                {renamingId === s.id ? (
-                  <input className="input" autoFocus value={renameText} onChange={e => setRenameText(e.target.value)}
-                    onBlur={() => { if (renameText.trim()) setSessionStore(store => ({ ...store, sessions: store.sessions.map(x => x.id === s.id ? { ...x, title: renameText.trim() } : x) })); setRenamingId(null) }}
-                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
-                ) : (
-                  <button className="ai-session-main" onClick={() => switchSession(s.id)}>
-                    <b>{s.title}</b>
-                    <span>{s.messages.length} 条 · {new Date(s.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                  </button>
-                )}
-                <button className="icon-btn" title="重命名" onClick={() => { setRenamingId(s.id); setRenameText(s.title) }}><Pencil size={13} /></button>
-                <button className="icon-btn" title="删除会话" onClick={() => deleteSession(s.id)}><Trash2 size={13} /></button>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* 会话列表已移到左侧边栏 AI 助手下方（历史会话区），此处不再内嵌面板 */}
 
         {/* 对话搜索栏 */}
         {searchOpen && (
