@@ -1379,6 +1379,12 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 30：数据存储目录路径显示（v0.1.300） ----
+Object.assign(D, {
+  '更换文件夹': { 'zh-TW': '更換資料夾', en: 'Change folder', ja: 'フォルダを変更', ko: '폴더 변경' },
+  '全部 Key 生成一份密文清单文件（apikeys.json）放进所选文件夹，增删改后自动更新；密钥备份也默认存到这里': { 'zh-TW': '全部 Key 產生一份密文清單檔案（apikeys.json）放進所選資料夾，增刪改後自動更新；金鑰備份也預設存到這裡', en: 'All keys are written to an encrypted list file (apikeys.json) in the chosen folder and kept up to date automatically; key backups also default to this folder.', ja: 'すべてのキーを暗号化リストファイル（apikeys.json）として選択フォルダに保存し、変更のたびに自動更新します。キーのバックアップも既定でここに保存されます。', ko: '모든 키를 암호화된 목록 파일(apikeys.json)로 선택한 폴더에 저장하고 변경 시 자동 업데이트합니다. 키 백업도 기본적으로 여기에 저장됩니다.' },
+})
+
 // ---- 补齐批次 29：余额自动刷新间隔（v0.1.299） ----
 Object.assign(D, {
   '余额自动刷新间隔': { 'zh-TW': '餘額自動刷新間隔', en: 'Balance auto-refresh interval', ja: '残高の自動更新間隔', ko: '잔액 자동 새로고침 간격' },

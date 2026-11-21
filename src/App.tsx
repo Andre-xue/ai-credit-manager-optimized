@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { saveArchivedSessionToFolder } from './core/archiveExport'
-import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs, type ApiKeyStoreFormat } from './core/storagePrefs'
+import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
 import { loadPatrolHours, savePatrolHours, patrolDue, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
 import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
@@ -389,7 +389,7 @@ function App() {
 
   useEffect(() => { saveStateDebounced(state) }, [state])
   // 数据存储：API Key 清单文件自动保持最新（v0.1.298）。账户增删改后防抖重写；
-  // 明文模式需要会话密码（Key 页解锁后才有），没有就等有密码时再补写
+  // 清单是密文，不需要会话密码（v0.1.300 起固定密文 JSON）
   const apikeySyncHashRef = useRef('')
   useEffect(() => {
     if (!isDesktopApp()) return
@@ -398,7 +398,7 @@ function App() {
     const hash = JSON.stringify(state.accounts.map(a => [a.id, a.updatedAt, a.encryptedKey, a.label]))
     if (apikeySyncHashRef.current === hash) return
     const timer = window.setTimeout(() => {
-      void writeApiKeyStorageFile(state, prefs, sessionPwd || undefined).then(r => {
+      void writeApiKeyStorageFile(state, prefs).then(r => {
         if (r.ok) apikeySyncHashRef.current = hash
       })
     }, 1500)
@@ -4760,6 +4760,18 @@ function SettingsSection({ title, desc, icon: Icon, tone = 'indigo', children }:
   )
 }
 
+/** 数据存储的目录选择控件：按钮 + 按钮下方直接显示已选路径。
+ * 路径不能放 SettingsRow 的 desc——claude-ui 样式把 .settings-row-desc 全局隐藏了，
+ * 放那里用户永远看不见（v0.1.300 Ethan 反馈后改到这里）。 */
+function StorageDirPicker({ dir, onPick }: { dir: string; onPick: () => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, maxWidth: 400 }}>
+      <button className="btn sm" onClick={onPick}><Folder size={13} /> {t(dir ? '更换文件夹' : '选择文件夹')}</button>
+      <div style={{ fontSize: 11.5, color: dir ? 'var(--text-2)' : 'var(--text-3)', wordBreak: 'break-all', textAlign: 'right', lineHeight: 1.45 }}>{dir || t('尚未选择')}</div>
+    </div>
+  )
+}
+
 /** 设置行：标题 + 说明 + 控件 */
 function SettingsRow({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
   return (
@@ -4856,11 +4868,10 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const patchStorage = (next: StoragePrefs, syncKeys = false) => {
     setStoragePrefs(next)
     saveStoragePrefs(next)
-    // API Key 存放刚开启/改了目录/格式/明密文时，立刻把当前清单写一份过去
+    // API Key 存放刚开启/改了目录时，立刻把当前清单写一份过去
     if (syncKeys) {
-      void writeApiKeyStorageFile(state, next, sessionPwd || undefined).then(r => {
+      void writeApiKeyStorageFile(state, next).then(r => {
         if (r.ok) notify(t('API Key 清单已保存到：{path}', { path: r.path ?? '' }))
-        else if (r.error === 'locked') notify(t('已保存设置；明文清单需要先解锁保险箱，解锁后会自动写入'))
         else if (r.error) notify(t('清单写入失败：{err}', { err: r.error }))
       })
     }
@@ -5512,41 +5523,28 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="数据存储" desc="总开关：开启后下面三类各有独立开关，互不影响；关闭则全部按默认方式存放">
               <Toggle checked={storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, enabled: v }, v)} />
             </SettingsRow>
-            <SettingsRow title="API Key 存放" desc="全部 Key 生成一份清单文件（apikeys）放进所选文件夹，增删改后自动更新；密钥备份也默认存到这里">
+            <SettingsRow title="API Key 存放" desc="全部 Key 生成一份密文清单文件（apikeys.json）放进所选文件夹，增删改后自动更新；密钥备份也默认存到这里">
               <Toggle checked={storagePrefs.apikey.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, enabled: v } }, v)} />
             </SettingsRow>
-            {storagePrefs.enabled && storagePrefs.apikey.enabled && (<>
-              <SettingsRow title="存放文件夹" desc={storagePrefs.apikey.dir || '尚未选择'}>
-                <button className="btn sm" onClick={() => void pickStorageDir('apikey')}><Folder size={13} /> {t('选择文件夹')}</button>
+            {storagePrefs.enabled && storagePrefs.apikey.enabled && (
+              <SettingsRow title="存放文件夹">
+                <StorageDirPicker dir={storagePrefs.apikey.dir} onPick={() => void pickStorageDir('apikey')} />
               </SettingsRow>
-              <SettingsRow title="清单内容" desc="明文：Key 以原文写入（注意文件保管）；密文：保险箱密文，无需解锁即可自动更新">
-                <div className="seg-control">
-                  <button className={`seg-btn ${storagePrefs.apikey.mode === 'cipher' ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, mode: 'cipher' } }, true)}>{t('密文')}</button>
-                  <button className={`seg-btn ${storagePrefs.apikey.mode === 'plain' ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, mode: 'plain' } }, true)}>{t('明文')}</button>
-                </div>
-              </SettingsRow>
-              <SettingsRow title="文件格式" desc="清单文件的保存格式">
-                <div className="seg-control">
-                  {(['md', 'xlsx', 'json', 'txt', 'html'] as ApiKeyStoreFormat[]).map(f => (
-                    <button key={f} className={`seg-btn ${storagePrefs.apikey.format === f ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, format: f } }, true)}>{f === 'xlsx' ? 'Excel' : f.toUpperCase()}</button>
-                  ))}
-                </div>
-              </SettingsRow>
-            </>)}
+            )}
             <SettingsRow title="AI 助手文件存放" desc="导出的对话记录、归档会话（自动存为一问一答的 md 文件）默认放进所选文件夹">
               <Toggle checked={storagePrefs.ai.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, ai: { ...storagePrefs.ai, enabled: v } })} />
             </SettingsRow>
             {storagePrefs.enabled && storagePrefs.ai.enabled && (
-              <SettingsRow title="存放文件夹" desc={storagePrefs.ai.dir || '尚未选择'}>
-                <button className="btn sm" onClick={() => void pickStorageDir('ai')}><Folder size={13} /> {t('选择文件夹')}</button>
+              <SettingsRow title="存放文件夹">
+                <StorageDirPicker dir={storagePrefs.ai.dir} onPick={() => void pickStorageDir('ai')} />
               </SettingsRow>
             )}
             <SettingsRow title="图像/视频存放" desc="AI 图像、AI 视频生成结果点保存时，默认存进所选文件夹（不再每次选目录）">
               <Toggle checked={storagePrefs.media.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, media: { ...storagePrefs.media, enabled: v } })} />
             </SettingsRow>
             {storagePrefs.enabled && storagePrefs.media.enabled && (
-              <SettingsRow title="存放文件夹" desc={storagePrefs.media.dir || '尚未选择'}>
-                <button className="btn sm" onClick={() => void pickStorageDir('media')}><Folder size={13} /> {t('选择文件夹')}</button>
+              <SettingsRow title="存放文件夹">
+                <StorageDirPicker dir={storagePrefs.media.dir} onPick={() => void pickStorageDir('media')} />
               </SettingsRow>
             )}
           </SettingsSection>
