@@ -1115,6 +1115,56 @@ fn stop_pids_confirmed(pids: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     (done, forced, still)
 }
 
+/// 读取进程的命令行（ps -o command=）；失败返回空串
+fn pid_command(pid: u32) -> String {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        Command::new("ps").args(["-p", &pid.to_string(), "-o", "command="]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    }
+    #[cfg(not(unix))]
+    { String::new() }
+}
+
+/// Ollama 桌面应用是否在运行（macOS：进程名恰为 Ollama）
+fn ollama_app_running() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("pgrep").args(["-x", "Ollama"]).output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    { false }
+}
+
+/// 退出 Ollama 桌面应用。必要性：该应用会守护自己的服务进程，应用不退出时，
+/// 关开关杀掉的 11434 服务会被它重新拉回来，达不到「关掉就停、不常驻」。
+/// 返回退出前它是否在运行。
+fn quit_ollama_app() -> bool {
+    if !ollama_app_running() { return false; }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let _ = Command::new("pkill").args(["-x", "Ollama"]).status();
+        let mut waited = 0;
+        while ollama_app_running() && waited < 2000 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            waited += 200;
+        }
+    }
+    true
+}
+
+/// Ollama CLI 可执行路径：Homebrew（Apple Silicon / Intel）与桌面应用自带 CLI，取第一个存在的
+fn ollama_program() -> String {
+    for p in ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/Applications/Ollama.app/Contents/Resources/ollama"] {
+        if std::path::Path::new(p).exists() { return p.to_string(); }
+    }
+    "/opt/homebrew/bin/ollama".to_string()
+}
+
 /// 某服务是否由本 App 启动且仍在运行（供前端决定是否显示"停止"按钮）
 #[tauri::command]
 fn is_service_app_managed(key: String) -> bool {
@@ -1149,7 +1199,7 @@ fn start_local_service(key: String, launch_desktop: bool) -> Result<String, Stri
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let (program, args, work_dir, guide): (String, Vec<String>, String, &str) = match key.as_str() {
         "ollama" => (
-            "/opt/homebrew/bin/ollama".to_string(),
+            ollama_program(),
             vec!["serve".to_string()],
             home.clone(),
             "Ollama 后台服务将在 11434 端口运行",
@@ -1232,13 +1282,16 @@ fn stop_service_by_port(key: String) -> Result<String, String> {
             return Err("查找端口进程失败：lsof 不可用".to_string());
         }
     }
+    // Ollama 先退出桌面应用：它会守护自己的服务进程，不先退出，刚杀掉的服务会被它拉回来
+    let app_quit = key == "ollama" && quit_ollama_app();
+    let app_note = if app_quit { "；已一并退出 Ollama 应用，防止它把服务重新拉起" } else { "" };
     let pids = port_listener_pids(port);
     if pids.is_empty() {
         // 端口无监听进程，仍需清理 App 的 PID 记录
         let mut m = load_managed_pids();
         m.remove(&key);
         save_managed_pids(&m);
-        return Ok(format!("{} 服务端口 {} 当前无进程监听", key, port));
+        return Ok(format!("{} 服务端口 {} 当前无进程监听{}", key, port, app_note));
     }
     let (done, forced, still) = stop_pids_confirmed(&pids);
     let mut m = load_managed_pids();
@@ -1253,13 +1306,95 @@ fn stop_service_by_port(key: String) -> Result<String, String> {
         return Err(format!("{} 服务端口 {} 仍有进程未退出（PID {}），可能需要管理员权限手动处理",
             key, port, bad.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")));
     }
+    // Ollama 落定复查：等 1.5 秒确认端口没有被任何守护者重新监听；若又出现则再清一次，
+    // 仍清不掉才报错——保证「关开关」返回成功时服务是真的停了，而不是杀完瞬间没人、过会儿又回来
+    if key == "ollama" {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let again = port_listener_pids(port);
+        if !again.is_empty() {
+            let (_d2, _f2, still2) = stop_pids_confirmed(&again);
+            let left = port_listener_pids(port);
+            if !still2.is_empty() || !left.is_empty() {
+                let mut bad: Vec<u32> = still2.iter().copied().chain(left.iter().copied()).collect();
+                bad.sort_unstable();
+                bad.dedup();
+                return Err(format!("{} 服务端口 {} 上的进程被停止后又重新出现（PID {}），可能有其他守护程序在拉起它，请手动处理",
+                    key, port, bad.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")));
+            }
+        }
+    }
     let pid_list = done.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
     if forced.is_empty() {
-        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），已确认进程退出、端口已释放，内存已回收", key, port, pid_list))
+        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），已确认进程退出、端口已释放，内存已回收{}", key, port, pid_list, app_note))
     } else {
-        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），其中 PID {} 常规终止未退出已强制结束；已确认端口已释放，内存已回收",
-            key, port, pid_list, forced.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")))
+        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），其中 PID {} 常规终止未退出已强制结束；已确认端口已释放，内存已回收{}",
+            key, port, pid_list, forced.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "), app_note))
     }
+}
+
+/// 开关关闭状态下的遗留进程对账（App 启动时由前端对每个「关着」的服务调用一次）：
+/// 保证「开关关了 = 服务不常驻」跨重启也成立。处理三类遗留：
+/// 1) 本 App 记录的托管 PID 还活着（App 上次异常退出/被强杀留下的孤儿进程）→ 确认式停止并清记录；
+/// 2) 服务端口上命令行确属该服务的监听进程（ollama serve / ComfyUI main.py）→ 确认式停止；
+/// 3) Ollama 端口仍被占且桌面应用在跑 → 退出该应用（它在守护服务）后再清一次。
+/// 命令行对不上的未知进程不动，只在返回信息里如实说明。返回 (是否动了进程, 说明)。
+#[tauri::command]
+fn reconcile_local_service(key: String) -> Result<(bool, String), String> {
+    let port = match service_port(&key) {
+        Some(p) => p,
+        None => return Ok((false, "未知服务".to_string())),
+    };
+    if key == "lmstudio" {
+        return Ok((false, "LM Studio 不由本 App 托管".to_string()));
+    }
+    let mut acted = false;
+    let mut notes: Vec<String> = Vec::new();
+    // 1) 托管 PID 遗留
+    let mut m = load_managed_pids();
+    if let Some(pid) = m.remove(&key) {
+        save_managed_pids(&m);
+        if pid_alive(pid) {
+            let (_d, _f, still) = stop_pids_confirmed(&[pid]);
+            if still.is_empty() {
+                acted = true;
+                notes.push(format!("已停止上次遗留的 {} 服务进程（PID {}）", key, pid));
+            }
+        }
+    }
+    // 2) 端口上确属该服务的监听进程
+    let matches_service = |pid: u32| -> bool {
+        let cmd = pid_command(pid).to_lowercase();
+        match key.as_str() {
+            "ollama" => cmd.contains("ollama") && cmd.contains("serve"),
+            "comfyui" => cmd.contains("main.py"),
+            _ => false,
+        }
+    };
+    let mut sweep_matching = |acted: &mut bool, notes: &mut Vec<String>| {
+        let targets: Vec<u32> = port_listener_pids(port).into_iter().filter(|p| matches_service(*p)).collect();
+        if !targets.is_empty() {
+            let (_d, _f, still) = stop_pids_confirmed(&targets);
+            let killed: Vec<u32> = targets.iter().copied().filter(|p| !still.contains(p)).collect();
+            if !killed.is_empty() {
+                *acted = true;
+                notes.push(format!("已停止占用 {} 端口的 {} 服务进程（PID {}）",
+                    port, key, killed.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")));
+            }
+        }
+    };
+    sweep_matching(&mut acted, &mut notes);
+    // 3) Ollama 应用守护兜底
+    if key == "ollama" && !port_listener_pids(port).is_empty() && ollama_app_running() {
+        if quit_ollama_app() {
+            acted = true;
+            notes.push("已退出 Ollama 应用（它在守护 11434 端口的服务）".to_string());
+            sweep_matching(&mut acted, &mut notes);
+        }
+    }
+    if !acted && !port_listener_pids(port).is_empty() {
+        notes.push(format!("{} 端口被其他进程占用（非 {} 服务本身），未做处理", port, key));
+    }
+    Ok((acted, notes.join("；")))
 }
 
 // ==================== 阿里云百炼 TTS 直连 ====================
@@ -2475,7 +2610,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

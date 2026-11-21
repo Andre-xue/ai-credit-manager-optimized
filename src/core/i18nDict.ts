@@ -1373,3 +1373,8 @@ Object.assign(D, {
   '开启后，在本 App 里开启 ComfyUI（开关或一键启动）将改为打开 Comfy Desktop 应用，还需在其中点开你的实例；关闭则按 ~/ComfyUI 命令行方式启动（仅本机设置）': { 'zh-TW': '開啟後，在本 App 裡開啟 ComfyUI（開關或一鍵啟動）將改為打開 Comfy Desktop 應用，還需在其中點開你的實例；關閉則按 ~/ComfyUI 命令列方式啟動（僅本機設定）', en: 'When on, turning on ComfyUI in this app (switch or one-click start) opens the Comfy Desktop app instead; you still open your instance inside it. When off, ComfyUI starts via the ~/ComfyUI command line (device-local setting)', ja: 'オンにすると、このアプリでComfyUIをオンにする（スイッチ/ワンクリック起動）とComfy Desktopアプリが開きます（インスタンスはその中で開いてください）。オフの場合は ~/ComfyUI のコマンドライン方式で起動します（このデバイスのみの設定）', ko: '켜면 이 앱에서 ComfyUI를 켤 때(스위치 또는 원클릭 시작) Comfy Desktop 앱이 열리며, 그 안에서 인스턴스를 열어야 합니다. 끄면 ~/ComfyUI 명령줄 방식으로 시작합니다(이 기기만의 설정)' },
   '已打开 Comfy Desktop，请在其中打开你的实例，启动后会自动识别': { 'zh-TW': '已打開 Comfy Desktop，請在其中打開你的實例，啟動後會自動識別', en: 'Comfy Desktop is open. Open your instance in it and it will be detected automatically once started', ja: 'Comfy Desktopを開きました。その中でインスタンスを開いてください。起動後に自動で認識されます', ko: 'Comfy Desktop이 열렸습니다. 그 안에서 인스턴스를 열면 시작 후 자동으로 인식됩니다' },
 })
+
+// ---- 补齐批次 25：服务开关即权威（v0.1.291） ----
+Object.assign(D, {
+  '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
+})

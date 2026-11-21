@@ -74,7 +74,8 @@ import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
-import { useServiceController } from './core/useServiceController'
+import { useServiceController, type ServiceController } from './core/useServiceController'
+import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
 // 性能优化：标签页级代码分割 —— 重型视图按需加载，减小首屏解析与内存占用（本地资源加载近乎瞬时）
@@ -1523,7 +1524,7 @@ function App() {
       {addOpen && <PlatformPickerModal
         onClose={() => setAddOpen(false)}
         onPick={(pid) => {
-          // 本地服务账户可直接添加，无需先在设置页开启开关（开关只控制功能可用性，不限制添加）
+          // 本地服务账户：开关关闭时弹窗不探测服务，需先打开弹窗内/设置页的服务开关（开关即权威）
           setAddOpen(false); setFormProviderId(pid)
         }}
       />}
@@ -1533,6 +1534,7 @@ function App() {
       />}
       {formProviderId && isLocalProvider(formProviderId) && <LocalAccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
+        serviceController={serviceController}
         onStartService={async (key) => {
           // 经服务控制器启动：同步把设置开关对齐为开（含内存互斥处理），
           // 避免弹窗里启动了服务、设置页与本地图像/视频页的开关却仍显示关闭
@@ -3532,13 +3534,15 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
 
 /** 第一步：选择要添加的平台 */
 /** 本地模型独立添加页：路径为 Key，网关端口由本机实时探测（只读不可改） */
-function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, onStartService }: {
+function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, onStartService, serviceController }: {
   provider: ProviderDefinition; sessionPwd: string;
   onClose: () => void;
   onSave: (account: AppState['accounts'][number], pwd: string) => void;
   notify: (m: string) => void;
   /** 一键启动入口：优先走服务控制器（同步开关状态），缺省直接拉进程 */
   onStartService?: (key: LocalServiceKey) => Promise<{ ok: boolean; message: string }>;
+  /** 服务开关控制器：开关关闭时弹窗不探测服务（开关即权威），需先打开开关 */
+  serviceController?: ServiceController;
 }) {
   const [services, setServices] = useState<LocalService[]>([])
   const [selected, setSelected] = useState<LocalService | null>(null)
@@ -3561,6 +3565,9 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
 
   const serviceKey = provider.id === 'local-ollama' ? 'ollama'
     : provider.id === 'local-comfyui' ? 'comfyui' : 'lmstudio'
+  // 开关即权威：该服务开关关闭时不探测本机服务（哪怕端口上正好有服务在跑也不显示），
+  // 打开开关后才探测。控制器缺省时（异常路径）按开启处理，不挡正常添加。
+  const svcEnabled = serviceController ? serviceController.enabled(serviceKey) : true
   /** 拉取当前服务的模型列表 */
   const loadModels = async (svc: LocalService) => {
     setModelsLoading(true); setModelsErr('')
@@ -3579,6 +3586,8 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
   const expectService = provider.id === 'local-ollama' ? 'Ollama'
     : provider.id === 'local-comfyui' ? 'ComfyUI' : ''
   const detect = async () => {
+    // 开关关闭：不探测，直接清空（与设置页开关状态保持一致）
+    if (!svcEnabled) { setServices([]); setSelected(null); setDetecting(false); return }
     const seq = ++detectSeq.current
     setDetecting(true); setDetectErr('')
     // 先直查期望服务的默认端口（单服务指纹校验，命中即返回，不必跑全端口扫描）
@@ -3602,7 +3611,12 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
     else setSelected(null)
     setDetecting(false)
   }
-  useEffect(() => { void detect() }, [])
+  // 开关状态驱动探测：打开（含弹窗打开时已开）→ 探测；关闭 → 作废进行中的探测并清空
+  useEffect(() => {
+    if (svcEnabled) void detect()
+    else { detectSeq.current++; setServices([]); setSelected(null); setDetecting(false) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svcEnabled])
 
   // 一键启动：探测不到服务时直接在弹窗内拉起本机服务，起来后自动重新探测并选中
   const [starting, setStarting] = useState(false)
@@ -3668,32 +3682,45 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
         <div className="modal-body">
           <div className="form-row">
             <label className="form-label">{t('本机服务（实时探测 · 网关与端口不可改）')}</label>
-            {detecting ? <div className="form-static">{t('正在探测本机服务…')}</div> : services.length === 0
-              ? <div className="form-static" style={{ color: 'var(--red)' }}>
-                  {detectErr || (expectService
-                    ? t('未检测到运行中的 {service} 服务，请先在本机启动{portHint}后点「重新探测」', { service: expectService, portHint: expectService === 'Ollama' ? t('（默认端口 11434）') : expectService === 'ComfyUI' ? t('（默认端口 8188）') : '' })
-                    : t('未检测到本机本地模型服务，请确认服务已启动'))}
+            {!svcEnabled && serviceController ? (
+              <>
+                <div className="form-static" style={{ color: 'var(--text-2)' }}>
+                  {t('{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。', { service: expectService || provider.shortName })}
                 </div>
-              : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {services.map(s => (
-                  <button key={`${s.host}:${s.port}`} className={`backup-option ${selected?.port === s.port ? 'active' : ''}`} onClick={() => setSelected(s)}>
-                    <span><b>{s.service}</b><small>{s.url}</small></span>
-                  </button>
-                ))}
-              </div>}
-            <div className="row" style={{ gap: 8, marginTop: 8 }}>
-              <button className="btn sm" onClick={() => void detect()} disabled={detecting || starting}>{t('重新探测')}</button>
-              {serviceKey !== 'lmstudio' && isDesktopApp() && (
-                services.length === 0 ? (
-                  <button className="btn sm primary" onClick={() => void startService()} disabled={starting}>
-                    {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
-                  </button>
-                ) : (
-                  // 已探测到 = 服务已在运行：按钮常显但禁用，明示状态，避免用户以为 Ollama 没有一键启动
-                  <button className="btn sm" disabled>{t('{service} 已在运行', { service: expectService || provider.shortName })}</button>
-                )
-              )}
-            </div>
+                <div style={{ marginTop: 8 }}>
+                  <ServiceSwitch controller={serviceController} serviceKey={serviceKey} />
+                </div>
+              </>
+            ) : (
+              <>
+                {detecting ? <div className="form-static">{t('正在探测本机服务…')}</div> : services.length === 0
+                  ? <div className="form-static" style={{ color: 'var(--red)' }}>
+                      {detectErr || (expectService
+                        ? t('未检测到运行中的 {service} 服务，请先在本机启动{portHint}后点「重新探测」', { service: expectService, portHint: expectService === 'Ollama' ? t('（默认端口 11434）') : expectService === 'ComfyUI' ? t('（默认端口 8188）') : '' })
+                        : t('未检测到本机本地模型服务，请确认服务已启动'))}
+                    </div>
+                  : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {services.map(s => (
+                      <button key={`${s.host}:${s.port}`} className={`backup-option ${selected?.port === s.port ? 'active' : ''}`} onClick={() => setSelected(s)}>
+                        <span><b>{s.service}</b><small>{s.url}</small></span>
+                      </button>
+                    ))}
+                  </div>}
+                <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                  <button className="btn sm" onClick={() => void detect()} disabled={detecting || starting}>{t('重新探测')}</button>
+                  {serviceKey !== 'lmstudio' && isDesktopApp() && (
+                    services.length === 0 ? (
+                      <button className="btn sm primary" onClick={() => void startService()} disabled={starting}>
+                        {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
+                      </button>
+                    ) : (
+                      // 已探测到 = 服务已在运行：按钮常显但禁用，明示状态，避免用户以为 Ollama 没有一键启动
+                      <button className="btn sm" disabled>{t('{service} 已在运行', { service: expectService || provider.shortName })}</button>
+                    )
+                  )}
+                </div>
+              </>
+            )}
           </div>
           <div className="form-row" style={{ marginTop: 12 }}>
             <label className="form-label">{t('选择模型')}

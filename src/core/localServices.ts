@@ -144,6 +144,24 @@ export async function stopServiceByPort(key: 'ollama' | 'comfyui' | 'lmstudio'):
   }
 }
 
+/**
+ * 开关关闭状态下的遗留进程对账（App 启动时对每个关着的服务调用一次）：
+ * 清理上次遗留的服务进程（托管孤儿 / 端口上的服务进程 / 守护中的 Ollama 应用），
+ * 保证「开关关了 = 服务不常驻」。返回是否真的动了进程与说明。
+ */
+export async function reconcileLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ acted: boolean; message: string }> {
+  if (!isDesktopApp()) return { acted: false, message: '' }
+  try {
+    const w = window as unknown as {
+      __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<[boolean, string]> }
+    }
+    const invoke = w.__TAURI_INTERNALS__?.invoke
+    if (!invoke) return { acted: false, message: '' }
+    const [acted, message] = await invoke('reconcile_local_service', { key })
+    return { acted: !!acted, message: message ?? '' }
+  } catch { return { acted: false, message: '' } }
+}
+
 /** 某服务是否由本 App 启动且仍在运行（决定是否显示停止按钮） */
 export async function isServiceAppManaged(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<boolean> {
   if (!isDesktopApp()) return false

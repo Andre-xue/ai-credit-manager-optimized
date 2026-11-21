@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppSettings, LocalServiceKey, MemoryTier } from './types'
 import {
   checkLocalService, startLocalService, stopServiceByPort, comfyLaunchDesktopEnabled,
+  reconcileLocalService,
 } from './localServices'
 import {
   LOCAL_SERVICE_KEYS, isServiceEnabled, planServiceToggle, notifyLocalServiceChanged,
@@ -39,32 +40,46 @@ export function useServiceController(
   const [status, setStatus] = useState<Partial<Record<LocalServiceKey, string | null>>>({})
   const [busyKey, setBusyKey] = useState<LocalServiceKey | null>(null)
 
-  const autoStartedRef = useRef<Partial<Record<LocalServiceKey, boolean>>>({})
   const refresh = useCallback(() => {
     void Promise.all(LOCAL_SERVICE_KEYS.map(async k => [k, await checkLocalService(k)] as const))
       .then(rows => {
         const map = Object.fromEntries(rows) as Partial<Record<LocalServiceKey, string | null>>
         setStatus(map)
-        // 自愈：Ollama 开关已开但服务实际没跑（如 App 重启后遗留状态）→ 自动拉起一次。
-        // 仅 ollama（轻量、用户开着开关即代表想用）；不自动拉 ComfyUI/LM Studio，且每次会话只尝试一次。
-        const k: LocalServiceKey = 'ollama'
-        if (settings && isServiceEnabled(settings, k) && !map[k] && !autoStartedRef.current[k]) {
-          autoStartedRef.current[k] = true
-          void startLocalService(k).then(r => {
-            if (r.ok) {
-              let n = 0
-              const timer = window.setInterval(() => {
-                void checkLocalService(k).then(addr => {
-                  if (addr) { setStatus(prev => ({ ...prev, [k]: addr })); window.clearInterval(timer) }
-                  else if (++n >= 15) window.clearInterval(timer)
-                })
-              }, 2000)
-            }
-          })
-        }
       })
-  }, [settings])
+  }, [])
   useEffect(() => { refresh() }, [refresh])
+
+  // 启动对账（每个会话只做一次，等 settings 就绪后执行）：让开关状态成为唯一事实——
+  // 开着的：Ollama 没在跑则拉起一次（原 refresh 自愈移到这里一次性做，避免每次刷新都
+  // 尝试拉起、与用户刚关掉开关的动作竞态，把用户关掉的服务又拉回来）；
+  // 关着的：清理上次遗留的服务进程（App 异常退出留下的孤儿 / 端口上的服务进程 /
+  // 守护中的 Ollama 应用），保证「关了就不常驻」跨重启也成立。清理真动了进程才提示。
+  const reconciledRef = useRef(false)
+  useEffect(() => {
+    if (!settings || reconciledRef.current) return
+    reconciledRef.current = true
+    void (async () => {
+      for (const k of LOCAL_SERVICE_KEYS) {
+        if (isServiceEnabled(settings, k)) {
+          if (k === 'ollama') {
+            const addr = await checkLocalService(k)
+            if (!addr) {
+              const r = await startLocalService(k)
+              if (r.ok) refresh()
+            }
+          }
+        } else {
+          const r = await reconcileLocalService(k)
+          if (r.acted) {
+            const name = k === 'ollama' ? 'Ollama' : k === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+            notify(`已清理遗留的 ${name} 服务进程（开关处于关闭）：${r.message}`)
+            notifyLocalServiceChanged(k, false)
+          }
+        }
+      }
+      refresh()
+    })()
+  }, [settings, notify, refresh])
 
   const enabled = useCallback((key: LocalServiceKey) => isServiceEnabled(settings, key), [settings])
 
