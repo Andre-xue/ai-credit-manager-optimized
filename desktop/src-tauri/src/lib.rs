@@ -2468,6 +2468,35 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Mac 系统毛玻璃增强（v0.1.293）：液态玻璃风格开启时给主窗口挂系统
+/// NSVisualEffectView（Sidebar 材质）作底材，前端再把壳/侧边栏底色调透让它透上来；
+/// 关闭即撤除。窗口透明由 tauri.macos.conf.json 的 transparent + macOSPrivateApi 保证。
+/// 非 macOS 平台为空操作（CSS 液态玻璃在所有平台都有效，系统底材只是 Mac 的增强）。
+#[tauri::command]
+fn set_window_glass(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, Effects};
+        if let Some(w) = app.get_webview_window("main") {
+            if enabled {
+                let _ = w.set_effects(Some(Effects {
+                    effects: vec![Effect::Sidebar],
+                    state: Some(EffectState::Active),
+                    radius: None,
+                    color: None,
+                }));
+            } else {
+                let _ = w.set_effects(None);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, enabled);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn autostart_is_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
@@ -2610,7 +2639,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

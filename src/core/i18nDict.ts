@@ -1379,6 +1379,14 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 27：界面风格（液态玻璃，v0.1.293） ----
+Object.assign(D, {
+  '界面风格': { 'zh-TW': '介面風格', en: 'Interface style', ja: 'インターフェーススタイル', ko: '인터페이스 스타일' },
+  '经典风格': { 'zh-TW': '經典風格', en: 'Classic', ja: 'クラシック', ko: '클래식' },
+  '液态玻璃': { 'zh-TW': '液態玻璃', en: 'Liquid Glass', ja: 'リキッドガラス', ko: '리퀴드 글래스' },
+  '液态玻璃：全局面板变为半透明毛玻璃，透出底层彩色光晕，苹果 iOS 26 / macOS 26 同款设计语言（Mac 桌面端还会叠加系统毛玻璃底材）；经典风格为现在的纯色界面': { 'zh-TW': '液態玻璃：全域面板變為半透明毛玻璃，透出底層彩色光暈，蘋果 iOS 26 / macOS 26 同款設計語言（Mac 桌面端還會疊加系統毛玻璃底材）；經典風格為現在的純色介面', en: 'Liquid Glass: panels turn into translucent frosted glass over a colorful ambient glow, the design language of Apple iOS 26 / macOS 26 (on Mac desktop a system frosted-glass material is layered underneath); Classic is the current solid interface.', ja: 'リキッドガラス：パネル全体が半透明のすりガラスになり、下のカラフルな光が透けます。Apple iOS 26 / macOS 26 と同じデザイン言語です（Macデスクトップ版ではシステムのすりガラス素材も重なります）。クラシックは現在のソリッドな画面です。', ko: '리퀴드 글래스: 전체 패널이 반투명 프로스트 글래스로 바뀌어 아래의 컬러 광원이 비칩니다. Apple iOS 26 / macOS 26과 같은 디자인 언어입니다(Mac 데스크톱에서는 시스템 프로스트 글래스 소재가 함께 겹쳐집니다). 클래식은 현재의 단색 화면입니다.' },
+})
+
 // ---- 补齐批次 26：免费通道拉取失败提示（v0.1.292） ----
 Object.assign(D, {
   'Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。': { 'zh-TW': 'Zen / Kilo 免費通道清單沒拉到（網路或上游問題），自動重試後仍失敗。', en: 'Could not load the Zen / Kilo free channel list (network or upstream issue); automatic retries also failed.', ja: 'Zen / Kilo無料チャンネルのリストを取得できませんでした（ネットワークまたは上流の問題）。自動リトライも失敗しました。', ko: 'Zen / Kilo 무료 채널 목록을 가져오지 못했습니다(네트워크 또는 업스트림 문제). 자동 재시도도 실패했습니다.' },

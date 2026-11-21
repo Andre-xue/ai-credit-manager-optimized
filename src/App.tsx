@@ -805,6 +805,20 @@ function App() {
     }
   }, [themePref])
 
+  // ---- Mac 系统毛玻璃增强（v0.1.293）：液态玻璃风格 + macOS 桌面端时，
+  // 让 Rust 侧给主窗口挂系统 NSVisualEffectView 底材，并给 <html> 挂 sys-glass
+  // 让壳/侧边栏底色调透（见 liquid-global.css 第 6 节）；切回经典即撤除 ----
+  const uiStylePref = state.settings.uiStyle
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    const isMac = /Mac/i.test(navigator.platform ?? '') || /Macintosh|Mac OS/i.test(navigator.userAgent ?? '')
+    if (!isMac) return
+    const enabled = uiStylePref === 'liquid'
+    document.documentElement.classList.toggle('sys-glass', enabled)
+    const invoke = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__?.invoke
+    if (invoke) void invoke('set_window_glass', { enabled }).catch(() => { /* 老版本桌面端无此命令时静默：CSS 玻璃照常 */ })
+  }, [uiStylePref])
+
   // ---- 桌面外壳联动（仅 Tauri）：托盘/快捷键发来导航事件时切页；待签到数同步到菜单栏标题 ----
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return
@@ -1083,12 +1097,15 @@ function App() {
   const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'calendar', 'checkin', 'voice', 'plugins', 'settings'] as Tab[])
     .filter(id => !(isPhone && id === 'docs'))
 
-  // 界面风格：全平台统一极简留白风（已移除其他风格选项，强制 claude）
+  // 界面风格：经典（默认，极简留白）/ 液态玻璃（uiStyle==='liquid' 时挂 liquid-ui，
+  // 材质覆盖在 liquid-global.css 最后一层；claude-ui 仍作基础设计系统保留）
+  const liquidUi = state.settings.uiStyle === 'liquid'
   const motionOn = state.settings.uiMotion !== false
   const shellClass = [
     'app-shell',
     isPhone ? 'phone-shell' : '',
     'claude-ui',
+    liquidUi ? 'liquid-ui' : '',
     motionOn ? 'motion-ui' : 'no-motion',
     sidebarVisible ? '' : 'sidebar-collapsed',
     state.settings.showBottomNav ? 'has-bottom-nav' : '',
@@ -5028,6 +5045,13 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <div className="seg-control">
                 {([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] as const).map(([v, label]) => (
                   <button key={v} className={`seg-btn ${(s.theme ?? 'system') === v ? 'active' : ''}`} onClick={() => onChange({ theme: v })}>{t(label)}</button>
+                ))}
+              </div>
+            </SettingsRow>
+            <SettingsRow title="界面风格" desc="液态玻璃：全局面板变为半透明毛玻璃，透出底层彩色光晕，苹果 iOS 26 / macOS 26 同款设计语言（Mac 桌面端还会叠加系统毛玻璃底材）；经典风格为现在的纯色界面">
+              <div className="seg-control">
+                {([['classic', '经典风格'], ['liquid', '液态玻璃']] as const).map(([v, label]) => (
+                  <button key={v} className={`seg-btn ${((s.uiStyle === 'liquid') ? 'liquid' : 'classic') === v ? 'active' : ''}`} onClick={() => onChange({ uiStyle: v })}>{t(label)}</button>
                 ))}
               </div>
             </SettingsRow>
