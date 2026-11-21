@@ -886,6 +886,64 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// 查监听某 TCP 端口的进程 PID 列表（unix 用 lsof；Windows 返回空，走 managed PID 路径）
+fn port_listener_pids(port: u16) -> Vec<u32> {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        match Command::new("lsof").args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"]).output() {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .lines().filter_map(|l| l.trim().parse().ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+    #[cfg(not(unix))]
+    { Vec::new() }
+}
+
+/// 向进程发送信号：force=false 为常规终止（SIGTERM），true 为强制结束（SIGKILL；Windows 恒为 taskkill /F）
+fn signal_pid(pid: u32, force: bool) -> bool {
+    use std::process::Command;
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("kill");
+        if force { cmd.arg("-9"); }
+        cmd.arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = force;
+        Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status().map(|s| s.success()).unwrap_or(false)
+    }
+}
+
+/// 轮询等待进程退出，最多等 max_ms；返回等待结束时仍存活的 PID
+fn wait_pids_exit(pids: &[u32], max_ms: u64) -> Vec<u32> {
+    let mut remaining: Vec<u32> = pids.to_vec();
+    let mut waited = 0u64;
+    while !remaining.is_empty() && waited < max_ms {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        waited += 200;
+        remaining.retain(|p| pid_alive(*p));
+    }
+    remaining
+}
+
+/// 确认式停止一组进程：先 SIGTERM 并等待退出（≤2s），未退出的 SIGKILL 再等一轮（≤1s）。
+/// 返回 (已确认退出的 PID, 其中被强制结束的 PID, 仍存活的 PID)
+fn stop_pids_confirmed(pids: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    for pid in pids { signal_pid(*pid, false); }
+    let alive = wait_pids_exit(pids, 2000);
+    if alive.is_empty() { return (pids.to_vec(), Vec::new(), Vec::new()); }
+    for pid in &alive { signal_pid(*pid, true); }
+    let still = wait_pids_exit(&alive, 1000);
+    let forced: Vec<u32> = alive.iter().copied().filter(|p| !still.contains(p)).collect();
+    let graceful: Vec<u32> = pids.iter().copied().filter(|p| !alive.contains(p)).collect();
+    let mut done = graceful;
+    done.extend(forced.iter().copied());
+    (done, forced, still)
+}
+
 /// 某服务是否由本 App 启动且仍在运行（供前端决定是否显示"停止"按钮）
 #[tauri::command]
 fn is_service_app_managed(key: String) -> bool {
@@ -938,10 +996,10 @@ fn start_local_service(key: String) -> Result<String, String> {
     Ok(format!("已启动 {} 后台进程（PID {}），请稍候点击「重新检测」。{}", key, child.id(), guide))
 }
 
-/// 停止由本 App 启动的本地服务进程；仅 kill 记录中的 PID，不碰用户手动启动的服务。
+/// 停止由本 App 启动的本地服务进程；仅处理记录中的 PID，不碰用户手动启动的服务。
+/// 确认式：发终止信号后等待进程真的退出，未退出则强制结束，并如实报告结果。
 #[tauri::command]
 fn stop_local_service(key: String) -> Result<String, String> {
-    use std::process::Command;
     let mut pids = load_managed_pids();
     let pid = match pids.remove(&key) {
         Some(p) => p,
@@ -949,14 +1007,17 @@ fn stop_local_service(key: String) -> Result<String, String> {
     };
     save_managed_pids(&pids);
     if !pid_alive(pid) {
-        return Ok(format!("服务进程（PID {}）已不在运行，记录已清理", pid))
+        return Ok(format!("服务进程（PID {}）已不在运行，记录已清理", pid));
     }
-    #[cfg(unix)]
-    let stopped = Command::new("kill").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
-    #[cfg(not(unix))]
-    let stopped = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status().map(|s| s.success()).unwrap_or(false);
-    if stopped { Ok(format!("已停止由本 App 启动的 {} 服务（PID {}）", key, pid)) }
-    else { Err(format!("停止进程 {} 失败", pid)) }
+    let (_done, forced, still) = stop_pids_confirmed(&[pid]);
+    if !still.is_empty() {
+        return Err(format!("进程 {} 经强制结束仍未退出，可能需要管理员权限手动处理", pid));
+    }
+    if forced.is_empty() {
+        Ok(format!("已停止由本 App 启动的 {} 服务（PID {}，已确认进程退出，内存已释放）", key, pid))
+    } else {
+        Ok(format!("已停止由本 App 启动的 {} 服务（PID {}，常规终止未退出已强制结束，已确认进程退出，内存已释放）", key, pid))
+    }
 }
 
 /// 服务默认端口映射（用于按端口定位并停止外部启动的服务进程）
@@ -970,53 +1031,45 @@ fn service_port(key: &str) -> Option<u16> {
 }
 
 /// 停止占用服务端口的进程（无论由谁启动），用于关闭开关时真正释放端口与内存。
-/// 通过 lsof 精确定位监听该端口的 PID；若 App 曾启动该服务则一并清理 PID 记录。
+/// 通过 lsof 精确定位监听该端口的 PID；确认式关闭：SIGTERM 后等待进程退出（≤2s），
+/// 未退出的 SIGKILL 强杀再等一轮（≤1s），最后复查端口无监听才算成功；若 App 曾启动该服务则一并清理 PID 记录。
 #[tauri::command]
 fn stop_service_by_port(key: String) -> Result<String, String> {
-    use std::process::Command;
     let port = service_port(&key).ok_or_else(|| "未知服务".to_string())?;
     #[cfg(unix)]
-    let pids_out = Command::new("lsof")
-        .args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"])
-        .output()
-        .map_err(|e| format!("查找端口进程失败：{}（请确认已安装 lsof）", e))?;
-    #[cfg(not(unix))]
-    let pids_out = Command::new("netstat")
-        .args(["-ano", "-p", "TCP"])
-        .output()
-        .map_err(|e| format!("查找端口进程失败：{}", e))?;
-
-    #[cfg(unix)]
-    let pids: Vec<u32> = String::from_utf8_lossy(&pids_out.stdout)
-        .lines().filter_map(|l| l.trim().parse().ok()).collect();
-    #[cfg(not(unix))]
-    let pids: Vec<u32> = Vec::new(); // Windows 端保守处理：仅靠 managed PID 停止
-
+    {
+        use std::process::Command;
+        if Command::new("lsof").arg("-v").output().is_err() {
+            return Err("查找端口进程失败：lsof 不可用".to_string());
+        }
+    }
+    let pids = port_listener_pids(port);
     if pids.is_empty() {
         // 端口无监听进程，仍需清理 App 的 PID 记录
         let mut m = load_managed_pids();
         m.remove(&key);
         save_managed_pids(&m);
-        return Ok(format!("{} 服务端口 {} 当前无进程监听", key, port))
+        return Ok(format!("{} 服务端口 {} 当前无进程监听", key, port));
     }
-    let mut stopped = Vec::new();
-    let mut failed = Vec::new();
-    for pid in &pids {
-        #[cfg(unix)]
-        let ok = Command::new("kill").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
-        #[cfg(not(unix))]
-        let ok = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status().map(|s| s.success()).unwrap_or(false);
-        if ok { stopped.push(*pid) } else { failed.push(*pid) }
-    }
+    let (done, forced, still) = stop_pids_confirmed(&pids);
     let mut m = load_managed_pids();
     m.remove(&key);
     save_managed_pids(&m);
-    if failed.is_empty() {
-        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），内存已释放", key, port,
-            stopped.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")))
+    // 最终复查：目标进程须全部退出，且端口上不得再有任何监听进程
+    let listeners = port_listener_pids(port);
+    if !still.is_empty() || !listeners.is_empty() {
+        let mut bad: Vec<u32> = still.iter().copied().chain(listeners.iter().copied()).collect();
+        bad.sort_unstable();
+        bad.dedup();
+        return Err(format!("{} 服务端口 {} 仍有进程未退出（PID {}），可能需要管理员权限手动处理",
+            key, port, bad.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    let pid_list = done.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+    if forced.is_empty() {
+        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），已确认进程退出、端口已释放，内存已回收", key, port, pid_list))
     } else {
-        Err(format!("部分进程停止失败（PID {}），可能需要管理员权限",
-            failed.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")))
+        Ok(format!("已停止 {} 服务端口 {} 上的进程（PID {}），其中 PID {} 常规终止未退出已强制结束；已确认端口已释放，内存已回收",
+            key, port, pid_list, forced.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")))
     }
 }
 

@@ -106,7 +106,7 @@ export async function stopLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): 
   }
 }
 
-/** 停止占用服务端口的进程（含外部启动的），关闭开关时真正释放端口与内存 */
+/** 停止占用服务端口的进程（含外部启动的）：确认式关闭——等进程真退出、端口真释放才算成功，赖着不走会强制结束 */
 export async function stopServiceByPort(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ ok: boolean; message: string }> {
   if (!isDesktopApp()) return { ok: false, message: '仅桌面端支持' }
   try {
