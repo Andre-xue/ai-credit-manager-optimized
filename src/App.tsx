@@ -1533,6 +1533,16 @@ function App() {
       />}
       {formProviderId && isLocalProvider(formProviderId) && <LocalAccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
+        onStartService={async (key) => {
+          // 经服务控制器启动：同步把设置开关对齐为开（含内存互斥处理），
+          // 避免弹窗里启动了服务、设置页与本地图像/视频页的开关却仍显示关闭
+          if (!serviceController.enabled(key)) {
+            await serviceController.toggle(key)
+            return { ok: true, message: '' }
+          }
+          // 开关已开但进程没跑（状态脱节）：直接拉起进程
+          return startLocalService(key)
+        }}
         onClose={() => { setFormProviderId(null); setAddOpen(true) }}
         onSave={(account, pwd) => {
           setState(s => ({ ...s, accounts: [{ ...account }, ...s.accounts] }))
@@ -3522,11 +3532,13 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
 
 /** 第一步：选择要添加的平台 */
 /** 本地模型独立添加页：路径为 Key，网关端口由本机实时探测（只读不可改） */
-function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }: {
+function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, onStartService }: {
   provider: ProviderDefinition; sessionPwd: string;
   onClose: () => void;
   onSave: (account: AppState['accounts'][number], pwd: string) => void;
   notify: (m: string) => void;
+  /** 一键启动入口：优先走服务控制器（同步开关状态），缺省直接拉进程 */
+  onStartService?: (key: LocalServiceKey) => Promise<{ ok: boolean; message: string }>;
 }) {
   const [services, setServices] = useState<LocalService[]>([])
   const [selected, setSelected] = useState<LocalService | null>(null)
@@ -3600,7 +3612,7 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
     detectSeq.current++
     setDetecting(false)
     try {
-      const r = await startLocalService(serviceKey)
+      const r = onStartService ? await onStartService(serviceKey) : await startLocalService(serviceKey)
       if (!r.ok) { notify(r.message); return }
       notify(t('正在启动 {service}…', { service: expectService || provider.shortName }))
       // 轮询等待服务真正开始监听（最多约 21 秒），命中后自动重新探测
