@@ -6,14 +6,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Check, AlertCircle } from 'lucide-react'
 import { t } from '../core/i18n'
+import type { GenPhase, GenProgress } from '../core/genTasks'
 
-export type GenPhase = 'idle' | 'submitting' | 'queued' | 'generating' | 'done' | 'error'
-
-export interface GenProgress {
-  phase: GenPhase
-  percent: number
-  label: string
-}
+export type { GenPhase, GenProgress }
 
 /** 进度条渲染组件 */
 export function GenProgressBar({ progress, compact }: { progress: GenProgress; compact?: boolean }) {

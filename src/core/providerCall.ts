@@ -301,6 +301,20 @@ export interface VideoOptions {
   lastFrame?: string      // 尾帧图（首尾帧生视频）
 }
 
+/**
+ * 给 Promise 套超时（v0.1.303）：云端生成接口此前无任何超时，服务商不返回时
+ * 前端进度条爬到 88% 上限后永远卡住。超时后以明确文案 reject，底层请求
+ * （桌面 Rust 另有 120s 上限）如何收尾不影响界面解脱。
+ */
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${what}超时（${Math.round(ms / 1000)} 秒无响应），请检查网络或稍后重试`)), ms)
+    }),
+  ])
+}
+
 /** 生图：按服务商协议风格自动生成请求（OpenAI 标准 / 硅基 image_size 等） */
 export async function callImage(
   account: Account, apiKey: string, prompt: string, opts?: ImageOptions,
@@ -312,7 +326,9 @@ export async function callImage(
     const style = detectMediaStyle(account)
     const model = opts?.model || extractModelId(account)
     const req = buildImageRequest(style, model, prompt, opts)
-    const raw = isDesktopApp() ? await invokeApi(`${base}${req.path}`, apiKey, req.body) : await directFetch(`${base}${req.path}`, apiKey, req.body)
+    const raw = await withTimeout(
+      isDesktopApp() ? invokeApi(`${base}${req.path}`, apiKey, req.body) : directFetch(`${base}${req.path}`, apiKey, req.body),
+      150_000, '生图请求')
     const json = JSON.parse(raw)
     const images: string[] = (json.data ?? []).map((d: { url?: string; b64_json?: string; image_url?: string }) => d.url ?? d.image_url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : '')).filter(Boolean)
     if (images.length === 0) {
@@ -342,7 +358,9 @@ export async function callVideo(
   let lastErr = ''
   for (const url of urls) {
     try {
-      const raw = isDesktopApp() ? await invokeApi(url, apiKey, req.body, 'POST', req.headers) : await directFetch(url, apiKey, req.body, req.headers)
+      const raw = await withTimeout(
+        isDesktopApp() ? invokeApi(url, apiKey, req.body, 'POST', req.headers) : directFetch(url, apiKey, req.body, req.headers),
+        90_000, '视频任务提交')
       const json = JSON.parse(raw)
       const videoUrl = extractVideoUrl(json)
       if (videoUrl) return { ok: true, text: '视频已生成', images: [videoUrl] }
@@ -375,26 +393,28 @@ export async function queryVideoTask(
     let raw: string
     if (style === 'siliconflow-video') {
       const body = { requestId: taskId }
-      raw = isDesktopApp() ? await invokeApi(`${base}/video/status`, apiKey, body) : await directFetch(`${base}/video/status`, apiKey, body)
+      raw = await withTimeout(
+        isDesktopApp() ? invokeApi(`${base}/video/status`, apiKey, body) : directFetch(`${base}/video/status`, apiKey, body),
+        30_000, '视频进度查询')
     } else if (reqDesc.statusGetPath) {
       const url = `${base}${reqDesc.statusGetPath(taskId)}`
-      raw = isDesktopApp()
-        ? await invokeApi(url, apiKey, undefined, 'GET')
-        : await (async () => {
+      raw = await withTimeout(isDesktopApp()
+        ? invokeApi(url, apiKey, undefined, 'GET')
+        : (async () => {
           const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } })
           const text = await res.text()
           if (!res.ok) throw new Error(`接口返回 ${res.status}：${text.slice(0, 120)}`)
           return text
-        })()
+        })(), 30_000, '视频进度查询')
     } else {
-      raw = isDesktopApp()
-        ? await invokeApi(`${base}/videos/${encodeURIComponent(taskId)}`, apiKey, undefined, 'GET')
-        : await (async () => {
+      raw = await withTimeout(isDesktopApp()
+        ? invokeApi(`${base}/videos/${encodeURIComponent(taskId)}`, apiKey, undefined, 'GET')
+        : (async () => {
           const res = await fetch(`${base}/videos/${encodeURIComponent(taskId)}`, { headers: { Authorization: `Bearer ${apiKey}` } })
           const text = await res.text()
           if (!res.ok) throw new Error(`接口返回 ${res.status}：${text.slice(0, 120)}`)
           return text
-        })()
+        })(), 30_000, '视频进度查询')
     }
     const json = JSON.parse(raw)
     const videoUrl = extractVideoUrl(json)

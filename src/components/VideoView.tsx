@@ -2,7 +2,7 @@
 // 支持文生视频 / 图生视频（上传首帧图）、时长与比例参数；异步任务提交后自动轮询状态，
 // 拿到视频 URL 即可预览与下载；历史记录仅存本机 localStorage。
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   Film, Sparkles, Loader2, Download, Trash2, Info, KeyRound,
   ExternalLink, History, X, Upload, HardDrive, RefreshCw,
@@ -11,7 +11,8 @@ import { callVideo, extractModelId, queryVideoTask, fetchProviderModels, filterM
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
-import { GenProgressBar, useGenProgress } from './GenProgressBar'
+import { GenProgressBar } from './GenProgressBar'
+import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { PROVIDER_MAP } from '../data/providers'
 import { categoryFromNote } from '../core/modelCategories'
 import {
@@ -58,16 +59,18 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   const [duration, setDuration] = useState(5)
   const [ratio, setRatio] = useState('16:9')
   const [firstFrame, setFirstFrame] = useState<string>('')  // 图生视频首帧 data URL
-  const [busy, setBusy] = useState(false)
-  const [taskText, setTaskText] = useState('')
-  const [results, setResults] = useState<string[]>([])
   const [pwdInput, setPwdInput] = useState('')
   const [history, setHistory] = useState<MediaHistoryItem[]>(() => loadHistory('video'))
   const [showHistory, setShowHistory] = useState(false)
-  const { progress, start: startProgress, advance: advanceProgress, done: doneProgress, fail: failProgress } = useGenProgress()
   const fileRef = useRef<HTMLInputElement>(null)
-  const aliveRef = useRef(true)
-  useEffect(() => { aliveRef.current = true; setHistory(loadHistory('video')); return () => { aliveRef.current = false } }, [])
+  // 生成任务在模块层运行（genTasks）：切走页面轮询不中断，回来接着看进度/结果
+  const task = useSyncExternalStore(cb => subscribeGenTask('video', cb), () => getGenTask('video'))
+  const busy = task.status === 'running'
+  const results = task.results
+  const taskText = task.note
+  const progress = task.progress
+  useEffect(() => { setHistory(loadHistory('video')) }, [])
+  useEffect(() => { if (task.status === 'done' || task.status === 'error') setHistory(loadHistory('video')) }, [task.status])
 
   const model = account ? extractModelId(account) : ''
   const activeModel = cloudModel || model
@@ -81,63 +84,79 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
     reader.readAsDataURL(file)
   }
 
-  const generate = async () => {
+  const generate = () => {
     if (!prompt.trim()) { notify(t('请先输入画面描述')); return }
     if (!account) { notify(onOpenLocal ? t('请先在「API Key 管理」添加带视频 API 地址的账户；本地生成请点右上角「本地生成」') : t('请先在「API Key 管理」添加带视频 API 地址的账户')); return }
     const pwd = getBiometricPassword() || sessionPwd
     if (!pwd) { notify(t('请先解锁密钥库（本页下方输入主密码）')); return }
-    setBusy(true); setResults([]); setTaskText(t('正在提交生成任务…'))
+    const useAccount = account
+    const text = prompt.trim()
+    const opts = { duration, ratio, image: firstFrame || undefined, model: cloudModel || undefined }
+    const params = `${t('{d}秒', { d: duration })} · ${ratio}${firstFrame ? t(' · 图生视频') : ''}`
     const startedAt = Date.now()
-    startProgress(t('正在提交视频任务…'))
-    try {
-      const opts = { duration, ratio, image: firstFrame || undefined, model: cloudModel || undefined }
-      advanceProgress(25, t('等待服务商响应…'), 'queued')
-      const useAccount = account
+    // 任务交给模块层管理器：切走页面轮询不中断（此前靠组件存活，切页即丢），
+    // 轮询上限 15 分钟（此前仅 60 秒，云端视频普遍要几分钟，注定拿不到结果）
+    const started = startGenTask('video', text, async (rep) => {
+      rep.setLabel(t('正在提交视频任务…'), 'submitting')
+      rep.setNote(t('正在提交生成任务…'))
+      rep.advance(25, t('等待服务商响应…'), 'queued')
       const apiKey = await decryptSecret(useAccount.encryptedKey!, pwd)
-      const r = await callVideo(useAccount, apiKey, prompt.trim(), opts)
-      if (!r.ok) { setTaskText(r.error ?? t('提交失败')); failProgress(t('提交失败')); notify(r.error ?? t('提交失败')); return }
+      const r = await callVideo(useAccount, apiKey, text, opts)
+      if (!r.ok) { notify(r.error ?? t('提交失败')); throw new Error(r.error ?? t('提交失败')) }
 
       let imgs = r.images ?? []
-      // 直接返回视频 URL：立即展示
+      let finalNote = ''
       if (imgs.length > 0) {
-        setResults(imgs); setTaskText(t('视频已生成'))
+        rep.setNote(t('视频已生成'))
       } else {
-        // 异步任务：尝试从文本里提取任务 ID 轮询；失败则保留提交提示（引导去官方查看）
         const idMatch = r.text.match(/ID:\s*([^）)\s]+)/)
         const taskId = idMatch?.[1]
         if (taskId) {
-          setTaskText(t('任务已提交（{id}…），正在查询进度…', { id: String(taskId).slice(0, 16) }))
-          advanceProgress(35, t('任务排队中…'), 'queued')
-          for (let i = 0; i < 12 && aliveRef.current; i++) {
+          rep.setNote(t('任务已提交（{id}…），正在查询进度…', { id: String(taskId).slice(0, 16) }))
+          rep.advance(35, t('任务排队中…'), 'queued')
+          const deadline = Date.now() + 15 * 60 * 1000
+          let consecutiveErrors = 0
+          let lastStatus = ''
+          for (let i = 0; Date.now() < deadline; i++) {
             await new Promise(res => setTimeout(res, 5000))
-            if (!aliveRef.current) return
             const q = await queryVideoTask(useAccount, apiKey, taskId)
             if (q.ok && q.images?.length) { imgs = q.images; break }
-            if (!q.ok && q.error) { setTaskText(q.error); failProgress(q.error); break }
+            if (!q.ok && q.error) {
+              // 平台明确终态失败才中止；单次查询的网络/超时错误容忍，继续轮询
+              if (q.error.startsWith('视频生成失败')) throw new Error(q.error)
+              consecutiveErrors++
+              if (consecutiveErrors >= 6) throw new Error(q.error)
+              continue
+            }
             if (q.ok) {
-              setTaskText(q.text || t('任务处理中…'))
-              advanceProgress(Math.min(85, 35 + (i + 1) * 4), q.text || t('视频生成中…'), 'generating')
+              consecutiveErrors = 0
+              lastStatus = q.text || t('任务处理中…')
+              rep.setNote(lastStatus)
+              rep.advance(Math.min(85, 35 + (i + 1) * 2), q.text || t('视频生成中…'), 'generating')
             }
           }
-          if (imgs.length > 0) { setResults(imgs); setTaskText(t('视频已生成')) }
-          else if (aliveRef.current && !taskText.startsWith('视频生成失败')) setTaskText(prev => prev.includes('失败') ? prev : t('{text}（未自动拿到视频地址，可到官方平台查看）', { text: r.text }))
+          if (imgs.length > 0) rep.setNote(t('视频已生成'))
+          else finalNote = t('{text}（等待 15 分钟仍未拿到视频地址，任务可能仍在平台处理，可到官方平台查看）', { text: lastStatus || r.text })
         } else {
-          setTaskText(r.text)
+          finalNote = r.text
+          rep.setNote(r.text)
         }
       }
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
-      doneProgress(imgs.length ? t('生成完成 · 耗时 {secs}s', { secs }) : t('任务已提交 · 耗时 {secs}s', { secs }))
-      const params = `${t('{d}秒', { d: duration })} · ${ratio}${firstFrame ? t(' · 图生视频') : ''}`
-      setHistory(addHistory('video', {
-        id: newMediaId(), kind: 'video', prompt: prompt.trim(),
+      addHistory('video', {
+        id: newMediaId(), kind: 'video', prompt: text,
         accountLabel: useAccount.label,
-        model: activeModel, createdAt: Date.now(), results: imgs, params, note: imgs.length ? '' : (taskText || r.text),
-      }))
+        model: activeModel, createdAt: Date.now(), results: imgs, params,
+        note: imgs.length ? '' : (finalNote || r.text),
+      })
       notify(imgs.length ? t('视频已生成') : t('视频任务已提交'))
-    } catch (e) {
-      const msg = errTextSafe(e)
-      setTaskText(msg); failProgress(t('生成失败')); notify(msg)
-    } finally { setBusy(false) }
+      return {
+        results: imgs,
+        note: imgs.length ? t('视频已生成') : (finalNote || r.text),
+        doneLabel: imgs.length ? t('生成完成 · 耗时 {secs}s', { secs }) : t('任务已提交 · 耗时 {secs}s', { secs }),
+      }
+    })
+    if (!started) notify(t('已有生成任务进行中，请等待完成'))
   }
 
   const download = async (url: string, idx: number) => {

@@ -1,7 +1,7 @@
 // AI 图像生成模块：用自有生图账户的 API Key 调用 OpenAI 兼容 /images/generations。
 // 支持文生图参数（尺寸/数量/质量/风格），结果预览与下载，历史记录仅存本机 localStorage。
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
   Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, KeyRound,
   ExternalLink, History, HardDrive, RefreshCw, ChevronDown,
@@ -10,7 +10,8 @@ import { callImage, extractModelId, fetchProviderModels, filterMediaModels } fro
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
-import { GenProgressBar, useGenProgress } from './GenProgressBar'
+import { GenProgressBar } from './GenProgressBar'
+import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { SafeThumb } from './SafeThumb'
 import { PROVIDER_MAP } from '../data/providers'
 import { categoryFromNote } from '../core/modelCategories'
@@ -60,50 +61,52 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   const [quality, setQuality] = useState('')
   const [style, setStyle] = useState('')
   const [count, setCount] = useState(1)
-  const [busy, setBusy] = useState(false)
-  const [results, setResults] = useState<string[]>([])
-  const [lastNote, setLastNote] = useState('')
   const [pwdInput, setPwdInput] = useState('')
   const [history, setHistory] = useState<MediaHistoryItem[]>(() => loadHistory('image'))
   const [showHistory, setShowHistory] = useState(false)
-  const { progress, start: startProgress, advance: advanceProgress, done: doneProgress, fail: failProgress } = useGenProgress()
+  // 生成任务在模块层运行（genTasks）：切走页面不中断，回来接着看进度/结果
+  const task = useSyncExternalStore(cb => subscribeGenTask('image', cb), () => getGenTask('image'))
+  const busy = task.status === 'running'
+  const results = task.results
+  const lastNote = task.note
+  const progress = task.progress
 
   useEffect(() => { setHistory(loadHistory('image')) }, [])
+  // 任务在别处（切走期间）完成时，回到页面刷新历史列表
+  useEffect(() => { if (task.status === 'done' || task.status === 'error') setHistory(loadHistory('image')) }, [task.status])
 
   const model = account ? extractModelId(account) : ''
   const activeModel = cloudModel || model
   const needPwd = !!account && !!account.encryptedKey && !getBiometricPassword() && !sessionPwd
 
-  const generate = async () => {
+  const generate = () => {
     if (!prompt.trim()) { notify(t('请先输入画面描述')); return }
     if (!account) { notify(onOpenLocal ? t('请先在「API Key 管理」添加带生图 API 地址的账户；本地生图请点右上角「本地生成」') : t('请先在「API Key 管理」添加带生图 API 地址的账户')); return }
     const pwd = getBiometricPassword() || sessionPwd
     if (!pwd) { notify(t('请先解锁密钥库（本页下方输入主密码）')); return }
-    setBusy(true); setResults([]); setLastNote('')
+    const useAccount = account
+    const text = prompt.trim()
+    const opts = { size, n: count, quality: quality || undefined, style: style || undefined, model: cloudModel || undefined }
     const startedAt = Date.now()
-    startProgress(t('正在提交生成请求…'))
-    try {
-      const opts = { size, n: count, quality: quality || undefined, style: style || undefined, model: cloudModel || undefined }
-      advanceProgress(30, t('服务商正在生成图片…'))
-      const r = await callImage(account, await decryptSecret(account.encryptedKey!, pwd), prompt.trim(), opts)
-      if (!r.ok) { setLastNote(r.error ?? t('生成失败')); failProgress(t('生成失败')); notify(r.error ?? t('生成失败')); return }
-      const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
-      doneProgress(t('生成完成 · 耗时 {secs}s', { secs }))
+    // 任务交给模块层管理器：切走页面继续跑，完成自动落历史，回来能看到结果
+    const started = startGenTask('image', text, async (rep) => {
+      rep.setLabel(t('正在提交生成请求…'), 'submitting')
+      rep.advance(30, t('服务商正在生成图片…'))
+      const r = await callImage(useAccount, await decryptSecret(useAccount.encryptedKey!, pwd), text, opts)
+      if (!r.ok) { notify(r.error ?? t('生成失败')); throw new Error(r.error ?? t('生成失败')) }
       const imgs = r.images ?? []
       const thumbs = await urlsToThumbs(imgs)
-      // 抓取成功用本地副本预览（不依赖可能过期的远程链接），失败则回退原 URL
-      setResults(imgs.map((u, i) => thumbs[i] || u))
-      setLastNote(r.text)
       const params = [size, quality || '', style || '', t('{count}张', { count })].filter(Boolean).join(' · ')
-      setHistory(addHistory('image', {
-        id: newMediaId(), kind: 'image', prompt: prompt.trim(),
-        accountLabel: account.label, model: activeModel, createdAt: Date.now(), results: imgs, thumbs, params,
-      }))
+      addHistory('image', {
+        id: newMediaId(), kind: 'image', prompt: text,
+        accountLabel: useAccount.label, model: activeModel, createdAt: Date.now(), results: imgs, thumbs, params,
+      })
       notify(imgs.length ? t('已生成 {n} 张图片', { n: imgs.length }) : r.text)
-    } catch (e) {
-      const msg = errTextSafe(e)
-      setLastNote(msg); failProgress(t('生成失败')); notify(msg)
-    } finally { setBusy(false) }
+      const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
+      // 展示用本地缩略图副本（不依赖可能过期的远程链接），失败回退原 URL
+      return { results: imgs.map((u, i) => thumbs[i] || u), note: r.text, doneLabel: t('生成完成 · 耗时 {secs}s', { secs }) }
+    })
+    if (!started) notify(t('已有生成任务进行中，请等待完成'))
   }
 
   const download = async (url: string, idx: number) => {

@@ -1379,6 +1379,12 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 33：云端生成任务后台化（v0.1.303） ----
+Object.assign(D, {
+  '已有生成任务进行中，请等待完成': { 'zh-TW': '已有生成任務進行中，請等待完成', en: 'A generation task is already running — please wait for it to finish.', ja: '生成タスクが既に実行中です。完了をお待ちください。', ko: '이미 실행 중인 생성 작업이 있습니다. 완료될 때까지 기다려 주세요.' },
+  '{text}（等待 15 分钟仍未拿到视频地址，任务可能仍在平台处理，可到官方平台查看）': { 'zh-TW': '{text}（等待 15 分鐘仍未取得影片地址，任務可能仍在平台處理，可到官方平台查看）', en: '{text} (No video URL after 15 minutes — the task may still be processing on the platform; check the official site.)', ja: '{text}（15分待っても動画URLを取得できませんでした。タスクはプラットフォームで処理中の可能性があります。公式サイトでご確認ください）', ko: '{text}(15분을 기다려도 동영상 주소를 받지 못했습니다. 작업이 플랫폼에서 아직 처리 중일 수 있으니 공식 사이트에서 확인하세요.)' },
+})
+
 // ---- 补齐批次 32：全局刷新（v0.1.302） ----
 Object.assign(D, {
   '刷新中…': { 'zh-TW': '刷新中…', en: 'Refreshing…', ja: '更新中…', ko: '새로고침 중…' },
