@@ -15,7 +15,7 @@ import { PROVIDER_MAP } from '../data/providers'
 import { getAdapter } from './adapters'
 import {
   loadPlugins, isHostAllowed, pluginStorageGet, pluginStorageSet, pluginHttpDesktop, isDesktopShell,
-  type InstalledPlugin,
+  pluginSettingsValues, type InstalledPlugin,
 } from './plugins'
 import { buildDataDigest } from './dataDigest'
 import { isNativeApp } from './openExternal'
@@ -50,7 +50,7 @@ const BRIDGE_JS = `
       var fn = adapters[d.providerId]
       if (!fn) { post({ kind: 'acm-call-result', id: d.id, ok: false, error: 'plugin did not register an adapter for ' + d.providerId }); return }
       var ctx = {
-        apiKey: d.apiKey, providerId: d.providerId, baseUrl: d.baseUrl || '',
+        apiKey: d.apiKey, providerId: d.providerId, baseUrl: d.baseUrl || '', settings: d.settings || {},
         http: function (url, opts) { return window.acm.http(url, opts) },
       }
       Promise.resolve().then(function () { return fn(ctx) }).then(
@@ -76,6 +76,7 @@ const BRIDGE_JS = `
     openUrl: function (url) { return rpc('openUrl', { url: String(url) }) },
     http: function (url, opts) { return rpc('http', { url: String(url), opts: opts || {} }) },
     digest: function () { return rpc('digest', {}) },
+    getSettings: function () { return rpc('getSettings', {}) },
     storage: {
       get: function (key) { return rpc('storageGet', { key: String(key) }) },
       set: function (key, value) { return rpc('storageSet', { key: String(key), value: value }) },
@@ -141,6 +142,10 @@ async function hostRpc(plugin: InstalledPlugin, method: string, args: Record<str
       if (!plugin.manifest.permissions.includes('data')) throw new Error('插件未声明 data 权限')
       if (!stateProvider) throw new Error('宿主未就绪')
       return buildDataDigest(stateProvider())
+    }
+    case 'getSettings': {
+      // 插件读自己的设置（用户在本插件设置页里填的值 + 清单默认值），无需额外权限
+      return pluginSettingsValues(plugin)
     }
     case 'http': {
       return hostHttp(plugin, String(args.url ?? ''), (args.opts ?? {}) as HttpOpts)
@@ -260,6 +265,7 @@ export async function runPluginBalanceAdapter(plugin: InstalledPlugin, providerI
     frame.iframe.contentWindow?.postMessage({
       kind: 'acm-call', nonce: frame.nonce, id, method: 'fetchBalance',
       providerId, apiKey, baseUrl: PROVIDER_MAP[providerId]?.apiBaseUrl ?? '',
+      settings: pluginSettingsValues(plugin),
     }, '*')
     const v = await withTimeout(result, 30000, '插件查询超时（30 秒）')
     if (!v || typeof v !== 'object') throw new Error('插件适配器没有返回有效的余额结果')

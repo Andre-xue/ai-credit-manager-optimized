@@ -10,6 +10,19 @@
 export type PluginPermission = 'network' | 'data' | 'notify' | 'storage'
 export const PLUGIN_PERMISSIONS: PluginPermission[] = ['network', 'data', 'notify', 'storage']
 
+/** 插件设置项声明：App 据此为每个插件生成独立设置页，值存插件私有存储，插件经 acm.getSettings() 读取 */
+export type PluginSettingType = 'text' | 'password' | 'number' | 'switch' | 'select' | 'textarea'
+export const PLUGIN_SETTING_TYPES: PluginSettingType[] = ['text', 'password', 'number', 'switch', 'select', 'textarea']
+export interface PluginSettingField {
+  key: string
+  label: string
+  type: PluginSettingType
+  options?: string[]
+  default?: string | number | boolean
+  placeholder?: string
+  help?: string
+}
+
 export interface PluginManifest {
   id: string
   name: string
@@ -25,6 +38,8 @@ export interface PluginManifest {
   providers?: string[]
   /** 进程插件（仅桌面端）：要启动的本地命令 */
   process?: { command: string; args?: string[] }
+  /** 设置项声明（可选）：App 为该插件生成独立设置页 */
+  settings?: PluginSettingField[]
 }
 
 export interface InstalledPlugin {
@@ -115,6 +130,18 @@ export function validatePluginPackage(pkg: unknown): string | null {
   if (m.provides.includes('process')) {
     if (!m.process || typeof m.process.command !== 'string' || !m.process.command.trim()) return '进程插件必须在 manifest.process.command 里写明要启动的命令'
   }
+  if (m.settings !== undefined) {
+    if (!Array.isArray(m.settings)) return 'manifest.settings 必须是数组'
+    const seenKeys = new Set<string>()
+    for (const f of m.settings as Array<Partial<PluginSettingField>>) {
+      if (!f || typeof f.key !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,40}$/.test(f.key)) return '设置项 key 只能用字母开头、字母数字与下划线'
+      if (seenKeys.has(f.key)) return `设置项 key 重复：${f.key}`
+      seenKeys.add(f.key)
+      if (typeof f.label !== 'string' || !f.label.trim()) return `设置项 ${f.key} 缺少 label`
+      if (!PLUGIN_SETTING_TYPES.includes(f.type as PluginSettingType)) return `设置项 ${f.key} 的 type 不合法`
+      if (f.type === 'select' && (!Array.isArray(f.options) || f.options.length === 0)) return `设置项 ${f.key} 是 select 类型，必须提供 options`
+    }
+  }
   if (typeof p.code !== 'string' || !p.code.trim()) return '插件代码不能为空'
   if (p.code.length > 512 * 1024) return '插件代码过大（上限 512KB）'
   if (p.html !== undefined && typeof p.html !== 'string') return 'html 必须是字符串'
@@ -141,6 +168,26 @@ export function pluginStorageGet(pluginId: string, key: string): unknown {
 }
 export function pluginStorageSet(pluginId: string, key: string, value: unknown): void {
   try { localStorage.setItem(`acm.plugin.data.${pluginId}.${key}`, JSON.stringify(value ?? null)) } catch { /* 忽略 */ }
+}
+
+/** 插件设置值在私有存储中的保留键 */
+export const PLUGIN_SETTINGS_STORAGE_KEY = '__settings'
+
+/** 读取插件当前设置值：清单声明的默认值打底，用户在设置页填的值覆盖 */
+export function pluginSettingsValues(plugin: InstalledPlugin): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const f of plugin.manifest.settings ?? []) {
+    if (f.default !== undefined) out[f.key] = f.default
+  }
+  const stored = pluginStorageGet(plugin.manifest.id, PLUGIN_SETTINGS_STORAGE_KEY)
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    Object.assign(out, stored as Record<string, unknown>)
+  }
+  return out
+}
+
+export function savePluginSettings(pluginId: string, values: Record<string, unknown>): void {
+  pluginStorageSet(pluginId, PLUGIN_SETTINGS_STORAGE_KEY, values)
 }
 
 // ---------------- 桌面进程插件（Tauri 命令封装；非桌面端调用直接报错） ----------------
@@ -194,6 +241,9 @@ export const EXAMPLE_PLUGINS: PluginPackage[] = [
       provides: ['panel'],
       permissions: ['network', 'storage', 'notify'],
       hosts: ['open.er-api.com'],
+      settings: [
+        { key: 'base', label: '基准货币', type: 'select', options: ['USD', 'EUR', 'GBP', 'CNY', 'JPY'], default: 'USD', help: '汇率接口的基准货币，在插件设置页修改' },
+      ],
     },
     html: '<div style="font-family:inherit;padding:6px 2px"><div style="display:flex;gap:8px;align-items:center"><button id="fx-go" style="padding:6px 14px;border-radius:8px;border:0;background:#6d28d9;color:#fff;cursor:pointer">获取最新汇率</button><span id="fx-at" style="font-size:12px;opacity:.65"></span></div><div id="fx-out" style="margin-top:10px;font-size:14px;line-height:1.9"></div></div>',
     code: `
@@ -210,7 +260,9 @@ function render(d) {
 document.getElementById('fx-go').addEventListener('click', async () => {
   out.textContent = '加载中…'
   try {
-    const res = await acm.http('https://open.er-api.com/v6/latest/USD')
+    const s = await acm.getSettings()
+    const base = s.base || 'USD'
+    const res = await acm.http('https://open.er-api.com/v6/latest/' + base)
     const j = JSON.parse(res.text)
     if (!j || !j.rates) throw new Error('接口返回异常')
     const d = { rates: j.rates, at: Date.now() }

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Puzzle, Plus, Upload, Link2, Sparkles, Pencil, Play, Square, RefreshCw, X, Server, Wrench, ChevronDown, ShieldCheck,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { t } from '../core/i18n'
 import {
   loadPlugins, installPlugin, uninstallPlugin, setPluginEnabled, validatePluginPackage,
   isDesktopShell, pluginProcessStart, pluginProcessStop, pluginProcessRunning, pluginProcessOutput,
-  pluginHttpDesktop, PLUGINS_EVENT, EXAMPLE_PLUGINS,
-  type InstalledPlugin, type PluginPackage,
+  pluginHttpDesktop, pluginSettingsValues, savePluginSettings, PLUGINS_EVENT, EXAMPLE_PLUGINS,
+  type InstalledPlugin, type PluginPackage, type PluginSettingField,
 } from '../core/plugins'
 import { mountPanelFrame } from '../core/pluginRuntime'
 import {
@@ -46,6 +47,7 @@ interface Draft {
   id: string; name: string; version: string; author: string; description: string
   provides: string[]; permissions: string[]; hosts: string; providers: string
   processCommand: string; processArgs: string; html: string; code: string
+  settingsJson: string
 }
 
 const NEW_PLUGIN_CODE = `// 插件代码运行在沙箱中，可用全局对象 acm：
@@ -65,6 +67,7 @@ function draftFromPlugin(p: InstalledPlugin): Draft {
     hosts: (p.manifest.hosts ?? []).join(', '), providers: (p.manifest.providers ?? []).join(', '),
     processCommand: p.manifest.process?.command ?? '', processArgs: (p.manifest.process?.args ?? []).join(' '),
     html: p.html ?? '', code: p.code,
+    settingsJson: p.manifest.settings ? JSON.stringify(p.manifest.settings, null, 2) : '',
   }
 }
 
@@ -74,6 +77,7 @@ function emptyDraft(): Draft {
     id: `my-plugin-${Math.random().toString(36).slice(2, 7)}`, name: '', version: '1.0.0',
     author: '', description: '', provides: ['panel'], permissions: ['notify', 'storage'],
     hosts: '', providers: '', processCommand: '', processArgs: '', html: '', code: NEW_PLUGIN_CODE,
+    settingsJson: '',
   }
 }
 
@@ -100,6 +104,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [draftErr, setDraftErr] = useState('')
   const [pendingInstall, setPendingInstall] = useState<PluginPackage | null>(null)
+  const [settingsTarget, setSettingsTarget] = useState<InstalledPlugin | null>(null)
   const [urlInput, setUrlInput] = useState('')
   const [urlBusy, setUrlBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -147,6 +152,10 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   const saveDraft = () => {
     if (!draft) return
     const split = (s: string) => s.split(/[,\s]+/).map(x => x.trim()).filter(Boolean)
+    let settings: PluginSettingField[] | undefined
+    if (draft.settingsJson.trim()) {
+      try { settings = JSON.parse(draft.settingsJson) as PluginSettingField[] } catch { setDraftErr('设置项 JSON 格式不对'); return }
+    }
     const pkg: PluginPackage = {
       manifest: {
         id: draft.id.trim(), name: draft.name.trim(), version: draft.version.trim() || '1.0.0',
@@ -156,6 +165,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
         hosts: split(draft.hosts).length ? split(draft.hosts) : undefined,
         providers: split(draft.providers).length ? split(draft.providers) : undefined,
         process: draft.provides.includes('process') ? { command: draft.processCommand.trim(), args: split(draft.processArgs) } : undefined,
+        settings,
       },
       code: draft.code,
       html: draft.html.trim() ? draft.html : undefined,
@@ -219,6 +229,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
           <PluginCard key={p.manifest.id} plugin={p} notify={notify} desktop={desktop}
             panelOpen={openPanelId === p.manifest.id}
             onTogglePanel={() => setOpenPanelId(openPanelId === p.manifest.id ? null : p.manifest.id)}
+            onOpenSettings={() => setSettingsTarget(p)}
             onEdit={() => { setDraftErr(''); setDraft(draftFromPlugin(p)) }} />
         ))}
       </div>
@@ -231,6 +242,10 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
           </div>
           <div ref={panelBoxRef} className="plugin-panel-box" />
         </div>
+      )}
+
+      {settingsTarget && (
+        <PluginSettingsModal plugin={settingsTarget} notify={notify} onClose={() => setSettingsTarget(null)} />
       )}
 
       <McpSection notify={notify} desktop={desktop} />
@@ -299,6 +314,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
                   <label>{t('参数（空格分隔）')}<input className="input" value={draft.processArgs} placeholder="server.js --port 3000" onChange={e => setDraft({ ...draft, processArgs: e.target.value })} /></label>
                 </div>
               )}
+              <label className="plugin-form-row">{t('设置项定义（JSON，可选）')}<textarea className="input plugin-code" rows={4} value={draft.settingsJson} placeholder={'[\n  { "key": "base", "label": "基准货币", "type": "select", "options": ["USD", "CNY"], "default": "USD" }\n]'} onChange={e => setDraft({ ...draft, settingsJson: e.target.value })} /></label>
               <label className="plugin-form-row">{t('面板 HTML（可选）')}<textarea className="input plugin-code" rows={4} value={draft.html} onChange={e => setDraft({ ...draft, html: e.target.value })} /></label>
               <label className="plugin-form-row">{t('插件代码（JavaScript）')}<textarea className="input plugin-code" rows={12} value={draft.code} onChange={e => setDraft({ ...draft, code: e.target.value })} /></label>
               {draftErr && <div style={{ color: 'var(--red)', fontSize: 13 }}>{t(draftErr)}</div>}
@@ -314,12 +330,13 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   )
 }
 
-function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onEdit }: {
+function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenSettings, onEdit }: {
   plugin: InstalledPlugin
   notify: (msg: string) => void
   desktop: boolean
   panelOpen: boolean
   onTogglePanel: () => void
+  onOpenSettings: () => void
   onEdit: () => void
 }) {
   const m = plugin.manifest
@@ -377,8 +394,70 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onEdit 
       )}
       <div className="plugin-card-actions">
         {m.provides.includes('panel') && <button className="btn sm" disabled={!plugin.enabled} onClick={onTogglePanel}>{panelOpen ? t('收起面板') : t('打开面板')}</button>}
+        {(m.settings?.length ?? 0) > 0 && <button className="btn sm ghost" onClick={onOpenSettings}><SlidersHorizontal size={13} /> {t('设置')}</button>}
         <button className="btn sm ghost" onClick={onEdit}><Pencil size={13} /> {t('编辑')}</button>
         <HoldToConfirm title={t('卸载插件')} size={30} onConfirm={() => { uninstallPlugin(m.id); notify(t('插件已卸载：{name}', { name: m.name })) }} />
+      </div>
+    </div>
+  )
+}
+
+/** 插件独立设置页：按清单声明的设置项渲染表单，值存插件私有存储，插件经 acm.getSettings() 读取 */
+function PluginSettingsModal({ plugin, notify, onClose }: {
+  plugin: InstalledPlugin
+  notify: (msg: string) => void
+  onClose: () => void
+}) {
+  const fields = plugin.manifest.settings ?? []
+  const [values, setValues] = useState<Record<string, unknown>>(() => pluginSettingsValues(plugin))
+  const set = (k: string, v: unknown) => setValues(prev => ({ ...prev, [k]: v }))
+
+  return (
+    <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="modal" style={{ maxWidth: 520 }}>
+        <div className="modal-head">
+          <h3 style={{ margin: 0 }}>{t('插件设置')} · {plugin.manifest.name}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          {fields.map(f => (
+            <div key={f.key} className="plugin-form-row" style={{ marginBottom: 14 }}>
+              {f.type === 'switch' ? (
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13.5, color: 'var(--text)' }}>{t(f.label)}</span>
+                  <JellyToggle checked={!!values[f.key]} onChange={v => set(f.key, v)} />
+                </div>
+              ) : (
+                <>
+                  <span style={{ fontSize: 13.5, color: 'var(--text)' }}>{t(f.label)}</span>
+                  {f.type === 'select' ? (
+                    <select className="select" value={String(values[f.key] ?? '')} onChange={e => set(f.key, e.target.value)}>
+                      {(f.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : f.type === 'textarea' ? (
+                    <textarea className="input" rows={4} value={String(values[f.key] ?? '')} placeholder={f.placeholder} onChange={e => set(f.key, e.target.value)} />
+                  ) : f.type === 'number' ? (
+                    <input className="input" type="number" value={values[f.key] === undefined ? '' : String(values[f.key])} placeholder={f.placeholder}
+                      onChange={e => set(f.key, e.target.value === '' ? undefined : Number(e.target.value))} />
+                  ) : (
+                    <input className="input" type={f.type === 'password' ? 'password' : 'text'} value={String(values[f.key] ?? '')} placeholder={f.placeholder}
+                      onChange={e => set(f.key, e.target.value)} />
+                  )}
+                </>
+              )}
+              {f.help && <small style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.5 }}>{t(f.help)}</small>}
+            </div>
+          ))}
+          {fields.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-3)' }}>{t('该插件没有声明设置项')}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
+          <button className="btn primary" onClick={() => {
+            savePluginSettings(plugin.manifest.id, values)
+            notify(t('设置已保存'))
+            onClose()
+          }}>{t('保存')}</button>
+        </div>
       </div>
     </div>
   )

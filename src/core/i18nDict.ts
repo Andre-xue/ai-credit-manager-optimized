@@ -1248,3 +1248,16 @@ Object.assign(D, {
   '插件代码过大（上限 512KB）': { 'zh-TW': '插件程式碼過大（上限 512KB）', en: 'Plugin code is too large (max 512KB)', ja: 'プラグインコードが大きすぎます（上限512KB）', ko: '플러그인 코드가 너무 큽니다(최대 512KB)' },
   'html 必须是字符串': { 'zh-TW': 'html 必須是字串', en: 'html must be a string', ja: 'htmlは文字列である必要があります', ko: 'html은 문자열이어야 합니다' },
 })
+
+// ---- 补齐批次 11：插件独立设置页（v0.1.265） ----
+Object.assign(D, {
+  '插件设置': { 'zh-TW': '插件設定', en: 'Plugin settings', ja: 'プラグイン設定', ko: '플러그인 설정' },
+  '设置已保存': { 'zh-TW': '設定已儲存', en: 'Settings saved', ja: '設定を保存しました', ko: '설정이 저장되었습니다' },
+  '设置项定义（JSON，可选）': { 'zh-TW': '設定項定義（JSON，可選）', en: 'Settings schema (JSON, optional)', ja: '設定項目の定義（JSON、任意）', ko: '설정 항목 정의(JSON, 선택)' },
+  '设置项 JSON 格式不对': { 'zh-TW': '設定項 JSON 格式不對', en: 'The settings JSON is malformed', ja: '設定項目のJSON形式が正しくありません', ko: '설정 항목 JSON 형식이 올바르지 않습니다' },
+  '该插件没有声明设置项': { 'zh-TW': '該插件沒有宣告設定項', en: 'This plugin declares no settings', ja: 'このプラグインは設定項目を宣言していません', ko: '이 플러그인은 설정 항목을 선언하지 않았습니다' },
+  '基准货币': { 'zh-TW': '基準貨幣', en: 'Base currency', ja: '基準通貨', ko: '기준 통화' },
+  '汇率接口的基准货币，在插件设置页修改': { 'zh-TW': '匯率介面的基準貨幣，在插件設定頁修改', en: 'Base currency for the rates API; change it in the plugin settings', ja: '為替APIの基準通貨。プラグイン設定で変更できます', ko: '환율 API의 기준 통화, 플러그인 설정에서 변경' },
+  'manifest.settings 必须是数组': { 'zh-TW': 'manifest.settings 必須是陣列', en: 'manifest.settings must be an array', ja: 'manifest.settingsは配列である必要があります', ko: 'manifest.settings는 배열이어야 합니다' },
+  '设置项 key 只能用字母开头、字母数字与下划线': { 'zh-TW': '設定項 key 只能用字母開頭、字母數字與底線', en: 'Setting keys must start with a letter and contain only letters, digits and underscores', ja: '設定項目のキーは英字で始まり、英数字とアンダースコアのみ使用できます', ko: '설정 항목 키는 문자로 시작하고 문자, 숫자, 밑줄만 사용할 수 있습니다' },
+})

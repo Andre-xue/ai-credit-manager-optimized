@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   validatePluginPackage, isHostAllowed, loadPlugins, installPlugin, uninstallPlugin,
-  setPluginEnabled, pluginStorageGet, pluginStorageSet, type PluginPackage,
+  setPluginEnabled, pluginStorageGet, pluginStorageSet, pluginSettingsValues, savePluginSettings,
+  type PluginPackage, type InstalledPlugin,
 } from './plugins'
 
 class MemStorage {
@@ -53,6 +54,44 @@ describe('validatePluginPackage', () => {
     const bad = { ...validPkg, manifest: { ...validPkg.manifest, permissions: ['root'] } }
     expect(validatePluginPackage(bad)).toContain('权限')
     expect(validatePluginPackage({ ...validPkg, code: '  ' })).toContain('代码')
+  })
+})
+
+describe('插件设置项（独立设置页）', () => {
+  const withSettings = (settings: unknown): PluginPackage => ({
+    ...validPkg,
+    manifest: { ...validPkg.manifest, settings } as PluginPackage['manifest'],
+  })
+
+  it('合法设置项声明通过', () => {
+    expect(validatePluginPackage(withSettings([
+      { key: 'base', label: '基准货币', type: 'select', options: ['USD', 'CNY'], default: 'USD' },
+      { key: 'verbose', label: '详细日志', type: 'switch', default: false },
+    ]))).toBeNull()
+  })
+
+  it('key 重复 / select 无 options / type 非法都被拒', () => {
+    expect(validatePluginPackage(withSettings([
+      { key: 'a', label: 'A', type: 'text' }, { key: 'a', label: 'B', type: 'text' },
+    ]))).toContain('重复')
+    expect(validatePluginPackage(withSettings([{ key: 's', label: 'S', type: 'select' }]))).toContain('options')
+    expect(validatePluginPackage(withSettings([{ key: 'x', label: 'X', type: 'magic' }]))).toContain('type')
+  })
+
+  it('设置值：默认值打底，设置页存的值覆盖', () => {
+    const rec: InstalledPlugin = {
+      manifest: {
+        id: 'set-demo', name: '设置演示', version: '1.0.0', provides: ['panel'], permissions: [],
+        settings: [
+          { key: 'base', label: '基准', type: 'select', options: ['USD', 'CNY'], default: 'USD' },
+          { key: 'n', label: '数量', type: 'number', default: 3 },
+        ],
+      },
+      code: 'x', enabled: true, installedAt: 0, source: 'editor',
+    }
+    expect(pluginSettingsValues(rec)).toEqual({ base: 'USD', n: 3 })
+    savePluginSettings('set-demo', { base: 'CNY' })
+    expect(pluginSettingsValues(rec)).toEqual({ base: 'CNY', n: 3 })
   })
 })
 
