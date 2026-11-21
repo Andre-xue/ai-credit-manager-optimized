@@ -685,6 +685,16 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-compare-body { padding: 10px 12px; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow-y: auto; }
 .ai-compare-body.error { color: var(--red); }
 /* 提示词库面板 */
+/* 手机端 AI 页稳定性（v0.1.238）：对比条单行滚动、顶栏去毛玻璃防重影、toast 避开底部导航 */
+@media (max-width: 760px) {
+  .ai-compare-bar { padding: 8px 10px; }
+  .ai-compare-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .ai-compare-chips::-webkit-scrollbar { display: none; }
+  .ai-compare-chip { flex: 0 0 auto; }
+  .claude-ui .ai-topbar { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  .toast { max-width: calc(100vw - 32px); bottom: 88px; }
+}
+
 /* 链接地址列 Key 页图标按钮（v0.1.236） */
 .key-page-btn { color: var(--primary); background: var(--primary-soft); border: 1px solid rgba(109, 40, 217, .25); width: 30px; height: 30px; border-radius: 9px; }
 .key-page-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
