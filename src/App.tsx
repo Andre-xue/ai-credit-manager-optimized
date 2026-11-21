@@ -1342,6 +1342,7 @@ function App() {
       {/* 设置中心：Claude 风为居中模态弹窗，其他风格仍可经 tab 打开 */}
       {settingsOpen && (() => {
         const node = <SettingsView
+          isPhone={isPhone}
           state={state}
           onChange={(patch) => setState(s => updateSettings(s, patch))}
           notify={notify}
@@ -4486,7 +4487,8 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
 }
 
 /** 设置中心 */
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone }: {
+  isPhone?: boolean
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
   notify: (m: string) => void
@@ -4783,9 +4785,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="动态效果" desc="抽屉滑入、卡片渐入、光斑浮动等动效">
               <Toggle checked={s.uiMotion !== false} onChange={v => onChange({ uiMotion: v })} />
             </SettingsRow>
-            <SettingsRow title="底部菜单栏（手机端）" desc="开启后手机端底部固定显示菜单栏；关闭则用左上角按钮打开侧边栏切换页面，聊天等页面全屏无遮挡">
+            {isPhone && <SettingsRow title="底部菜单栏" desc="开启后底部固定显示菜单栏；关闭则用左上角按钮打开侧边栏切换页面，聊天等页面全屏无遮挡">
               <Toggle checked={!!s.showBottomNav} onChange={v => onChange({ showBottomNav: v })} />
-            </SettingsRow>
+            </SettingsRow>}
           </SettingsSection>
 
           <SettingsSection title="AI 行为" desc="对话推理与思考偏好，全局生效" icon={Sparkles} tone="indigo">
