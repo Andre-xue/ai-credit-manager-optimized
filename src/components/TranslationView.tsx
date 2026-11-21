@@ -27,6 +27,7 @@ import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { buildDocxBlob, DOCX_MIME } from '../core/docxExport'
 import { ocrImage, ocrToParagraphs, renderTranslatedImage } from '../core/imageOcr'
 import { ServiceSwitch } from './ServiceSwitch'
+import { useFreeAiOptions, FreeAiModelSelect } from './FreeAiModelField'
 import type { ServiceController } from '../core/useServiceController'
 import type { Account, AppSettings } from '../core/types'
 
@@ -54,6 +55,7 @@ export function TranslationView({ accounts, notify, settings, serviceController,
   const [files, setFiles] = useState<TranslateFile[]>([])
   const [engine, setEngine] = useState<TranslateEngine>('free')
   const [freeEngine, setFreeEngine] = useState<FreeEngine>('google')
+  const freeAi = useFreeAiOptions()
   const [source, setSource] = useState('auto')
   const [accountId, setAccountId] = useState('')
   const [target, setTarget] = useState('zh-CN')
@@ -218,7 +220,8 @@ export function TranslationView({ accounts, notify, settings, serviceController,
     if (!files.length) { notify(t('请先导入文件')); return }
     if (engine === 'account' && !accountId) { notify(t('请先在 API Key 管理添加模型账户')); return }
     if (engine === 'local' && (!localBase.trim() || !localModel.trim())) { notify(t('请先设置本地服务地址并拉取/填写翻译模型')); return }
-    const localOpts = { localBase: localBase.trim(), localModel: localModel.trim() }
+    if (engine === 'freeai' && !freeAi.selected) { notify(t('暂无可用免费 AI 模型：云端免费需先在 AI 助手登录云账号；或检查网络后重试')); return }
+    const localOpts = { localBase: localBase.trim(), localModel: localModel.trim(), freeAi: freeAi.selected }
     setTranslating(true)
     const out: TransResult[] = []
     try {
@@ -470,9 +473,13 @@ export function TranslationView({ accounts, notify, settings, serviceController,
             <select className="select" value={engine} onChange={e => setEngine(e.target.value as TranslateEngine)} disabled={translating}>
               <option value="free">{t('免费公共 API（无需 Key）')}</option>
               <option value="account">{t('我的模型账户')}</option>
+              <option value="freeai">{t('免费 AI 模型')}</option>
               {ollamaEnabled && <option value="local">{t('本地服务（Ollama）')}</option>}
             </select>
           </div>
+          {engine === 'freeai' && (
+            <FreeAiModelSelect options={freeAi.options} value={freeAi.key} onChange={freeAi.setKey} disabled={translating} />
+          )}
           {engine === 'free' && (
             <div className="tr-field">
               <label>{t('免费服务')}</label>

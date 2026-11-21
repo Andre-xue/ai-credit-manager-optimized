@@ -4,9 +4,10 @@
 
 import { callChat, callLocalChat } from './providerCall'
 import { decryptSecret, getBiometricPassword } from './crypto'
+import { freeAiChat, type FreeAiOption } from './freeAi'
 import type { Account } from './types'
 
-export type TranslateEngine = 'account' | 'free' | 'local'
+export type TranslateEngine = 'account' | 'free' | 'local' | 'freeai'
 /** 免费公共翻译引擎 */
 export type FreeEngine = 'mymemory' | 'google'
 
@@ -149,7 +150,15 @@ export interface TranslateOptions {
   engineId?: string        // 账户模型的引擎（model 参数），不填则用账户默认
   localBase?: string       // 本地服务地址（如 http://127.0.0.1:11434）
   localModel?: string      // 本地翻译模型名
+  freeAi?: FreeAiOption    // 免费 AI 模型（engine='freeai' 时使用）
   onProgress?: (done: number, total: number) => void
+}
+
+/** 用免费 AI 模型翻译（云端免费 / Zen / Kilo 通道，提示词与本地引擎同款） */
+async function translateByFreeAi(opt: FreeAiOption, text: string, target: string): Promise<string> {
+  const system = `你是一个专业翻译引擎。把用户输入的文本翻译成${target}。只输出译文，不要解释、不要加引号、不要加任何前缀。保留原文的段落结构与换行。`
+  const out = await freeAiChat(opt, system, text)
+  return out.trim()
 }
 
 /** 翻译整段文本：切块后逐块翻译，失败块保留原文 */
@@ -161,6 +170,10 @@ export async function translateText(text: string, opts: TranslateOptions): Promi
   for (let i = 0; i < chunks.length; i++) {
     try {
       if (opts.engine === 'free') results.push(await translateFree(chunks[i], opts.target, opts.source ?? 'auto', opts.freeEngine ?? 'google'))
+      else if (opts.engine === 'freeai') {
+        if (!opts.freeAi) throw new Error('请先选择一个免费 AI 模型')
+        results.push(await translateByFreeAi(opts.freeAi, chunks[i], opts.target))
+      }
       else if (opts.engine === 'local') {
         if (!opts.localBase || !opts.localModel) throw new Error('请先在本地服务中设置地址与翻译模型')
         results.push(await translateByLocal(opts.localBase, opts.localModel, chunks[i], opts.target))

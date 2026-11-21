@@ -17,6 +17,7 @@ import { isAccountServiceEnabled, LOCAL_SERVICE_CHANGED_EVENT } from '../core/lo
 import type { Account, AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
 import { ServiceSwitch } from './ServiceSwitch'
+import { useFreeAiOptions, FreeAiModelSelect } from './FreeAiModelField'
 import { t } from '../core/i18n'
 
 interface ChatMsg { id: string; role: 'user' | 'assistant'; text: string; at: number }
@@ -26,6 +27,7 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
 }) {
   const [engine, setEngine] = useState<TranslateEngine>('free')
   const [freeEngine, setFreeEngine] = useState<FreeEngine>('google')
+  const freeAi = useFreeAiOptions()
   const [source, setSource] = useState('auto')
   const [target, setTarget] = useState('zh-CN')
   const [messages, setMessages] = useState<ChatMsg[]>([])
@@ -125,6 +127,7 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
   const send = async () => {
     const text = input.trim()
     if (!text || busy) return
+    if (engine === 'freeai' && !freeAi.selected) { notify(t('暂无可用免费 AI 模型：云端免费需先在 AI 助手登录云账号；或检查网络后重试')); return }
     setInput('')
     setMessages(prev => [...prev, { id: `u-${Date.now()}`, role: 'user', text, at: Date.now() }])
     setBusy(true)
@@ -132,6 +135,7 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
       const opts: Parameters<typeof translateText>[1] = {
         engine, target, source, freeEngine, engineId,
         localBase: localBase || 'http://127.0.0.1:11434', localModel,
+        freeAi: freeAi.selected,
         account: engine === 'account' ? account ?? undefined : undefined,
       }
       const out = await translateText(text, opts)
@@ -159,9 +163,13 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
             <select className="select" value={engine} onChange={e => setEngine(e.target.value as TranslateEngine)} disabled={busy}>
               <option value="free">{t('免费公共 API（无需 Key）')}</option>
               <option value="account">{t('我的模型账户')}</option>
+              <option value="freeai">{t('免费 AI 模型')}</option>
               {ollamaOn && <option value="local">{t('本地服务（Ollama）')}</option>}
             </select>
           </div>
+          {engine === 'freeai' && (
+            <FreeAiModelSelect options={freeAi.options} value={freeAi.key} onChange={freeAi.setKey} disabled={busy} />
+          )}
           {engine === 'free' && (
             <div className="tr-field">
               <label>{t('免费引擎')}</label>

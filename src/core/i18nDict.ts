@@ -1330,3 +1330,15 @@ Object.assign(D, {
   '资料来源：按名称与架构推断，仅供参考': { 'zh-TW': '資料來源：依名稱與架構推斷，僅供參考', en: 'Source: inferred from the name and architecture, for reference only', ja: '出典：名前とアーキテクチャからの推定（参考）', ko: '출처: 이름과 아키텍처 기반 추론, 참고용' },
   '查看页面': { 'zh-TW': '查看頁面', en: 'View page', ja: 'ページを見る', ko: '페이지 보기' },
 })
+
+// ---- 补齐批次 20：翻译页免费 AI 模型引擎（v0.1.277） ----
+Object.assign(D, {
+  '免费 AI 模型': { 'zh-TW': '免費 AI 模型', en: 'Free AI models', ja: '無料AIモデル', ko: '무료 AI 모델' },
+  '免费模型': { 'zh-TW': '免費模型', en: 'Free model', ja: '無料モデル', ko: '무료 모델' },
+  '云端免费': { 'zh-TW': '雲端免費', en: 'Cloud free', ja: 'クラウド無料', ko: '클라우드 무료' },
+  'Zen 免费通道': { 'zh-TW': 'Zen 免費通道', en: 'Zen free channel', ja: 'Zen無料チャネル', ko: 'Zen 무료 채널' },
+  'Kilo 免费通道': { 'zh-TW': 'Kilo 免費通道', en: 'Kilo free channel', ja: 'Kilo無料チャネル', ko: 'Kilo 무료 채널' },
+  '暂无可用免费模型（云端需先登录）': { 'zh-TW': '暫無可用免費模型（雲端需先登入）', en: 'No free models available (cloud requires sign-in first)', ja: '利用可能な無料モデルがありません（クラウドはログインが必要）', ko: '사용 가능한 무료 모델이 없습니다(클라우드는 먼저 로그인 필요)' },
+  '暂无可用免费 AI 模型：云端免费需先在 AI 助手登录云账号；或检查网络后重试': { 'zh-TW': '暫無可用免費 AI 模型：雲端免費需先在 AI 助手登入雲帳號；或檢查網路後重試', en: 'No free AI models available: cloud free models require signing in to your cloud account in AI Assistant first, or check your network and retry', ja: '利用可能な無料AIモデルがありません。クラウド無料モデルはAIアシスタントでクラウドアカウントへのログインが必要です。またはネットワークを確認して再試行してください', ko: '사용 가능한 무료 AI 모델이 없습니다. 클라우드 무료 모델은 AI 어시스턴트에서 클라우드 계정에 먼저 로그인해야 합니다. 또는 네트워크를 확인하고 다시 시도하세요' },
+  '请先选择一个免费 AI 模型': { 'zh-TW': '請先選擇一個免費 AI 模型', en: 'Please select a free AI model first', ja: 'まず無料AIモデルを選択してください', ko: '먼저 무료 AI 모델을 선택하세요' },
+})
