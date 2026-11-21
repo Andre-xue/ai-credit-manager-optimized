@@ -39,6 +39,8 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   // 云端账户：该 Key 实际可用的生图模型（从 /v1/models 拉取并筛选）
   const [cloudModels, setCloudModels] = useState<string[]>([])
   const [cloudModel, setCloudModel] = useState('')
+  // 模型说明卡默认隐藏（Ethan 要求）：拉取后点选模型、或点「说明」才展开
+  const [modelInfoOpen, setModelInfoOpen] = useState(false)
   const [loadingCloudModels, setLoadingCloudModels] = useState(false)
   const loadCloudModels = async () => {
     const pwd = getBiometricPassword() || sessionPwd
@@ -132,7 +134,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                   <div className="gen-empty-hint"><KeyRound size={16} /> {t('没有「生图型」账户。请到「API Key 管理」把对应账户的备注/用途分类设为生图型（备注以 [生图型] 开头），并确保已填 API 地址与密钥。')}</div>
                 ) : (
                   <div className="gen-select-wrap">
-                    <select className="input" value={account?.id ?? ''} onChange={e => { setAccountId(e.target.value); setCloudModels([]); setCloudModel('') }}>
+                    <select className="input" value={account?.id ?? ''} onChange={e => { setAccountId(e.target.value); setCloudModels([]); setCloudModel(''); setModelInfoOpen(false) }}>
                       {usable.map(a => <option key={a.id} value={a.id}>{a.label} · {PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId}</option>)}
                     </select>
                     {account && <span className="gen-model-tag">{t('从备注识别：{model}', { model: model || t('未填（可点下方拉取自动选）') })}</span>}
@@ -141,7 +143,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                 <label className="gen-label" style={{ marginTop: 12 }}>{t('生图模型（仅列出可生图模型）')}</label>
                 <div className="gen-local-row">
                   {cloudModels.length > 0 ? (
-                    <select className="input" value={cloudModel} onChange={e => setCloudModel(e.target.value)}>
+                    <select className="input" value={cloudModel} onChange={e => { setCloudModel(e.target.value); setModelInfoOpen(true) }}>
                       {cloudModels.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
                   ) : (
@@ -150,8 +152,13 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                   <button className="btn sm ghost" onClick={() => void loadCloudModels()} disabled={loadingCloudModels || !account} title={t('从平台拉取并筛选生图模型')}>
                     {loadingCloudModels ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} {t('拉取')}
                   </button>
+                  {(cloudModel || model) && (
+                    <button className={`btn sm ghost ${modelInfoOpen ? 'primary' : ''}`} onClick={() => setModelInfoOpen(v => !v)} title={t('查看所选模型的优缺点说明')}>
+                      <Info size={14} /> {t('说明')}
+                    </button>
+                  )}
                 </div>
-                <ModelInfoCard modelId={cloudModel || model} kind="image" />
+                {modelInfoOpen && <ModelInfoCard modelId={cloudModel || model} kind="image" />}
 
             <label className="gen-label" style={{ marginTop: 15 }}>{t('画面描述（Prompt）')}</label>
             <textarea className="input gen-prompt" rows={4} placeholder={t('例如：赛博朋克风格的城市夜景，霓虹灯倒映在雨后的街道，电影质感')}

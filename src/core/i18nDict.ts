@@ -1379,6 +1379,12 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 34：模型说明卡默认隐藏（v0.1.304） ----
+Object.assign(D, {
+  '说明': { 'zh-TW': '說明', en: 'Info', ja: '説明', ko: '설명' },
+  '查看所选模型的优缺点说明': { 'zh-TW': '查看所選模型的優缺點說明', en: 'View pros & cons of the selected model', ja: '選択中モデルの長所・短所を見る', ko: '선택한 모델의 장단점 보기' },
+})
+
 // ---- 补齐批次 33：云端生成任务后台化（v0.1.303） ----
 Object.assign(D, {
   '已有生成任务进行中，请等待完成': { 'zh-TW': '已有生成任務進行中，請等待完成', en: 'A generation task is already running — please wait for it to finish.', ja: '生成タスクが既に実行中です。完了をお待ちください。', ko: '이미 실행 중인 생성 작업이 있습니다. 완료될 때까지 기다려 주세요.' },
