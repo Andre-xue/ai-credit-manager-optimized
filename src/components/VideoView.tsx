@@ -12,6 +12,7 @@ import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
+import { useHoverZoom, HoverZoomOverlay, spaceOpenProps, videoResumeProps } from './mediaPreview'
 import { GenProgressBar } from './GenProgressBar'
 import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { PROVIDER_MAP } from '../data/providers'
@@ -42,6 +43,8 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   // 模型说明卡默认隐藏（Ethan 要求）：拉取后点选模型、或点「说明」才展开
   const [modelInfoOpen, setModelInfoOpen] = useState(false)
   const [extOpen] = useState(() => externalOpenEnabled('video'))
+  const hz = useHoverZoom()
+  const [bigVideo, setBigVideo] = useState('')
   const [loadingCloudModels, setLoadingCloudModels] = useState(false)
   const loadCloudModels = async () => {
     const pwd = getBiometricPassword() || sessionPwd
@@ -292,8 +295,10 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
             ) : results.length > 0 ? (
               <div className="gen-results">
                 {results.map((u, i) => (
-                  <div className="gen-result-card" key={i}>
-                    <video src={u} controls className="gen-result-video" playsInline />
+                  <div className="gen-result-card" key={i} {...spaceOpenProps(() => setBigVideo(u))} title={t('选中后按空格放大查看')}>
+                    <video src={u} controls className="gen-result-video" playsInline
+                      onMouseEnter={e => { videoResumeProps.onMouseEnter(e); hz.enter(e, u, 'video') }}
+                      onMouseLeave={e => { videoResumeProps.onMouseLeave(e); hz.leave() }} />
                     <div className="gen-result-actions">
                       <a className="btn sm ghost" href={u} target="_blank" rel="noopener"><ExternalLink size={13} /> {t('打开')}</a>
                       <button className="btn sm ghost" onClick={() => void download(u, i)}><Download size={13} /> {t('下载')}</button>
@@ -312,6 +317,13 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
           </div>
         </section>
       </div>
+      <HoverZoomOverlay hover={hz.hover} />
+      {bigVideo && (
+        <div className="sd-lightbox" onClick={() => setBigVideo('')}>
+          <button className="sd-lightbox-close" onClick={() => setBigVideo('')}><X size={24} /></button>
+          <video src={bigVideo} controls autoPlay playsInline onClick={e => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   )
 }

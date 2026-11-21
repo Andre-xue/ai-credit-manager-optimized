@@ -4,13 +4,14 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
   Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, Eraser, AppWindow, KeyRound,
-  ExternalLink, History, HardDrive, RefreshCw, ChevronDown,
+  ExternalLink, History, HardDrive, RefreshCw, ChevronDown, X,
 } from 'lucide-react'
 import { callImage, extractModelId, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
+import { useHoverZoom, HoverZoomOverlay, spaceOpenProps } from './mediaPreview'
 import { GenProgressBar } from './GenProgressBar'
 import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { SafeThumb } from './SafeThumb'
@@ -43,6 +44,8 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   // 模型说明卡默认隐藏（Ethan 要求）：拉取后点选模型、或点「说明」才展开
   const [modelInfoOpen, setModelInfoOpen] = useState(false)
   const [extOpen] = useState(() => externalOpenEnabled('image'))
+  const hz = useHoverZoom()
+  const [lightbox, setLightbox] = useState('')
   const [loadingCloudModels, setLoadingCloudModels] = useState(false)
   const loadCloudModels = async () => {
     const pwd = getBiometricPassword() || sessionPwd
@@ -247,9 +250,9 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
             ) : results.length > 0 ? (
               <div className="gen-results">
                 {results.map((u, i) => (
-                  <div className="gen-result-card" key={i}>
+                  <div className="gen-result-card" key={i} {...spaceOpenProps(() => setLightbox(u))} title={t('选中后按空格放大查看')}>
                     {u.startsWith('data:') || /^https?:\/\//.test(u)
-                      ? <img src={u} alt={t('生成图片 {n}', { n: i + 1 })} className="gen-result-img" />
+                      ? <img src={u} alt={t('生成图片 {n}', { n: i + 1 })} className="gen-result-img" style={{ cursor: 'zoom-in' }} onClick={() => setLightbox(u)} onMouseEnter={e => hz.enter(e, u, 'image')} onMouseLeave={hz.leave} />
                       : <div className="gen-result-text">{u}</div>}
                     <div className="gen-result-actions">
                       <a className="btn sm ghost" href={u} target="_blank" rel="noopener" title={t('在新窗口打开')}><ExternalLink size={13} /> {t('打开')}</a>
@@ -269,6 +272,13 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
           </div>
         </section>
       </div>
+      <HoverZoomOverlay hover={hz.hover} />
+      {lightbox && (
+        <div className="sd-lightbox" onClick={() => setLightbox('')}>
+          <button className="sd-lightbox-close" onClick={() => setLightbox('')}><X size={24} /></button>
+          <img src={lightbox} alt={t('大图预览')} onClick={e => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   )
 }

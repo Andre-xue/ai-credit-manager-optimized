@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { callLocalImage, fetchLocalMediaModels } from '../core/providerCall'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
+import { useHoverZoom, HoverZoomOverlay, spaceOpenProps } from './mediaPreview'
 import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints, stripComfyCategoryPrefix } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
@@ -55,6 +56,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
   const [fastMode, setFastMode] = useState(() => { try { return localStorage.getItem('acm.local.fastMode') === '1' } catch { return false } })
   const toggleFastMode = (v: boolean) => { setFastMode(v); try { localStorage.setItem('acm.local.fastMode', v ? '1' : '0') } catch { /* 忽略 */ } }
   const [extOpen] = useState(() => externalOpenEnabled('image'))
+  const hz = useHoverZoom()
   const [strength, setStrength] = useState(0.7)
   const [sourceImage, setSourceImage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -352,8 +354,8 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
             ) : results.length > 0 ? (
               <div className="sd-gallery">
                 {results.map((u, i) => (
-                  <div className="sd-gallery-item" key={i}>
-                    {/^data:|^https?:/.test(u) ? <img src={u} alt={t('结果 {n}', { n: i + 1 })} /> : <div className="sd-gallery-text">{u}</div>}
+                  <div className="sd-gallery-item" key={i} {...spaceOpenProps(() => setLightbox(u))} title={t('选中后按空格放大查看')}>
+                    {/^data:|^https?:/.test(u) ? <img src={u} alt={t('结果 {n}', { n: i + 1 })} onMouseEnter={e => hz.enter(e, u, 'image')} onMouseLeave={hz.leave} /> : <div className="sd-gallery-text">{u}</div>}
                     <div className="sd-gallery-bar">
                       <span>#{i + 1}</span>
                       <button onClick={() => setLightbox(u)} title={t('放大')}><Maximize2 size={14} /></button>
@@ -370,6 +372,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
         </section>
       </div>
 
+      <HoverZoomOverlay hover={hz.hover} />
       {lightbox && (() => {
         const idx = results.indexOf(lightbox)
         return (

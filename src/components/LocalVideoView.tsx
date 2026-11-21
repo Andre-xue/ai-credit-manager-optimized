@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../core/providerCall'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
+import { useHoverZoom, HoverZoomOverlay, spaceOpenProps, videoResumeProps } from './mediaPreview'
 import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
@@ -66,6 +67,8 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   const [fastMode, setFastMode] = useState(() => { try { return localStorage.getItem('acm.local.fastMode') === '1' } catch { return false } })
   const toggleFastMode = (v: boolean) => { setFastMode(v); try { localStorage.setItem('acm.local.fastMode', v ? '1' : '0') } catch { /* 忽略 */ } }
   const [extOpen] = useState(() => externalOpenEnabled('video'))
+  const hz = useHoverZoom()
+  const [bigVideo, setBigVideo] = useState('')
   const [cfg, setCfg] = useState(7)
   const [seed, setSeed] = useState(-1)
   const [motion, setMotion] = useState(0.7)
@@ -379,8 +382,10 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
             ) : results.length > 0 ? (
               <div className="sd-gallery">
                 {results.map((u, i) => (
-                  <div className="sd-gallery-item sd-video-item" key={i}>
-                    <video src={u} controls playsInline />
+                  <div className="sd-gallery-item sd-video-item" key={i} {...spaceOpenProps(() => setBigVideo(u))} title={t('选中后按空格放大查看')}>
+                    <video src={u} controls playsInline
+                      onMouseEnter={e => { videoResumeProps.onMouseEnter(e); hz.enter(e, u, 'video') }}
+                      onMouseLeave={e => { videoResumeProps.onMouseLeave(e); hz.leave() }} />
                     <div className="sd-gallery-bar"><span>{t('视频 #{n}', { n: i + 1 })}</span><a href={u} target="_blank" rel="noopener"><Maximize2 size={14} /></a><button onClick={() => void download(u, i)} title={t('下载')}><Download size={14} /></button>{extOpen && <button onClick={() => void openWithViewer(u, 'video', notify)} title={t('用外部软件打开')}><AppWindow size={14} /></button>}</div>
                   </div>
                 ))}
@@ -391,6 +396,13 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
           </div>
         </section>
       </div>
+      <HoverZoomOverlay hover={hz.hover} />
+      {bigVideo && (
+        <div className="sd-lightbox" onClick={() => setBigVideo('')}>
+          <button className="sd-lightbox-close" onClick={() => setBigVideo('')}><X size={24} /></button>
+          <video src={bigVideo} controls autoPlay playsInline onClick={e => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   )
 }
