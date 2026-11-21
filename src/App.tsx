@@ -2339,14 +2339,14 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   <td><span className="key-note" title={a.note ?? ''}>{a.note ?? '—'}</span></td>
                   <td>
                     <div className="key-actions">
-                      <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={13} /> 编辑</button>
+                      <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
                       <button className="key-action" title="复制 Key" onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
                         const okCopy = await copyKeyWithAutoClear(plain)
                         if (okCopy) { onAudit('复制Key', a.label); notify('API Key 已复制（30 秒后自动清除剪贴板）') }
                         else notify('复制失败，请检查浏览器权限')
-                      }}><Copy size={13} /> 复制</button>
-                      <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={13} /> 备份</button>
+                      }}><Copy size={15} /></button>
+                      <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
                       {adapter.supported && <button className="key-action" title="查询官方用量" onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
                         try {
@@ -2354,7 +2354,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           onQuotaFetched(a.id, r.used, r.total, r.unit)
                           notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
                         } catch (e: any) { notify(errorText(e, '查询失败')) }
-                      }}><RefreshCw size={13} /> 查询</button>}
+                      }}><RefreshCw size={15} /></button>}
                       <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
                         onRemoveKeys([a.id])
                         setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
