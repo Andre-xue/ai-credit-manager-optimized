@@ -230,6 +230,13 @@ export async function callChat(
         const retry = { ...body }
         delete retry.temperature
         raw = await request(retry)
+      }
+      // 其他 400：多半是某个可选参数被平台拒绝（如 GLM 对 reasoning_effort 的校验），
+      // 错误文案不一定带可识别关键词，统一剥离可选参数用最简请求体重试一次
+      else if (/\b400\b/.test((e as Error)?.message ?? String(e))) {
+        const min = slim(body)
+        if (min) raw = await request(min)
+        else throw e
       } else throw e
     }
     const json = JSON.parse(raw)

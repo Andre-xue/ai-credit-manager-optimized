@@ -1487,12 +1487,12 @@ function App() {
       />}
       {formProviderId && isLocalProvider(formProviderId) && <LocalAccountFormModal
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
-        onClose={() => setFormProviderId(null)}
+        onClose={() => { setFormProviderId(null); setAddOpen(true) }}
         onSave={(account, pwd) => {
           setState(s => ({ ...s, accounts: [{ ...account }, ...s.accounts] }))
           if (pwd && !sessionPwd) setSessionPwd(pwd)
-          setFormProviderId(null)
-          notify(`已添加本地模型「${account.label}」`)
+          setFormProviderId(null); setAddOpen(true)
+          notify(`已添加本地模型「${account.label}」，可继续添加或关闭选择平台`)
         }}
         notify={notify}
       />}
@@ -1500,7 +1500,7 @@ function App() {
         provider={PROVIDER_MAP[formProviderId]} sessionPwd={sessionPwd}
         initialSecret={pasteSecret || undefined}
         groupSuggestions={Array.from(new Set(state.accounts.map(a => a.group).filter((g): g is string => !!g))).sort()}
-        onClose={() => { setFormProviderId(null); setPasteSecret('') }}
+        onClose={() => { setFormProviderId(null); setPasteSecret(''); setAddOpen(true) }}
         onSave={async (data) => {
           setState(s => ({
             ...s,
@@ -1521,7 +1521,7 @@ function App() {
           } else {
             notify(`已添加「${data.account.label}」，已置顶到 API Key 管理列表`)
           }
-          setFormProviderId(null); setPasteSecret('')
+          setFormProviderId(null); setPasteSecret(''); setAddOpen(true)
         }}
       />}
       {vaultOpen && <VaultModal
@@ -3519,6 +3519,16 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
     : provider.id === 'local-comfyui' ? 'ComfyUI' : ''
   const detect = async () => {
     setDetecting(true); setDetectErr('')
+    // 先直查期望服务的默认端口（单服务指纹校验，命中即返回，不必跑全端口扫描）
+    if (expectService) {
+      const url = await checkLocalService(serviceKey).catch(() => null)
+      if (url) {
+        const port = Number(new URL(url).port) || (serviceKey === 'ollama' ? 11434 : serviceKey === 'comfyui' ? 8188 : 1234)
+        const svc: LocalService = { service: expectService, host: '127.0.0.1', port, url }
+        setServices([svc]); setSelected(svc); setDetecting(false)
+        return
+      }
+    }
     const r = await detectLocalServices()
     // 按 provider 精确匹配：如添加 Ollama 只显示识别为 Ollama 的服务
     const matched = expectService ? r.services.filter(s => s.service === expectService) : r.services

@@ -243,5 +243,6 @@ export function friendlyAiError(error: unknown): string {
   if (low.includes('401') || low.includes('unauthorized') || low.includes('sign in')) return '请先登录后再使用 AI 助手'
   if (low.includes('timeout') || low.includes('timed out') || low.includes('network')) return '网络连接超时，请重试'
   if (low.includes('content_filter') || low.includes('blocked')) return '内容未通过安全检查，请换个说法'
-  return `调用失败：${msg.slice(0, 120)}`
+  // 已带「调用失败：」前缀的不重复加；截断放宽到 300 字，确保平台返回的错误详情（如 GLM 的 code/message）能显示出来
+  return msg.startsWith('调用失败') ? msg.slice(0, 300) : `调用失败：${msg.slice(0, 300)}`
 }

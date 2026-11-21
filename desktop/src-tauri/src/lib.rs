@@ -529,36 +529,39 @@ async fn detect_local_services() -> Result<Vec<serde_json::Value>, String> {
         1234, 1235,          // LM Studio 默认及常见自定义
         5000, 5001, 8000, 8080, 7860, 3000, // 通用本地端口（需指纹命中才返回）
     ];
-    let hosts = ["127.0.0.1", "localhost"];
-    let mut found: Vec<serde_json::Value> = Vec::new();
-
+    // 各端口并行探测：此前串行逐个端口×双主机×三指纹试，最坏要等几十秒，
+    // 添加本地模型的表单长时间卡在「正在探测本机服务…」像检测不到服务（v0.1.256 改并行）
+    let mut handles = Vec::new();
     for &port in ports {
-        let mut matched: Option<(&str, &str)> = None; // (service, path)
-        for host in hosts {
-            for (service, path, check) in fingerprints {
-                let url = format!("http://{}:{}{}", host, port, path);
-                if let Ok(resp) = client.get(&url).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                            if check(&json) {
-                                matched = Some((service, host));
-                                break
+        let client = client.clone();
+        let fps: Vec<(&str, &str, fn(&serde_json::Value) -> bool)> = fingerprints.to_vec();
+        handles.push(tauri::async_runtime::spawn(async move {
+            for host in ["127.0.0.1", "localhost"] {
+                for (service, path, check) in &fps {
+                    let url = format!("http://{}:{}{}", host, port, path);
+                    if let Ok(resp) = client.get(&url).send().await {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if check(&json) {
+                                    let h = if host == "localhost" { "127.0.0.1" } else { host };
+                                    return Some(serde_json::json!({
+                                        "service": service,
+                                        "host": h,
+                                        "port": port,
+                                        "url": format!("http://{}:{}", h, port),
+                                    }));
+                                }
                             }
                         }
                     }
                 }
             }
-            if matched.is_some() { break }
-        }
-        if let Some((service, host)) = matched {
-            let host = if host == "localhost" { "127.0.0.1" } else { host };
-            found.push(serde_json::json!({
-                "service": service,
-                "host": host,
-                "port": port,
-                "url": format!("http://{}:{}", host, port),
-            }));
-        }
+            None
+        }));
+    }
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for h in handles {
+        if let Ok(Some(v)) = h.await { found.push(v) }
     }
     Ok(found)
 }
