@@ -125,8 +125,9 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
     const backups = [...(remotePrev?.keyBackups ?? []), ...(newBackups ?? [])].slice(-MAX_CLOUD_BACKUPS)
     // 本地模型（Ollama/ComfyUI 等）默认不进云同步；用户在设置里开启后一并同步
     const localIds = new Set(opts?.includeLocal ? [] : appState.accounts.filter(a => isLocalProvider(a.providerId)).map(a => a.id))
-    // 网关令牌是本机凭据（可调用本机网关代理全部 Key），永不离开本机：推送前剥离
-    const noTokenState: AppState = { ...appState, settings: { ...appState.settings, gatewayToken: undefined } }
+    // 网关令牌是本机凭据（可调用本机网关代理全部 Key），永不离开本机：推送前剥离；
+    // 界面语言是本机偏好（每台设备各自设置），同样不进云同步
+    const noTokenState: AppState = { ...appState, settings: { ...appState.settings, gatewayToken: undefined, language: undefined } }
     const syncState: AppState = localIds.size ? {
       ...noTokenState,
       accounts: noTokenState.accounts.filter(a => !localIds.has(a.id)),
@@ -179,10 +180,10 @@ export function applyPayload(payload: SyncPayload, local: AppState): AppState {
   // 若云端已包含同一账户（用户开启了「同步本地模型账户」），以云端为准，不重复保留
   const remoteIds = new Set(payload.appState.accounts.map(a => a.id))
   const localAccounts = local.accounts.filter(a => isLocalProvider(a.providerId) && !remoteIds.has(a.id))
-  // 网关令牌只认本机的：远端（已剥离）不覆盖本机令牌
+  // 网关令牌与界面语言只认本机的：远端（已剥离）不覆盖本机值
   const withLocalToken = (s: AppState): AppState => ({
     ...s,
-    settings: { ...s.settings, gatewayToken: local.settings.gatewayToken },
+    settings: { ...s.settings, gatewayToken: local.settings.gatewayToken, language: local.settings.language },
   })
   if (!localAccounts.length) return withLocalToken(payload.appState)
   const localIds = new Set(localAccounts.map(a => a.id))

@@ -246,7 +246,7 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
 function App() {
   const [state, setState] = useState<AppState>(() => loadState())
 
-  // 界面语言：settings.language 为准（随云同步），驱动 i18n 当前语言；useLang 让全树随切换重渲染
+  // 界面语言：settings.language 为准（仅本机，不云同步、不进备份），驱动 i18n 当前语言；useLang 让全树随切换重渲染
   useLang()
   useEffect(() => {
     const want = (state.settings.language as Lang | undefined) ?? 'zh-CN'
@@ -1419,8 +1419,8 @@ function App() {
           onClearAudit={() => { setState(s => ({ ...s, audit: [] })); notify('审计日志已清空') }}
           onImportBackup={(imported) => {
             try { localStorage.setItem('acm.state.pre-import-backup', JSON.stringify(state)) } catch { /* 存不下就忽略，不阻断导入 */ }
-            // 网关令牌是本机凭据：导入备份不覆盖本机的令牌
-            setState({ ...imported, settings: { ...imported.settings, gatewayToken: state.settings.gatewayToken } })
+            // 网关令牌是本机凭据、界面语言是本机偏好：导入备份不覆盖本机的这两项
+            setState({ ...imported, settings: { ...imported.settings, gatewayToken: state.settings.gatewayToken, language: state.settings.language } })
             setSessionPwd('')
             audit('导入完整备份', `账户 ${imported.accounts.length} 个`)
             notify('备份已导入并覆盖当前数据；保险箱已锁定，请用备份来源的主密码重新解锁')

@@ -47,4 +47,11 @@ describe('备份不含本机凭据', () => {
     expect(back.ok).toBe(true)
     if (back.ok) expect(back.state.settings.gatewayToken).toBeUndefined()
   })
+
+  it('buildBackup 剥离界面语言（语言仅本机，不随备份走）', () => {
+    const s = { ...sampleState, settings: { ...sampleState.settings, language: 'ko' } } as unknown as AppState
+    const back = parseBackup(buildBackup(s, '0.1.263'))
+    expect(back.ok).toBe(true)
+    if (back.ok) expect(back.state.settings.language).toBeUndefined()
+  })
 })

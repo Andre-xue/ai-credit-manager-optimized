@@ -14,8 +14,8 @@ export interface BackupEnvelope {
 }
 
 export function buildBackup(state: AppState, appVersion: string): string {
-  // 网关令牌是本机凭据，不进备份文件（导入后保留目标设备自己的令牌）
-  const safeState: AppState = { ...state, settings: { ...state.settings, gatewayToken: undefined } }
+  // 网关令牌是本机凭据、界面语言是本机偏好，都不进备份文件（导入后保留目标设备自己的）
+  const safeState: AppState = { ...state, settings: { ...state.settings, gatewayToken: undefined, language: undefined } }
   const env: BackupEnvelope = {
     app: 'ai-credit-manager',
     kind: 'full-backup',

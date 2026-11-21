@@ -2,7 +2,8 @@
 // 国际化（v0.1.262）：简体中文（源语言）/ 繁体中文 / English / 日本語 / 한국어
 // 方案：t('简体中文原文') —— 词条键即简体原文，查 i18nDict 得译文；
 // 查不到时回退原文（简体），保证未抽取的长尾文案不报错、只是暂未翻译。
-// 语言存于 settings.language（随云同步），同时镜像到 localStorage 供启动时先行生效。
+// 语言存于 settings.language（仅本机：云同步推送/备份导出均剥离，拉取/导入保留本机值），
+// 同时镜像到 localStorage 供启动时先行生效。
 // ============================================================
 import { useEffect, useState } from 'react'
 import { DICT } from './i18nDict'
