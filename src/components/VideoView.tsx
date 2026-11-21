@@ -4,13 +4,14 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
-  Film, Sparkles, Loader2, Download, Trash2, Info, Eraser, KeyRound,
+  Film, Sparkles, Loader2, Download, Trash2, Info, Eraser, AppWindow, KeyRound,
   ExternalLink, History, X, Upload, HardDrive, RefreshCw,
 } from 'lucide-react'
 import { callVideo, extractModelId, queryVideoTask, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
+import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { GenProgressBar } from './GenProgressBar'
 import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { PROVIDER_MAP } from '../data/providers'
@@ -40,6 +41,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
   const [cloudModel, setCloudModel] = useState('')
   // 模型说明卡默认隐藏（Ethan 要求）：拉取后点选模型、或点「说明」才展开
   const [modelInfoOpen, setModelInfoOpen] = useState(false)
+  const [extOpen] = useState(() => externalOpenEnabled('video'))
   const [loadingCloudModels, setLoadingCloudModels] = useState(false)
   const loadCloudModels = async () => {
     const pwd = getBiometricPassword() || sessionPwd
@@ -295,6 +297,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                     <div className="gen-result-actions">
                       <a className="btn sm ghost" href={u} target="_blank" rel="noopener"><ExternalLink size={13} /> {t('打开')}</a>
                       <button className="btn sm ghost" onClick={() => void download(u, i)}><Download size={13} /> {t('下载')}</button>
+                      {extOpen && <button className="btn sm ghost" onClick={() => void openWithViewer(u, 'video', notify)}><AppWindow size={13} /> {t('外部打开')}</button>}
                     </div>
                   </div>
                 ))}

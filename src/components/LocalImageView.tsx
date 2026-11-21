@@ -5,9 +5,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, RefreshCw,
-  Dices, Upload, X, Maximize2, Eraser, Zap, ChevronDown, SlidersHorizontal, History, Settings2, Radar,
+  Dices, Upload, X, Maximize2, Eraser, Zap, AppWindow, ChevronDown, SlidersHorizontal, History, Settings2, Radar,
 } from 'lucide-react'
 import { callLocalImage, fetchLocalMediaModels } from '../core/providerCall'
+import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints, stripComfyCategoryPrefix } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
@@ -53,6 +54,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
   // 极速模式（本机偏好，两本地页共用）：生成时压分辨率/步数，M1 上更快、发热更低
   const [fastMode, setFastMode] = useState(() => { try { return localStorage.getItem('acm.local.fastMode') === '1' } catch { return false } })
   const toggleFastMode = (v: boolean) => { setFastMode(v); try { localStorage.setItem('acm.local.fastMode', v ? '1' : '0') } catch { /* 忽略 */ } }
+  const [extOpen] = useState(() => externalOpenEnabled('image'))
   const [strength, setStrength] = useState(0.7)
   const [sourceImage, setSourceImage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -356,6 +358,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
                       <span>#{i + 1}</span>
                       <button onClick={() => setLightbox(u)} title={t('放大')}><Maximize2 size={14} /></button>
                       <button onClick={() => void download(u, i)} title={t('下载')}><Download size={14} /></button>
+                      {extOpen && <button onClick={() => void openWithViewer(u, 'image', notify)} title={t('用外部软件打开')}><AppWindow size={14} /></button>}
                     </div>
                   </div>
                 ))}

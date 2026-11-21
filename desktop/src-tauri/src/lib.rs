@@ -644,6 +644,176 @@ async fn write_binary_to_dir(dir: String, filename: String, content_base64: Stri
     Ok(path.to_string_lossy().to_string())
 }
 
+
+// ---- 阅览方式（v0.1.306）：扫描本机能打开视频/图片的软件 + 用指定软件打开生成的媒体 ----
+// macOS 按各 App 在 Info.plist 里声明的文档类型（UTI/扩展名）分类；每次调用都重新扫描，
+// 新安装的软件自然会出现。非 macOS 返回空列表（设置里只剩「应用内/系统默认」）。
+
+#[derive(serde::Serialize)]
+struct MediaAppInfo {
+    name: String,
+    path: String,
+    kinds: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn scan_media_apps_macos() -> Vec<MediaAppInfo> {
+    use std::collections::BTreeMap;
+    const VIDEO_UTIS: [&str; 10] = ["public.movie", "public.video", "public.mpeg-4", "com.apple.quicktime-movie", "public.avi", "public.mpeg", "public.3gpp", "public.3gpp2", "com.apple.protected-mpeg-4-video", "public.enhanced-definition-3gpp"];
+    const IMAGE_UTIS: [&str; 12] = ["public.image", "public.jpeg", "public.png", "public.heic", "public.heif", "public.tiff", "public.gif", "com.compuserve.gif", "public.svg-image", "public.camera-raw-image", "public.avif", "com.microsoft.bmp"];
+    const VIDEO_EXTS: [&str; 13] = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "flv", "mpg", "mpeg", "ts", "3gp", "rmvb"];
+    const IMAGE_EXTS: [&str; 13] = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff", "svg", "avif", "ico"];
+    let mut dirs = vec![
+        "/Applications".to_string(),
+        "/System/Applications".to_string(),
+        "/System/Applications/Utilities".to_string(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(format!("{home}/Applications"));
+    }
+    let mut found: BTreeMap<String, MediaAppInfo> = BTreeMap::new();
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("app") { continue }
+            let plist = path.join("Contents/Info.plist");
+            if !plist.exists() { continue }
+            let Ok(out) = std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "json", "-o", "-", "--"]).arg(&plist).output() else { continue };
+            if !out.status.success() { continue }
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
+            // 后台代理类 App（无界面）不列入，避免噪音
+            if v.get("LSUIElement").and_then(|x| x.as_bool()) == Some(true) { continue }
+            if v.get("LSBackgroundOnly").and_then(|x| x.as_bool()) == Some(true) { continue }
+            let name = v.get("CFBundleDisplayName").and_then(|x| x.as_str())
+                .or_else(|| v.get("CFBundleName").and_then(|x| x.as_str()))
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| path.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string());
+            if name.is_empty() { continue }
+            let (mut is_video, mut is_image) = (false, false);
+            if let Some(types) = v.get("CFBundleDocumentTypes").and_then(|x| x.as_array()) {
+                for ty in types {
+                    if let Some(utis) = ty.get("LSItemContentTypes").and_then(|x| x.as_array()) {
+                        for u in utis.iter().filter_map(|x| x.as_str()) {
+                            if VIDEO_UTIS.contains(&u) { is_video = true }
+                            if IMAGE_UTIS.contains(&u) { is_image = true }
+                        }
+                    }
+                    if let Some(exts) = ty.get("CFBundleTypeExtensions").and_then(|x| x.as_array()) {
+                        for e in exts.iter().filter_map(|x| x.as_str()) {
+                            let e = e.to_lowercase();
+                            if VIDEO_EXTS.contains(&e.as_str()) { is_video = true }
+                            if IMAGE_EXTS.contains(&e.as_str()) { is_image = true }
+                        }
+                    }
+                }
+            }
+            if !is_video && !is_image { continue }
+            let path_str = path.to_string_lossy().to_string();
+            let mut kinds = Vec::new();
+            if is_video { kinds.push("video".to_string()) }
+            if is_image { kinds.push("image".to_string()) }
+            found.entry(path_str.clone()).or_insert(MediaAppInfo { name, path: path_str, kinds });
+        }
+    }
+    let mut list: Vec<MediaAppInfo> = found.into_values().collect();
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    list
+}
+
+#[tauri::command]
+async fn list_media_apps() -> Result<Vec<MediaAppInfo>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(scan_media_apps_macos)
+            .await
+            .map_err(|e| format!("扫描本机软件失败：{e}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+fn media_ext_for(mime: &str, kind: &str) -> &'static str {
+    match mime {
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => if kind == "video" { "mp4" } else { "png" },
+    }
+}
+
+fn write_media_cache(bytes: &[u8], ext: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join("acm-viewer");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建缓存目录失败：{e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("media-{stamp}.{ext}"));
+    std::fs::write(&path, bytes).map_err(|e| format!("写入媒体缓存失败：{e}"))?;
+    Ok(path)
+}
+
+// 用指定软件（或系统默认）打开 AI 生成的媒体：source 可为 data: / http(s): / 本地路径。
+#[tauri::command]
+async fn open_media_external(source: String, kind: String, app_path: Option<String>) -> Result<String, String> {
+    let file_path: std::path::PathBuf = if let Some(rest) = source.strip_prefix("data:") {
+        let (meta, data) = rest.split_once(',').ok_or("媒体数据格式不正确")?;
+        let mime = meta.split(';').next().unwrap_or("");
+        let bytes = if meta.contains("base64") {
+            base64_decode(data.trim())?
+        } else {
+            data.as_bytes().to_vec()
+        };
+        write_media_cache(&bytes, media_ext_for(mime, &kind))?
+    } else if source.starts_with("http://") || source.starts_with("https://") {
+        let resp = reqwest::get(&source).await.map_err(|e| format!("下载媒体失败：{e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("下载媒体失败：HTTP {}", resp.status()));
+        }
+        let ct = resp.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").trim().to_string();
+        let bytes = resp.bytes().await.map_err(|e| format!("下载媒体失败：{e}"))?;
+        write_media_cache(&bytes, media_ext_for(&ct, &kind))?
+    } else {
+        let p = std::path::PathBuf::from(&source);
+        if !p.exists() { return Err("本地媒体文件不存在".into()) }
+        p
+    };
+    let file_str = file_path.to_string_lossy().to_string();
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if let Some(app) = app_path.as_deref().filter(|a| !a.is_empty()) {
+            cmd.arg("-a").arg(app);
+        }
+        let ok = cmd.arg(&file_path).status().map(|s| s.success()).unwrap_or(false);
+        if !ok { return Err("打开媒体失败：所选软件可能已卸载".into()) }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = &app_path;
+        let ok = std::process::Command::new("cmd").args(["/C", "start", "", &file_str]).status()
+            .map(|s| s.success()).unwrap_or(false);
+        if !ok { return Err("打开媒体失败".into()) }
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let _ = &app_path;
+        let ok = std::process::Command::new("xdg-open").arg(&file_path).status()
+            .map(|s| s.success()).unwrap_or(false);
+        if !ok { return Err("打开媒体失败".into()) }
+    }
+    Ok(file_str)
+}
+
 #[tauri::command]
 async fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
@@ -2686,7 +2856,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

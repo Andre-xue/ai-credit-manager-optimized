@@ -1379,6 +1379,20 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 36：阅览方式（v0.1.306） ----
+Object.assign(D, {
+  '应用内播放': { 'zh-TW': '應用程式內播放', en: 'Play in app', ja: 'アプリ内で再生', ko: '앱에서 재생' },
+  '应用内查看': { 'zh-TW': '應用程式內查看', en: 'View in app', ja: 'アプリ内で表示', ko: '앱에서 보기' },
+  '系统默认软件': { 'zh-TW': '系統預設軟體', en: 'System default app', ja: 'システムの既定アプリ', ko: '시스템 기본 앱' },
+  '未检测到': { 'zh-TW': '未偵測到', en: 'not detected', ja: '未検出', ko: '감지 안 됨' },
+  '扫描中…': { 'zh-TW': '掃描中…', en: 'Scanning…', ja: 'スキャン中…', ko: '스캔 중…' },
+  '已发现 {v} 个视频软件、{i} 个图片软件': { 'zh-TW': '已發現 {v} 個影片軟體、{i} 個圖片軟體', en: 'Found {v} video apps and {i} image apps', ja: '動画アプリ {v} 件・画像アプリ {i} 件を検出', ko: '동영상 앱 {v}개, 이미지 앱 {i}개 발견' },
+  '重新扫描': { 'zh-TW': '重新掃描', en: 'Rescan', ja: '再スキャン', ko: '다시 스캔' },
+  '外部打开': { 'zh-TW': '外部開啟', en: 'Open externally', ja: '外部で開く', ko: '외부 앱으로 열기' },
+  '用外部软件打开': { 'zh-TW': '用外部軟體開啟', en: 'Open with external app', ja: '外部アプリで開く', ko: '외부 앱으로 열기' },
+  '用外部软件打开失败：{err}': { 'zh-TW': '用外部軟體開啟失敗：{err}', en: 'Failed to open with external app: {err}', ja: '外部アプリで開けませんでした：{err}', ko: '외부 앱으로 열기 실패: {err}' },
+})
+
 // ---- 补齐批次 35：清空输入 + 本地极速模式（v0.1.305） ----
 Object.assign(D, {
   '清空输入': { 'zh-TW': '清空輸入', en: 'Clear inputs', ja: '入力をクリア', ko: '입력 지우기' },

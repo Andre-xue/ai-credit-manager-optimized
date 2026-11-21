@@ -3,6 +3,7 @@ import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
 import { loadPatrolHours, savePatrolHours, patrolDue, refreshAllBalances, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
+import { loadViewerPrefs, saveViewerPrefs, listMediaApps, type ViewerPrefs, type MediaAppInfo } from './core/viewerPrefs'
 import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
@@ -4899,6 +4900,16 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   }
   // ---- 余额自动刷新间隔（本机偏好） ----
   const [patrolHours, setPatrolHours] = useState<number>(() => loadPatrolHours())
+  // ---- 阅览方式（仅桌面端、本机偏好）：AI 生成的视频/图片用哪个本机软件打开 ----
+  const [viewerPrefs, setViewerPrefs] = useState<ViewerPrefs>(() => loadViewerPrefs())
+  const [mediaApps, setMediaApps] = useState<MediaAppInfo[]>([])
+  const [mediaAppsLoading, setMediaAppsLoading] = useState(false)
+  const scanMediaApps = async (force = false) => {
+    if (!isDesktopApp()) return
+    setMediaAppsLoading(true)
+    try { setMediaApps(await listMediaApps(force)) } catch { /* 扫描失败保持空列表 */ } finally { setMediaAppsLoading(false) }
+  }
+  useEffect(() => { void scanMediaApps() }, [])
   // ---- 数据存储（仅桌面端、本机偏好）：三类文件的自定义存放文件夹 ----
   const [storagePrefs, setStoragePrefs] = useState<StoragePrefs>(() => loadStoragePrefs())
   const patchStorage = (next: StoragePrefs, syncKeys = false) => {
@@ -5324,6 +5335,39 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </select>
             </SettingsRow>
           </SettingsSection>
+
+          {isDesktopApp() && (
+          <SettingsSection title="阅览方式" desc="AI 生成的视频/图片用本机软件打开" icon={Eye} tone="indigo">
+            <SettingsRow title="视频播放软件" desc="在视频生成结果里点「外部打开」时用它播放">
+              <select className="select" style={{ width: 190 }} value={viewerPrefs.video}
+                      onChange={e => { const v = { ...viewerPrefs, video: e.target.value }; setViewerPrefs(v); saveViewerPrefs(v) }}>
+                <option value="internal">{t('应用内播放')}</option>
+                <option value="system">{t('系统默认软件')}</option>
+                {mediaApps.filter(a => a.kinds.includes('video')).map(a => <option key={a.path} value={a.path}>{a.name}</option>)}
+                {viewerPrefs.video !== 'internal' && viewerPrefs.video !== 'system' && !mediaApps.some(a => a.path === viewerPrefs.video) && (
+                  <option value={viewerPrefs.video}>{viewerPrefs.video.split('/').pop()?.replace(/\.app$/, '') ?? viewerPrefs.video}（{t('未检测到')}）</option>
+                )}
+              </select>
+            </SettingsRow>
+            <SettingsRow title="图片查看软件" desc="在图片生成结果里点「外部打开」时用它查看，与视频选项互相独立">
+              <select className="select" style={{ width: 190 }} value={viewerPrefs.image}
+                      onChange={e => { const v = { ...viewerPrefs, image: e.target.value }; setViewerPrefs(v); saveViewerPrefs(v) }}>
+                <option value="internal">{t('应用内查看')}</option>
+                <option value="system">{t('系统默认软件')}</option>
+                {mediaApps.filter(a => a.kinds.includes('image')).map(a => <option key={a.path} value={a.path}>{a.name}</option>)}
+                {viewerPrefs.image !== 'internal' && viewerPrefs.image !== 'system' && !mediaApps.some(a => a.path === viewerPrefs.image) && (
+                  <option value={viewerPrefs.image}>{viewerPrefs.image.split('/').pop()?.replace(/\.app$/, '') ?? viewerPrefs.image}（{t('未检测到')}）</option>
+                )}
+              </select>
+            </SettingsRow>
+            <SettingsRow title="本机软件扫描" desc="按各软件声明可打开的文件类型自动分类；新安装的软件重新打开设置或点重新扫描即可出现">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{mediaAppsLoading ? t('扫描中…') : t('已发现 {v} 个视频软件、{i} 个图片软件', { v: mediaApps.filter(a => a.kinds.includes('video')).length, i: mediaApps.filter(a => a.kinds.includes('image')).length })}</span>
+                <button className="btn sm ghost" onClick={() => void scanMediaApps(true)} disabled={mediaAppsLoading}><RefreshCw size={13} /> {t('重新扫描')}</button>
+              </div>
+            </SettingsRow>
+          </SettingsSection>
+          )}
 
           <SettingsSection title="提醒通知" desc="通过系统通知提醒签到、到期、额度告急与预算" icon={Bell} tone="amber">
             <SettingsRow title="开启系统通知" desc={notifyPerm === 'granted' ? '通知权限已获得' : notifyPerm === 'denied' ? '通知权限被拒绝，请到系统设置中开启' : notifyPerm === 'unsupported' ? '当前平台不支持系统通知' : '开启时将请求系统通知权限'}>

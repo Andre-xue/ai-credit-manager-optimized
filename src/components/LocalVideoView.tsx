@@ -5,9 +5,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Film, Sparkles, Loader2, Download, Trash2, Info, RefreshCw,
-  Dices, Upload, X, Maximize2, Eraser, Zap, ChevronDown, SlidersHorizontal, History, Settings2, Workflow, Radar,
+  Dices, Upload, X, Maximize2, Eraser, Zap, AppWindow, ChevronDown, SlidersHorizontal, History, Settings2, Workflow, Radar,
 } from 'lucide-react'
 import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../core/providerCall'
+import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
@@ -64,6 +65,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   // 极速模式（本机偏好，两本地页共用）：生成时压分辨率/步数，M1 上更快、发热更低
   const [fastMode, setFastMode] = useState(() => { try { return localStorage.getItem('acm.local.fastMode') === '1' } catch { return false } })
   const toggleFastMode = (v: boolean) => { setFastMode(v); try { localStorage.setItem('acm.local.fastMode', v ? '1' : '0') } catch { /* 忽略 */ } }
+  const [extOpen] = useState(() => externalOpenEnabled('video'))
   const [cfg, setCfg] = useState(7)
   const [seed, setSeed] = useState(-1)
   const [motion, setMotion] = useState(0.7)
@@ -379,7 +381,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
                 {results.map((u, i) => (
                   <div className="sd-gallery-item sd-video-item" key={i}>
                     <video src={u} controls playsInline />
-                    <div className="sd-gallery-bar"><span>{t('视频 #{n}', { n: i + 1 })}</span><a href={u} target="_blank" rel="noopener"><Maximize2 size={14} /></a><button onClick={() => void download(u, i)} title={t('下载')}><Download size={14} /></button></div>
+                    <div className="sd-gallery-bar"><span>{t('视频 #{n}', { n: i + 1 })}</span><a href={u} target="_blank" rel="noopener"><Maximize2 size={14} /></a><button onClick={() => void download(u, i)} title={t('下载')}><Download size={14} /></button>{extOpen && <button onClick={() => void openWithViewer(u, 'video', notify)} title={t('用外部软件打开')}><AppWindow size={14} /></button>}</div>
                   </div>
                 ))}
               </div>
