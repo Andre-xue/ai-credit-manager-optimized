@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
-import { loadPatrolHours, savePatrolHours, patrolDue, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
+import { loadPatrolHours, savePatrolHours, patrolDue, refreshAllBalances, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
 import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
@@ -951,24 +951,36 @@ function App() {
       balancePatrolRunningRef.current = true
       localStorage.setItem(PATROL_AT_KEY, String(Date.now()))
       try {
-        for (const a of stateRef.current.accounts) {
-          if (!a.encryptedKey) continue
-          const adapter = getAdapterWithPlugins(a.providerId)
-          if (!adapter.supported) continue
-          try {
-            const plain = await decryptSecret(a.encryptedKey, sessionPwd)
-            const r = await adapter.fetchUsage!(plain)
-            const total = r.total
-            if (total === undefined) continue
-            setState(s => upsertQuota(s, { accountId: a.id, used: r.used, total, unit: r.unit, source: 'api' }))
-          } catch { /* 巡检失败静默：单账户问题不打扰用户，手动刷新仍会给出明确报错 */ }
-        }
+        await refreshAllBalances(stateRef.current.accounts, sessionPwd, (accountId, r) =>
+          setState(s => upsertQuota(s, { accountId, used: r.used, total: r.total!, unit: r.unit, source: 'api' })))
       } finally { balancePatrolRunningRef.current = false }
     }
     void runPatrol()
     const t = window.setInterval(() => { void runPatrol() }, 60 * 1000)
     return () => window.clearInterval(t)
   }, [sessionPwd])
+
+  // ---- 全局刷新（v0.1.302）：Key 管理 / 额度看板 / 用量费用三页的「刷新」按钮共用 ----
+  // 立即全量拉一遍可查余额平台的官方余额并落快照，同时重置自动巡检计时。
+  const [globalRefreshing, setGlobalRefreshing] = useState(false)
+  const globalRefreshRef = useRef(false)
+  const doGlobalRefresh = async () => {
+    if (globalRefreshRef.current) return
+    if (!sessionPwd) { notify(t('请先解锁保险箱后再刷新（余额需要解密 Key 才能查询）')); return }
+    globalRefreshRef.current = true
+    setGlobalRefreshing(true)
+    try {
+      const res = await refreshAllBalances(stateRef.current.accounts, sessionPwd, (accountId, r) =>
+        setState(s => upsertQuota(s, { accountId, used: r.used, total: r.total!, unit: r.unit, source: 'api' })))
+      try { localStorage.setItem(PATROL_AT_KEY, String(Date.now())) } catch { /* ignore */ }
+      if (res.supported === 0) notify(t('没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter 支持）'))
+      else if (res.failed === 0) notify(t('已刷新全部余额：{n} 个账户已更新', { n: res.updated }))
+      else notify(t('刷新完成：{ok} 个已更新，{fail} 个失败', { ok: res.updated, fail: res.failed }))
+    } finally {
+      globalRefreshRef.current = false
+      setGlobalRefreshing(false)
+    }
+  }
 
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
   const notifyPrefs = notifyPrefsOf(state.settings)
@@ -1324,7 +1336,7 @@ function App() {
             </div>
           )}
 
-          <DashboardView views={views} onAdd={() => setAddOpen(true)} onRemove={(id) => {
+          <DashboardView views={views} onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing} onAdd={() => setAddOpen(true)} onRemove={(id) => {
             const acc = state.accounts.find(a => a.id === id)
             const doRemove = () => {
               scheduleUndo(stateRef.current, t('账户已移除'))
@@ -1370,6 +1382,7 @@ function App() {
           {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> {t('智能粘贴')}</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> {t('添加账户')}</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify} isPhone={isPhone}
+            onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
             onAudit={audit}
             onImportFile={handleImportFile}
             onExport={() => setExportOpen(true)}
@@ -1407,6 +1420,7 @@ function App() {
           {tab === 'plugins' && <PluginsView notify={notify} />}
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
+            onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
             priceAlerts={priceAlerts} priceCheckedAt={priceCheckedAt} checkingPrices={checkingPrices}
             onCheckPrices={() => void runPriceCheck(true, false)}
             onAckPriceAlerts={() => { setPriceAlerts([]); savePriceAlerts([]) }}
@@ -1924,9 +1938,9 @@ function AgentPager({ page, pages, onChange }: { page: number; pages: number; on
   )
 }
 
-function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, notify }: {
+function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, notify, onRefresh, refreshing }: {
   views: AccountView[]; onAdd: () => void; onRemove: (id: string) => void; onRemoveMany: (ids: string[]) => void; onEditQuota: (id: string) => void;
-  notify: (m: string) => void
+  notify: (m: string) => void; onRefresh: () => void; refreshing: boolean
 }) {
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -1976,7 +1990,10 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
     <>
       <div className="section-head">
         <h2>{t('账户额度')} <span className="hint">{filtering ? t('{f} / {n} 个账户', { f: filtered.length, n: views.length }) : t('{n} 个账户', { n: views.length })}</span></h2>
-        <button className="btn sm" onClick={onAdd}><Plus size={14} /> {t('添加')}</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <GlobalRefreshButton refreshing={refreshing} onRefresh={onRefresh} />
+          <button className="btn sm" onClick={onAdd}><Plus size={14} /> {t('添加')}</button>
+        </div>
       </div>
       <div className="dash-filters">
         <label className="dash-search">
@@ -2351,7 +2368,7 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone }: {
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing }: {
   state: AppState; notify: (m: string) => void; onOpenVault: () => void; isPhone?: boolean;
   onImportFile: (file?: File) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
@@ -2359,6 +2376,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   onQuotaFetched: (accountId: string, used: number, total: number | undefined, unit: CreditUnit) => void;
   onUpdateAccount: (id: string, patch: Partial<AppState['accounts'][number]>) => void;
   onUnlocked: (pwd: string) => void;
+  onRefresh: () => void; refreshing: boolean;
   initialPwd?: string;
   bioLabel?: string
   onAudit: (action: string, detail?: string) => void
@@ -2570,6 +2588,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{t('{n} 个密钥 · 本地加密存储', { n: keyAccounts.length })}</div>
         </div>
         <div className="keys-header-tools">
+          <GlobalRefreshButton refreshing={globalRefreshing} onRefresh={onRefresh} />
           <button className="btn sm" disabled={checking.size > 0 || keyAccounts.length === 0}
             onClick={() => void runHealthCheck(keyAccounts)}
             title={t('用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）')}>
@@ -3227,7 +3246,7 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
   )
 }
 
-function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onAccountBudget, onOpenReport, priceAlerts, priceCheckedAt, checkingPrices, onCheckPrices, onAckPriceAlerts }: {
+function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChange, onDeleteUsage, onProviderBudget, onAccountBudget, onOpenReport, priceAlerts, priceCheckedAt, checkingPrices, onCheckPrices, onAckPriceAlerts, onRefresh, refreshing }: {
   state: AppState; notify: (m: string) => void; onBudget: (v: number) => void;
   onAddUsage: () => void;
   onDeleteUsage: (ids: string[]) => void;
@@ -3238,6 +3257,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
   onOpenReport: () => void
   priceAlerts: PriceChange[]; priceCheckedAt: string | null; checkingPrices: boolean
   onCheckPrices: () => void; onAckPriceAlerts: () => void
+  onRefresh: () => void; refreshing: boolean
 }) {
   const [selectedUsage, setSelectedUsage] = useState<Set<string>>(new Set())
   const [rankTab, setRankTab] = useState<'provider' | 'model'>('provider')
@@ -3272,6 +3292,9 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
 
   return (
     <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+        <GlobalRefreshButton refreshing={refreshing} onRefresh={onRefresh} />
+      </div>
       <div className="stats-grid">
         <StatCard icon={<Wallet size={17} />} color="blue" label="本月费用" value={`¥${totalCost.toFixed(2)}`} hint="本地估算" />
         <StatCard icon={<BarChart3 size={17} />} color="green" label="本月 Tokens" value={(totalIn + totalOut).toLocaleString()} hint={t('输入 {input} · 输出 {output}', { input: totalIn.toLocaleString(), output: totalOut.toLocaleString() })} />
@@ -4772,6 +4795,16 @@ function StorageDirPicker({ dir, onPick }: { dir: string; onPick: () => void }) 
       <button className="btn sm" onClick={onPick}><Folder size={13} /> {t(dir ? '更换文件夹' : '选择文件夹')}</button>
       <div style={{ fontSize: 11.5, color: dir ? 'var(--text-2)' : 'var(--text-3)', wordBreak: 'break-all', textAlign: 'right', lineHeight: 1.45 }}>{dir || t('尚未选择')}</div>
     </div>
+  )
+}
+
+/** 全局刷新按钮（v0.1.302）：Key 管理 / 额度看板 / 用量费用三页共用 */
+function GlobalRefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) {
+  return (
+    <button className="btn sm" onClick={onRefresh} disabled={refreshing}
+      title={t('立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter）')}>
+      <RefreshCw size={14} style={refreshing ? { animation: 'acm-spin 1s linear infinite' } : undefined} /> {refreshing ? t('刷新中…') : t('刷新')}
+    </button>
   )
 }
 

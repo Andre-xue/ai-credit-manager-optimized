@@ -1379,6 +1379,16 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 32：全局刷新（v0.1.302） ----
+Object.assign(D, {
+  '刷新中…': { 'zh-TW': '刷新中…', en: 'Refreshing…', ja: '更新中…', ko: '새로고침 중…' },
+  '立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter）': { 'zh-TW': '立即刷新全部可自動查詢的餘額（DeepSeek、Kimi、矽基流動、OpenRouter）', en: 'Refresh all balances that have an official API (DeepSeek, Kimi, SiliconFlow, OpenRouter) now', ja: 'APIで照会できる全残高を今すぐ更新（DeepSeek、Kimi、SiliconFlow、OpenRouter）', ko: '자동 조회 가능한 모든 잔액을 지금 새로고침(DeepSeek, Kimi, SiliconFlow, OpenRouter)' },
+  '请先解锁保险箱后再刷新（余额需要解密 Key 才能查询）': { 'zh-TW': '請先解鎖保險箱後再刷新（餘額需要解密 Key 才能查詢）', en: 'Unlock the vault first — balances can only be queried after decrypting your keys.', ja: '先に保管庫のロックを解除してください（残高照会にはキーの復号が必要です）', ko: '먼저 금고를 잠금 해제하세요(잔액 조회에는 키 복호화가 필요합니다).' },
+  '没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter 支持）': { 'zh-TW': '沒有可自動刷新餘額的帳戶（僅 DeepSeek、Kimi、矽基流動、OpenRouter 支援）', en: 'No account supports automatic balance refresh (only DeepSeek, Kimi, SiliconFlow, OpenRouter).', ja: '自動更新できるアカウントがありません（DeepSeek、Kimi、SiliconFlow、OpenRouter のみ対応）。', ko: '자동 잔액 새로고침을 지원하는 계정이 없습니다(DeepSeek, Kimi, SiliconFlow, OpenRouter만 지원).' },
+  '已刷新全部余额：{n} 个账户已更新': { 'zh-TW': '已刷新全部餘額：{n} 個帳戶已更新', en: 'All balances refreshed: {n} account(s) updated.', ja: '全残高を更新しました：{n} 件のアカウントを更新。', ko: '모든 잔액을 새로고침했습니다: {n}개 계정 업데이트됨.' },
+  '刷新完成：{ok} 个已更新，{fail} 个失败': { 'zh-TW': '刷新完成：{ok} 個已更新，{fail} 個失敗', en: 'Refresh done: {ok} updated, {fail} failed.', ja: '更新完了：{ok} 件更新、{fail} 件失敗。', ko: '새로고침 완료: {ok}개 업데이트, {fail}개 실패.' },
+})
+
 // ---- 补齐批次 31：备份清单格式提示（v0.1.301） ----
 Object.assign(D, {
   'MD / HTML / Excel 是便于查看的清单格式（名称、余额、链接地址、Key、分组），不能用于恢复导入；恢复备份请用 JSON / CSV / TXT': { 'zh-TW': 'MD / HTML / Excel 是便於查看的清單格式（名稱、餘額、連結地址、Key、分組），不能用於恢復匯入；恢復備份請用 JSON / CSV / TXT', en: 'MD / HTML / Excel are read-only list formats (name, balance, URL, key, group) for viewing — they cannot be imported for restore. Use JSON / CSV / TXT for restorable backups.', ja: 'MD / HTML / Excel は閲覧用のリスト形式（名前、残高、URL、キー、グループ）で、復元インポートには使えません。復元用バックアップには JSON / CSV / TXT を使ってください。', ko: 'MD / HTML / Excel은 보기용 목록 형식(이름, 잔액, URL, 키, 그룹)으로 복원 가져오기에는 사용할 수 없습니다. 복원용 백업은 JSON / CSV / TXT를 사용하세요.' },
