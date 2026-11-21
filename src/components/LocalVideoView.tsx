@@ -374,7 +374,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
                     <div className="sd-hist-head"><span>{new Date(h.createdAt).toLocaleString(locale())}</span><HoldToConfirm title={t('删除')} onConfirm={() => setHistory(removeHistory('video', h.id))} /></div>
                     <div className="sd-hist-prompt">{h.prompt}</div>
                     <div className="sd-hist-params">{h.params}</div>
-                    {h.results.length > 0 ? <div className="sd-hist-thumbs">{h.results.map((u, i) => <video key={i} src={u} muted />)}</div> : h.note ? <div className="sd-hist-note">{h.note}</div> : null}
+                    {h.results.length > 0 ? <div className="sd-hist-thumbs">{h.results.map((u, i) => <video key={i} src={u} muted onClick={() => setBigVideo(u)} style={{ cursor: 'zoom-in' }} />)}</div> : h.note ? <div className="sd-hist-note">{h.note}</div> : null}
                   </div>
                 ))}
                 {history.length > 0 && <button className="btn sm ghost" onClick={resetHistory}><Trash2 size={13} /> {t('清空历史')}</button>}

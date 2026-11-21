@@ -8,7 +8,6 @@ import {
 } from 'lucide-react'
 import { callImage, extractModelId, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
-import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { useHoverZoom, HoverZoomOverlay, spaceOpenProps } from './mediaPreview'
@@ -241,7 +240,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                     <div className="gen-hist-prompt">{h.prompt}</div>
                     <div className="gen-hist-meta">{h.accountLabel} · {h.params}</div>
                     <div className="gen-thumbs">
-                      {h.results.map((u, i) => <SafeThumb key={i} src={h.thumbs?.[i] || u} fallbackSrc={u} className="gen-thumb" onClick={() => void openExternal(u)} />)}
+                      {h.results.map((u, i) => <SafeThumb key={i} src={h.thumbs?.[i] || u} fallbackSrc={u} className="gen-thumb" onClick={() => setLightbox(u)} />)}
                     </div>
                   </div>
                 ))}
@@ -255,7 +254,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                       ? <img src={u} alt={t('生成图片 {n}', { n: i + 1 })} className="gen-result-img" style={{ cursor: 'zoom-in' }} onClick={() => setLightbox(u)} onMouseEnter={e => hz.enter(e, u, 'image')} onMouseLeave={hz.leave} />
                       : <div className="gen-result-text">{u}</div>}
                     <div className="gen-result-actions">
-                      <a className="btn sm ghost" href={u} target="_blank" rel="noopener" title={t('在新窗口打开')}><ExternalLink size={13} /> {t('打开')}</a>
+                      <button className="btn sm ghost" onClick={() => setLightbox(u)} title={t('在应用内放大查看')}><ExternalLink size={13} /> {t('打开')}</button>
                       <button className="btn sm ghost" onClick={() => void download(u, i)}><Download size={13} /> {t('下载')}</button>
                       {extOpen && <button className="btn sm ghost" onClick={() => void openWithViewer(u, 'image', notify)}><AppWindow size={13} /> {t('外部打开')}</button>}
                     </div>

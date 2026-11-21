@@ -9,7 +9,6 @@ import {
 } from 'lucide-react'
 import { callVideo, extractModelId, queryVideoTask, fetchProviderModels, filterMediaModels } from '../core/providerCall'
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
-import { openExternal } from '../core/openExternal'
 import { ModelInfoCard } from './ModelInfoCard'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { useHoverZoom, HoverZoomOverlay, spaceOpenProps, videoResumeProps } from './mediaPreview'
@@ -285,7 +284,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                     <div className="gen-hist-meta">{h.accountLabel} · {h.params}</div>
                     {h.results.length > 0 ? (
                       <div className="gen-thumbs">
-                        {h.results.map((u, i) => <video key={i} src={u} className="gen-thumb" controls={false} muted onClick={() => void openExternal(u)} />)}
+                        {h.results.map((u, i) => <video key={i} src={u} className="gen-thumb" controls={false} muted onClick={() => setBigVideo(u)} />)}
                       </div>
                     ) : h.note ? <div className="gen-hist-note">{h.note}</div> : null}
                   </div>
@@ -300,7 +299,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                       onMouseEnter={e => { videoResumeProps.onMouseEnter(e); hz.enter(e, u, 'video') }}
                       onMouseLeave={e => { videoResumeProps.onMouseLeave(e); hz.leave() }} />
                     <div className="gen-result-actions">
-                      <a className="btn sm ghost" href={u} target="_blank" rel="noopener"><ExternalLink size={13} /> {t('打开')}</a>
+                      <button className="btn sm ghost" onClick={() => setBigVideo(u)} title={t('在应用内放大查看')}><ExternalLink size={13} /> {t('打开')}</button>
                       <button className="btn sm ghost" onClick={() => void download(u, i)}><Download size={13} /> {t('下载')}</button>
                       {extOpen && <button className="btn sm ghost" onClick={() => void openWithViewer(u, 'video', notify)}><AppWindow size={13} /> {t('外部打开')}</button>}
                     </div>
