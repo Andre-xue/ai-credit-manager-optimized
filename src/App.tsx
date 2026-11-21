@@ -1433,9 +1433,10 @@ function App() {
                   const unlocked = !!(sessionPwd || getBiometricPassword())
                   if (!unlocked) { notify('请先解锁保险箱或在支持生物识别的设备上验证，未执行清空'); return }
                 }
-                scheduleUndo(stateRef.current, '业务数据已清空')
+                scheduleUndo(stateRef.current, '全部数据已清空')
                 setState(s => clearAllData(s))
-                notify('业务数据已清空（5 秒内可撤回）')
+                clearSessionsData('all')
+                notify('全部数据已清空（业务数据 5 秒内可撤回；聊天记录已清空）')
               })()
             })
           }}
@@ -4594,7 +4595,6 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const [clearSel, setClearSel] = useState<ClearCat[]>([])
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const toggleClearCat = (key: ClearCat) => setClearSel(sel => sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key])
-  const allClearSel = clearSel.length === CLEAR_CATS.length
   const [confirmReset, setConfirmReset] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [oldPwd, setOldPwd] = useState('')
@@ -5157,7 +5157,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <Toggle checked={s.backupReminder} onChange={v => onChange({ backupReminder: v })} />
               </span>
             </SettingsRow>
-            <SettingsRow title="清空业务数据" desc="删除全部账户、额度、签到与用量记录；设置与保险箱保留">
+            <SettingsRow title="清空全部数据" desc="删除全部账户、额度、签到、用量记录与 AI 聊天历史（含归档）；设置与保险箱保留">
               {confirmClear ? (
                 <span style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm danger" onClick={() => { onClear(); setConfirmClear(false) }}>确认清空</button>
@@ -5171,10 +5171,6 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </button>
             </SettingsRow>
             <div className="clear-cat-list">
-              <label className="clear-cat">
-                <input type="checkbox" checked={allClearSel} onChange={e => setClearSel(e.target.checked ? CLEAR_CATS.map(c => c.key) : [])} />
-                <b>清空全部</b><span>以下所有类别</span>
-              </label>
               {CLEAR_CATS.map(c => (
                 <label key={c.key} className="clear-cat">
                   <input type="checkbox" checked={clearSel.includes(c.key)} onChange={() => toggleClearCat(c.key)} />
