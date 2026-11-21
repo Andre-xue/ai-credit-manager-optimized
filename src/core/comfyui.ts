@@ -134,13 +134,27 @@ async function fetchComfyNodeInfo(base: string, className: string): Promise<Reco
   } catch { return null }
 }
 
+/** 从 ADE_LoadAnimateDiffModel 的 object_info 解析运动模块清单（model_name 组合选项） */
+export function motionModelsFromNodeInfo(info: Record<string, unknown> | null): string[] {
+  const req = (info?.input as { required?: Record<string, unknown> } | undefined)?.required
+  const arr = (req?.model_name as unknown[] | undefined)?.[0]
+  return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === 'string') : []
+}
+
 /** 拉取 AnimateDiff 运动模块列表（ADE_LoadAnimateDiffModel 的 model_name 选项，即 models/animatediff_models 目录）；
  *  ADE 扩展未安装时返回空数组 */
 export async function fetchComfyMotionModules(base: string): Promise<string[]> {
+  return motionModelsFromNodeInfo(await fetchComfyNodeInfo(base, 'ADE_LoadAnimateDiffModel'))
+}
+
+export type MotionModuleState = 'ready' | 'no-extension' | 'no-files'
+
+/** 运动模块可用状态：区分「扩展没装（ADE 节点不存在）」与「扩展已装但没扫到文件」——两者的解决办法完全不同 */
+export async function fetchComfyMotionModuleStatus(base: string): Promise<{ state: MotionModuleState; models: string[] }> {
   const info = await fetchComfyNodeInfo(base, 'ADE_LoadAnimateDiffModel')
-  const req = (info?.input as { required?: Record<string, unknown> } | undefined)?.required
-  const arr = (req?.model_name as unknown[] | undefined)?.[0]
-  return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === 'string') : []
+  if (!info) return { state: 'no-extension', models: [] }
+  const models = motionModelsFromNodeInfo(info)
+  return models.length ? { state: 'ready', models } : { state: 'no-files', models: [] }
 }
 
 export interface AnimateDiffOptions {

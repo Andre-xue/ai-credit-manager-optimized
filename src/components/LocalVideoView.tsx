@@ -11,7 +11,7 @@ import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../c
 import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
-import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModules, comfyGenerateAnimateDiff } from '../core/comfyui'
+import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModuleStatus, comfyGenerateAnimateDiff, type MotionModuleState } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
@@ -51,6 +51,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   const [model, setModel] = useState('')
   const [motionModels, setMotionModels] = useState<string[]>([])
   const [motionModel, setMotionModel] = useState('')
+  const [motionState, setMotionState] = useState<MotionModuleState | ''>('')
   const [loadingModels, setLoadingModels] = useState(false)
   const [mode, setMode] = useState<'t2v' | 'i2v' | 'flf2v'>('t2v')
   const [prompt, setPrompt] = useState('')
@@ -81,7 +82,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   useEffect(() => {
     const onChanged = (e: Event) => {
       const d = (e as CustomEvent<{ key: string; enabled: boolean }>).detail
-      if (d?.key === 'comfyui' && !d.enabled) { setModels([]); setModel(''); setMotionModels([]); setMotionModel('') }
+      if (d?.key === 'comfyui' && !d.enabled) { setModels([]); setModel(''); setMotionModels([]); setMotionModel(''); setMotionState('') }
     }
     window.addEventListener(LOCAL_SERVICE_CHANGED_EVENT, onChanged)
     return () => window.removeEventListener(LOCAL_SERVICE_CHANGED_EVENT, onChanged)
@@ -115,7 +116,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
     }
     // 服务总闸：ComfyUI 地址且开关关闭时禁止连接，避免关了服务还能拉到模型
     if (isComfyUIBase(base) && serviceController && !serviceController.enabled('comfyui')) {
-      setModels([]); setModel(''); setMotionModels([]); setMotionModel('')
+      setModels([]); setModel(''); setMotionModels([]); setMotionModel(''); setMotionState('')
       notify(t('ComfyUI 服务已关闭，请先开启服务后再连接。开关与设置页同步。'))
       return
     }
@@ -130,10 +131,11 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
           if (!r.ok) throw new Error(r.error ?? t('拉取失败'))
           ids = r.models
         }
-        // 运动模块走 ADE 节点的 object_info（即 animatediff_models 目录清单）
-        const motions = await fetchComfyMotionModules(base)
-        setMotionModels(motions)
-        setMotionModel(prev => motions.includes(prev) ? prev : (motions[0] ?? ''))
+        // 运动模块走 ADE 节点的 object_info（即 animatediff_models 目录清单），并区分未装扩展/未扫到文件
+        const mst = await fetchComfyMotionModuleStatus(base)
+        setMotionModels(mst.models)
+        setMotionState(mst.state)
+        setMotionModel(prev => mst.models.includes(prev) ? prev : (mst.models[0] ?? ''))
         if (ids.length) notify(t('已连上 ComfyUI，列出 {n} 个 checkpoint；选好底模与运动模块后可通过 AnimateDiff 生成视频', { n: ids.length }))
       } else {
         ids = await fetchLocalMediaModels(base)
@@ -174,7 +176,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
       // ComfyUI 走内置 AnimateDiff 工作流（底模 + 运动模块 → mp4），不走通用视频接口
       if (isComfyUIBase(base)) {
         if (mode !== 't2v') { failProgress(t('生成失败')); notify(t('ComfyUI AnimateDiff 目前仅支持文生视频')); return }
-        if (!motionModel) { failProgress(t('生成失败')); notify(t('未选择运动模块：请先点「连接」拉取；若列表为空，说明 ComfyUI 未安装 AnimateDiff 扩展，或 animatediff_models 目录里没有运动模块文件')); return }
+        if (!motionModel) { failProgress(t('生成失败')); notify(motionState === 'no-extension' ? t('未安装 AnimateDiff 扩展：请先在 ComfyUI 的 Manager 里安装 ComfyUI-AnimateDiff-Evolved 与 VideoHelperSuite 并重启 ComfyUI') : t('未选择运动模块：请先点「连接」拉取；若列表为空，说明 ComfyUI 未安装 AnimateDiff 扩展，或 animatediff_models 目录里没有运动模块文件')); return }
         const size = comfyVideoSize(resolution, ratio)
         const rv = await comfyGenerateAnimateDiff(base, model, motionModel, prompt.trim(), {
           negativePrompt: negative.trim() || undefined,
@@ -278,9 +280,15 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
               {motionModels.length > 0 ? (
                 <select className="input" value={motionModel} onChange={e => setMotionModel(e.target.value)}>{motionModels.map(m => <option key={m} value={m}>{m}</option>)}</select>
               ) : (
-                <input className="input" disabled placeholder={t('未检测到运动模块（先点顶部「连接」）')} value="" readOnly />
+                <input className="input" disabled placeholder={motionState === 'no-extension' ? t('未安装 AnimateDiff 扩展（ADE 节点不存在）') : motionState === 'no-files' ? t('扩展已就绪，但没扫到运动模块文件') : t('未检测到运动模块（先点顶部「连接」）')} value="" readOnly />
               )}
-              <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('AnimateDiff 运动模块与底模搭配生成视频，需 ComfyUI 已安装 AnimateDiff-Evolved 与 VideoHelperSuite 扩展；固定 16 帧 · 8fps，约 2 秒')}</div>
+              {motionState === 'no-extension' ? (
+                <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('未检测到 AnimateDiff 扩展：请打开 ComfyUI → Manager → Custom Nodes Manager，搜索并安装 ComfyUI-AnimateDiff-Evolved 与 ComfyUI-VideoHelperSuite 两个扩展，重启 ComfyUI 后回到这里点「连接」')}</div>
+              ) : motionState === 'no-files' ? (
+                <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('AnimateDiff 扩展已就绪，但它的清单里没有运动模块：请把运动模块文件（如 mm_sd_v15_v2.ckpt）放进 ComfyUI 的 models/animatediff_models 目录，重启 ComfyUI 后再点「连接」')}</div>
+              ) : (
+                <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('AnimateDiff 运动模块与底模搭配生成视频，需 ComfyUI 已安装 AnimateDiff-Evolved 与 VideoHelperSuite 扩展；固定 16 帧 · 8fps，约 2 秒')}</div>
+              )}
               <LocalModelInfoCard filename={motionModel} />
             </div>
           )}

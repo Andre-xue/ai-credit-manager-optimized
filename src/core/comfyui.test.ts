@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow, buildAnimateDiffWorkflow } from './comfyui'
+import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow, buildAnimateDiffWorkflow, motionModelsFromNodeInfo } from './comfyui'
 
 describe('ComfyUI 原生协议适配', () => {
   it('按地址识别 ComfyUI（8188 端口或域名含 comfyui）', () => {
@@ -74,5 +74,17 @@ describe('AnimateDiff 工作流构造', () => {
     expect(wf['7'].inputs.images).toEqual(['6', 0])
     expect(wf['7'].inputs.format).toBe('video/h264-mp4')
     expect(wf['7'].inputs.frame_rate).toBe(8)
+  })
+})
+
+describe('运动模块清单解析（ADE object_info）', () => {
+  it('从 V3 节点信息解析 model_name 选项', () => {
+    const info = { input: { required: { model_name: [['mm_sd_v15_v2.ckpt', 'mm_sd_v15_v2.5.ckpt'], {}] } } } as Record<string, unknown>
+    expect(motionModelsFromNodeInfo(info)).toEqual(['mm_sd_v15_v2.ckpt', 'mm_sd_v15_v2.5.ckpt'])
+  })
+  it('节点不存在或结构异常时返回空', () => {
+    expect(motionModelsFromNodeInfo(null)).toEqual([])
+    expect(motionModelsFromNodeInfo({})).toEqual([])
+    expect(motionModelsFromNodeInfo({ input: { required: { model_name: ['notarray'] } } } as Record<string, unknown>)).toEqual([])
   })
 })

@@ -3720,6 +3720,11 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
                 {modelsErr ? t('未能自动读取模型列表：{err}', { err: modelsErr }) : t('本机服务暂无可读取的模型列表')}
               </div>
             )}
+            {availModels.some(m => isMotionModule(m)) && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.6 }}>
+                {t('列表中灰色的运动模块不能单独添加为账户；它在「AI 视频 · 本地」页里与底模搭配生成视频，直接从 ComfyUI 读取，无需在此添加')}
+              </div>
+            )}
             {/* 选中模型的能力标注与提示 */}
             {path.trim() && (() => {
               const cap = detectModelCapability(path.trim())
