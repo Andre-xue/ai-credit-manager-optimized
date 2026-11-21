@@ -1379,6 +1379,11 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 31：备份清单格式提示（v0.1.301） ----
+Object.assign(D, {
+  'MD / HTML / Excel 是便于查看的清单格式（名称、余额、链接地址、Key、分组），不能用于恢复导入；恢复备份请用 JSON / CSV / TXT': { 'zh-TW': 'MD / HTML / Excel 是便於查看的清單格式（名稱、餘額、連結地址、Key、分組），不能用於恢復匯入；恢復備份請用 JSON / CSV / TXT', en: 'MD / HTML / Excel are read-only list formats (name, balance, URL, key, group) for viewing — they cannot be imported for restore. Use JSON / CSV / TXT for restorable backups.', ja: 'MD / HTML / Excel は閲覧用のリスト形式（名前、残高、URL、キー、グループ）で、復元インポートには使えません。復元用バックアップには JSON / CSV / TXT を使ってください。', ko: 'MD / HTML / Excel은 보기용 목록 형식(이름, 잔액, URL, 키, 그룹)으로 복원 가져오기에는 사용할 수 없습니다. 복원용 백업은 JSON / CSV / TXT를 사용하세요.' },
+})
+
 // ---- 补齐批次 30：数据存储目录路径显示（v0.1.300） ----
 Object.assign(D, {
   '更换文件夹': { 'zh-TW': '更換資料夾', en: 'Change folder', ja: 'フォルダを変更', ko: '폴더 변경' },

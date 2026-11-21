@@ -99,7 +99,7 @@ import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
 import {
-  buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup,
+  buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup, isReadableFormat,
   type KeyBackupMode, type KeyBackupFormat, type KeyBackupFile, type BackupFileFormat,
 } from './core/keyBackup'
 
@@ -2992,10 +2992,13 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
               </div>
               <div className="backup-format" style={{ marginTop: 10 }}>
                 <span className="field-label" style={{ margin: '0 8px 0 0' }}>{t('文件容器')}</span>
-                {(['json', 'csv', 'txt'] as BackupFileFormat[]).map(f => (
-                  <button key={f} className={`btn sm ${fileFormat === f ? 'primary' : ''}`} onClick={() => { setFileFormat(f); setBackup(null); setConfirmed(false) }}>{f.toUpperCase()}</button>
+                {(['json', 'csv', 'txt', 'md', 'html', 'xlsx'] as BackupFileFormat[]).map(f => (
+                  <button key={f} className={`btn sm ${fileFormat === f ? 'primary' : ''}`} onClick={() => { setFileFormat(f); setBackup(null); setConfirmed(false) }}>{f === 'xlsx' ? 'Excel' : f.toUpperCase()}</button>
                 ))}
               </div>
+              {isReadableFormat(fileFormat) && (
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>{t('MD / HTML / Excel 是便于查看的清单格式（名称、余额、链接地址、Key、分组），不能用于恢复导入；恢复备份请用 JSON / CSV / TXT')}</div>
+              )}
               {isDesktopApp() && !keyStoreDir && (
                 <button className="btn sm" style={{ marginTop: 10 }} onClick={async () => {
                   const dir = await chooseBackupFolder()

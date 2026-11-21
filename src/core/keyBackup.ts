@@ -6,12 +6,19 @@ import { isLocalProvider } from './types'
 import { decryptSecret, encryptSecret, fingerprint, getVaultSyncMaterial, applyVaultSyncMaterial, type VaultSyncMaterial } from './crypto'
 import { isNativeApp, isDesktopApp } from './openExternal'
 import { pushPayload } from './sync'
-import { todayISO, uid } from './store'
+import { todayISO, uid, latestQuota } from './store'
+import { PROVIDER_MAP } from '../data/providers'
 
 export type KeyBackupMode = 'cloud' | 'local' | 'notes'
 export type KeyBackupFormat = 'cipher' | 'plain'
-/** 备份文件容器格式（与明文/密文无关） */
-export type BackupFileFormat = 'json' | 'csv' | 'txt'
+/** 备份文件容器格式（与明文/密文无关）。
+ * json/csv/txt 是可恢复导入的机器格式；md/html/xlsx 是只读清单格式（v0.1.301，
+ * Ethan 要求）：字段一一对应——名称=平台名+（备注）、余额（未设置为空）、
+ * 链接地址（账户地址或平台默认地址）、API Key、分组。 */
+export type BackupFileFormat = 'json' | 'csv' | 'txt' | 'md' | 'html' | 'xlsx'
+export type ReadableBackupFormat = 'md' | 'html' | 'xlsx'
+export const isReadableFormat = (f: BackupFileFormat): f is ReadableBackupFormat =>
+  f === 'md' || f === 'html' || f === 'xlsx'
 
 export interface KeyBackupItem {
   account: Account
@@ -108,8 +115,10 @@ const CSV_HEADER = [
   'accCreatedAt', 'accUpdatedAt', 'quotasJson', 'usageJson', 'checkinsJson',
 ]
 
+export type MachineBackupFormat = 'json' | 'csv' | 'txt'
+
 /** 序列化为 JSON / CSV / TXT。TXT 也是可机器解析的稳定格式，不只是给人看。 */
-export function serializeKeyBackup(backup: KeyBackupFile, fileFormat: BackupFileFormat = 'json'): string {
+export function serializeKeyBackup(backup: KeyBackupFile, fileFormat: MachineBackupFormat = 'json'): string {
   if (fileFormat === 'json') return JSON.stringify(backup, null, 2)
 
   const vault = backup.vault
@@ -147,6 +156,96 @@ export function serializeKeyBackup(backup: KeyBackupFile, fileFormat: BackupFile
     CSV_HEADER.slice(9).forEach((k, i) => lines.push(`${k}=${JSON.stringify(r[i + 9])}`))
   })
   return lines.join('\n')
+}
+
+// ---- 只读清单格式（md / html / xlsx）：字段与账户一一对应（v0.1.301） ----
+
+export interface KeyBackupReadableRow {
+  /** 名称：AI 平台名字 +（备注），无备注只显示平台名 */
+  name: string
+  /** 余额：最新快照剩余（带单位）；没有设置额度/快照时为空 */
+  balance: string
+  /** 链接地址：账户自填地址，缺省用平台默认 API 地址 */
+  apiUrl: string
+  /** API Key：明文备份为原文，密文备份为保险箱密文 */
+  apiKey: string
+  /** 分组：账户所在的分组，未分组为空 */
+  group: string
+}
+
+const UNIT_TEXT: Record<string, string> = { credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天' }
+const trimNum = (n: number) => String(Math.round(n * 10000) / 10000)
+
+export function buildReadableRows(backup: KeyBackupFile): KeyBackupReadableRow[] {
+  return backup.accounts.map(item => {
+    const a = item.account
+    const provider = PROVIDER_MAP[a.providerId]
+    const q = latestQuota(item.quotas, a.id)
+    return {
+      name: `${provider?.name ?? a.providerId}${a.note ? `（${a.note}）` : ''}`,
+      balance: q && Number.isFinite(q.total) ? `${trimNum(q.total - q.used)} ${UNIT_TEXT[q.unit] ?? q.unit}`.trim() : '',
+      apiUrl: a.apiUrl || provider?.apiBaseUrl || '',
+      apiKey: backup.format === 'plain' ? (item.apiKey ?? '') : (a.encryptedKey ?? ''),
+      group: a.group ?? '',
+    }
+  })
+}
+
+const escMdCell = (s: string) => s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+const escHtmlCell = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/** 清单格式序列化（md / html）：给人看的表格，不能用于恢复导入 */
+export function serializeKeyBackupReadable(backup: KeyBackupFile, format: 'md' | 'html'): string {
+  const rows = buildReadableRows(backup)
+  const modeLabel = backup.format === 'plain' ? '明文' : '密文（保险箱加密）'
+  const stamp = backup.createdAt.replace('T', ' ').slice(0, 19)
+  if (format === 'md') {
+    return [
+      '# AI 积分管家密钥备份',
+      '',
+      `> 形式：${modeLabel} · 生成于 ${stamp} · 共 ${rows.length} 个`,
+      '',
+      '| 名称 | 余额 | 链接地址 | API Key | 分组 |',
+      '| --- | --- | --- | --- | --- |',
+      ...rows.map(r => `| ${escMdCell(r.name)} | ${escMdCell(r.balance)} | ${escMdCell(r.apiUrl)} | ${escMdCell(r.apiKey)} | ${escMdCell(r.group)} |`),
+      '',
+    ].join('\n')
+  }
+  const trs = rows.map(r =>
+    `<tr><td>${escHtmlCell(r.name)}</td><td>${escHtmlCell(r.balance)}</td><td>${escHtmlCell(r.apiUrl)}</td><td class="k">${escHtmlCell(r.apiKey)}</td><td>${escHtmlCell(r.group)}</td></tr>`,
+  ).join('\n')
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="zh-CN"><head><meta charset="utf-8">',
+    '<title>AI 积分管家密钥备份</title>',
+    '<style>body{font-family:system-ui,sans-serif;margin:24px;color:#1f2023}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d0d5dd;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top}th{background:#f4f4f5}.k{word-break:break-all;font-family:ui-monospace,monospace;font-size:12px}.meta{color:#667085;font-size:12.5px}</style>',
+    '</head><body>',
+    '<h2>AI 积分管家密钥备份</h2>',
+    `<p class="meta">形式：${escHtmlCell(modeLabel)} · 生成于 ${escHtmlCell(stamp)} · 共 ${rows.length} 个</p>`,
+    '<table><thead><tr><th>名称</th><th>余额</th><th>链接地址</th><th>API Key</th><th>分组</th></tr></thead>',
+    `<tbody>\n${trs}\n</tbody></table>`,
+    '</body></html>',
+  ].join('\n')
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  return btoa(bin)
+}
+
+/** Excel 清单（xlsx 二进制 → base64）：列与 md/html 一致 */
+export async function buildKeyBackupXlsxBase64(backup: KeyBackupFile): Promise<string> {
+  const XLSX = await import('xlsx')
+  const rows = buildReadableRows(backup)
+  const ws = XLSX.utils.json_to_sheet(rows.map(r => ({
+    '名称': r.name, '余额': r.balance, '链接地址': r.apiUrl, 'API Key': r.apiKey, '分组': r.group,
+  })))
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'API Keys')
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+  return bytesToBase64(new Uint8Array(out))
 }
 
 function defaultFileName(backup: KeyBackupFile, fileFormat: BackupFileFormat = 'json'): string {
@@ -302,8 +401,27 @@ export async function importKeyBackup(text: string, state: AppState, pwd?: strin
 }
 
 function browserDownload(text: string, filename: string, fileFormat: BackupFileFormat): void {
-  const mime = fileFormat === 'json' ? 'application/json' : fileFormat === 'csv' ? 'text/csv' : 'text/plain'
+  const mime = fileFormat === 'json' ? 'application/json'
+    : fileFormat === 'csv' ? 'text/csv'
+    : fileFormat === 'md' ? 'text/markdown'
+    : fileFormat === 'html' ? 'text/html'
+    : 'text/plain'
   const blob = new Blob([text], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function browserDownloadBase64(base64: string, filename: string, mime: string): void {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -326,9 +444,28 @@ export async function chooseBackupFolder(): Promise<string | null> {
 
 /** 备份到本机文件夹：桌面可指定目录，原生 App 写入 Documents，Web 走浏览器下载。 */
 export async function backupToLocalFile(backup: KeyBackupFile, dir?: string | null, fileFormat: BackupFileFormat = 'json'): Promise<BackupResult> {
-  const text = serializeKeyBackup(backup, fileFormat)
   const filename = defaultFileName(backup, fileFormat)
   try {
+    if (fileFormat === 'xlsx') {
+      const base64 = await buildKeyBackupXlsxBase64(backup)
+      if (isDesktopApp() && dir) {
+        const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
+        const invoke = w.__TAURI_INTERNALS__?.invoke
+        if (!invoke) throw new Error('桌面接口不可用')
+        const path = await invoke('write_binary_to_dir', { dir, filename, content_base64: base64 })
+        return { ok: true, location: path }
+      }
+      if (isNativeApp()) {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Documents, recursive: true })
+        return { ok: true, location: `Documents/${filename}` }
+      }
+      browserDownloadBase64(base64, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      return { ok: true, location: filename }
+    }
+    const text = isReadableFormat(fileFormat)
+      ? serializeKeyBackupReadable(backup, fileFormat)
+      : serializeKeyBackup(backup, fileFormat)
     if (isDesktopApp() && dir) {
       const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<string> } }
       const invoke = w.__TAURI_INTERNALS__?.invoke
@@ -375,7 +512,9 @@ async function copyText(text: string): Promise<boolean> {
 export async function backupToNotes(backup: KeyBackupFile, fileFormat: BackupFileFormat = 'txt'): Promise<BackupResult> {
   // 备忘录只能明文：防御性检查，避免调用方传错格式
   if (backup.format !== 'plain') return { ok: false, error: '备忘录备份只能使用明文格式' }
-  const text = serializeKeyBackup(backup, fileFormat)
+  // 备忘录是文本场景：清单/二进制格式一律落回可恢复的 TXT 机器格式
+  const machineFormat: MachineBackupFormat = fileFormat === 'json' || fileFormat === 'csv' ? fileFormat : 'txt'
+  const text = serializeKeyBackup(backup, machineFormat)
   const nav = navigator as Navigator & { share?: (data: { title?: string; text?: string }) => Promise<void> }
   if (typeof nav.share === 'function') {
     try {
