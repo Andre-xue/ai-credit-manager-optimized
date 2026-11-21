@@ -10,6 +10,7 @@ import {
 import { callLocalImage, fetchLocalMediaModels } from '../core/providerCall'
 import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
+import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
 import type { ServiceController } from '../core/useServiceController'
 import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
@@ -122,6 +123,8 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
       } else {
         ids = await fetchLocalMediaModels(base)
       }
+      // 运动模块（AnimateDiff）不能出图，不进图像模型列表
+      ids = ids.filter(m => !isMotionModule(m))
       setModels(ids)
       setModel(prev => ids.includes(prev) ? prev : (ids[0] ?? ''))
       notify(isComfyUIBase(base)

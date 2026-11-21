@@ -2,7 +2,7 @@
 // 新加入的模型会被自动归类，用于 AI 聊天下拉过滤（嵌入模型不参与聊天）。
 // 规则驱动、可扩展：已知模型精确表 + 关键词回退。
 
-export type ModelCapability = 'chat' | 'translation' | 'embedding' | 'image' | 'audio' | 'unknown'
+export type ModelCapability = 'chat' | 'translation' | 'embedding' | 'image' | 'audio' | 'video' | 'unknown'
 
 export interface CapabilityInfo {
   capability: ModelCapability
@@ -20,7 +20,22 @@ export const CAPABILITY_LABEL: Record<ModelCapability, string> = {
   embedding: '嵌入',
   image: '图像',
   audio: '音频',
+  video: '视频',
   unknown: '未知',
+}
+
+/**
+ * 是否为 AnimateDiff 运动模块（如 mm_sd_v15_v2.ckpt）。
+ * 这类文件不是底模：不能单独出图/对话，必须在 ComfyUI 的 AnimateDiff 工作流中
+ * 搭配一个 SD1.5 checkpoint 才能生成视频。识别特征：位于 animatediff 目录、
+ * mm_ 前缀的 ckpt/safetensors 文件名、或名称含 motion module。
+ */
+export function isMotionModule(modelName: string): boolean {
+  const lower = (modelName || '').trim().toLowerCase()
+  const baseName = lower.split(/[\\/]/).pop() ?? lower
+  return lower.includes('animatediff')
+    || /^mm_[^/\\]*\.(ckpt|safetensors)$/.test(baseName)
+    || /motion[-_ ]?module/.test(lower)
 }
 
 /** 已知模型的精确识别表（小写名 → 能力） */
@@ -47,7 +62,7 @@ const KNOWN_MODELS: Record<string, ModelCapability> = {
   'whisper': 'audio',
   'whisper-large-v3': 'audio',
   // ComfyUI / Stable Diffusion 绘图模型（精确名，去掉目录前缀后的文件名）
-  'mm_sd_v15_v2.ckpt': 'image',
+  // 注：mm_sd_v15_v2.ckpt 是 AnimateDiff 运动模块，不在此表——由 isMotionModule 前置识别为 video
   'anythingv5v3_v5prtre.safetensors': 'image',
   'realistic_vision_v6.0_nv_b1.safetensors': 'image',
   'v1-5-pruned-emaonly-fp16.safetensors': 'image',
@@ -60,7 +75,7 @@ const KEYWORD_RULES: { pattern: RegExp; capability: ModelCapability }[] = [
   // 图像：对话型多模态 + ComfyUI/SD 绘图模型特征。
   // 目录特征（checkpoints/ 等）与绘图扩展名强相关；绘图模型名关键词兜底。
   {
-    pattern: /llava|vision|vl\b|image|pixtral|checkpoints\/|animatediff|loras\/|vae\/|controlnet\/|mm_sd_|\.safetensors$|\.ckpt$|(^|\/)v1[-_]?5|anything|realistic|dreamshaper|chilloutmix|majicmix|sd[_ -]?xl|sd[_ -]?1[._-]?5|flux/i,
+    pattern: /llava|vision|vl\b|image|pixtral|checkpoints\/|loras\/|vae\/|controlnet\/|\.safetensors$|\.ckpt$|(^|\/)v1[-_]?5|anything|realistic|dreamshaper|chilloutmix|majicmix|sd[_ -]?xl|sd[_ -]?1[._-]?5|flux/i,
     capability: 'image',
   },
   { pattern: /whisper|asr|speech|tts|audio/i, capability: 'audio' },
@@ -75,6 +90,10 @@ const KEYWORD_RULES: { pattern: RegExp; capability: ModelCapability }[] = [
 export function detectModelCapability(modelName: string): CapabilityInfo {
   const raw = (modelName || '').trim()
   const lower = raw.toLowerCase()
+  // 运动模块前置识别：它既不是图像底模也不能对话，单独归类为视频·运动模块
+  if (isMotionModule(raw)) {
+    return { capability: 'video', label: '视频·运动模块', reason: 'AnimateDiff 运动模块', chatCapable: false }
+  }
   const base = lower.split(':')[0]                       // 去掉 :tag 标签
   const baseName = base.split(/[\\/]/).pop() ?? base     // 去掉目录前缀，取文件名
 
@@ -95,9 +114,9 @@ export function detectModelCapability(modelName: string): CapabilityInfo {
   return { capability: 'unknown', label: '未知', reason: '未匹配已知规则', chatCapable: true }
 }
 
-/** 能力类型是否支持聊天（对话/翻译/未知可聊；嵌入/图像/音频不可） */
+/** 能力类型是否支持聊天（对话/翻译/未知可聊；嵌入/图像/音频/视频不可） */
 export function capabilityChatCapable(cap: ModelCapability): boolean {
-  return cap !== 'embedding' && cap !== 'image' && cap !== 'audio'
+  return cap !== 'embedding' && cap !== 'image' && cap !== 'audio' && cap !== 'video'
 }
 
 /** 是否应从 AI 聊天下拉中隐藏（嵌入/图像/音频模型不能聊天） */

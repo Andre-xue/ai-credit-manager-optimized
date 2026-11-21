@@ -19,7 +19,7 @@ import { buildReminders, filterUnsent, markSent, notifyPrefsOf } from './core/re
 import { getNotificationPermission, requestNotificationPermission, showNotification, scheduleDailyCheckin, cancelDailyCheckin, type NotificationPermissionState } from './core/notifications'
 import { syncVoiceAccounts, setVoiceSessionPwd } from './core/voiceKey'
 import { saveTtsConfig } from './core/voice-download'
-import { detectModelCapability, shouldHideFromChat } from './core/modelCapability'
+import { detectModelCapability, shouldHideFromChat, isMotionModule } from './core/modelCapability'
 import { VOICE_PROVIDERS } from './core/voiceProviders'
 import {
   LOCAL_SERVICE_KEYS, memoryToTier, tierAdvice, maxServicesForTier,
@@ -3628,6 +3628,7 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
   const submit = async () => {
     if (!selected) { notify('请先选择本机探测到的服务'); return }
     if (!path.trim()) { notify('请选择或输入模型'); return }
+    if (isMotionModule(path.trim())) { notify('这是 AnimateDiff 运动模块，不能单独作为模型使用，请选择一个 checkpoint 底模'); return }
     if (!isVaultInitialized()) { notify('请先在「设置 → 安全」创建保险箱'); return }
     // 密码来源：会话解锁 > 生物识别 > 表单内就地输入（不再强制跳转到 Key 管理页解锁）
     const pwd = sessionPwd || getBiometricPassword() || formPwd.trim()
@@ -3699,7 +3700,8 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
                 <option value="">{t('请选择模型…')}</option>
                 {availModels.map(m => {
                   const cap = detectModelCapability(m)
-                  return <option key={m} value={m}>{m}　[{t(cap.label)}]</option>
+                  // 运动模块不是底模：列出但禁用，避免被误选为图像/对话模型
+                  return <option key={m} value={m} disabled={isMotionModule(m)}>{m}　[{t(cap.label)}]</option>
                 })}
               </select>
             ) : modelsLoading ? (
@@ -3720,7 +3722,9 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
               return (
                 <div className={`model-cap-hint ${hidden ? 'warn' : ''}`}>
                   <span className="cap-badge">{t(cap.label)}</span>
-                  <span>{hidden
+                  <span>{isMotionModule(path.trim())
+                    ? t('这是 AnimateDiff 运动模块，不能单独出图或对话；需在 ComfyUI 的 AnimateDiff 工作流中搭配 SD1.5 底模生成视频。')
+                    : hidden
                     ? t('{reason}识别为「{label}」模型，不能用于 AI 聊天对话；添加后会在聊天列表自动隐藏。', { reason: cap.reason, label: t(cap.label) })
                     : cap.capability === 'translation'
                       ? t('翻译专用模型，可走对话接口但更适合翻译任务。')

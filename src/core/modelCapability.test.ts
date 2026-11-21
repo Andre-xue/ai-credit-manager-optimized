@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectModelCapability, shouldHideFromChat } from './modelCapability'
+import { detectModelCapability, shouldHideFromChat, isMotionModule } from './modelCapability'
 
 describe('模型能力识别', () => {
   it('识别嵌入模型（含标签变体）', () => {
@@ -28,7 +28,6 @@ describe('模型能力识别', () => {
   })
   it('识别 ComfyUI/SD 绘图模型（带目录前缀）', () => {
     const comfyModels = [
-      'animatediff_models/mm_sd_v15_v2.ckpt',
       'checkpoints/AnythingV5V3_v5PrtRE.safetensors',
       'checkpoints/Realistic_Vision_V6.0_NV_B1.safetensors',
       'checkpoints/v1-5-pruned-emaonly-fp16.safetensors',
@@ -40,6 +39,18 @@ describe('模型能力识别', () => {
       expect(r.capability, name).toBe('image')
       expect(shouldHideFromChat(r), name).toBe(true)
     }
+  })
+  it('AnimateDiff 运动模块识别为视频·运动模块（不是图像底模）', () => {
+    for (const name of ['animatediff_models/mm_sd_v15_v2.ckpt', 'mm_sd_v15_v2.ckpt', 'models/motion_module.ckpt']) {
+      expect(isMotionModule(name), name).toBe(true)
+      const r = detectModelCapability(name)
+      expect(r.capability, name).toBe('video')
+      expect(r.label, name).toBe('视频·运动模块')
+      expect(shouldHideFromChat(r), name).toBe(true)
+    }
+    // 真 checkpoint 不得误判为运动模块
+    expect(isMotionModule('checkpoints/AnythingV5V3_v5PrtRE.safetensors')).toBe(false)
+    expect(isMotionModule('checkpoints/v1-5-pruned-emaonly-fp16.safetensors')).toBe(false)
   })
   it('绘图规则不误伤对话模型', () => {
     for (const name of ['llama3.2:3b', 'qwen2.5:3b', 'deepseek-v4-pro-4b-uncensored:latest']) {

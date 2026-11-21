@@ -13,6 +13,7 @@ import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
 import { isComfyUIBase, fetchComfyCheckpoints } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
+import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
 import type { ServiceController } from '../core/useServiceController'
 import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
@@ -117,6 +118,8 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
       } else {
         ids = await fetchLocalMediaModels(base)
       }
+      // 本页的「模型」指底模 checkpoint；运动模块是搭配件，不作为底模列出
+      ids = ids.filter(m => !isMotionModule(m))
       setModels(ids)
       setModel(prev => ids.includes(prev) ? prev : (ids[0] ?? ''))
       if (!isComfyUIBase(base)) notify(t('已连接本地服务，找到 {n} 个模型', { n: ids.length }))
