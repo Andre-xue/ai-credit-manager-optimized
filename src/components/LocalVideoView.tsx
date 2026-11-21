@@ -10,7 +10,7 @@ import {
 import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../core/providerCall'
 import { externalOpenEnabled, openWithViewer } from '../core/viewerPrefs'
 import { useHoverZoom, HoverZoomOverlay, spaceOpenProps, videoResumeProps } from './mediaPreview'
-import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
+import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, autoSaveGeneratedMedia, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
 import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModuleStatus, comfyGenerateAnimateDiff, stripComfyCategoryPrefix, type MotionModuleState } from '../core/comfyui'
@@ -206,6 +206,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
           model, createdAt: Date.now(), results: vids, params: paramsV, note: '',
         }))
         notify(t('本地视频已生成'))
+        if (vids.length) void autoSaveGeneratedMedia(vids, 'video').then(saved => { if (saved.length) notify(t('已自动保存 {n} 个文件到数据存储文件夹', { n: saved.length })) })
         return
       }
       const r = await callLocalVideo(base, model, prompt.trim(), {
@@ -242,6 +243,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
         model, createdAt: Date.now(), results: imgs, params, note: imgs.length ? '' : r.text,
       }))
       notify(imgs.length ? t('本地视频已生成') : r.text)
+      if (imgs.length) void autoSaveGeneratedMedia(imgs, 'video').then(saved => { if (saved.length) notify(t('已自动保存 {n} 个文件到数据存储文件夹', { n: saved.length })) })
     } catch (e) { if (alive.current) { failProgress(t('生成失败')); notify(errTextSafe(e)) } }
     finally { if (alive.current) setBusy(false) }
   }

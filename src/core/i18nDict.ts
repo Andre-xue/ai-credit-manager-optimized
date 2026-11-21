@@ -1379,6 +1379,11 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 39：生成后自动保存到数据存储文件夹（v0.1.310） ----
+Object.assign(D, {
+  '已自动保存 {n} 个文件到数据存储文件夹': { 'zh-TW': '已自動保存 {n} 個檔案到資料儲存資料夾', en: 'Auto-saved {n} file(s) to the storage folder', ja: '{n} 件を保存フォルダへ自動保存しました', ko: '파일 {n}개를 저장 폴더에 자동 저장했습니다' },
+})
+
 // ---- 补齐批次 38：预览改应用内（v0.1.308） ----
 Object.assign(D, {
   '在应用内放大查看': { 'zh-TW': '在應用程式內放大查看', en: 'Enlarge in app', ja: 'アプリ内で拡大表示', ko: '앱에서 확대 보기' },

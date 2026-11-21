@@ -97,6 +97,32 @@ function toBase64(blob: Blob): Promise<string> {
 }
 
 /**
+ * 生成完成后自动把结果存进「数据存储 · 图像/视频」文件夹（Ethan 要求）：
+ * 仅桌面端且已配置该文件夹时执行；未配置静默跳过；单个失败不影响其余文件与生成流程。
+ * 返回实际保存的完整路径列表。
+ */
+export async function autoSaveGeneratedMedia(urls: string[], kind: MediaKind): Promise<string[]> {
+  const dir = storageDir('media')
+  if (!dir || !isDesktopApp() || urls.length === 0) return []
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }
+  const invoke = w.__TAURI_INTERNALS__?.invoke
+  if (!invoke) return []
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const base = `ai-${kind}-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const saved: string[] = []
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const { blob } = await urlToBlob(urls[i])
+      const filename = `${base}-${i + 1}.${extOf(urls[i], kind)}`
+      await invoke('write_binary_to_dir', { dir, filename, contentBase64: await toBase64(blob) })
+      saved.push(`${dir}/${filename}`)
+    } catch { /* 单个文件失败不阻断其余与生成结果 */ }
+  }
+  return saved
+}
+
+/**
  * 保存生成的图片/视频到本机：
  * - 桌面端：优先弹系统目录选择（沿用 choose_save_dir / write_binary_to_dir）
  * - 原生 App：写入 Documents 目录

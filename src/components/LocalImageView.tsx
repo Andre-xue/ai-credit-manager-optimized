@@ -16,7 +16,7 @@ import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
 import type { ServiceController } from '../core/useServiceController'
 import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
-import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, urlToThumb, type MediaHistoryItem } from '../core/mediaGeneration'
+import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, urlToThumb, autoSaveGeneratedMedia, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { GenProgressBar, useGenProgress } from './GenProgressBar'
 import { SafeThumb } from './SafeThumb'
@@ -207,6 +207,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
         model, createdAt: Date.now(), results: imgs, thumbs, params,
       }))
       notify(imgs.length ? t('已生成 {n} 张图片', { n: imgs.length }) : t('生成完成但未返回图片'))
+      if (imgs.length) void autoSaveGeneratedMedia(imgs, 'image').then(saved => { if (saved.length) notify(t('已自动保存 {n} 个文件到数据存储文件夹', { n: saved.length })) })
     } catch (e) { if (alive.current) { failProgress(t('生成失败')); notify(errTextSafe(e)) } }
     finally { if (alive.current) setBusy(false) }
   }

@@ -17,7 +17,7 @@ import { SafeThumb } from './SafeThumb'
 import { PROVIDER_MAP } from '../data/providers'
 import { categoryFromNote } from '../core/modelCategories'
 import {
-  addHistory, clearHistory, loadHistory, newMediaId, removeHistory, saveMedia, errTextSafe, urlsToThumbs,
+  addHistory, clearHistory, loadHistory, newMediaId, removeHistory, saveMedia, errTextSafe, urlsToThumbs, autoSaveGeneratedMedia,
   type MediaHistoryItem,
 } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
@@ -108,6 +108,7 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
         accountLabel: useAccount.label, model: activeModel, createdAt: Date.now(), results: imgs, thumbs, params,
       })
       notify(imgs.length ? t('已生成 {n} 张图片', { n: imgs.length }) : r.text)
+      if (imgs.length) void autoSaveGeneratedMedia(imgs, 'image').then(saved => { if (saved.length) notify(t('已自动保存 {n} 个文件到数据存储文件夹', { n: saved.length })) })
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
       // 展示用本地缩略图副本（不依赖可能过期的远程链接），失败回退原 URL
       return { results: imgs.map((u, i) => thumbs[i] || u), note: r.text, doneLabel: t('生成完成 · 耗时 {secs}s', { secs }) }

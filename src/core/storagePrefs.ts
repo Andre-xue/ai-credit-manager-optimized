@@ -5,7 +5,7 @@
 //   在备份页选择，v0.1.300 按 Ethan 要求移除设置里的重复选项），Key 变更后自动
 //   保持最新；同时作为密钥备份的默认目录（备份弹窗不再让选文件夹）
 // - ai：AI 助手文件——对话导出、归档会话的 md 文件默认存这里
-// - media：AI 图像/视频生成结果保存时默认存这里
+// - media：AI 图像/视频生成完成后自动存这里（v0.1.310 起自动保存；手动保存时也默认用此目录）
 
 export type ApiKeyStoreFormat = 'md' | 'xlsx' | 'json' | 'txt' | 'html'
 export type StorageKind = 'apikey' | 'ai' | 'media'

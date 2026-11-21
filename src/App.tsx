@@ -5619,7 +5619,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <StorageDirPicker dir={storagePrefs.ai.dir} onPick={() => void pickStorageDir('ai')} />
               </SettingsRow>
             )}
-            <SettingsRow title="图像/视频存放" desc="AI 图像、AI 视频生成结果点保存时，默认存进所选文件夹（不再每次选目录）">
+            <SettingsRow title="图像/视频存放" desc="AI 图像、AI 视频生成完成后自动存进所选文件夹；手动点保存时也默认存这里">
               <Toggle checked={storagePrefs.media.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, media: { ...storagePrefs.media, enabled: v } })} />
             </SettingsRow>
             {storagePrefs.enabled && storagePrefs.media.enabled && (

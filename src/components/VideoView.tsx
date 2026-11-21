@@ -17,7 +17,7 @@ import { getGenTask, startGenTask, subscribeGenTask } from '../core/genTasks'
 import { PROVIDER_MAP } from '../data/providers'
 import { categoryFromNote } from '../core/modelCategories'
 import {
-  addHistory, clearHistory, loadHistory, newMediaId, removeHistory, saveMedia, errTextSafe,
+  addHistory, clearHistory, loadHistory, newMediaId, removeHistory, saveMedia, errTextSafe, autoSaveGeneratedMedia,
   type MediaHistoryItem,
 } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
@@ -156,6 +156,7 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
         note: imgs.length ? '' : (finalNote || r.text),
       })
       notify(imgs.length ? t('视频已生成') : t('视频任务已提交'))
+      if (imgs.length) void autoSaveGeneratedMedia(imgs, 'video').then(saved => { if (saved.length) notify(t('已自动保存 {n} 个文件到数据存储文件夹', { n: saved.length })) })
       return {
         results: imgs,
         note: imgs.length ? t('视频已生成') : (finalNote || r.text),
