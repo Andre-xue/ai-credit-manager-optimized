@@ -120,6 +120,32 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
   const [list, setList] = useState(loadSessionList)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
+  // 左滑删除（手机端）：swipe=已滑开的会话 id；drag=拖动中的实时位移
+  const [swipe, setSwipe] = useState<string | null>(null)
+  const [drag, setDrag] = useState<{ id: string; dx: number } | null>(null)
+  const touchRef = useRef<{ id: string; startX: number; base: number; moved: boolean } | null>(null)
+  const suppressClickRef = useRef<string | null>(null)
+  const swipeOffset = (id: string) => (drag?.id === id ? drag.dx : swipe === id ? -64 : 0)
+  const onSwipeStart = (e: React.TouchEvent, id: string) => {
+    if (swipe && swipe !== id) setSwipe(null)
+    touchRef.current = { id, startX: e.touches[0].clientX, base: swipe === id ? -64 : 0, moved: false }
+  }
+  const onSwipeMove = (e: React.TouchEvent, id: string) => {
+    const t = touchRef.current
+    if (!t || t.id !== id) return
+    const delta = e.touches[0].clientX - t.startX
+    if (Math.abs(delta) > 6) t.moved = true
+    setDrag({ id, dx: Math.max(-64, Math.min(0, t.base + delta)) })
+  }
+  const onSwipeEnd = (id: string) => {
+    const t = touchRef.current
+    touchRef.current = null
+    if (!t) return
+    const cur = drag?.id === id ? drag.dx : t.base
+    setDrag(null)
+    setSwipe(cur < -32 ? id : null)
+    if (t.moved) suppressClickRef.current = id
+  }
   useEffect(() => {
     const refresh = () => setList(loadSessionList())
     window.addEventListener(SESSIONS_EVENT, refresh)
@@ -127,6 +153,8 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
     return () => { window.removeEventListener(SESSIONS_EVENT, refresh); window.removeEventListener('storage', refresh) }
   }, [])
   useEffect(() => { if (open) setList(loadSessionList()) }, [open ])
+  // 只剩一个空会话时视为「暂无历史」：删掉最后一个空会话后存储会自动补一个空会话占位，列表里不再假装它还在
+  const visibleSessions = list.sessions.filter(s => !(list.sessions.length === 1 && s.count === 0))
   const fmtTime = (ts: number) => {
     const d = new Date(ts)
     const p = (n: number) => String(n).padStart(2, '0')
@@ -145,21 +173,30 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
           <button className="side-history-new" onClick={() => { onNavigate(); requestNewSession() }}>
             <Plus size={13} /> 新建会话
           </button>
-          {list.sessions.length === 0 && <div className="side-history-empty">暂无历史会话</div>}
-          {list.sessions.map(s => (
-            <div key={s.id} className={`side-history-item ${s.id === list.activeId ? 'active' : ''}`}>
-              {renaming === s.id ? (
-                <input className="input side-history-rename" autoFocus value={renameText} onChange={e => setRenameText(e.target.value)}
-                  onBlur={() => { if (renameText.trim()) updateSessionTitle(s.id, renameText.trim()); setRenaming(null) }}
-                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }} />
-              ) : (
-                <button className="side-history-main" onClick={() => { onNavigate(); requestOpenSession(s.id) }} title={s.title}>
-                  <b>{s.title}</b>
-                  <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
-                </button>
-              )}
-              <button className="icon-btn side-history-act" title="重命名" onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
-              <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+          {visibleSessions.length === 0 && <div className="side-history-empty">暂无历史会话</div>}
+          {visibleSessions.map(s => (
+            <div key={s.id} className="side-history-swipe">
+              <button className="side-history-del" tabIndex={swipe === s.id ? 0 : -1} onClick={() => { setSwipe(null); deleteStoredSession(s.id) }}>删除</button>
+              <div className={`side-history-item ${s.id === list.activeId ? 'active' : ''} ${drag?.id === s.id ? 'dragging' : ''}`}
+                style={{ transform: `translateX(${swipeOffset(s.id)}px)` }}
+                onTouchStart={e => onSwipeStart(e, s.id)} onTouchMove={e => onSwipeMove(e, s.id)} onTouchEnd={() => onSwipeEnd(s.id)} onTouchCancel={() => onSwipeEnd(s.id)}>
+                {renaming === s.id ? (
+                  <input className="input side-history-rename" autoFocus value={renameText} onChange={e => setRenameText(e.target.value)}
+                    onBlur={() => { if (renameText.trim()) updateSessionTitle(s.id, renameText.trim()); setRenaming(null) }}
+                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }} />
+                ) : (
+                  <button className="side-history-main" title={s.title} onClick={() => {
+                    if (suppressClickRef.current === s.id) { suppressClickRef.current = null; return }
+                    if (swipe === s.id) { setSwipe(null); return }
+                    onNavigate(); requestOpenSession(s.id)
+                  }}>
+                    <b>{s.title}</b>
+                    <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                  </button>
+                )}
+                <button className="icon-btn side-history-act" title="重命名" onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
+                <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+              </div>
             </div>
           ))}
         </div>

@@ -671,6 +671,13 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 历史会话左滑删除（v0.1.246）：行可横向拖动，露出右侧红色删除键；纵向滚动列表不受影响 */
+.side-history-swipe { position: relative; border-radius: 9px; overflow: hidden; }
+.side-history-del { position: absolute; top: 0; right: 0; bottom: 0; width: 64px; border: none; background: var(--red); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+.side-history-item { background: var(--panel); transition: transform .18s ease; touch-action: pan-y; will-change: transform; }
+.side-history-item.active { background: linear-gradient(rgba(109, 40, 217, .10), rgba(109, 40, 217, .10)), var(--panel); }
+.side-history-item.dragging { transition: none; }
+
 /* 左右滚动隔离（v0.1.245）：主内容区改为独立滚动容器、窗口本身不再滚动，
    侧边栏与右侧页面各自滚动、滚到头也不串扰对方 */
 .app-shell { height: 100dvh; overflow: hidden; }
