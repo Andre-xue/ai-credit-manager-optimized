@@ -96,7 +96,7 @@ jobs:
             cp -R "src-tauri/target/release/bundle/macos/AI Cube.app" "$STAGE/"
             ln -s /Applications "$STAGE/Applications"
             hdiutil create -volname "AI 魔方" -srcfolder "$STAGE" -ov -format UDZO \
-              "src-tauri/target/release/bundle/dmg/AI 魔方_${{ github.ref_name }}_${{ matrix.name }}.dmg"
+              "src-tauri/target/release/bundle/dmg/AI Cube_${{ github.ref_name }}_${{ matrix.name }}.dmg"
           fi
 
       - name: List built artifacts
