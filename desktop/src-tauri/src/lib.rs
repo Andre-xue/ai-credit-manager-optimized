@@ -1379,28 +1379,115 @@ fn parse_openai_models(json: &serde_json::Value) -> Vec<String> {
 const MODEL_FILE_EXTS: &[&str] = &["gguf", "safetensors", "ckpt", "bin", "model", "pth"];
 
 /// 扫描 ComfyUI models 目录下支持的模型文件（递归一层），返回相对 models 的路径
-fn scan_comfyui_models() -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let root = std::path::Path::new(&home).join("ComfyUI").join("models");
-    let mut out = Vec::new();
-    fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() {
+/// 递归收集模型文件（相对名去重，总量上限 5000 条防失控目录）
+fn walk_model_files(dir: &std::path::Path, rel: &str, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    if out.len() >= 5000 { return; }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let next = if rel.is_empty() { name } else { format!("{}/{}", rel, name) };
+                walk_model_files(&p, &next, out, seen);
+            } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if MODEL_FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
                     let name = e.file_name().to_string_lossy().to_string();
-                    let next = if rel.is_empty() { name } else { format!("{}/{}", rel, name) };
-                    walk(&p, &next, out);
-                } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    if MODEL_FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        out.push(if rel.is_empty() { name } else { format!("{}/{}", rel, name) });
-                    }
+                    let rel_name = if rel.is_empty() { name } else { format!("{}/{}", rel, name) };
+                    if seen.insert(rel_name.clone()) { out.push(rel_name); }
                 }
             }
         }
     }
-    walk(&root, "", &mut out);
+}
+
+fn scan_comfyui_models() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let root = std::path::Path::new(&home).join("ComfyUI").join("models");
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    walk_model_files(&root, "", &mut out, &mut seen);
+    out.sort();
+    out
+}
+
+/// 从 Comfy Desktop 的 electron-store 配置（config.json）里泛化提取实例目录：
+/// 不依赖其字段结构——收集所有「存在的绝对路径」字符串，取其 models 子目录。
+/// 配置位置随版本/改名变化，逐个候选尝试。
+fn comfy_desktop_models_roots() -> Vec<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let app_support = std::path::Path::new(&home).join("Library").join("Application Support");
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    fn collect_paths(v: &serde_json::Value, acc: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => { if s.starts_with('/') { acc.push(s.clone()); } }
+            serde_json::Value::Array(a) => { for x in a { collect_paths(x, acc); } }
+            serde_json::Value::Object(m) => { for (_, x) in m { collect_paths(x, acc); } }
+            _ => {}
+        }
+    }
+    for name in ["Comfy Desktop", "ComfyUI", "Comfy", "comfyui-electron"] {
+        let cfg = app_support.join(name).join("config.json");
+        let Ok(text) = std::fs::read_to_string(&cfg) else { continue };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let mut paths = Vec::new();
+        collect_paths(&json, &mut paths);
+        for p in paths {
+            let dir = std::path::PathBuf::from(&p);
+            if !dir.is_dir() { continue; }
+            if dir.file_name().map(|n| n == "models").unwrap_or(false) {
+                if !roots.contains(&dir) { roots.push(dir.clone()); }
+            }
+            let models = dir.join("models");
+            if models.is_dir() && !roots.contains(&models) { roots.push(models); }
+        }
+    }
+    roots
+}
+
+/// 解析某 ComfyUI 安装目录下的 extra_model_paths.yaml，返回 (分类, 目录) 列表（仅保留真实存在的目录）
+fn extra_model_path_dirs(install_root: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let yaml = install_root.join("extra_model_paths.yaml");
+    let Ok(text) = std::fs::read_to_string(&yaml) else { return Vec::new() };
+    const CATS: [&str; 18] = ["checkpoints", "loras", "vae", "controlnet", "animatediff_models", "upscale_models", "embeddings", "clip", "unet", "diffusion_models", "text_encoders", "clip_vision", "style_models", "gligen", "hypernetworks", "photomaker", "classifiers", "animatediff_motion_lora"];
+    let mut base_path: Option<std::path::PathBuf> = None;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let key = k.trim().to_string();
+        let val = v.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+        if val.is_empty() { continue; }
+        if key == "base_path" { base_path = Some(std::path::PathBuf::from(&val)); }
+        else if CATS.contains(&key.as_str()) { pairs.push((key, val)); }
+    }
+    let mut out = Vec::new();
+    for (key, val) in pairs {
+        let p = std::path::PathBuf::from(&val);
+        let resolved = if p.is_absolute() { p } else if let Some(b) = &base_path { b.join(&p) } else { install_root.join(&p) };
+        if resolved.is_dir() { out.push((key, resolved)); }
+    }
+    out
+}
+
+/// 扩展扫描：固定目录 + Comfy Desktop 实例目录 + 各安装目录 extra_model_paths.yaml 指向的分类目录
+fn scan_comfyui_models_extended() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let home_root = std::path::Path::new(&home).join("ComfyUI");
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    walk_model_files(&home_root.join("models"), "", &mut out, &mut seen);
+    for (cat, dir) in extra_model_path_dirs(&home_root) {
+        walk_model_files(&dir, &cat, &mut out, &mut seen);
+    }
+    for models_root in comfy_desktop_models_roots() {
+        walk_model_files(&models_root, "", &mut out, &mut seen);
+        if let Some(install_root) = models_root.parent() {
+            for (cat, dir) in extra_model_path_dirs(install_root) {
+                walk_model_files(&dir, &cat, &mut out, &mut seen);
+            }
+        }
+    }
     out.sort();
     out
 }
@@ -1463,13 +1550,18 @@ async fn comfyui_checkpoints(base_url: String) -> Result<Vec<String>, String> {
 /// 拉取本地服务已加载/已安装的模型列表，供添加本地模型弹窗选择。
 /// key: ollama / comfyui / lmstudio；url 为探测到的服务网关地址。
 #[tauri::command]
-async fn fetch_local_models(key: String, url: String) -> Result<Vec<String>, String> {
+async fn fetch_local_models(key: String, url: String, scan_extra: bool) -> Result<Vec<String>, String> {
     let base = url.trim().trim_end_matches('/');
     if key == "comfyui" {
-        // ComfyUI 无标准已加载模型 API，扫描 models 目录下的模型文件
-        let models = scan_comfyui_models();
+        // ComfyUI 无标准已加载模型 API，扫描 models 目录下的模型文件；
+        // scan_extra（设置开关）时同时覆盖 Comfy Desktop 实例目录与 extra_model_paths.yaml
+        let models = if scan_extra { scan_comfyui_models_extended() } else { scan_comfyui_models() };
         if models.is_empty() {
-            return Err("未在 ~/ComfyUI/models 下找到模型文件（支持 gguf/safetensors/ckpt/bin）".to_string())
+            return Err(if scan_extra {
+                "未在 ~/ComfyUI/models 与 Comfy Desktop 实例目录下找到模型文件（支持 gguf/safetensors/ckpt/bin）".to_string()
+            } else {
+                "未在 ~/ComfyUI/models 下找到模型文件（支持 gguf/safetensors/ckpt/bin）".to_string()
+            })
         }
         return Ok(models)
     }

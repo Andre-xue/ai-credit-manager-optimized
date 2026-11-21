@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider, mergeToolbarOrder } from './core/types'
-import { detectLocalServices, getSystemMemoryGb, checkLocalService, startLocalService, stopLocalService, stopServiceByPort, isServiceAppManaged, fetchLocalModels, chooseModelFile, type LocalService } from './core/localServices'
+import { detectLocalServices, getSystemMemoryGb, checkLocalService, startLocalService, stopLocalService, stopServiceByPort, isServiceAppManaged, fetchLocalModels, chooseModelFile, comfyScanDesktopEnabled, setComfyScanDesktop, type LocalService } from './core/localServices'
 import { buildReminders, filterUnsent, markSent, notifyPrefsOf } from './core/reminders'
 import { getNotificationPermission, requestNotificationPermission, showNotification, scheduleDailyCheckin, cancelDailyCheckin, type NotificationPermissionState } from './core/notifications'
 import { syncVoiceAccounts, setVoiceSessionPwd } from './core/voiceKey'
@@ -4723,6 +4723,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const [confirmClear, setConfirmClear] = useState(false)
   // 数据清理多选（v0.1.255）：勾选类别 → 确认弹窗 → 执行
   const [clearSel, setClearSel] = useState<ClearCat[]>([])
+  const [scanDesktop, setScanDesktopState] = useState(() => comfyScanDesktopEnabled())
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const toggleClearCat = (key: ClearCat) => setClearSel(sel => sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key])
   const [confirmReset, setConfirmReset] = useState(false)
@@ -5098,6 +5099,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <div className="local-mem-note">
               {t('「允许 App 使用」开启会拉起服务进程，关闭会停止该服务端口上的进程（含其他软件启动的）并释放内存；「启动/停止」单独管理服务进程（不开图形界面、不改系统自启）。LM Studio 无 CLI 后台启动方式，需在其应用内手动开启。')}
             </div>
+            {isDesktopApp() && (
+              <SettingsRow title="模型扫描覆盖 Comfy Desktop 实例" desc="添加本地模型时，磁盘扫描除 ~/ComfyUI/models 外，同时覆盖 Comfy Desktop 各实例的模型目录与 extra_model_paths.yaml 指向的目录（仅本机设置）">
+                <Toggle checked={scanDesktop} onChange={v => { setComfyScanDesktop(v); setScanDesktopState(v) }} />
+              </SettingsRow>
+            )}
           </SettingsSection>)}
 
           <SettingsSection title="通用" desc="提醒与预警行为" icon={Settings} tone="indigo">
