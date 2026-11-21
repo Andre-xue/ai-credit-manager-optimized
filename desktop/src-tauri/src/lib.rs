@@ -210,6 +210,41 @@ async fn plugin_http(url: String, method: String, headers_json: Option<String>, 
     Ok(serde_json::json!({ "status": status, "body": text, "headers": headers_map }).to_string())
 }
 
+// ---------------- 插件面板文档服务（v0.1.284） ----------------
+// 真因记录：主窗口 CSP 是 script-src 'self'，srcdoc 子文档按规范继承嵌入方 CSP，
+// 插件面板的内联脚本（桥 + 插件代码）在桌面端全被拦截——面板 HTML 能显示、点击毫无反应（v0.1.264 起）。
+// 改法：面板 HTML 先经 plugin_frame_put 暂存，再让 iframe 加载自定义协议 acmplugin:// 的独立文档，
+// 该文档带自己的 CSP 响应头（只放行内联脚本/样式，直连网络全禁，能力照旧走宿主 RPC）；
+// iframe 的 sandbox="allow-scripts"（无 allow-same-origin）不变，插件与宿主依然不同源。
+fn plugin_frames() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static FRAMES: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    FRAMES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[tauri::command]
+fn plugin_frame_put(id: String, html: String) -> Result<(), String> {
+    plugin_frames().lock().map_err(|_| "面板表锁定失败".to_string())?.insert(id, html);
+    Ok(())
+}
+
+#[tauri::command]
+fn plugin_frame_remove(id: String) -> Result<(), String> {
+    plugin_frames().lock().map_err(|_| "面板表锁定失败".to_string())?.remove(&id);
+    Ok(())
+}
+
+fn plugin_frame_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    let id = request.uri().path().rsplit('/').next().unwrap_or("").to_string();
+    let html = plugin_frames().lock().ok()
+        .and_then(|m| m.get(&id).cloned())
+        .unwrap_or_else(|| "<!doctype html><html><body></body></html>".to_string());
+    tauri::http::Response::builder()
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: https:; media-src data: blob: https:; font-src data:")
+        .body(html.into_bytes())
+        .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+}
+
 /// 桌面进程插件：用户在插件清单里声明的本地命令，由用户手动启动/停止；输出留最近 300 行。
 struct PluginProc {
     child: std::process::Child,
@@ -2305,8 +2340,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
+        .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

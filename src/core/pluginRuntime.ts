@@ -99,6 +99,20 @@ function buildSrcdoc(plugin: InstalledPlugin, nonce: string): string {
     + '</body></html>'
 }
 
+/** 桌面端插件帧的文档地址：自定义协议 acmplugin 单独成页，文档自带 CSP，不继承主窗口的 script-src 'self'
+ *  （srcdoc 子文档会继承嵌入方 CSP，桥与插件的内联脚本会被全部拦截、面板点了没反应——v0.1.284 修复）；
+ *  Windows 上该协议以 http://<scheme>.localhost 形式提供。非桌面端返回空串，沿用 srcdoc（网页/手机没有这层 CSP）。 */
+export function pluginFrameUrl(nonce: string, desktop: boolean, platform: string): string {
+  if (!desktop) return ''
+  return /win/i.test(platform) ? `http://acmplugin.localhost/frame/${nonce}` : `acmplugin://localhost/frame/${nonce}`
+}
+
+function tauriInvokeRaw(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a: Record<string, unknown>) => Promise<unknown> } }
+  if (!w.__TAURI_INTERNALS__?.invoke) return Promise.reject(new Error('仅桌面端可用'))
+  return w.__TAURI_INTERNALS__.invoke(cmd, args)
+}
+
 // ---------------- 宿主侧 RPC 执行 ----------------
 
 interface HttpOpts { method?: string; headers?: Record<string, string>; body?: string }
@@ -216,13 +230,23 @@ function createFrame(plugin: InstalledPlugin, visible: boolean): FrameHandle {
     }
   }
   window.addEventListener('message', onMessage)
-  iframe.srcdoc = buildSrcdoc(plugin, nonce)
+  const html = buildSrcdoc(plugin, nonce)
+  const frameUrl = pluginFrameUrl(nonce, isDesktopShell(), typeof navigator !== 'undefined' ? navigator.platform : '')
+  if (frameUrl) {
+    // 桌面端：文档先交给 Rust 暂存，再指向自定义协议地址单独成页；暂存失败（旧壳）时回退 srcdoc
+    void tauriInvokeRaw('plugin_frame_put', { id: nonce, html })
+      .then(() => { iframe.src = frameUrl })
+      .catch(() => { iframe.srcdoc = html })
+  } else {
+    iframe.srcdoc = html
+  }
   const handle: FrameHandle = {
     iframe, nonce, plugin, ready,
     callSeq: 0,
     pendingCalls,
     destroy: () => {
       window.removeEventListener('message', onMessage)
+      if (frameUrl) void tauriInvokeRaw('plugin_frame_remove', { id: nonce }).catch(() => undefined)
       pendingCalls.forEach(p => p.reject(new Error('插件帧已关闭')))
       pendingCalls.clear()
       iframe.remove()
