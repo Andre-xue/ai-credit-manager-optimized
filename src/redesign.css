@@ -671,6 +671,12 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 左右滚动隔离（v0.1.245）：主内容区改为独立滚动容器、窗口本身不再滚动，
+   侧边栏与右侧页面各自滚动、滚到头也不串扰对方 */
+.app-shell { height: 100dvh; overflow: hidden; }
+.main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.sidebar .nav { overscroll-behavior: contain; }
+
 /* Key 表格内的图标按钮常显且更清晰（v0.1.244：配合删除旧 hover 隐藏规则） */
 .key-table .icon-btn { color: var(--text-2); opacity: 1; }
 
