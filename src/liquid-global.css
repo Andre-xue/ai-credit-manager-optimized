@@ -29,9 +29,25 @@ html:has(.app-shell.liquid-ui) body { background: #eef1ff; }
 }
 .app-shell.claude-ui.phone-shell.liquid-ui::before { display: block !important; }
 
+/* ---------- 1b. 文字对比度（液态专用） ----------
+   玻璃是半透明的、背后还有彩色光晕，经典模式够用的浅灰次级文字
+   （--text-3 原值 #98a2b3）在液态下会被底色吃掉。液态作用域内整体
+   加深次级/三级文字（深色模式则整体提亮），经典模式不受影响。
+   Ethan 2026-11-21 明确要求：液态下文字对比度要够。 */
+.app-shell.liquid-ui {
+  --text-2: #2e3547;
+  --text-3: #4d5871;
+}
+.app-shell.liquid-ui ::placeholder { color: #4d5871; opacity: 1; }
+:root[data-theme="dark"] .app-shell.liquid-ui {
+  --text-2: #ccd4e2;
+  --text-3: #a9b3c7;
+}
+:root[data-theme="dark"] .app-shell.liquid-ui ::placeholder { color: #a9b3c7; }
+
 /* ---------- 2. 玻璃表面（浅色） ---------- */
 .app-shell.liquid-ui .sidebar {
-  background: rgba(255, 255, 255, .42) !important;
+  background: rgba(255, 255, 255, .5) !important;
   -webkit-backdrop-filter: blur(24px) saturate(170%);
   backdrop-filter: blur(24px) saturate(170%);
   border-right: 1px solid rgba(255, 255, 255, .55);
@@ -53,7 +69,7 @@ html:has(.app-shell.liquid-ui) body { background: #eef1ff; }
 .app-shell.liquid-ui .gen-panel,
 .app-shell.liquid-ui .onboarding-card,
 .app-shell.liquid-ui .sd-block {
-  background: rgba(255, 255, 255, .58) !important;
+  background: rgba(255, 255, 255, .66) !important;
   -webkit-backdrop-filter: blur(18px) saturate(155%);
   backdrop-filter: blur(18px) saturate(155%);
   border: 1px solid rgba(255, 255, 255, .65);
