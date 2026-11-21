@@ -1368,20 +1368,26 @@ function App() {
         const node = <SettingsView
           isPhone={isPhone}
           onClearData={(cats) => {
-            const hasHistory = cats.includes('history')
-            const hasArchived = cats.includes('archived')
-            if (hasHistory && hasArchived) clearSessionsData('all')
-            else if (hasHistory) clearSessionsData('history')
-            else if (hasArchived) clearSessionsData('archived')
-            setState(s => ({
-              ...s,
-              accounts: cats.includes('api') ? [] : s.accounts,
-              quotas: cats.includes('api') ? [] : s.quotas,
-              usage: cats.includes('usage') ? [] : s.usage,
-              checkins: cats.includes('calendar') ? [] : s.checkins,
-              benefitMarks: cats.includes('calendar') ? [] : s.benefitMarks,
-            }))
-            notify('所选数据已清空')
+            const doClear = () => {
+              const hasHistory = cats.includes('history')
+              const hasArchived = cats.includes('archived')
+              if (hasHistory && hasArchived) clearSessionsData('all')
+              else if (hasHistory) clearSessionsData('history')
+              else if (hasArchived) clearSessionsData('archived')
+              setState(s => ({
+                ...s,
+                accounts: cats.includes('api') ? [] : s.accounts,
+                quotas: cats.includes('api') ? [] : s.quotas,
+                usage: cats.includes('usage') ? [] : s.usage,
+                checkins: cats.includes('calendar') ? [] : s.checkins,
+                benefitMarks: cats.includes('calendar') ? [] : s.benefitMarks,
+              }))
+              notify('所选数据已清空')
+            }
+            // 勾选了 API 账户与密钥：必须先完成一次备份（备份门禁通过）才执行清空
+            if (cats.includes('api') && state.accounts.length > 0) {
+              requestBackup(state.accounts.map(a => a.id), '清空 API 账户与密钥前必须备份', '已备份，确认清空', doClear)
+            } else doClear()
           }}
           state={state}
           onChange={(patch) => setState(s => updateSettings(s, patch))}
@@ -5188,7 +5194,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   <ul style={{ margin: '0 0 6px', paddingLeft: 18, fontSize: 13, lineHeight: 1.9 }}>
                     {CLEAR_CATS.filter(c => clearSel.includes(c.key)).map(c => <li key={c.key}>{c.label}</li>)}
                   </ul>
-                  {clearSel.includes('api') && <div style={{ fontSize: 12, color: 'var(--red)' }}>含 API 密钥：如需保留，请先用下方「数据备份」导出完整备份。</div>}
+                  {clearSel.includes('api') && <div style={{ fontSize: 12, color: 'var(--red)' }}>含 API 密钥：点「确认清空」后会先要求完成一次备份，备份成功才会真正执行清空。</div>}
                 </div>
                 <div className="modal-foot">
                   <button className="btn" onClick={() => setClearConfirmOpen(false)}>取消</button>
