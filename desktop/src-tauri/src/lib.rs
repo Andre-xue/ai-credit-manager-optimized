@@ -2468,7 +2468,7 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Mac 系统毛玻璃增强（v0.1.293）：液态玻璃风格开启时给主窗口挂系统
+/// Mac 系统毛玻璃增强（v0.1.294）：液态玻璃风格开启时给主窗口挂系统
 /// NSVisualEffectView（Sidebar 材质）作底材，前端再把壳/侧边栏底色调透让它透上来；
 /// 关闭即撤除。窗口透明由 tauri.macos.conf.json 的 transparent + macOSPrivateApi 保证。
 /// 非 macOS 平台为空操作（CSS 液态玻璃在所有平台都有效，系统底材只是 Mac 的增强）。
@@ -2476,15 +2476,14 @@ fn quit_app(app: tauri::AppHandle) {
 fn set_window_glass(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        use tauri::window::{Effect, EffectState, Effects};
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
         if let Some(w) = app.get_webview_window("main") {
             if enabled {
-                let _ = w.set_effects(Some(Effects {
-                    effects: vec![Effect::Sidebar],
-                    state: Some(EffectState::Active),
-                    radius: None,
-                    color: None,
-                }));
+                let effects = EffectsBuilder::new()
+                    .effect(Effect::Sidebar)
+                    .state(EffectState::Active)
+                    .build();
+                let _ = w.set_effects(Some(effects));
             } else {
                 let _ = w.set_effects(None);
             }

@@ -1379,7 +1379,7 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
-// ---- 补齐批次 27：界面风格（液态玻璃，v0.1.293） ----
+// ---- 补齐批次 27：界面风格（液态玻璃，v0.1.294） ----
 Object.assign(D, {
   '界面风格': { 'zh-TW': '介面風格', en: 'Interface style', ja: 'インターフェーススタイル', ko: '인터페이스 스타일' },
   '经典风格': { 'zh-TW': '經典風格', en: 'Classic', ja: 'クラシック', ko: '클래식' },

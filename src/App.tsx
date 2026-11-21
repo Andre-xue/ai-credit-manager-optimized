@@ -805,7 +805,7 @@ function App() {
     }
   }, [themePref])
 
-  // ---- Mac 系统毛玻璃增强（v0.1.293）：液态玻璃风格 + macOS 桌面端时，
+  // ---- Mac 系统毛玻璃增强（v0.1.294）：液态玻璃风格 + macOS 桌面端时，
   // 让 Rust 侧给主窗口挂系统 NSVisualEffectView 底材，并给 <html> 挂 sys-glass
   // 让壳/侧边栏底色调透（见 liquid-global.css 第 6 节）；切回经典即撤除 ----
   const uiStylePref = state.settings.uiStyle

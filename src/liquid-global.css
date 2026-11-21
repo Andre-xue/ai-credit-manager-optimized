@@ -1,5 +1,5 @@
 /* ============================================================
-   AI 积分管家 · 全局液态玻璃（Liquid Glass）界面（v0.1.293）
+   AI 积分管家 · 全局液态玻璃（Liquid Glass）界面（v0.1.294）
    设置 → 外观设计 → 界面风格 = 液态玻璃时，App 根节点带 .liquid-ui，
    本文件作为最后一层样式覆盖材质：彩色光晕背景 + 面板毛玻璃透光、
    高光描边、大圆角、悬浮阴影（苹果 iOS 26 / macOS 26 设计语言的 CSS 近似）。
@@ -61,7 +61,7 @@ html:has(.app-shell.liquid-ui) body { background: #eef1ff; }
   box-shadow: 0 12px 32px rgba(80, 70, 180, .09), inset 0 1px 0 rgba(255, 255, 255, .8);
 }
 /* 看板彩色磁贴：保留各自色调、只把底色调成半透明（主磁贴的紫色渐变是品牌位，
-   绝不能被玻璃白覆盖——否则白字白底看不见，v0.1.293 首测实测） */
+   绝不能被玻璃白覆盖——否则白字白底看不见，v0.1.294 首测实测） */
 .app-shell.liquid-ui .bento-tile {
   -webkit-backdrop-filter: blur(16px) saturate(150%);
   backdrop-filter: blur(16px) saturate(150%);
