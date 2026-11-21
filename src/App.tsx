@@ -2931,6 +2931,22 @@ function UnlockModal({ method, bioAvailable, bioLabel, onClose, onPassword, onBi
   busy: boolean; pwd: string; setPwd: (v: string) => void
 }) {
   const useBio = method === 'biometric' && bioAvailable
+  // 指纹/触控模式：弹窗一打开就直接调起系统验证，不再多点一次「验证」按钮；
+  // 取消/失败后才落回按钮页可重试。密码模式仍走输入框（v0.1.253）
+  const autoBioRef = useRef(false)
+  const [bioPrompting, setBioPrompting] = useState(false)
+  const [bioFailed, setBioFailed] = useState(false)
+  const runBio = async () => {
+    setBioFailed(false); setBioPrompting(true)
+    const ok = await onBiometric()
+    setBioPrompting(false); if (!ok) setBioFailed(true)
+  }
+  useEffect(() => {
+    if (!useBio || autoBioRef.current) return
+    autoBioRef.current = true
+    void runBio()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useBio])
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 420 }}>
@@ -2944,10 +2960,10 @@ function UnlockModal({ method, bioAvailable, bioLabel, onClose, onPassword, onBi
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}><Fingerprint size={36} /></div>
               <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>使用{bioLabel}解锁</div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 22 }}>验证{bioLabel === '人脸' ? 'Face ID' : bioLabel === '指纹' ? 'Touch ID' : bioLabel}后显示全部 API Key 明文</div>
-              <button className="btn primary" style={{ width: '100%' }} onClick={onBiometric} disabled={busy}>
-                <Fingerprint size={16} /> 验证{bioLabel}
-              </button>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 22 }}>{bioPrompting ? `请在系统弹窗中完成${bioLabel}验证` : `验证${bioLabel === '人脸' ? 'Face ID' : bioLabel === '指纹' ? 'Touch ID' : bioLabel}后显示全部 API Key 明文`}</div>
+              {bioFailed && <button className="btn primary" style={{ width: '100%' }} onClick={() => void runBio()} disabled={busy || bioPrompting}>
+                <Fingerprint size={16} /> 重新验证{bioLabel}
+              </button>}
             </div>
           ) : (
             <>
