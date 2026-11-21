@@ -328,9 +328,7 @@ tbody tr:hover { background: var(--panel-2); }
 .key-action:hover { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
 .key-action.danger:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
 .key-table .icon-btn svg { display: block; }
-.key-table .icon-btn svg:last-child { display: none; }
-.key-table .icon-btn:hover svg:first-child { display: none; }
-.key-table .icon-btn:hover svg:last-child { display: block; }
+/* （已删除旧的 hover 双图交换规则：它会把只有一个图标的按钮——眼睛/钥匙/删除——在非悬停时整个隐藏，造成「隐形图标」与悬停闪烁） */
 
 .keys-header {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;

@@ -379,7 +379,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 
 
 /* 全局标题栏已移除（用户 2026-11-20 要求）：内容整体上移 */
-.page-action-row { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+.page-action-row { display: flex; justify-content: flex-end; margin-bottom: 14px; gap: 12px; }
 .phone-shell .content:not(.content-ai) { padding-top: calc(env(safe-area-inset-top, 0px) + 62px) !important; }
 
 
@@ -670,6 +670,9 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
+
+/* Key 表格内的图标按钮常显且更清晰（v0.1.244：配合删除旧 hover 隐藏规则） */
+.key-table .icon-btn { color: var(--text-2); opacity: 1; }
 
 /* 额度看板筛选条（v0.1.241） */
 .dash-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 2px 0 12px; }
