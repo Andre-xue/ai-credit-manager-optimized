@@ -671,6 +671,16 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* AI 页顶栏功能菜单（v0.1.240）：单图标入口，点开列出全部功能，选中关闭、开关项变色；仅 AI 页 */
+.ai-top-actions { position: relative; }
+.ai-tools-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 216px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; z-index: 90; display: grid; gap: 2px; animation: rise .16s ease; }
+.ai-tools-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 10px; background: none; color: var(--text-2); font-size: 13.5px; cursor: pointer; text-align: left; }
+.ai-tools-item:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.ai-tools-item.active { color: var(--primary); background: rgba(109, 40, 217, .10); font-weight: 600; }
+.ai-tools-item:disabled { opacity: .45; cursor: not-allowed; }
+.ai-tools-item span { flex: 1; }
+.ai-tools-check { color: var(--primary); flex: none; }
+
 /* 多模型对比 */
 .ai-compare-bar { padding: 8px 14px; border-bottom: 1px solid var(--border); display: grid; gap: 7px; }
 .ai-compare-hint { font-size: 12px; color: var(--text-3); }

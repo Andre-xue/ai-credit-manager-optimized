@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -830,6 +830,18 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
   // ---- 顶栏工具显隐（设置「AI 助手工具栏」逐个开关，缺省显示） ----
   const tbShow = (k: keyof AiToolbarPrefs) => settings?.aiToolbar?.[k] !== false
+  // 顶栏功能菜单（v0.1.240）：只保留一个入口图标，点开列出全部功能；选中后关闭，开关型功能变色
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const toolsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!toolsOpen) return
+    const onDown = (e: MouseEvent) => { if (toolsRef.current && !toolsRef.current.contains(e.target as Node)) setToolsOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setToolsOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [toolsOpen])
+  const anyToolOn = autoSpeak || useMyData || compareMode || searchOpen
   // ---- 提示词库（完整页面） ----
   const [promptsOpen, setPromptsOpen] = useState(false)
   const [promptTitle, setPromptTitle] = useState('')
@@ -1007,34 +1019,53 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       <div className="ai-shell">
         {/* 顶部栏：朗读开关 / 电话 / 刷新，靠右间距适中 */}
         <div className="ai-topbar">
-          <div className="ai-top-actions">
-            {tbShow('autoSpeak') && (
-              <button className={`ai-icon-btn auto-speak-btn ${autoSpeak ? 'active' : ''}`} onClick={toggleAutoSpeak}
-                data-tip={autoSpeak ? '自动朗读：开' : '自动朗读：关'}>
-                <Volume2 size={17} />
-              </button>
-            )}
-            {tbShow('voiceCall') && (
-              <button className="ai-icon-btn call" onClick={() => setCallOpen(true)} disabled={!callEnabled}
-                data-tip={callEnabled ? '语音通话' : '语音通话（当前模型不支持）'}><Phone size={17} /></button>
-            )}
-            {tbShow('chatSearch') && (
-              <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} data-tip="搜索对话"><Search size={17} /></button>
-            )}
-            {tbShow('chatExport') && (
-              <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} data-tip="导出对话"><Download size={17} /></button>
-            )}
-            {tbShow('myData') && (
-              <button className={`ai-icon-btn ${useMyData ? 'active' : ''}`} onClick={toggleUseMyData} data-tip={useMyData ? '引用我的数据：开' : '引用我的数据：关'}><Database size={17} /></button>
-            )}
-            {tbShow('compare') && (
-              <button className={`ai-icon-btn ${compareMode ? 'active' : ''}`} onClick={() => setCompareMode(v => !v)} data-tip="多模型对比"><Columns2 size={17} /></button>
-            )}
-            {tbShow('sessions') && (
-              <button className="ai-icon-btn" onClick={() => requestToggleHistory()} data-tip="会话列表（在左侧边栏展开）"><MessagesSquare size={17} /></button>
-            )}
-            {tbShow('clearChat') && (
-              <button className="ai-icon-btn" onClick={clear} data-tip="清空对话"><RotateCcw size={17} /></button>
+          <div className="ai-top-actions" ref={toolsRef}>
+            <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip="全部功能">
+              <LayoutGrid size={17} />
+            </button>
+            {toolsOpen && (
+              <div className="ai-tools-menu" role="menu">
+                {tbShow('autoSpeak') && (
+                  <button className={`ai-tools-item ${autoSpeak ? 'active' : ''}`} onClick={() => { toggleAutoSpeak(); setToolsOpen(false) }}>
+                    <Volume2 size={16} /><span>自动朗读</span>{autoSpeak && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                )}
+                {tbShow('voiceCall') && (
+                  <button className="ai-tools-item" disabled={!callEnabled} onClick={() => { setCallOpen(true); setToolsOpen(false) }}>
+                    <Phone size={16} /><span>语音通话{callEnabled ? '' : '（当前模型不支持）'}</span>
+                  </button>
+                )}
+                {tbShow('chatSearch') && (
+                  <button className={`ai-tools-item ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(''); setToolsOpen(false) }}>
+                    <Search size={16} /><span>搜索对话</span>{searchOpen && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                )}
+                {tbShow('chatExport') && (
+                  <button className="ai-tools-item" disabled={messages.length === 0} onClick={() => { setExportOpen(true); setToolsOpen(false) }}>
+                    <Download size={16} /><span>导出对话</span>
+                  </button>
+                )}
+                {tbShow('myData') && (
+                  <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
+                    <Database size={16} /><span>引用我的数据</span>{useMyData && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                )}
+                {tbShow('compare') && (
+                  <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
+                    <Columns2 size={16} /><span>多模型对比</span>{compareMode && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                )}
+                {tbShow('sessions') && (
+                  <button className="ai-tools-item" onClick={() => { requestToggleHistory(); setToolsOpen(false) }}>
+                    <MessagesSquare size={16} /><span>会话列表</span>
+                  </button>
+                )}
+                {tbShow('clearChat') && (
+                  <button className="ai-tools-item" onClick={() => { clear(); setToolsOpen(false) }}>
+                    <RotateCcw size={16} /><span>清空对话</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
