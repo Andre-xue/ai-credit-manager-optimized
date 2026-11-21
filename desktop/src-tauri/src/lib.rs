@@ -1515,7 +1515,9 @@ fn scan_comfyui_models_extended() -> Vec<String> {
 /// 仅允许本机地址（复用 validate_proxy_url 的 SSRF 校验）。
 #[tauri::command]
 async fn comfyui_api(base_url: String, endpoint: String, method: String, body_json: String, want_image: bool) -> Result<String, String> {
-    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string();
+    // Url 序列化会给裸主机名补尾斜杠（http://127.0.0.1:8188/），再拼 /endpoint 会变成双斜杠；
+    // ComfyUI 的 aiohttp 对 // 路径返回 404（实测），故序列化后必须再去掉尾斜杠
+    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string().trim_end_matches('/').to_string();
     // endpoint 只允许简单路径与查询串，禁止 //、.. 防止路径穿越
     if endpoint.contains("..") || endpoint.starts_with("//") { return Err("非法端点".into()) }
     let url = format!("{}/{}", base, endpoint.trim_start_matches('/'));
@@ -1545,7 +1547,8 @@ async fn comfyui_api(base_url: String, endpoint: String, method: String, body_js
 /// 从 ComfyUI /object_info/CheckpointLoaderSimple 获取实时可用的 checkpoint 列表（比扫目录准确）。
 #[tauri::command]
 async fn comfyui_checkpoints(base_url: String) -> Result<Vec<String>, String> {
-    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string();
+    // 同 comfyui_api：去掉 Url 序列化补的尾斜杠，避免拼出 //object_info 双斜杠被 aiohttp 404
+    let base = validate_proxy_url(base_url.trim().trim_end_matches('/'))?.to_string().trim_end_matches('/').to_string();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
