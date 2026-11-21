@@ -2,7 +2,7 @@
 // 对话历史仅存本机 localStorage，不纳入账单数据的云同步——聊天是私密且高频的内容，
 // 与额度数据分离可避免同步载荷膨胀，也符合用户对对话隐私的预期。
 
-import { LLM_PROXY_CONFIG, cloud, cloudClientHeaders } from './cloud'
+import { LLM_PROXY_CONFIG, cloud, cloudClientHeaders, getCloudDeviceId } from './cloud'
 import { isDesktopApp, isNativeApp } from './openExternal'
 import type { ChatCompletionContentPart } from '@tencent-ai/workbuddy-cloud-sdk'
 
@@ -179,6 +179,10 @@ export async function streamChat(
       bodyJson: JSON.stringify(body),
       conversationId,
       accessToken: accessToken ?? null,
+      // 网关按「设备 + Origin」绑定会话：Rust 代理必须带与 WebView 一致的客户端身份，
+      // 否则网关判「session issued for another client」返回 401 invalid_grant（与手机端同根因）
+      deviceId: getCloudDeviceId(),
+      origin: 'tauri://localhost',
     })
     onDelta(full)
     return full

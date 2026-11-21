@@ -115,7 +115,11 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
     setEngineId(prev => engines.some(e => e.id === prev) ? prev : (engines.find(e => e.flagship)?.id ?? engines[0]?.id ?? ''))
   }, [engines])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, busy])
+  // 只滚消息容器本身（scrollIntoView 会连带滚动侧边栏/整页，造成闪屏）
+  useEffect(() => {
+    const c = bottomRef.current?.parentElement
+    if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' })
+  }, [messages, busy])
 
   const send = async () => {
     const text = input.trim()

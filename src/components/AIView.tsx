@@ -318,6 +318,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           setCompareRuns(null)
         }
       } else if (wantNew) {
+        // 当前会话还是空的时连点「新建会话」不重复建空会话（防刷屏式闪烁与空会话堆积）
+        const cur = sessionStoreRef.current
+        const active = cur.sessions.find(s => s.id === cur.activeId)
+        if (active && active.messages.length === 0) return
         const s: ChatSession = { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
         setSessionStore(store => ({ sessions: [s, ...store.sessions], activeId: s.id }))
         setMessages([])
@@ -335,7 +339,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamingText])
+  // 自动滚动只滚聊天区容器本身：用 scrollIntoView 会连带滚动侧边栏与整页（祖先滚动容器），表现为侧边栏闪屏/滑动
+  useEffect(() => {
+    const c = bottomRef.current?.parentElement
+    if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' })
+  }, [messages, streamingText])
 
   // 本地型：Ollama 服务开启时自动拉取本机可用模型（文本+视觉，排除嵌入/生图/视频/语音）
   const [localModels, setLocalModels] = useState<string[]>([])
@@ -556,7 +564,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
       finally { setResolvingKey(false) }
       const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
-      const r = await callByCategory(acct, apiKey, opt.category, msgs, engineId || undefined, effectiveReasoning)
+      // 引擎必须与账户匹配：主选账户用当前所选引擎；对比/换 Key 重试等异账户调用用该平台自己的默认引擎，
+      // 否则会把主选模型的 id（如 glm-4.6）发给别的平台接口（如 DeepSeek）导致 400
+      const mainOpt = allOptions.find(o => o.key === model)
+      const sameAsMain = !optKey || mainOpt?.account?.id === acct.id
+      const engForCall = sameAsMain ? (engineId || undefined) : (enginesFor(acct.providerId)[0]?.id || undefined)
+      const r = await callByCategory(acct, apiKey, opt.category, msgs, engForCall, effectiveReasoning)
       if (!r.ok) throw Object.assign(new Error(r.error ?? '调用失败'), { cors: r.cors })
       if (r.images?.length) {
         return `${r.text}\n${r.images.map(u => u.startsWith('data:') ? '[已生成图片]' : u).join('\n')}`
@@ -726,16 +739,24 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return messages.filter(m => m.content.toLowerCase().includes(q)).map(m => m.id)
   }, [messages, searchQuery])
   const currentMatchId = searchMatches.length ? searchMatches[Math.min(searchIdx, searchMatches.length - 1)] : null
+  // 容器内定位滚动（不用 scrollIntoView，避免连带滚动侧边栏/整页造成闪屏）
+  const scrollMsgIntoCenter = (id: string) => {
+    const el = document.getElementById(`aimsg-${id}`)
+    const c = el?.closest('.ai-messages') as HTMLElement | null
+    if (!el || !c) return
+    const top = el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop - c.clientHeight / 2
+    c.scrollTo({ top, behavior: 'smooth' })
+  }
   const jumpMatch = (dir: 1 | -1) => {
     if (!searchMatches.length) return
     const next = (searchIdx + dir + searchMatches.length) % searchMatches.length
     setSearchIdx(next)
-    document.getElementById(`aimsg-${searchMatches[next]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    scrollMsgIntoCenter(searchMatches[next])
   }
   useEffect(() => {
     if (searchMatches.length) {
       setSearchIdx(0)
-      document.getElementById(`aimsg-${searchMatches[0]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      scrollMsgIntoCenter(searchMatches[0])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery])
