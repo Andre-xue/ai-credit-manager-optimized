@@ -6,7 +6,7 @@
 
 import { listModels, streamChat, type AiModel } from './ai'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, type UpstreamModel, type UpstreamSource } from './upstreamFree'
-import { detectModelCapability } from './modelCapability'
+import { detectModelCapability, capabilityChatCapable } from './modelCapability'
 
 export interface FreeAiOption {
   key: string
@@ -40,6 +40,14 @@ export function buildFreeAiOptions(cloud: AiModel[], upstream: UpstreamModel[]):
     })
   }
   return out
+}
+
+/**
+ * 只要文本对话的（文档问答等场景）：在翻译过滤（剔除嵌入/语音）之上再剔除
+ * 图像/视频生成类——与 AI 助手聊天列表同一口径（capabilityChatCapable）。
+ */
+export function filterChatCapableFreeOptions(opts: FreeAiOption[]): FreeAiOption[] {
+  return opts.filter(o => capabilityChatCapable(detectModelCapability(o.modelId).capability))
 }
 
 /** 拉取全部免费 AI 模型选项；单路失败不影响其他路（云端未登录时仅剩 Zen/Kilo） */

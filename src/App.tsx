@@ -75,6 +75,7 @@ import {
 } from './core/io'
 import { openExternal, openTool, isDesktopApp, isNativeApp, isAppInstalled, biometricAvailable, biometricAuth, biometricLabel } from './core/openExternal'
 import { cloud, type CloudUser } from './core/cloud'
+import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
@@ -563,11 +564,24 @@ function App() {
             return
           }
         }
+        // localStorage 里会话键丢失时（手机 WebView 存储被清理等），先从耐久镜像还原再取会话
+        await restoreCloudSessionMirror()
         const { data: session } = await cloud.auth.getSession()
-        if (session) await bootstrapCloud(session.user, false)
+        if (session) { void mirrorCloudSession(); await bootstrapCloud(session.user, false) }
       } catch { /* 未登录或网络异常时保持本地模式 */ }
     })()
   }, [notify, bootstrapCloud])
+
+  // 会话镜像维护：登录与每次续期后刷新镜像；被动失效（句柄过期等）不动镜像，
+  // 下次启动可先还原镜像再续期；仅用户显式退出时清镜像（见 handleCloudLogout）
+  useEffect(() => {
+    try {
+      const unsub = cloud.auth.onAuthStateChange((event, session) => {
+        if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) void mirrorCloudSession()
+      })
+      return () => { try { unsub() } catch { /* ignore */ } }
+    } catch { /* SDK 不支持订阅时忽略 */ }
+  }, [])
 
   // 数据变更时防抖推送（仅初始化完成后，且没有其他同步在进行）
   useEffect(() => {
@@ -660,6 +674,7 @@ function App() {
   }, [notify, bootstrapCloud])
 
   const handleCloudLogout = useCallback(async () => {
+    await clearCloudSessionMirror()
     await cloud.auth.signOut()
     setCloudUser(null)
     cloudUserRef.current = null

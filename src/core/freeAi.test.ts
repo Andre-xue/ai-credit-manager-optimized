@@ -35,3 +35,17 @@ describe('免费 AI 模型（翻译可用性过滤）', () => {
     expect(opts[2].group).toBe('Kilo 免费通道')
   })
 })
+
+describe('filterChatCapableFreeOptions 只要文本对话（文档问答用，v0.1.311）', () => {
+  it('剔除图像生成类，保留对话类', async () => {
+    const { filterChatCapableFreeOptions } = await import('./freeAi')
+    const opts = buildFreeAiOptions(
+      [{ id: 'glm-4.6', name: 'GLM-4.6' }, { id: 'flux-schnell', name: 'Flux' }],
+      [{ source: 'zen', id: 'deepseek-v4.1-flash-free', name: 'DeepSeek' }],
+    )
+    // buildFreeAiOptions 的翻译过滤会保留 flux（非嵌入/语音），文档问答再按文本对话口径剔除
+    expect(opts.map(o => o.modelId)).toContain('flux-schnell')
+    const chat = filterChatCapableFreeOptions(opts)
+    expect(chat.map(o => o.modelId)).toEqual(['glm-4.6', 'deepseek-v4.1-flash-free'])
+  })
+})

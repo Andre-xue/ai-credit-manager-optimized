@@ -18,10 +18,11 @@ import { filterAssistantModelNames, callChat, callLocalChat, fetchProviderModels
 import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { globalReasoningEffort, enginesFor, enginesFromRemote } from '../data/engines'
+import { loadFreeAiOptions, freeAiChat, filterChatCapableFreeOptions, type FreeAiOption } from '../core/freeAi'
 import type { Account, AppSettings } from '../core/types'
 import { t } from '../core/i18n'
 
-type ServiceType = 'cloud' | 'local'
+type ServiceType = 'cloud' | 'local' | 'free'
 
 export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode, settings, serviceController }: {
   accounts: Account[]; sessionPwd: string; onUnlock: (pwd: string) => void; notify: (m: string) => void; thinkingMode?: boolean; settings?: AppSettings; serviceController?: ServiceController
@@ -89,6 +90,26 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
   useEffect(() => {
     if (cloudAccounts.length && !cloudAccounts.some(a => a.id === cloudAccountId)) setCloudAccountId(cloudAccounts[0].id)
   }, [cloudAccounts, cloudAccountId])
+
+  // ===== 免费模型（与 AI 助手同一份免费清单，只保留文本对话类）=====
+  const [freeOptions, setFreeOptions] = useState<FreeAiOption[]>([])
+  const [freeKey, setFreeKey] = useState('')
+  const [freeLoading, setFreeLoading] = useState(false)
+  useEffect(() => {
+    let alive = true
+    setFreeLoading(true)
+    loadFreeAiOptions()
+      .then(opts => { if (alive) setFreeOptions(filterChatCapableFreeOptions(opts)) })
+      .catch(() => { if (alive) setFreeOptions([]) })
+      .finally(() => { if (alive) setFreeLoading(false) })
+    return () => { alive = false }
+  }, [])
+  const selectedFree = freeOptions.find(o => o.key === freeKey) ?? freeOptions[0] ?? null
+  const freeGroups = useMemo(() => {
+    const groups = new Map<string, FreeAiOption[]>()
+    for (const o of freeOptions) groups.set(o.group, [...(groups.get(o.group) ?? []), o])
+    return [...groups.entries()]
+  }, [freeOptions])
 
   // ===== 本机 Ollama：回答模型 + 嵌入模型统一拉取（默认地址优先，探测仅校准）=====
   const [ollamaBase, setOllamaBase] = useState('http://127.0.0.1:11434')
@@ -176,8 +197,8 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
   // 是否用向量检索：Ollama 开着且嵌入可用时用向量，否则降级关键词检索（云端模式因此可脱离 Ollama）
   const useVector = serviceOn && embedInstalled
   // 导入/提问就绪：云端模式脱离 Ollama 也可用（关键词检索），本地模式需 Ollama 嵌入就绪
-  const embeddingReady = serviceType === 'cloud' || useVector
-  const answerReady = serviceType === 'cloud' ? !!cloudAccount : (serviceOn && !!localModel)
+  const embeddingReady = serviceType !== 'local' || useVector
+  const answerReady = serviceType === 'cloud' ? !!cloudAccount : serviceType === 'free' ? !!selectedFree : (serviceOn && !!localModel)
 
   useEffect(() => { void refreshDocs() }, [])
 
@@ -217,7 +238,7 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
     if (!docs.length) { notify(t('请先导入文档')); return }
     if (!embeddingReady) { notify(t('请先开启 Ollama 服务并确认嵌入模型已安装')); return }
     if (!answerReady) {
-      notify(serviceType === 'cloud' ? t('请先在 API Key 管理添加「通用型/对话型」模型账户') : t('请先开启 Ollama 服务并等待本地模型加载')); return
+      notify(serviceType === 'cloud' ? t('请先在 API Key 管理添加「通用型/对话型」模型账户') : serviceType === 'free' ? t('暂无可用免费模型（云端免费需先登录账号，Zen/Kilo 需联网拉取）') : t('请先开启 Ollama 服务并等待本地模型加载')); return
     }
     setAnswering(true); setAnswer(''); setSources([])
     try {
@@ -227,7 +248,11 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
       if (!hits.length) { notify(t('知识库为空或未匹配到相关内容，请先导入文档')); return }
       const prompt = buildContextPrompt(q, hits)
       const msgs = [{ role: 'user', content: prompt }]
-      if (serviceType === 'cloud') {
+      if (serviceType === 'free') {
+        // 免费回答：云端免费 / Zen / Kilo 通道，无需 Key 与主密码
+        const text = await freeAiChat(selectedFree!, '你是文档问答助手。只依据用户给出的文档内容回答问题；文档中没有的内容要明确说明不知道，不要编造。', prompt)
+        setAnswer(text)
+      } else if (serviceType === 'cloud') {
         // 云端回答：用账户 Key + 选定引擎
         const acct = cloudAccount!
         const pwd = getBiometricPassword() || sessionPwd || pwdInput
@@ -255,7 +280,9 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
 
   const answerLabel = serviceType === 'cloud'
     ? `${cloudAccount?.label ?? t('云端模型')}${cloudEngineId ? ` · ${cloudEngines.find(e => e.id === cloudEngineId)?.name ?? cloudEngineId}` : ''}`
-    : (localModel || t('本地对话模型'))
+    : serviceType === 'free'
+      ? `${t('免费模型')}${selectedFree ? ` · ${selectedFree.label}` : ''}`
+      : (localModel || t('本地对话模型'))
 
   return (
     <div className="docqa">
@@ -278,12 +305,22 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
             <label>{t('服务类型')}</label>
             <select className="select" value={serviceType} onChange={e => setServiceType(e.target.value as ServiceType)} disabled={importing || answering}>
               <option value="cloud">☁️ {t('云端模型')}</option>
+              <option value="free">🎁 {t('免费模型')}</option>
               {serviceOn && <option value="local">🖥️ {t('本地模型')}</option>}
             </select>
           </div>
           <div className="tr-field">
             <label>{t('回答模型')}</label>
-            {serviceType === 'cloud' ? (
+            {serviceType === 'free' ? (
+              <select className="select" value={selectedFree?.key ?? ''} onChange={e => setFreeKey(e.target.value)} disabled={importing || answering || freeOptions.length === 0}>
+                {freeOptions.length === 0 && <option value="">{freeLoading ? t('加载免费模型中…') : t('暂无可用免费模型（云端免费需登录账号，Zen/Kilo 需联网拉取）')}</option>}
+                {freeGroups.map(([group, opts]) => (
+                  <optgroup key={group} label={t(group)}>
+                    {opts.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            ) : serviceType === 'cloud' ? (
               <select className="select" value={cloudAccount?.id ?? ''} onChange={e => setCloudAccountId(e.target.value)} disabled={importing || answering}>
                 {cloudAccounts.length === 0 && <option value="">{t('请先在 API Key 管理添加通用/对话型账户')}</option>}
                 {cloudAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
@@ -331,6 +368,9 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
         )}
         {serviceType === 'cloud' && !serviceOn && (
           <div className="docqa-hint-line">{t('云端模式无需 Ollama：文档将以关键词检索方式入库与检索。开启 Ollama 后可获得更精准的向量检索。')}</div>
+        )}
+        {serviceType === 'free' && !serviceOn && (
+          <div className="docqa-hint-line">{t('免费模式无需 Ollama 与 API Key：文档以关键词检索方式入库与检索，回答走所选免费模型（云端免费需先登录云账号；Zen / Kilo 免登录）。')}</div>
         )}
       </div>
 

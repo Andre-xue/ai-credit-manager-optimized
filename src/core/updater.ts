@@ -15,6 +15,41 @@ const REPO = 'Andre-xue/ai-credit-manager-optimized'
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`
 const RELEASES_LIST_API = `https://api.github.com/repos/${REPO}/releases?per_page=10`
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`
+/** Tauri 更新清单直链：走 Release 资产 CDN，不经过 api.github.com（未认证 60 次/小时/IP，极易触发限流） */
+const LATEST_JSON_URL = `https://github.com/${REPO}/releases/latest/download/latest.json`
+
+/** 解析 latest.json（Tauri updater 清单）；无效返回 null */
+export function parseLatestJson(text: string): { version: string; notes: string; pubDate?: string } | null {
+  try {
+    const j = JSON.parse(text) as { version?: string; notes?: string; pub_date?: string }
+    const version = (j.version ?? '').replace(/^v/i, '').trim()
+    if (!version) return null
+    return { version, notes: j.notes ?? '', pubDate: j.pub_date }
+  } catch { return null }
+}
+
+/** 某版本的 APK 直链（资产名由发布流程固定为 app-release.apk） */
+export function apkUrlForVersion(version: string): string {
+  const v = version.replace(/^v/i, '')
+  return `https://github.com/${REPO}/releases/download/v${v}/app-release.apk`
+}
+
+/** 先经 latest.json 查更新（不限流）；清单存在即说明该版本安装包已就绪 */
+async function checkViaLatestJson(): Promise<UpdateInfo | null> {
+  const res = await fetch(LATEST_JSON_URL)
+  if (!res.ok) return null
+  const parsed = parseLatestJson(await res.text())
+  if (!parsed) return null
+  return {
+    current: APP_VERSION,
+    latest: parsed.version,
+    hasUpdate: versionGreater(parsed.version, APP_VERSION),
+    releaseUrl: `https://github.com/${REPO}/releases/tag/v${parsed.version}`,
+    notes: parsed.notes,
+    publishedAt: parsed.pubDate,
+    installersReady: true,
+  }
+}
 
 export type UpdatePlatform = 'desktop' | 'android' | 'docker' | 'web' | 'miniapp'
 
@@ -94,6 +129,11 @@ export async function checkReleaseUpdate(requireDesktopInstaller = false): Promi
   const base: UpdateInfo = {
     current: APP_VERSION, latest: '', hasUpdate: false, releaseUrl: RELEASES_PAGE, notes: '',
   }
+  // 首选 latest.json 直链：不走 GitHub API、没有频率限制（v0.1.311，修安卓端检查更新常报限流）
+  try {
+    const viaJson = await checkViaLatestJson()
+    if (viaJson) return viaJson
+  } catch { /* 清单不可达 → 回退 API 流程 */ }
   try {
     const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
     if (!res.ok) return {
@@ -194,6 +234,14 @@ export function dockerUpdateCommands(): string {
 
 /** 获取最新 APK 下载地址 */
 export async function latestApkUrl(): Promise<string | null> {
+  // 同样优先 latest.json（不限流），拿到版本号后拼固定资产直链
+  try {
+    const res = await fetch(LATEST_JSON_URL)
+    if (res.ok) {
+      const parsed = parseLatestJson(await res.text())
+      if (parsed) return apkUrlForVersion(parsed.version)
+    }
+  } catch { /* 回退 API */ }
   try {
     const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
     if (!res.ok) return null

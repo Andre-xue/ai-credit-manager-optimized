@@ -1379,6 +1379,14 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 40：文档问答免费模型 + 会话镜像（v0.1.311） ----
+Object.assign(D, {
+  '加载免费模型中…': { 'zh-TW': '載入免費模型中…', en: 'Loading free models…', ja: '無料モデルを読み込み中…', ko: '무료 모델 로딩 중…' },
+  '暂无可用免费模型（云端免费需先登录账号，Zen/Kilo 需联网拉取）': { 'zh-TW': '暫無可用免費模型（雲端免費需先登入帳號，Zen/Kilo 需聯網取得）', en: 'No free models available (cloud free needs sign-in; Zen/Kilo need network)', ja: '利用可能な無料モデルがありません（クラウド無料はログイン、Zen/Kilo は通信が必要です）', ko: '사용 가능한 무료 모델이 없습니다(클라우드 무료는 로그인, Zen/Kilo는 네트워크 필요)' },
+  '暂无可用免费模型（云端免费需登录账号，Zen/Kilo 需联网拉取）': { 'zh-TW': '暫無可用免費模型（雲端免費需登入帳號，Zen/Kilo 需聯網取得）', en: 'No free models available (cloud free needs an account; Zen/Kilo need network)', ja: '利用可能な無料モデルがありません（クラウド無料はアカウント、Zen/Kilo は通信が必要です）', ko: '사용 가능한 무료 모델이 없습니다(클라우드 무료는 계정, Zen/Kilo는 네트워크 필요)' },
+  '免费模式无需 Ollama 与 API Key：文档以关键词检索方式入库与检索，回答走所选免费模型（云端免费需先登录云账号；Zen / Kilo 免登录）。': { 'zh-TW': '免費模式無需 Ollama 與 API Key：文件以關鍵詞檢索方式入庫與檢索，回答走所選免費模型（雲端免費需先登入雲帳號；Zen / Kilo 免登入）。', en: 'Free mode needs no Ollama or API key: documents use keyword search and answers come from the selected free model (cloud free needs a cloud account; Zen / Kilo need no sign-in).', ja: '無料モードは Ollama も API キーも不要です：文書はキーワード検索で登録・検索し、回答は選択した無料モデルが行います（クラウド無料はログインが必要、Zen / Kilo は不要）。', ko: '무료 모드는 Ollama와 API 키가 필요 없습니다: 문서는 키워드 검색으로 등록·검색하고 답변은 선택한 무료 모델이 제공합니다(클라우드 무료는 로그인 필요, Zen/Kilo는 불필요).' },
+})
+
 // ---- 补齐批次 39：生成后自动保存到数据存储文件夹（v0.1.310） ----
 Object.assign(D, {
   '已自动保存 {n} 个文件到数据存储文件夹': { 'zh-TW': '已自動保存 {n} 個檔案到資料儲存資料夾', en: 'Auto-saved {n} file(s) to the storage folder', ja: '{n} 件を保存フォルダへ自動保存しました', ko: '파일 {n}개를 저장 폴더에 자동 저장했습니다' },
