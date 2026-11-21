@@ -3,6 +3,7 @@
 // - 网页端：优先 File System Access「另存为」对话框（showSaveFilePicker，可任选位置），不支持时退回浏览器下载
 // - 安卓端：系统不向应用开放通用另存为对话框，写入公共「文档/AI积分管家」目录并返回路径（失败退到应用专属目录）
 import { isDesktopApp, isNativeApp } from './openExternal'
+import { storageDir, type StorageKind } from './storagePrefs'
 
 export interface SaveResult {
   ok: boolean
@@ -38,14 +39,15 @@ function anchorDownload(filename: string, blob: Blob): SaveResult {
   return { ok: true, where: '浏览器下载' }
 }
 
-export async function saveExportFile(filename: string, data: string | Blob): Promise<SaveResult> {
+export async function saveExportFile(filename: string, data: string | Blob, kind?: Extract<StorageKind, 'ai' | 'media'>): Promise<SaveResult> {
   const blob = typeof data === 'string' ? new Blob([data], { type: 'text/plain;charset=utf-8' }) : data
 
   if (isDesktopApp()) {
     const invoke = tauriInvoke()
     if (invoke) {
       try {
-        const dir = (await invoke('choose_save_dir')) as string | null
+        // 数据存储已为该类文件指定文件夹时直接写入，不再弹选择框
+        const dir = (kind ? storageDir(kind) : null) ?? (await invoke('choose_save_dir')) as string | null
         if (!dir) return { ok: false, cancelled: true }
         if (typeof data === 'string') {
           const path = (await invoke('write_file_to_dir', { dir, filename, content: data })) as string

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
+import { saveArchivedSessionToFolder } from './core/archiveExport'
+import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs, type ApiKeyStoreFormat } from './core/storagePrefs'
+import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
 import {
@@ -10,7 +13,7 @@ import {
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight, ChevronUp,
-  Archive, ArchiveRestore, Puzzle,
+  Archive, ArchiveRestore, Puzzle, Folder,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider, mergeToolbarOrder } from './core/types'
@@ -209,7 +212,7 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
                   </button>
                 )}
                 <button className="icon-btn side-history-act" title={t('重命名')} onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
-                <button className="icon-btn side-history-act" title={t('归档')} onClick={() => setSessionArchived(s.id, true)}><Archive size={12} /></button>
+                <button className="icon-btn side-history-act" title={t('归档')} onClick={() => { setSessionArchived(s.id, true); void saveArchivedSessionToFolder(s.id) }}><Archive size={12} /></button>
                 <button className="icon-btn side-history-act" title={t('删除会话')} onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
               </div>
             </div>
@@ -384,6 +387,23 @@ function App() {
   }, [])
 
   useEffect(() => { saveStateDebounced(state) }, [state])
+  // 数据存储：API Key 清单文件自动保持最新（v0.1.298）。账户增删改后防抖重写；
+  // 明文模式需要会话密码（Key 页解锁后才有），没有就等有密码时再补写
+  const apikeySyncHashRef = useRef('')
+  useEffect(() => {
+    if (!isDesktopApp()) return
+    const prefs = loadStoragePrefs()
+    if (!storageDir('apikey', prefs)) return
+    const hash = JSON.stringify(state.accounts.map(a => [a.id, a.updatedAt, a.encryptedKey, a.label]))
+    if (apikeySyncHashRef.current === hash) return
+    const timer = window.setTimeout(() => {
+      void writeApiKeyStorageFile(state, prefs, sessionPwd || undefined).then(r => {
+        if (r.ok) apikeySyncHashRef.current = hash
+      })
+    }, 1500)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.accounts, sessionPwd])
   // 页面隐藏/关闭前立即落盘，避免 250ms 防抖窗口内丢失最后一笔
   useEffect(() => {
     const flush = () => { if (document.visibilityState === 'hidden') flushState() }
@@ -2891,7 +2911,9 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
   const [busy, setBusy] = useState(false)
   const [backup, setBackup] = useState<KeyBackupFile | null>(null)
   const [location, setLocation] = useState('')
-  const [backupDir, setBackupDir] = useState<string | null>(null)
+  // 数据存储已指定 API Key 文件夹时，备份默认走该文件夹且不再让选（v0.1.298）
+  const keyStoreDir = storageDir('apikey')
+  const [backupDir, setBackupDir] = useState<string | null>(() => keyStoreDir)
   const [confirmed, setConfirmed] = useState(false)
   const [codeInput, setCodeInput] = useState('')
 
@@ -2901,7 +2923,7 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
   const needPwd = effectiveFormat === 'plain' && !unlockedPwd
 
   const resetBackup = (m: KeyBackupMode, f: KeyBackupFormat) => {
-    setMode(m); setFormat(f); setBackup(null); setLocation(''); setConfirmed(false); setCodeInput(''); setBackupDir(null)
+    setMode(m); setFormat(f); setBackup(null); setLocation(''); setConfirmed(false); setCodeInput(''); setBackupDir(keyStoreDir)
   }
 
   const doBackup = async () => {
@@ -2965,12 +2987,15 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
                   <button key={f} className={`btn sm ${fileFormat === f ? 'primary' : ''}`} onClick={() => { setFileFormat(f); setBackup(null); setConfirmed(false) }}>{f.toUpperCase()}</button>
                 ))}
               </div>
-              {isDesktopApp() && (
+              {isDesktopApp() && !keyStoreDir && (
                 <button className="btn sm" style={{ marginTop: 10 }} onClick={async () => {
                   const dir = await chooseBackupFolder()
                   if (dir) { setBackupDir(dir); setBackup(null); setConfirmed(false); notify(t('备份目录：{dir}', { dir })) }
                   else notify('已取消选择目录')
                 }}><HardDrive size={13} /> {backupDir ? t('目录：{dir}', { dir: backupDir }) : t('选择备份文件夹')}</button>
+              )}
+              {isDesktopApp() && keyStoreDir && (
+                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-3)', wordBreak: 'break-all' }}>{t('备份将保存到数据存储文件夹：{dir}', { dir: keyStoreDir })}</div>
               )}
             </>
           )}
@@ -4663,7 +4688,7 @@ function SelectionBar({ selectedCount, totalOnPage, allSelected, onToggleAll, on
 }
 
 /** 开关组件 */
-function Toggle({ checked, onChange, danger }: { checked: boolean; onChange: (v: boolean) => void; danger?: boolean }) {
+function Toggle({ checked, onChange, danger, disabled }: { checked: boolean; onChange: (v: boolean) => void; danger?: boolean; disabled?: boolean }) {
   // 果冻动画：null=静态，'on'/'off'=正在向对应方向滑动
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
   const prevChecked = useRef(checked)
@@ -4678,8 +4703,10 @@ function Toggle({ checked, onChange, danger }: { checked: boolean; onChange: (v:
   return (
     <button
       role="switch" aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={() => { if (!disabled) onChange(!checked) }}
       className={`jelly-toggle ${checked ? 'is-on' : ''} ${danger ? 'danger' : ''}`}
+      style={disabled ? { opacity: .45, pointerEvents: 'none' } : undefined}
       aria-label={checked ? t('关闭') : t('开启')}
     >
       <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
@@ -4692,10 +4719,26 @@ function SettingsSection({ title, desc, icon: Icon, tone = 'indigo', children }:
   title: string; desc?: string; icon?: typeof Settings; tone?: 'indigo' | 'green' | 'amber' | 'blue' | 'red'; children: React.ReactNode
 }) {
   // 分段可折叠：点标题栏收起/展开，设置项多时不用长滚（v0.1.259）
-  const [open, setOpen] = useState(true)
+  // 折叠状态按分段标题持久化到本机（v0.1.298，Ethan 要求）：收起过的分段
+  // 下次打开设置/重启 App 后仍保持收起，不再每次自动展开
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const m = JSON.parse(localStorage.getItem('acm.set.sections') || '{}') as Record<string, boolean>
+      return m[title] !== false
+    } catch { return true }
+  })
+  const toggleOpen = () => setOpen(o => {
+    const next = !o
+    try {
+      const m = JSON.parse(localStorage.getItem('acm.set.sections') || '{}') as Record<string, boolean>
+      m[title] = next
+      localStorage.setItem('acm.set.sections', JSON.stringify(m))
+    } catch { /* ignore */ }
+    return next
+  })
   return (
     <section className={`set-card ${open ? '' : 'collapsed'}`}>
-      <div className="set-card-head collapsible" onClick={() => setOpen(o => !o)} title={open ? t('点击收起') : t('点击展开')}>
+      <div className="set-card-head collapsible" onClick={toggleOpen} title={open ? t('点击收起') : t('点击展开')}>
         {Icon && <span className={`set-card-icon ${tone}`}><Icon size={17} /></span>}
         <div className="set-card-heading">
           <h3>{t(title)}</h3>
@@ -4797,6 +4840,29 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     if (!r.ok) { notify(r.error); return }
     setPendingImport(r)
   }
+  // ---- 数据存储（仅桌面端、本机偏好）：三类文件的自定义存放文件夹 ----
+  const [storagePrefs, setStoragePrefs] = useState<StoragePrefs>(() => loadStoragePrefs())
+  const patchStorage = (next: StoragePrefs, syncKeys = false) => {
+    setStoragePrefs(next)
+    saveStoragePrefs(next)
+    // API Key 存放刚开启/改了目录/格式/明密文时，立刻把当前清单写一份过去
+    if (syncKeys) {
+      void writeApiKeyStorageFile(state, next, sessionPwd || undefined).then(r => {
+        if (r.ok) notify(t('API Key 清单已保存到：{path}', { path: r.path ?? '' }))
+        else if (r.error === 'locked') notify(t('已保存设置；明文清单需要先解锁保险箱，解锁后会自动写入'))
+        else if (r.error) notify(t('清单写入失败：{err}', { err: r.error }))
+      })
+    }
+  }
+  const pickStorageDir = async (kind: 'apikey' | 'ai' | 'media') => {
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string) => Promise<string | null> } }
+    const invoke = w.__TAURI_INTERNALS__?.invoke
+    if (!invoke) return
+    const dir = await invoke('choose_save_dir')
+    if (!dir) return
+    const next = { ...storagePrefs, [kind]: { ...storagePrefs[kind], dir } }
+    patchStorage(next, kind === 'apikey')
+  }
   // ---- 提醒通知（系统通知） ----
   const np = notifyPrefsOf(s)
   const [notifyPerm, setNotifyPerm] = useState<NotificationPermissionState>('prompt')
@@ -4830,6 +4896,18 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
     try { await w.__TAURI_INTERNALS__?.invoke?.('autostart_set', { enabled: v }); setAutostart(v) }
     catch { notify('设置开机自启失败，请重试') }
+  }
+  // ---- 静默启动（仅桌面端）：开机自启时不弹主窗口，只常驻菜单栏 ----
+  const [silentStart, setSilentStart] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (!desktopShell) return
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    void w.__TAURI_INTERNALS__?.invoke?.('silent_start_get').then(v => setSilentStart(!!v)).catch(() => setSilentStart(null))
+  }, [desktopShell])
+  const onToggleSilentStart = async (v: boolean) => {
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+    try { await w.__TAURI_INTERNALS__?.invoke?.('silent_start_set', { enabled: v }); setSilentStart(v) }
+    catch { notify('设置静默启动失败，请重试') }
   }
   // ---- 本地统一网关（仅桌面端） ----
   const [gwStatus, setGwStatus] = useState<GatewayStatusInfo | null>(null)
@@ -5237,6 +5315,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('不可用')}</span>
                 : <Toggle checked={autostart} onChange={(v) => void onToggleAutostart(v)} />}
             </SettingsRow>
+            <SettingsRow title="静默启动" desc="开启后，开机自启时不打开主窗口，只在菜单栏/Dock 常驻，需要时点图标打开；手动启动 App 不受影响">
+              {silentStart === null
+                ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('不可用')}</span>
+                : <Toggle checked={silentStart} onChange={(v) => void onToggleSilentStart(v)} />}
+            </SettingsRow>
             <SettingsRow title="全局快捷键" desc="关闭后两个组合键都不再生效（托盘图标与迷你窗不受影响）">
               <Toggle checked={s.shortcutsEnabled ?? true} onChange={v => onChange({ shortcutsEnabled: v })} />
             </SettingsRow>
@@ -5407,6 +5490,51 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={e => void onBackupFile(e)} />
             </SettingsRow>
           </SettingsSection>
+
+          {isDesktopApp() && (
+          <SettingsSection title="数据存储" desc="为三类文件指定本机存放文件夹；设置只保存在此设备，不云同步" icon={Folder} tone="blue">
+            <SettingsRow title="数据存储" desc="总开关：开启后下面三类各有独立开关，互不影响；关闭则全部按默认方式存放">
+              <Toggle checked={storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, enabled: v }, v)} />
+            </SettingsRow>
+            <SettingsRow title="API Key 存放" desc="全部 Key 生成一份清单文件（apikeys）放进所选文件夹，增删改后自动更新；密钥备份也默认存到这里">
+              <Toggle checked={storagePrefs.apikey.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, enabled: v } }, v)} />
+            </SettingsRow>
+            {storagePrefs.enabled && storagePrefs.apikey.enabled && (<>
+              <SettingsRow title="存放文件夹" desc={storagePrefs.apikey.dir || '尚未选择'}>
+                <button className="btn sm" onClick={() => void pickStorageDir('apikey')}><Folder size={13} /> {t('选择文件夹')}</button>
+              </SettingsRow>
+              <SettingsRow title="清单内容" desc="明文：Key 以原文写入（注意文件保管）；密文：保险箱密文，无需解锁即可自动更新">
+                <div className="seg-control">
+                  <button className={`seg-btn ${storagePrefs.apikey.mode === 'cipher' ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, mode: 'cipher' } }, true)}>{t('密文')}</button>
+                  <button className={`seg-btn ${storagePrefs.apikey.mode === 'plain' ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, mode: 'plain' } }, true)}>{t('明文')}</button>
+                </div>
+              </SettingsRow>
+              <SettingsRow title="文件格式" desc="清单文件的保存格式">
+                <div className="seg-control">
+                  {(['md', 'xlsx', 'json', 'txt', 'html'] as ApiKeyStoreFormat[]).map(f => (
+                    <button key={f} className={`seg-btn ${storagePrefs.apikey.format === f ? 'active' : ''}`} onClick={() => patchStorage({ ...storagePrefs, apikey: { ...storagePrefs.apikey, format: f } }, true)}>{f === 'xlsx' ? 'Excel' : f.toUpperCase()}</button>
+                  ))}
+                </div>
+              </SettingsRow>
+            </>)}
+            <SettingsRow title="AI 助手文件存放" desc="导出的对话记录、归档会话（自动存为一问一答的 md 文件）默认放进所选文件夹">
+              <Toggle checked={storagePrefs.ai.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, ai: { ...storagePrefs.ai, enabled: v } })} />
+            </SettingsRow>
+            {storagePrefs.enabled && storagePrefs.ai.enabled && (
+              <SettingsRow title="存放文件夹" desc={storagePrefs.ai.dir || '尚未选择'}>
+                <button className="btn sm" onClick={() => void pickStorageDir('ai')}><Folder size={13} /> {t('选择文件夹')}</button>
+              </SettingsRow>
+            )}
+            <SettingsRow title="图像/视频存放" desc="AI 图像、AI 视频生成结果点保存时，默认存进所选文件夹（不再每次选目录）">
+              <Toggle checked={storagePrefs.media.enabled} disabled={!storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, media: { ...storagePrefs.media, enabled: v } })} />
+            </SettingsRow>
+            {storagePrefs.enabled && storagePrefs.media.enabled && (
+              <SettingsRow title="存放文件夹" desc={storagePrefs.media.dir || '尚未选择'}>
+                <button className="btn sm" onClick={() => void pickStorageDir('media')}><Folder size={13} /> {t('选择文件夹')}</button>
+              </SettingsRow>
+            )}
+          </SettingsSection>
+          )}
 
           {pendingImport && (
             <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingImport(null) }}>

@@ -978,7 +978,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const downloadChat = async () => {
     const p = (n: number) => String(n).padStart(2, '0')
     const d = new Date()
-    const r = await saveExportFile(`${t('AI对话记录')}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`, buildChatMarkdown())
+    const r = await saveExportFile(`${t('AI对话记录')}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`, buildChatMarkdown(), 'ai')
     if (r.cancelled) return
     setExportOpen(false)
     notify(r.ok ? t('对话记录已导出到：{where}', { where: r.where ?? '' }) : t('导出失败：{error}', { error: r.error ?? t('未知错误') }))

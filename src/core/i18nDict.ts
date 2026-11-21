@@ -1379,6 +1379,32 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 28：静默启动 + 数据存储（v0.1.298） ----
+Object.assign(D, {
+  '静默启动': { 'zh-TW': '靜默啟動', en: 'Silent launch', ja: 'サイレント起動', ko: '조용한 시작' },
+  '开启后，开机自启时不打开主窗口，只在菜单栏/Dock 常驻，需要时点图标打开；手动启动 App 不受影响': { 'zh-TW': '開啟後，開機自啟時不打開主視窗，只在選單列/Dock 常駐，需要時點圖示打開；手動啟動 App 不受影響', en: 'When on, autostart at login keeps the app in the menu bar/Dock without opening the main window; launching the app manually is unaffected.', ja: 'オンにすると、ログイン時の自動起動でメインウィンドウを開かず、メニューバー/Dockに常駐します。手動起動には影響しません。', ko: '켜면 로그인 시 자동 시작할 때 메인 창을 열지 않고 메뉴 막대/Dock에만 상주합니다. 수동 실행에는 영향이 없습니다.' },
+  '设置静默启动失败，请重试': { 'zh-TW': '設定靜默啟動失敗，請重試', en: 'Failed to set silent launch, please retry', ja: 'サイレント起動の設定に失敗しました。再試行してください', ko: '조용한 시작 설정에 실패했습니다. 다시 시도하세요' },
+  '数据存储': { 'zh-TW': '資料儲存', en: 'Data storage', ja: 'データ保存', ko: '데이터 저장' },
+  '为三类文件指定本机存放文件夹；设置只保存在此设备，不云同步': { 'zh-TW': '為三類檔案指定本機存放資料夾；設定只保存在此裝置，不雲端同步', en: 'Choose local folders for three kinds of files; these settings stay on this device and are not cloud-synced.', ja: '3種類のファイルの保存フォルダを指定します。設定はこのデバイスにのみ保存され、クラウド同期されません。', ko: '세 가지 파일의 로컬 저장 폴더를 지정합니다. 설정은 이 기기에만 저장되며 클라우드 동기화되지 않습니다.' },
+  '总开关：开启后下面三类各有独立开关，互不影响；关闭则全部按默认方式存放': { 'zh-TW': '總開關：開啟後下面三類各有獨立開關，互不影響；關閉則全部按預設方式存放', en: 'Master switch: when on, each of the three kinds below has its own independent switch; when off, everything uses the default locations.', ja: 'マスタースイッチ：オンにすると下の3種類が個別に切り替えられます。オフではすべてデフォルトの場所に保存されます。', ko: '마스터 스위치: 켜면 아래 세 가지가 각각 독립적으로 동작하고, 끄면 모두 기본 위치에 저장됩니다.' },
+  'API Key 存放': { 'zh-TW': 'API Key 存放', en: 'API key storage', ja: 'APIキーの保存', ko: 'API 키 저장' },
+  '全部 Key 生成一份清单文件（apikeys）放进所选文件夹，增删改后自动更新；密钥备份也默认存到这里': { 'zh-TW': '全部 Key 產生一份清單檔案（apikeys）放進所選資料夾，增刪改後自動更新；金鑰備份也預設存到這裡', en: 'All keys are written to one list file (apikeys) in the chosen folder and kept up to date automatically; key backups also go there by default.', ja: 'すべてのキーを1つのリストファイル（apikeys）として指定フォルダに保存し、変更のたびに自動更新します。キーのバックアップもデフォルトでここに保存されます。', ko: '모든 키를 하나의 목록 파일(apikeys)로 지정 폴더에 저장하고 변경 시 자동 업데이트합니다. 키 백업도 기본적으로 여기에 저장됩니다.' },
+  '存放文件夹': { 'zh-TW': '存放資料夾', en: 'Storage folder', ja: '保存フォルダ', ko: '저장 폴더' },
+  '尚未选择': { 'zh-TW': '尚未選擇', en: 'Not chosen yet', ja: '未選択', ko: '아직 선택 안 함' },
+  '选择文件夹': { 'zh-TW': '選擇資料夾', en: 'Choose folder', ja: 'フォルダを選択', ko: '폴더 선택' },
+  '清单内容': { 'zh-TW': '清單內容', en: 'List content', ja: 'リスト内容', ko: '목록 내용' },
+  '明文：Key 以原文写入（注意文件保管）；密文：保险箱密文，无需解锁即可自动更新': { 'zh-TW': '明文：Key 以原文寫入（注意檔案保管）；密文：保險箱密文，無需解鎖即可自動更新', en: 'Plain: keys are written in clear text (keep the file safe). Cipher: vault ciphertext, updates automatically without unlocking.', ja: '平文：キーをそのまま書き込みます（ファイルの保管に注意）。暗号文：保管庫の暗号文で、ロック解除なしに自動更新されます。', ko: '평문: 키가 원문으로 기록됩니다(파일 보관에 주의). 암호문: 금고 암호문으로, 잠금 해제 없이 자동 업데이트됩니다.' },
+  '清单文件的保存格式': { 'zh-TW': '清單檔案的保存格式', en: 'File format of the key list', ja: 'リストファイルの保存形式', ko: '목록 파일의 저장 형식' },
+  'AI 助手文件存放': { 'zh-TW': 'AI 助手檔案存放', en: 'AI assistant files', ja: 'AIアシスタントのファイル', ko: 'AI 어시스턴트 파일 저장' },
+  '导出的对话记录、归档会话（自动存为一问一答的 md 文件）默认放进所选文件夹': { 'zh-TW': '匯出的對話記錄、歸檔工作階段（自動存為一問一答的 md 檔案）預設放進所選資料夾', en: 'Exported chat transcripts and archived sessions (auto-saved as Q&A-style md files) go to the chosen folder by default.', ja: 'エクスポートした会話記録やアーカイブしたセッション（Q&A形式のmdファイルとして自動保存）は、デフォルトで指定フォルダに保存されます。', ko: '내보낸 대화 기록과 보관된 세션(Q&A 형식 md 파일로 자동 저장)이 기본적으로 지정 폴더에 저장됩니다.' },
+  '图像/视频存放': { 'zh-TW': '圖像/影片存放', en: 'Image/video storage', ja: '画像/動画の保存', ko: '이미지/동영상 저장' },
+  'AI 图像、AI 视频生成结果点保存时，默认存进所选文件夹（不再每次选目录）': { 'zh-TW': 'AI 圖像、AI 影片產生結果點保存時，預設存進所選資料夾（不再每次選目錄）', en: 'When you save AI image/video results, they go to the chosen folder by default (no folder picking each time).', ja: 'AI画像・AI動画の生成結果を保存するとき、デフォルトで指定フォルダに保存されます（毎回選ぶ必要はありません）。', ko: 'AI 이미지/동영상 결과를 저장할 때 기본적으로 지정 폴더에 저장됩니다(매번 고를 필요 없음).' },
+  'API Key 清单已保存到：{path}': { 'zh-TW': 'API Key 清單已保存到：{path}', en: 'API key list saved to: {path}', ja: 'APIキーリストを保存しました：{path}', ko: 'API 키 목록이 저장되었습니다: {path}' },
+  '已保存设置；明文清单需要先解锁保险箱，解锁后会自动写入': { 'zh-TW': '已保存設定；明文清單需要先解鎖保險箱，解鎖後會自動寫入', en: 'Settings saved; the plain-text list needs the vault unlocked and will be written automatically after unlocking.', ja: '設定を保存しました。平文リストは保管庫のロック解除が必要で、解除後に自動で書き込まれます。', ko: '설정이 저장되었습니다. 평문 목록은 금고 잠금 해제가 필요하며, 해제 후 자동으로 기록됩니다.' },
+  '清单写入失败：{err}': { 'zh-TW': '清單寫入失敗：{err}', en: 'Failed to write the key list: {err}', ja: 'リストの書き込みに失敗しました：{err}', ko: '목록 기록 실패: {err}' },
+  '备份将保存到数据存储文件夹：{dir}': { 'zh-TW': '備份將保存到資料儲存資料夾：{dir}', en: 'The backup will be saved to the data-storage folder: {dir}', ja: 'バックアップはデータ保存フォルダに保存されます：{dir}', ko: '백업이 데이터 저장 폴더에 저장됩니다: {dir}' },
+})
+
 // ---- 补齐批次 27：界面风格（液态玻璃，v0.1.294） ----
 Object.assign(D, {
   '界面风格': { 'zh-TW': '介面風格', en: 'Interface style', ja: 'インターフェーススタイル', ko: '인터페이스 스타일' },

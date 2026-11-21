@@ -1,7 +1,7 @@
 {
   "name": "ai-credit-manager",
   "private": true,
-  "version": "0.1.297",
+  "version": "0.1.298",
   "type": "module",
   "description": "AI 积分管家 - 统一管理各家 AI 平台的积分、额度、用量与 API Key（合规版：只读官方接口 + 跳转本人操作）",
   "scripts": {
@@ -35,7 +35,8 @@
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

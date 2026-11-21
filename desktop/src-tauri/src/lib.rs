@@ -2507,8 +2507,56 @@ fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     if enabled { m.enable() } else { m.disable() }.map_err(|e| e.to_string())
 }
 
+/// 静默启动标记文件（app 数据目录）：存在=开启。Rust 在 webview 加载前就要
+/// 做显隐决定，读不了前端 localStorage，故用标记文件存这个设备级偏好。
+fn silent_start_flag_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("silent_start.flag"))
+}
+
+fn silent_start_enabled(app: &tauri::AppHandle) -> bool {
+    silent_start_flag_path(app).map(|p| p.exists()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn silent_start_get(app: tauri::AppHandle) -> bool {
+    silent_start_enabled(&app)
+}
+
+#[tauri::command]
+fn silent_start_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = silent_start_flag_path(&app).ok_or("无法定位应用数据目录")?;
+    if enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, b"1").map_err(|e| e.to_string())?;
+        // 自启项若是旧版本注册的（不带 --autostart 参数），重写一次让参数生效
+        let m = app.autolaunch();
+        if m.is_enabled().unwrap_or(false) {
+            let _ = m.disable();
+            let _ = m.enable();
+        }
+    } else if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 本次进程是否由开机自启拉起（自启注册时带 --autostart 参数，手动打开没有）
+fn launched_from_autostart() -> bool {
+    std::env::args().any(|a| a == "--autostart")
+}
+
 fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
+
+    // 主窗口默认隐藏创建（tauri.conf visible:false）：普通启动立刻显示；
+    // 开机自启 + 静默启动开启时不显示，只常驻托盘/菜单栏（v0.1.298）
+    if let Some(main) = app.get_webview_window("main") {
+        if !(launched_from_autostart() && silent_start_enabled(&handle)) {
+            let _ = main.show();
+        }
+    }
 
     // 主窗口关闭行为随图标模式：菜单栏常驻（both/menubar）时隐藏到托盘；仅 Dock 时关窗即退出
     if let Some(main) = app.get_webview_window("main") {
@@ -2635,10 +2683,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

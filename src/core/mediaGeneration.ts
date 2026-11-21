@@ -2,6 +2,7 @@
 // 历史只存 URL/文本与元信息，不存二进制；图片/视频本体由调用方按 URL 预览与下载。
 
 import { isDesktopApp, isNativeApp } from './openExternal'
+import { storageDir } from './storagePrefs'
 
 export type MediaKind = 'image' | 'video'
 
@@ -111,9 +112,11 @@ export async function saveMedia(url: string, kind: MediaKind, filenameBase: stri
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }
     const invoke = w.__TAURI_INTERNALS__?.invoke
     if (!invoke) throw new Error('桌面接口不可用')
-    // 让用户在系统对话框里选保存目录
-    let dir: string | null = null
-    try { dir = await invoke('choose_save_dir') as string | null } catch { dir = null }
+    // 数据存储已指定图像/视频文件夹时直接存入；否则让用户在系统对话框里选
+    let dir: string | null = storageDir('media')
+    if (!dir) {
+      try { dir = await invoke('choose_save_dir') as string | null } catch { dir = null }
+    }
     if (!dir) throw new Error('已取消保存')
     const base64 = await toBase64(blob)
     await invoke('write_binary_to_dir', { dir, filename, content_base64: base64 })

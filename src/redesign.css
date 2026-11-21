@@ -572,6 +572,10 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 :root[data-theme="dark"] .claude-ui .agent-card,
 :root[data-theme="dark"] .claude-ui .account-card{background:var(--panel)!important;border-color:var(--border)!important}
 :root[data-theme="dark"] .claude-ui .ai-page{background:var(--bg)}
+/* AI 欢迎语：claude-ui 里写死深色字（#1f2023），深色模式下黑底黑字看不见
+   （Ethan 2026-11-21 液态深色实机截图坐实，经典深色同样中招） */
+:root[data-theme="dark"] .claude-ui .ai-welcome h2{color:var(--text)}
+:root[data-theme="dark"] .claude-ui .ai-welcome p{color:var(--text-2)}
 :root[data-theme="dark"] .claude-ui .set-modal{background:var(--panel);color:var(--text)}
 :root[data-theme="dark"] .claude-ui .set-modal-head{border-bottom-color:var(--border)}
 :root[data-theme="dark"] .claude-ui .set-tabs{background:var(--panel-2);border-right-color:var(--border)}
