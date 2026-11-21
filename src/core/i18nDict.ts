@@ -1302,3 +1302,8 @@ Object.assign(D, {
   '这是 AnimateDiff 运动模块，不能单独出图或对话；需在 ComfyUI 的 AnimateDiff 工作流中搭配 SD1.5 底模生成视频。': { 'zh-TW': '這是 AnimateDiff 運動模組，不能單獨出圖或對話；需在 ComfyUI 的 AnimateDiff 工作流中搭配 SD1.5 底模生成影片。', en: 'This is an AnimateDiff motion module. It cannot generate images or chat on its own; use it with an SD1.5 checkpoint in a ComfyUI AnimateDiff workflow to create videos.', ja: 'これはAnimateDiffのモーションモジュールです。単体では画像生成もチャットもできません。ComfyUIのAnimateDiffワークフローでSD1.5のベースモデルと組み合わせて動画を生成します。', ko: '이것은 AnimateDiff 모션 모듈입니다. 단독으로 이미지를 만들거나 대화할 수 없으며, ComfyUI의 AnimateDiff 워크플로에서 SD1.5 기본 모델과 함께 사용해 동영상을 생성합니다.' },
   '这是 AnimateDiff 运动模块，不能单独作为模型使用，请选择一个 checkpoint 底模': { 'zh-TW': '這是 AnimateDiff 運動模組，不能單獨作為模型使用，請選擇一個 checkpoint 底模', en: 'This is an AnimateDiff motion module and cannot be used as a model on its own. Please choose a checkpoint base model', ja: 'これはAnimateDiffのモーションモジュールで、単体ではモデルとして使えません。チェックポイントのベースモデルを選んでください', ko: '이것은 AnimateDiff 모션 모듈이라 단독으로 모델로 사용할 수 없습니다. checkpoint 기본 모델을 선택하세요' },
 })
+
+// ---- 补齐批次 17：一键启动按钮常显（v0.1.274） ----
+Object.assign(D, {
+  '{service} 已在运行': { 'zh-TW': '{service} 已在運行', en: '{service} is already running', ja: '{service}はすでに起動しています', ko: '{service} 이미 실행 중' },
+})

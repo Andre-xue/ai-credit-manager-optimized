@@ -3683,10 +3683,15 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify, 
               </div>}
             <div className="row" style={{ gap: 8, marginTop: 8 }}>
               <button className="btn sm" onClick={() => void detect()} disabled={detecting || starting}>{t('重新探测')}</button>
-              {services.length === 0 && serviceKey !== 'lmstudio' && isDesktopApp() && (
-                <button className="btn sm primary" onClick={() => void startService()} disabled={starting}>
-                  {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
-                </button>
+              {serviceKey !== 'lmstudio' && isDesktopApp() && (
+                services.length === 0 ? (
+                  <button className="btn sm primary" onClick={() => void startService()} disabled={starting}>
+                    {starting ? t('正在启动…') : t('一键启动 {service}', { service: expectService || provider.shortName })}
+                  </button>
+                ) : (
+                  // 已探测到 = 服务已在运行：按钮常显但禁用，明示状态，避免用户以为 Ollama 没有一键启动
+                  <button className="btn sm" disabled>{t('{service} 已在运行', { service: expectService || provider.shortName })}</button>
+                )
               )}
             </div>
           </div>
