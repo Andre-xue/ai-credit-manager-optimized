@@ -1574,6 +1574,15 @@ function StatCard({ icon, color, label, value, hint }: { icon: React.ReactNode; 
 }
 
 function ProviderLogo({ provider, size = 38 }: { provider: ProviderDefinition; size?: number }) {
+  // 全局平台图标：优先用打包的官网图标（public/logos/<id>.png），加载失败回退彩色分类图标
+  const [err, setErr] = useState(false)
+  if (!err) {
+    return (
+      <div className="ac-logo ac-logo-img" style={{ width: size, height: size }}>
+        <img src={`logos/${provider.id}.png`} alt={provider.name} onError={() => setErr(true)} />
+      </div>
+    )
+  }
   const Icon = CATEGORY_ICON[provider.category]
   return (
     <div className="ac-logo" style={{ background: provider.color, width: size, height: size }}>

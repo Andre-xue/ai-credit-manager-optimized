@@ -680,6 +680,10 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-compare-body { padding: 10px 12px; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow-y: auto; }
 .ai-compare-body.error { color: var(--red); }
 /* 提示词库面板 */
+/* 平台官网图标（v0.1.235：打包官网 favicon，白底圆角，全局 ProviderLogo 使用） */
+.ac-logo-img { background: #fff; border: 1px solid var(--border); overflow: hidden; padding: 3px; }
+.ac-logo-img img { width: 100%; height: 100%; object-fit: contain; display: block; border-radius: 5px; }
+
 /* Key 管理分组列徽标（v0.1.234） */
 .group-chip { display: inline-block; font-size: 11.5px; line-height: 1; padding: 4px 8px; border-radius: 999px; background: rgba(109, 40, 217, .10); color: var(--primary); border: 1px solid rgba(109, 40, 217, .25); white-space: nowrap; max-width: 100px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 

@@ -47,7 +47,7 @@
   <view class="card account" wx:for="{{accounts}}" wx:key="id">
     <view class="row between">
       <view class="row">
-        <view class="logo" style="background:{{item.color}}">{{item.initials}}</view>
+        <view class="logo logo-img"><image src="/assets/logos/{{item.providerId}}.png" mode="aspectFit" /></view>
         <view>
           <view style="font-size:28rpx;font-weight:600">{{item.label}}</view>
           <view class="hint" style="margin-top:6rpx">{{item.providerName}}</view>
@@ -109,7 +109,7 @@
         <view class="field-label">选择平台</view>
         <scroll-view scroll-y style="max-height:600rpx">
           <view class="provider-opt" wx:for="{{providerList}}" wx:key="id" data-id="{{item.id}}" bindtap="selectProvider">
-            <view class="logo" style="background:{{item.color}}">{{item.initials}}</view>
+            <view class="logo logo-img"><image src="/assets/logos/{{item.id}}.png" mode="aspectFit" /></view>
             <view style="margin-left:16rpx;font-size:26rpx">{{item.name}}</view>
           </view>
         </scroll-view>

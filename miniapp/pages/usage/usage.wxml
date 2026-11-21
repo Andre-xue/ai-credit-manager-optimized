@@ -31,7 +31,7 @@
     </block>
     <view wx:for="{{platforms}}" wx:key="pid" style="margin-bottom:18rpx">
       <view class="row between" style="font-size:26rpx;margin-bottom:8rpx">
-        <view class="row"><view class="p-logo" style="background:{{item.color}}">{{item.name[0]}}</view><text style="margin-left:10rpx">{{item.name}}</text></view>
+        <view class="row"><view class="p-logo p-logo-img" wx:if="{{item.pid != 'unknown'}}"><image src="/assets/logos/{{item.pid}}.png" mode="aspectFit" /></view><view class="p-logo" wx:else style="background:{{item.color}}">{{item.name[0]}}</view><text style="margin-left:10rpx">{{item.name}}</text></view>
         <text style="color:#6b7280">¥{{item.cost}} · {{item.tokens}} tokens</text>
       </view>
       <view class="progress"><view class="progress-bar" style="width:{{item.share}}%;background:#9333ea"></view></view>
