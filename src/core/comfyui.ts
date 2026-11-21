@@ -276,16 +276,22 @@ export async function comfyGenerateAnimateDiff(
     onProgress(25, 'AnimateDiff 工作流已构造，正在提交…')
     const promptId = await comfySubmit(base, workflow)
     onProgress(40, '任务已提交，ComfyUI 排队中…')
-    for (let i = 0; i < 150 && alive(); i++) {
+    // 等待上限 15 分钟：M1 级别机器跑 16 帧 × 20 步 AnimateDiff 常见 5–10 分钟，
+    // 旧上限 5 分钟会在任务其实还在正常生成时误报超时（2026-11-21 用户实测「卡在 88%」即此）。
+    // 进度改为按已等待时间如实爬升（封顶 95%），文案带已等待时长，不再假装快完成。
+    const startedAt = Date.now()
+    for (let i = 0; i < 450 && alive(); i++) {
       await new Promise(r => setTimeout(r, 2000))
       if (!alive()) return { ok: false, images: [], error: '已取消' }
       const r = await comfyPollVideo(base, promptId)
       if (r.videos.length) return { ok: true, images: r.videos, taskId: promptId }
-      onProgress(Math.min(92, 40 + (i + 1) * 0.35), r.status || '生成中…')
+      const waited = Math.floor((Date.now() - startedAt) / 1000)
+      const waitedText = `${Math.floor(waited / 60)}:${String(waited % 60).padStart(2, '0')}`
+      onProgress(Math.min(95, 40 + (i + 1) * 0.12), /生成中|排队/.test(r.status) || !r.status ? `生成中…（已等待 ${waitedText}，本地 AnimateDiff 通常需 5–10 分钟）` : r.status)
       if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.errorDetail || r.status}`, taskId: promptId }
       if (r.done && !r.videos.length) return { ok: false, images: [], error: '任务完成但未找到输出视频（检查 VHS_VideoCombine 节点）', taskId: promptId }
     }
-    return { ok: false, images: [], error: '等待超时（5 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }
+    return { ok: false, images: [], error: '等待超时（15 分钟）。任务可能仍在 ComfyUI 里运行，完成后视频会出现在 ComfyUI 的 output 目录', taskId: promptId }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return { ok: false, images: [], error: `ComfyUI 调用失败：${msg}` }
@@ -376,7 +382,7 @@ export async function comfyGenerate(
     onProgress(25, '工作流已构造，正在提交…')
     const promptId = await comfySubmit(base, workflow)
     onProgress(40, '任务已提交，ComfyUI 排队中…')
-    for (let i = 0; i < 60 && alive(); i++) {
+    for (let i = 0; i < 120 && alive(); i++) {
       await new Promise(r => setTimeout(r, 2000))
       if (!alive()) return { ok: false, images: [], error: '已取消' }
       const r = await comfyPoll(base, promptId)
@@ -385,7 +391,7 @@ export async function comfyGenerate(
       if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.errorDetail || r.status}`, taskId: promptId }
       if (r.done && !r.images.length) return { ok: false, images: [], error: '任务完成但未找到输出图片（检查工作流 SaveImage 节点）', taskId: promptId }
     }
-    return { ok: false, images: [], error: '等待超时（2 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }
+    return { ok: false, images: [], error: '等待超时（4 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return { ok: false, images: [], error: `ComfyUI 调用失败：${msg}` }
