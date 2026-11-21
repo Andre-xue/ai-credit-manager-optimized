@@ -1320,3 +1320,13 @@ Object.assign(D, {
   '未检测到 AnimateDiff 扩展节点（ADE_LoadAnimateDiffModel）。请先在 ComfyUI 中安装 ComfyUI-AnimateDiff-Evolved 扩展，并确认运动模块在 models/animatediff_models 目录，重启 ComfyUI 后再试': { 'zh-TW': '未偵測到 AnimateDiff 擴充節點（ADE_LoadAnimateDiffModel）。請先在 ComfyUI 中安裝 ComfyUI-AnimateDiff-Evolved 擴充，並確認運動模組在 models/animatediff_models 目錄，重新啟動 ComfyUI 後再試', en: 'AnimateDiff extension node (ADE_LoadAnimateDiffModel) not found. Install the ComfyUI-AnimateDiff-Evolved extension in ComfyUI, make sure the motion module is in models/animatediff_models, restart ComfyUI and try again', ja: 'AnimateDiff拡張ノード（ADE_LoadAnimateDiffModel）が見つかりません。ComfyUIにComfyUI-AnimateDiff-Evolved拡張をインストールし、モーションモジュールがmodels/animatediff_modelsにあることを確認して、ComfyUIを再起動してからお試しください', ko: 'AnimateDiff 확장 노드(ADE_LoadAnimateDiffModel)가 없습니다. ComfyUI에 ComfyUI-AnimateDiff-Evolved 확장을 설치하고 모션 모듈이 models/animatediff_models에 있는지 확인한 뒤 ComfyUI를 재시작하세요' },
   '未检测到 VideoHelperSuite 扩展节点（VHS_VideoCombine）。请先在 ComfyUI 中安装 ComfyUI-VideoHelperSuite 扩展，重启 ComfyUI 后再试': { 'zh-TW': '未偵測到 VideoHelperSuite 擴充節點（VHS_VideoCombine）。請先在 ComfyUI 中安裝 ComfyUI-VideoHelperSuite 擴充，重新啟動 ComfyUI 後再試', en: 'VideoHelperSuite extension node (VHS_VideoCombine) not found. Install the ComfyUI-VideoHelperSuite extension in ComfyUI, restart ComfyUI and try again', ja: 'VideoHelperSuite拡張ノード（VHS_VideoCombine）が見つかりません。ComfyUIにComfyUI-VideoHelperSuite拡張をインストールし、ComfyUIを再起動してからお試しください', ko: 'VideoHelperSuite 확장 노드(VHS_VideoCombine)가 없습니다. ComfyUI에 ComfyUI-VideoHelperSuite 확장을 설치하고 ComfyUI를 재시작하세요' },
 })
+
+// ---- 补齐批次 19：本地模型资料卡（v0.1.276） ----
+Object.assign(D, {
+  '正在联网查询模型资料…': { 'zh-TW': '正在連網查詢模型資料…', en: 'Looking up model info online…', ja: 'モデル情報をオンラインで検索中…', ko: '모델 정보를 온라인으로 조회 중…' },
+  '风格：{style}': { 'zh-TW': '風格：{style}', en: 'Style: {style}', ja: 'スタイル：{style}', ko: '스타일: {style}' },
+  '资料来源：本地知识库': { 'zh-TW': '資料來源：本地知識庫', en: 'Source: built-in knowledge base', ja: '出典：内蔵ナレッジベース', ko: '출처: 내장 지식 베이스' },
+  '资料来源：Civitai 实时数据': { 'zh-TW': '資料來源：Civitai 即時數據', en: 'Source: Civitai (live)', ja: '出典：Civitai（リアルタイム）', ko: '출처: Civitai 실시간 데이터' },
+  '资料来源：按名称与架构推断，仅供参考': { 'zh-TW': '資料來源：依名稱與架構推斷，僅供參考', en: 'Source: inferred from the name and architecture, for reference only', ja: '出典：名前とアーキテクチャからの推定（参考）', ko: '출처: 이름과 아키텍처 기반 추론, 참고용' },
+  '查看页面': { 'zh-TW': '查看頁面', en: 'View page', ja: 'ページを見る', ko: '페이지 보기' },
+})

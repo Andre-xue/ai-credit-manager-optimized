@@ -18,6 +18,7 @@ import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMed
 import { HoldToConfirm } from './HoldToConfirm'
 import { GenProgressBar, useGenProgress } from './GenProgressBar'
 import { SafeThumb } from './SafeThumb'
+import { LocalModelInfoCard } from './LocalModelInfoCard'
 import { t, locale } from '../core/i18n'
 
 const SAMPLERS = ['Euler a', 'Euler', 'DPM++ 2M Karras', 'DPM++ 2M', 'DPM++ SDE Karras', 'DDIM', 'UniPC', 'LMS', 'Heun']
@@ -237,6 +238,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
             ) : (
               <input className="input" placeholder={t('点顶部「连接」拉取本地模型，或手填模型名')} value={model} onChange={e => setModel(e.target.value)} />
             )}
+            <LocalModelInfoCard filename={model} />
           </div>
 
           <div className="sd-block">

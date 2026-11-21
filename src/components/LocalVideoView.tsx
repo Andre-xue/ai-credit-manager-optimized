@@ -15,6 +15,7 @@ import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModules, comfyGen
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
+import { LocalModelInfoCard } from './LocalModelInfoCard'
 import type { ServiceController } from '../core/useServiceController'
 import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
 import { GenProgressBar, useGenProgress } from './GenProgressBar'
@@ -268,6 +269,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
             ) : (
               <input className="input" placeholder={t('点顶部「连接」拉取本地视频模型')} value={model} onChange={e => setModel(e.target.value)} />
             )}
+            <LocalModelInfoCard filename={model} />
           </div>
 
           {isComfyUIBase(base) && (
@@ -279,6 +281,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
                 <input className="input" disabled placeholder={t('未检测到运动模块（先点顶部「连接」）')} value="" readOnly />
               )}
               <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('AnimateDiff 运动模块与底模搭配生成视频，需 ComfyUI 已安装 AnimateDiff-Evolved 与 VideoHelperSuite 扩展；固定 16 帧 · 8fps，约 2 秒')}</div>
+              <LocalModelInfoCard filename={motionModel} />
             </div>
           )}
 

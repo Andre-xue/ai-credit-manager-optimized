@@ -961,3 +961,11 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
   .plugin-form-grid { grid-template-columns: 1fr; }
   .plugin-url-row { flex-wrap: wrap; }
 }
+
+/* 本地模型资料卡补充行（风格/简介/来源） */
+.gen-mi-style { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-2); margin: -3px 0 7px; }
+.gen-mi-style svg { color: var(--primary); flex-shrink: 0; }
+.gen-mi-intro { font-size: 10.5px; color: var(--text-2); line-height: 1.6; margin: 0 0 8px; }
+.gen-mi-source { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 10px; color: var(--text-3); }
+.gen-mi-best + .gen-mi-source { border-top: 1px dashed var(--border); }
+.gen-mi-link { display: inline-flex; align-items: center; gap: 3px; border: none; background: none; color: var(--primary); font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap; }
