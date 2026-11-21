@@ -125,6 +125,27 @@ export function comboOptionsFromSpec(spec: unknown): string[] {
   return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === 'string') : []
 }
 
+/** 剥掉模型名的分类目录前缀：扫盘清单是相对 models 根目录的路径（checkpoints/xxx.safetensors），
+ *  ComfyUI 加载器的合法值是相对分类目录的路径（xxx.safetensors，即 object_info 的格式） */
+export function stripComfyCategoryPrefix(name: string, category: 'checkpoints' | 'animatediff_models'): string {
+  const prefix = category + '/'
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name
+}
+
+/** 把选中的模型名对齐到当前服务器 object_info 的合法值：精确命中优先；否则试剥/补分类前缀；
+ *  都对不上或清单为空时原样返回（错误由服务器返回）。
+ *  背景（2026-11-21 实测）：扫盘命名的 checkpoints/Realistic_Vision.safetensors 被服务器以
+ *  value_not_in_list 拒收（400 prompt_outputs_failed_validation）——同一文件在不同来源下有两种命名，
+ *  提交前必须按当前服务器的清单对齐（用户有两套 ComfyUI 实例，命名以正在服务的那套为准）。 */
+export function resolveComfyModelName(selected: string, serverList: string[], category: 'checkpoints' | 'animatediff_models'): string {
+  if (!selected || !serverList.length || serverList.includes(selected)) return selected
+  const stripped = stripComfyCategoryPrefix(selected, category)
+  if (stripped !== selected && serverList.includes(stripped)) return stripped
+  const prefixed = category + '/' + selected
+  if (serverList.includes(prefixed)) return prefixed
+  return selected
+}
+
 /** 从 ComfyUI 实时 API 拉取可用 checkpoint 列表；失败返回空数组由调用方回退到扫目录 */
 export async function fetchComfyCheckpoints(base: string): Promise<string[]> {
   try {
@@ -191,7 +212,8 @@ export function buildAnimateDiffWorkflow(checkpoint: string, motionModel: string
     '2': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['1', 1] } },
     '3': { class_type: 'CLIPTextEncode', inputs: { text: opts.negativePrompt ?? '', clip: ['1', 1] } },
     '8': { class_type: 'ADE_LoadAnimateDiffModel', inputs: { model_name: motionModel } },
-    '9': { class_type: 'ADE_ApplyAnimateDiffModel', inputs: { model: ['1', 0], motion_model: ['8', 0], start_percent: 0, end_percent: 1 } },
+    // 注意：ADE 现行 V3 schema 的 ApplyAnimateDiffModel 没有 model 输入（旧版才有），多传会被现行版拒/误处理，故只给 motion_model + 起止百分比
+    '9': { class_type: 'ADE_ApplyAnimateDiffModel', inputs: { motion_model: ['8', 0], start_percent: 0, end_percent: 1 } },
     '10': { class_type: 'ADE_UseEvolvedSampling', inputs: { model: ['1', 0], beta_schedule: 'sqrt_linear (AnimateDiff)', m_models: ['9', 0] } },
     '4': { class_type: 'EmptyLatentImage', inputs: { width: opts.width, height: opts.height, batch_size: frames } },
     '5': {
@@ -214,11 +236,11 @@ export function buildAnimateDiffWorkflow(checkpoint: string, motionModel: string
 }
 
 /** 查询 AnimateDiff 任务状态；完成时返回视频 data URL（VHS 输出在 history 的 gifs 字段） */
-export async function comfyPollVideo(base: string, promptId: string): Promise<{ done: boolean; videos: string[]; status: string }> {
+export async function comfyPollVideo(base: string, promptId: string): Promise<{ done: boolean; videos: string[]; status: string; errorDetail: string }> {
   const text = await call(base, `history/${encodeURIComponent(promptId)}`, 'GET', undefined, false)
   const json = JSON.parse(text)
   const entry = json[promptId]
-  if (!entry) return { done: false, videos: [], status: '排队中' }
+  if (!entry) return { done: false, videos: [], status: '排队中', errorDetail: '' }
   const status = String(entry.status?.status_str ?? entry.status ?? '')
   const outputs = entry.outputs ?? {}
   const videos: string[] = []
@@ -231,7 +253,7 @@ export async function comfyPollVideo(base: string, promptId: string): Promise<{ 
     }
   }
   const done = /success|complete/i.test(status) || videos.length > 0
-  return { done, videos, status: status || (videos.length ? '完成' : '生成中') }
+  return { done, videos, status: status || (videos.length ? '完成' : '生成中'), errorDetail: historyErrorDetail(entry) }
 }
 
 /** 一键 AnimateDiff 生视频：扩展预检 → 提交 → 轮询（最长约 5 分钟）→ 取 mp4 */
@@ -247,7 +269,9 @@ export async function comfyGenerateAnimateDiff(
     if (!(await fetchComfyNodeInfo(base, 'VHS_VideoCombine'))) {
       return { ok: false, images: [], error: '未检测到 VideoHelperSuite 扩展节点（VHS_VideoCombine）。请先在 ComfyUI 中安装 ComfyUI-VideoHelperSuite 扩展，重启 ComfyUI 后再试' }
     }
-    const workflow = buildAnimateDiffWorkflow(checkpoint, motionModel, prompt, opts)
+    const resolvedCkpt = resolveComfyModelName(checkpoint, await fetchComfyCheckpoints(base), 'checkpoints')
+    const resolvedMotion = resolveComfyModelName(motionModel, await fetchComfyMotionModules(base), 'animatediff_models')
+    const workflow = buildAnimateDiffWorkflow(resolvedCkpt, resolvedMotion, prompt, opts)
     onProgress(25, 'AnimateDiff 工作流已构造，正在提交…')
     const promptId = await comfySubmit(base, workflow)
     onProgress(40, '任务已提交，ComfyUI 排队中…')
@@ -257,7 +281,7 @@ export async function comfyGenerateAnimateDiff(
       const r = await comfyPollVideo(base, promptId)
       if (r.videos.length) return { ok: true, images: r.videos, taskId: promptId }
       onProgress(Math.min(92, 40 + (i + 1) * 0.35), r.status || '生成中…')
-      if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.status}`, taskId: promptId }
+      if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.errorDetail || r.status}`, taskId: promptId }
       if (r.done && !r.videos.length) return { ok: false, images: [], error: '任务完成但未找到输出视频（检查 VHS_VideoCombine 节点）', taskId: promptId }
     }
     return { ok: false, images: [], error: '等待超时（5 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }
@@ -282,11 +306,27 @@ export async function comfySubmit(base: string, workflow: Record<string, unknown
 }
 
 /** 查询任务状态；完成时返回图片列表（data URL） */
-export async function comfyPoll(base: string, promptId: string): Promise<{ done: boolean; images: string[]; status: string }> {
+/** 从 history 条目的 status.messages 里提取 execution_error 的可读详情（节点类型 + 异常信息）。
+ *  没有它，任务失败只能看到一句 status_str 的 "error"，无从排障（2026-11-21 实测 AnimateDiff 失败即如此）。 */
+export function historyErrorDetail(entry: unknown): string {
+  const messages = (entry as { status?: { messages?: unknown } } | null)?.status?.messages
+  if (!Array.isArray(messages)) return ''
+  for (const msg of messages) {
+    if (Array.isArray(msg) && msg[0] === 'execution_error') {
+      const d = (msg[1] ?? {}) as { node_type?: unknown; exception_type?: unknown; exception_message?: unknown }
+      const node = d.node_type ? `${String(d.node_type)} 节点` : '未知节点'
+      const ex = [d.exception_type, d.exception_message].filter(x => typeof x === 'string' && x).join(': ')
+      return ex ? `${node}执行出错：${ex.slice(0, 300)}` : `${node}执行出错`
+    }
+  }
+  return ''
+}
+
+export async function comfyPoll(base: string, promptId: string): Promise<{ done: boolean; images: string[]; status: string; errorDetail: string }> {
   const text = await call(base, `history/${encodeURIComponent(promptId)}`, 'GET', undefined, false)
   const json = JSON.parse(text)
   const entry = json[promptId]
-  if (!entry) return { done: false, images: [], status: '排队中' }
+  if (!entry) return { done: false, images: [], status: '排队中', errorDetail: '' }
   const status = String(entry.status?.status_str ?? entry.status ?? '')
   const outputs = entry.outputs ?? {}
   const images: string[] = []
@@ -298,7 +338,7 @@ export async function comfyPoll(base: string, promptId: string): Promise<{ done:
     }
   }
   const done = /success|complete/i.test(status) || images.length > 0
-  return { done, images, status: status || (images.length ? '完成' : '生成中') }
+  return { done, images, status: status || (images.length ? '完成' : '生成中'), errorDetail: historyErrorDetail(entry) }
 }
 
 /** 上传图片到 ComfyUI（img2img 用），返回服务端文件名 */
@@ -323,12 +363,14 @@ export async function comfyGenerate(
   alive: () => boolean,
 ): Promise<ComfyResult> {
   try {
+    // 提交前按当前服务器的 object_info 清单对齐模型名（扫盘/历史命名的 checkpoints/ 前缀会被服务器拒）
+    const resolvedModel = resolveComfyModelName(model, await fetchComfyCheckpoints(base), 'checkpoints')
     let workflow: Record<string, unknown>
     if (opts?.sourceImage) {
       const name = await comfyUpload(base, opts.sourceImage, `acm_src_${Date.now()}.png`)
-      workflow = buildImg2ImgWorkflow(model, prompt, name, opts)
+      workflow = buildImg2ImgWorkflow(resolvedModel, prompt, name, opts)
     } else {
-      workflow = buildTxt2ImgWorkflow(model, prompt, opts)
+      workflow = buildTxt2ImgWorkflow(resolvedModel, prompt, opts)
     }
     onProgress(25, '工作流已构造，正在提交…')
     const promptId = await comfySubmit(base, workflow)
@@ -339,7 +381,7 @@ export async function comfyGenerate(
       const r = await comfyPoll(base, promptId)
       if (r.images.length) return { ok: true, images: r.images, taskId: promptId }
       onProgress(Math.min(90, 40 + (i + 1) * 0.8), r.status || '生成中…')
-      if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.status}`, taskId: promptId }
+      if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.errorDetail || r.status}`, taskId: promptId }
       if (r.done && !r.images.length) return { ok: false, images: [], error: '任务完成但未找到输出图片（检查工作流 SaveImage 节点）', taskId: promptId }
     }
     return { ok: false, images: [], error: '等待超时（2 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }

@@ -11,7 +11,7 @@ import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../c
 import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
-import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModuleStatus, comfyGenerateAnimateDiff, type MotionModuleState } from '../core/comfyui'
+import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModuleStatus, comfyGenerateAnimateDiff, stripComfyCategoryPrefix, type MotionModuleState } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
@@ -129,7 +129,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
         if (ids.length === 0) {
           const r = await fetchLocalModels('comfyui', base)
           if (!r.ok) throw new Error(r.error ?? t('拉取失败'))
-          ids = r.models
+          ids = [...new Set(r.models.map(m => stripComfyCategoryPrefix(m, 'checkpoints')))]
         }
         // 运动模块走 ADE 节点的 object_info（即 animatediff_models 目录清单），并区分未装扩展/未扫到文件
         const mst = await fetchComfyMotionModuleStatus(base)

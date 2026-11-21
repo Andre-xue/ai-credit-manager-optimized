@@ -8,7 +8,7 @@ import {
   Dices, Upload, X, Maximize2, ChevronDown, SlidersHorizontal, History, Settings2, Radar,
 } from 'lucide-react'
 import { callLocalImage, fetchLocalMediaModels } from '../core/providerCall'
-import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints } from '../core/comfyui'
+import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints, stripComfyCategoryPrefix } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
@@ -119,7 +119,8 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
         if (ids.length === 0) {
           const r = await fetchLocalModels('comfyui', base)
           if (!r.ok) throw new Error(r.error ?? t('拉取失败'))
-          ids = r.models
+          // 扫盘命名带 checkpoints/ 前缀，与服务器合法值不一致（提交会被拒）：统一剥掉并去重
+          ids = [...new Set(r.models.map(m => stripComfyCategoryPrefix(m, 'checkpoints')))]
         }
       } else {
         ids = await fetchLocalMediaModels(base)

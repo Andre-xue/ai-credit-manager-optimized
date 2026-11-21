@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow, buildAnimateDiffWorkflow, motionModelsFromNodeInfo } from './comfyui'
+import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow, buildAnimateDiffWorkflow, motionModelsFromNodeInfo, stripComfyCategoryPrefix, resolveComfyModelName } from './comfyui'
 
 describe('ComfyUI 原生协议适配', () => {
   it('按地址识别 ComfyUI（8188 端口或域名含 comfyui）', () => {
@@ -54,7 +54,8 @@ describe('AnimateDiff 工作流构造', () => {
     expect(wf['8'].class_type).toBe('ADE_LoadAnimateDiffModel')
     expect(wf['8'].inputs.model_name).toBe('mm_sd_v15_v2.ckpt')
     expect(wf['9'].class_type).toBe('ADE_ApplyAnimateDiffModel')
-    expect(wf['9'].inputs.model).toEqual(['1', 0])
+    // ADE 现行 V3 schema 无 model 输入（旧版才有），不得再传
+    expect(wf['9'].inputs.model).toBeUndefined()
     expect(wf['9'].inputs.motion_model).toEqual(['8', 0])
     expect(wf['10'].class_type).toBe('ADE_UseEvolvedSampling')
     expect(wf['10'].inputs.m_models).toEqual(['9', 0])
@@ -90,5 +91,48 @@ describe('运动模块清单解析（ADE object_info）', () => {
     expect(motionModelsFromNodeInfo(null)).toEqual([])
     expect(motionModelsFromNodeInfo({})).toEqual([])
     expect(motionModelsFromNodeInfo({ input: { required: { model_name: ['notarray'] } } } as Record<string, unknown>)).toEqual([])
+  })
+})
+
+describe('模型名与服务器清单对齐（v0.1.288）', () => {
+  const server = ['Realistic_Vision_V6.0_NV_B1.safetensors', 'AnythingV5V3_v5Pruned.safetensors']
+  it('扫盘命名的 checkpoints/ 前缀被剥掉对齐服务器裸名', () => {
+    expect(resolveComfyModelName('checkpoints/Realistic_Vision_V6.0_NV_B1.safetensors', server, 'checkpoints'))
+      .toBe('Realistic_Vision_V6.0_NV_B1.safetensors')
+  })
+  it('服务器清单带前缀时反向补上', () => {
+    expect(resolveComfyModelName('mm_sd_v15_v2.ckpt', ['animatediff_models/mm_sd_v15_v2.ckpt'], 'animatediff_models'))
+      .toBe('animatediff_models/mm_sd_v15_v2.ckpt')
+  })
+  it('精确命中、清单为空或对不上时原样返回', () => {
+    expect(resolveComfyModelName('AnythingV5V3_v5Pruned.safetensors', server, 'checkpoints')).toBe('AnythingV5V3_v5Pruned.safetensors')
+    expect(resolveComfyModelName('checkpoints/x.safetensors', [], 'checkpoints')).toBe('checkpoints/x.safetensors')
+    expect(resolveComfyModelName('checkpoints/not-there.safetensors', server, 'checkpoints')).toBe('checkpoints/not-there.safetensors')
+  })
+  it('stripComfyCategoryPrefix 只剥目标分类前缀，子目录保留', () => {
+    expect(stripComfyCategoryPrefix('checkpoints/SD15/a.safetensors', 'checkpoints')).toBe('SD15/a.safetensors')
+    expect(stripComfyCategoryPrefix('loras/a.safetensors', 'checkpoints')).toBe('loras/a.safetensors')
+  })
+})
+
+describe('historyErrorDetail（v0.1.288）', () => {
+  it('从 status.messages 提取 execution_error 的节点与异常', async () => {
+    const { historyErrorDetail } = await import('./comfyui')
+    const entry = {
+      status: {
+        status_str: 'error',
+        messages: [
+          ['execution_start', { prompt_id: 'x' }],
+          ['execution_error', { node_id: '7', node_type: 'VHS_VideoCombine', exception_type: 'RuntimeError', exception_message: 'ffmpeg is not installed' }],
+        ],
+      },
+    }
+    expect(historyErrorDetail(entry)).toBe('VHS_VideoCombine 节点执行出错：RuntimeError: ffmpeg is not installed')
+  })
+  it('无 execution_error 时返回空串', async () => {
+    const { historyErrorDetail } = await import('./comfyui')
+    expect(historyErrorDetail({ status: { status_str: 'success', messages: [] } })).toBe('')
+    expect(historyErrorDetail(null)).toBe('')
+    expect(historyErrorDetail({})).toBe('')
   })
 })
