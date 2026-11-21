@@ -78,9 +78,13 @@ describe('AnimateDiff 工作流构造', () => {
 })
 
 describe('运动模块清单解析（ADE object_info）', () => {
-  it('从 V3 节点信息解析 model_name 选项', () => {
+  it('从旧格式节点信息解析 model_name 选项', () => {
     const info = { input: { required: { model_name: [['mm_sd_v15_v2.ckpt', 'mm_sd_v15_v2.5.ckpt'], {}] } } } as Record<string, unknown>
     expect(motionModelsFromNodeInfo(info)).toEqual(['mm_sd_v15_v2.ckpt', 'mm_sd_v15_v2.5.ckpt'])
+  })
+  it('从 V3 COMBO 格式解析 model_name 选项（实测 ADE 1.6 返回形状）', () => {
+    const info = { input: { required: { model_name: ['COMBO', { multiselect: false, options: ['mm_sd_v15_v2.ckpt'] }] } } } as Record<string, unknown>
+    expect(motionModelsFromNodeInfo(info)).toEqual(['mm_sd_v15_v2.ckpt'])
   })
   it('节点不存在或结构异常时返回空', () => {
     expect(motionModelsFromNodeInfo(null)).toEqual([])

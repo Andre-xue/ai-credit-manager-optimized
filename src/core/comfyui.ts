@@ -115,13 +115,22 @@ const isDesktop = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' i
 const call = (base: string, endpoint: string, method: string, body: unknown, wantImage: boolean) =>
   isDesktop() ? invokeComfy(base, endpoint, method, body, wantImage) : fetchComfy(base, endpoint, method, body, wantImage)
 
+/** 解析 object_info 里组合框（combo）输入的选项清单，兼容两种序列化格式：
+ *  旧格式（经典 INPUT_TYPES 节点）：[选项数组, 附加参数]
+ *  V3 格式（io schema 节点，如 ADE Gen2 加载器）：["COMBO", { options: 选项数组 }]
+ *  （2026-11-21 实测 ComfyUI 0.46 + ADE 1.6：model_name 即 V3 格式，只读 [0] 会拿到字符串 "COMBO" 而误判清单为空） */
+export function comboOptionsFromSpec(spec: unknown): string[] {
+  if (!Array.isArray(spec)) return []
+  const arr = Array.isArray(spec[0]) ? spec[0] : (spec[1] as { options?: unknown } | undefined)?.options
+  return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === 'string') : []
+}
+
 /** 从 ComfyUI 实时 API 拉取可用 checkpoint 列表；失败返回空数组由调用方回退到扫目录 */
 export async function fetchComfyCheckpoints(base: string): Promise<string[]> {
   try {
     const text = await call(base, 'object_info/CheckpointLoaderSimple', 'GET', undefined, false)
     const json = JSON.parse(text)
-    const arr = json?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0]
-    return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === 'string') : []
+    return comboOptionsFromSpec(json?.CheckpointLoaderSimple?.input?.required?.ckpt_name)
   } catch { return [] }
 }
 
@@ -137,8 +146,7 @@ async function fetchComfyNodeInfo(base: string, className: string): Promise<Reco
 /** 从 ADE_LoadAnimateDiffModel 的 object_info 解析运动模块清单（model_name 组合选项） */
 export function motionModelsFromNodeInfo(info: Record<string, unknown> | null): string[] {
   const req = (info?.input as { required?: Record<string, unknown> } | undefined)?.required
-  const arr = (req?.model_name as unknown[] | undefined)?.[0]
-  return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === 'string') : []
+  return comboOptionsFromSpec(req?.model_name)
 }
 
 /** 拉取 AnimateDiff 运动模块列表（ADE_LoadAnimateDiffModel 的 model_name 选项，即 models/animatediff_models 目录）；
