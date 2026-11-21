@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Check, AlertCircle } from 'lucide-react'
+import { t } from '../core/i18n'
 
 export type GenPhase = 'idle' | 'submitting' | 'queued' | 'generating' | 'done' | 'error'
 
@@ -29,7 +30,7 @@ export function GenProgressBar({ progress, compact }: { progress: GenProgress; c
         <span className="gen-progress-pct">{percentText(progress)}</span>
       </div>
       <div className="gen-progress-track"><div className="gen-progress-fill" style={{ width: `${progress.percent}%` }} /></div>
-      {!compact && <div className="gen-progress-foot">预计进度 · 实际耗时取决于服务商与本地算力</div>}
+      {!compact && <div className="gen-progress-foot">{t('预计进度 · 实际耗时取决于服务商与本地算力')}</div>}
     </div>
   )
 }
@@ -51,7 +52,7 @@ export function useGenProgress() {
 
   const clearTimer = () => { if (timer.current !== null) { window.clearInterval(timer.current); timer.current = null } }
 
-  const start = (label = '正在连接…') => {
+  const start = (label = t('正在连接…')) => {
     clearTimer()
     ceiling.current = 88
     setProgress({ phase: 'submitting', percent: 8, label })
@@ -75,7 +76,7 @@ export function useGenProgress() {
     setProgress(prev => ({ phase, percent: Math.max(prev.percent, percent), label }))
   }
 
-  const done = (label = '生成完成') => { clearTimer(); setProgress({ phase: 'done', percent: 100, label }) }
+  const done = (label = t('生成完成')) => { clearTimer(); setProgress({ phase: 'done', percent: 100, label }) }
   const fail = (label: string) => { clearTimer(); setProgress(prev => ({ phase: 'error', percent: prev.percent, label })) }
   const reset = () => { clearTimer(); setProgress({ phase: 'idle', percent: 0, label: '' }) }
 

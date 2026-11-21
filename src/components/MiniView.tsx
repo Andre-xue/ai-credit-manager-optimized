@@ -4,6 +4,7 @@ import { predictExhaustion } from '../core/forecast'
 import { CHECKIN_TOOLS } from '../data/agentTools'
 import { PROVIDER_MAP } from '../data/providers'
 import type { AppState } from '../core/types'
+import { t } from '../core/i18n'
 
 /**
  * 菜单栏迷你窗（桌面端专用，独立窗口 #/mini）：
@@ -94,27 +95,27 @@ export function MiniView() {
       style={{ minHeight: '100vh', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 26, height: 26, borderRadius: 8, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
-        <b style={{ fontSize: 14 }}>AI 积分管家</b>
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>更新于 {updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
-        <button onClick={hide} title="收起" style={{ ...btn, padding: '2px 8px', fontSize: 13 }}>×</button>
+        <b style={{ fontSize: 14 }}>{t('AI 积分管家')}</b>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>{t('更新于 {time}', { time: updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })}</span>
+        <button onClick={hide} title={t('收起')} style={{ ...btn, padding: '2px 8px', fontSize: 13 }}>×</button>
       </div>
 
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span style={{ fontSize: 24, fontWeight: 700, color: pending.length ? '#d97706' : '#16a34a' }}>{pending.length}</span>
-          <span style={{ fontSize: 12.5, color: c.sub }}>个工具今日待签到</span>
-          <button onClick={() => goMain('checkin')} style={{ ...btn, marginLeft: 'auto', background: 'linear-gradient(135deg,#6d28d9,#9333ea)', color: '#fff', border: 'none', fontWeight: 600 }}>去签到</button>
+          <span style={{ fontSize: 12.5, color: c.sub }}>{t('个工具今日待签到')}</span>
+          <button onClick={() => goMain('checkin')} style={{ ...btn, marginLeft: 'auto', background: 'linear-gradient(135deg,#6d28d9,#9333ea)', color: '#fff', border: 'none', fontWeight: 600 }}>{t('去签到')}</button>
         </div>
         {pending.length > 0 && (
           <div style={{ marginTop: 6, fontSize: 12, color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {pending.slice(0, 6).map((t) => t.name).join(' · ')}{pending.length > 6 ? ` 等 ${pending.length} 个` : ''}
+            {pending.slice(0, 6).map((tool) => tool.name).join(' · ')}{pending.length > 6 ? ` ${t('等 {count} 个', { count: pending.length })}` : ''}
           </div>
         )}
       </div>
 
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontSize: 12.5, color: c.sub }}>剩余额度合计</span>
+          <span style={{ fontSize: 12.5, color: c.sub }}>{t('剩余额度合计')}</span>
           <b style={{ fontSize: 17 }}>¥{fmt(totalRemaining)}</b>
         </div>
         <div style={{ marginTop: 8, display: 'grid', gap: 5 }}>
@@ -124,19 +125,19 @@ export function MiniView() {
               <span style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                 <b style={b.low ? { color: '#dc2626' } : undefined}>¥{fmt(b.remaining)}</b>
                 {b.daysLeft !== undefined && b.daysLeft <= 60 && (
-                  <span style={{ display: 'block', fontSize: 10.5, color: b.daysLeft <= 7 ? '#dc2626' : c.faint }}>约 {Math.max(0, Math.ceil(b.daysLeft))} 天后耗尽</span>
+                  <span style={{ display: 'block', fontSize: 10.5, color: b.daysLeft <= 7 ? '#dc2626' : c.faint }}>{t('约 {days} 天后耗尽', { days: Math.max(0, Math.ceil(b.daysLeft)) })}</span>
                 )}
               </span>
             </div>
           ))}
-          {balances.length === 0 && <div style={{ fontSize: 12, color: c.faint }}>暂无额度数据，去主窗口添加账户或刷新余额</div>}
+          {balances.length === 0 && <div style={{ fontSize: 12, color: c.faint }}>{t('暂无额度数据，去主窗口添加账户或刷新余额')}</div>}
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-        <button onClick={() => goMain('ai')} style={{ ...btn, flex: 1 }}>AI 助手</button>
-        <button onClick={() => goMain()} style={{ ...btn, flex: 1 }}>打开主界面</button>
-        <button onClick={quit} style={{ ...btn, flex: 1 }}>退出应用</button>
+        <button onClick={() => goMain('ai')} style={{ ...btn, flex: 1 }}>{t('AI 助手')}</button>
+        <button onClick={() => goMain()} style={{ ...btn, flex: 1 }}>{t('打开主界面')}</button>
+        <button onClick={quit} style={{ ...btn, flex: 1 }}>{t('退出应用')}</button>
       </div>
     </div>
   )

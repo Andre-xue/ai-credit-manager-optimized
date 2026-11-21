@@ -1,6 +1,7 @@
 // 全局搜索命令面板（Cmd/Ctrl+K）：搜页面、账户、AI 工具，键盘可达。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
+import { t } from '../core/i18n'
 
 export interface PaletteItem {
   id: string
@@ -42,14 +43,14 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
 
   return (
     <div className="overlay cmdk-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="cmdk-panel" role="dialog" aria-label="全局搜索">
+      <div className="cmdk-panel" role="dialog" aria-label={t('全局搜索')}>
         <div className="cmdk-input-row">
           <Search size={16} />
           <input
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="搜索页面、账户、工具…"
+            placeholder={t('搜索页面、账户、工具…')}
             onKeyDown={(e) => {
               if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(s + 1, results.length - 1)) }
               else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)) }
@@ -60,7 +61,7 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
           <kbd>ESC</kbd>
         </div>
         <div className="cmdk-list" ref={listRef}>
-          {results.length === 0 && <div className="cmdk-empty">没有匹配的结果</div>}
+          {results.length === 0 && <div className="cmdk-empty">{t('没有匹配的结果')}</div>}
           {results.map((it, i) => (
             <button
               key={it.id}
@@ -75,7 +76,7 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
             </button>
           ))}
         </div>
-        <div className="cmdk-foot">↑↓ 选择 · Enter 打开 · 支持搜索页面 / 账户 / 工具名</div>
+        <div className="cmdk-foot">{t('↑↓ 选择 · Enter 打开 · 支持搜索页面 / 账户 / 工具名')}</div>
       </div>
     </div>
   )

@@ -9,6 +9,7 @@ import {
   currentPlatform, fileToAttachment, formatSize, pickAttachment,
   type AttachmentKind, type PickedAttachment,
 } from '../core/attachments'
+import { t } from '../core/i18n'
 
 const MAX_BYTES = 8 * 1024 * 1024
 
@@ -27,13 +28,13 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
     const picked: PickedAttachment[] = []
     for (const f of files) {
       if (f.size > MAX_BYTES) {
-        notify(`「${f.name}」超过 8MB，已跳过`)
+        notify(t('「{name}」超过 8MB，已跳过', { name: f.name }))
         continue
       }
       try {
         picked.push(await fileToAttachment(f, kind))
       } catch {
-        notify(`「${f.name}」读取失败，已跳过`)
+        notify(t('「{name}」读取失败，已跳过', { name: f.name }))
       }
     }
     if (picked.length) setItems(prev => [...prev, ...picked])
@@ -52,7 +53,7 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
       const one = await pickAttachment(kind)
       if (one) setItems(prev => [...prev, one])
     } catch (err) {
-      notify((err as Error).message ?? '获取照片失败')
+      notify((err as Error).message ?? t('获取照片失败'))
     } finally {
       setBusy(false)
     }
@@ -69,10 +70,10 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="modal ap-modal" role="dialog" aria-label="添加附件">
+      <div className="modal ap-modal" role="dialog" aria-label={t('添加附件')}>
         <div className="modal-head">
-          <h3>添加附件</h3>
-          <button className="ap-x" onClick={onClose} title="关闭"><X size={18} /></button>
+          <h3>{t('添加附件')}</h3>
+          <button className="ap-x" onClick={onClose} title={t('关闭')}><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div
@@ -87,8 +88,8 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
             onClick={() => fileRef.current?.click()}
           >
             <UploadCloud size={38} strokeWidth={1.5} />
-            <div className="ap-drop-title">点击选择文件，或拖拽到此处</div>
-            <div className="ap-drop-hint">支持图片、音频、视频、文档等 · 单个文件不超过 8MB · 可多选</div>
+            <div className="ap-drop-title">{t('点击选择文件，或拖拽到此处')}</div>
+            <div className="ap-drop-hint">{t('支持图片、音频、视频、文档等 · 单个文件不超过 8MB · 可多选')}</div>
             <input
               ref={fileRef}
               type="file"
@@ -104,16 +105,16 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
 
           {platform === 'mobile' && (
             <div className="ap-camera-row">
-              <button disabled={busy} onClick={() => void openCamera('camera')}><Camera size={16} /> 拍照</button>
-              <button disabled={busy} onClick={() => void openCamera('album')}><Images size={16} /> 从相册选</button>
+              <button disabled={busy} onClick={() => void openCamera('camera')}><Camera size={16} /> {t('拍照')}</button>
+              <button disabled={busy} onClick={() => void openCamera('album')}><Images size={16} /> {t('从相册选')}</button>
             </div>
           )}
 
           {items.length > 0 && (
             <div className="ap-section">
               <div className="ap-section-head">
-                <span>已选择 · {items.length} 个</span>
-                <button className="ap-clear" onClick={() => setItems([])}>清空</button>
+                <span>{t('已选择 · {count} 个', { count: items.length })}</span>
+                <button className="ap-clear" onClick={() => setItems([])}>{t('清空')}</button>
               </div>
               <div className="ap-grid">
                 {items.map((a, i) => (
@@ -127,9 +128,9 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
                     </div>
                     <div className="ap-item-info">
                       <div className="ap-item-name" title={a.name}>{a.name}</div>
-                      <div className="ap-item-meta">{formatSize(a.size)} · {a.mime.split('/')[1]?.toUpperCase() ?? '文件'}</div>
+                      <div className="ap-item-meta">{formatSize(a.size)} · {a.mime.split('/')[1]?.toUpperCase() ?? t('文件')}</div>
                     </div>
-                    <button className="ap-item-remove" onClick={() => removeAt(i)} title="移除"><X size={14} /></button>
+                    <button className="ap-item-remove" onClick={() => removeAt(i)} title={t('移除')}><X size={14} /></button>
                   </div>
                 ))}
               </div>
@@ -137,9 +138,9 @@ export function AttachmentPicker({ onClose, onConfirm, notify }: {
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn ghost" onClick={onClose}>取消</button>
+          <button className="btn ghost" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" disabled={!items.length || busy} onClick={() => onConfirm(items)}>
-            <Check size={15} /> 添加 {items.length > 0 ? `(${items.length})` : ''}
+            <Check size={15} /> {t('添加')} {items.length > 0 ? `(${items.length})` : ''}
           </button>
         </div>
       </div>

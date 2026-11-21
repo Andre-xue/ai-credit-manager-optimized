@@ -19,6 +19,7 @@ import { decryptSecret, getBiometricPassword } from '../core/crypto'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { globalReasoningEffort, enginesFor, enginesFromRemote } from '../data/engines'
 import type { Account, AppSettings } from '../core/types'
+import { t } from '../core/i18n'
 
 type ServiceType = 'cloud' | 'local'
 
@@ -140,7 +141,7 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
             if (!alive) return
             if (!addr) {
               setServiceDown(true)
-              notify('Ollama 开关虽已开启，但本机服务未运行。请在终端执行 ollama serve 启动，或到设置页重新开关一次')
+              notify(t('Ollama 开关虽已开启，但本机服务未运行。请在终端执行 ollama serve 启动，或到设置页重新开关一次'))
             }
           })
         }
@@ -185,9 +186,9 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
   }
 
   const importFile = async (file: File) => {
-    if (serviceType === 'local' && !serviceOn) { notify('本地模式需要本机 Ollama 生成向量，请先开启服务或切换到云端模式'); return }
-    if (useVector && !embedInstalled) { notify(`本机未安装嵌入模型 ${embedModel}，请先执行：ollama pull ${embedModel}`); return }
-    setImporting(true); setProgress('读取文件…')
+    if (serviceType === 'local' && !serviceOn) { notify(t('本地模式需要本机 Ollama 生成向量，请先开启服务或切换到云端模式')); return }
+    if (useVector && !embedInstalled) { notify(t('本机未安装嵌入模型 {model}，请先执行：ollama pull {model}', { model: embedModel })); return }
+    setImporting(true); setProgress(t('读取文件…'))
     try {
       // docx/pdf 是二进制，必须走本地解析；纯文本直接读。否则会把 zip 乱码入库，检索不到内容
       let text: string
@@ -197,99 +198,99 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
       } else {
         text = await file.text()
       }
-      if (!text.trim()) { notify('文档内容为空或无可提取文字（扫描版 PDF 需先 OCR）'); return }
+      if (!text.trim()) { notify(t('文档内容为空或无可提取文字（扫描版 PDF 需先 OCR）')); return }
       const docId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      setProgress(useVector ? '生成向量并入库…' : '切分文本并入库（关键词检索模式）…')
+      setProgress(useVector ? t('生成向量并入库…') : t('切分文本并入库（关键词检索模式）…'))
       const count = useVector
-        ? await addDocument({ docId, name: file.name, text, baseUrl: ollamaBase, embedModel, onProgress: (done, total) => setProgress(`已处理 ${done}/${total} 块`) })
-        : await addDocumentTextOnly({ docId, name: file.name, text, onProgress: (done, total) => setProgress(`已处理 ${done}/${total} 块`) })
-      notify(`已导入「${file.name}」，切分 ${count} 块`)
+        ? await addDocument({ docId, name: file.name, text, baseUrl: ollamaBase, embedModel, onProgress: (done, total) => setProgress(t('已处理 {done}/{total} 块', { done, total })) })
+        : await addDocumentTextOnly({ docId, name: file.name, text, onProgress: (done, total) => setProgress(t('已处理 {done}/{total} 块', { done, total })) })
+      notify(t('已导入「{name}」，切分 {count} 块', { name: file.name, count }))
       await refreshDocs()
     } catch (e) {
-      notify(`导入失败：${(e as Error)?.message ?? String(e)}`)
+      notify(t('导入失败：{msg}', { msg: (e as Error)?.message ?? String(e) }))
     } finally { setImporting(false); setProgress('') }
   }
 
   const ask = async () => {
     const q = question.trim()
-    if (!q) { notify('请输入问题'); return }
-    if (!docs.length) { notify('请先导入文档'); return }
-    if (!embeddingReady) { notify('请先开启 Ollama 服务并确认嵌入模型已安装'); return }
+    if (!q) { notify(t('请输入问题')); return }
+    if (!docs.length) { notify(t('请先导入文档')); return }
+    if (!embeddingReady) { notify(t('请先开启 Ollama 服务并确认嵌入模型已安装')); return }
     if (!answerReady) {
-      notify(serviceType === 'cloud' ? '请先在 API Key 管理添加「通用型/对话型」模型账户' : '请先开启 Ollama 服务并等待本地模型加载'); return
+      notify(serviceType === 'cloud' ? t('请先在 API Key 管理添加「通用型/对话型」模型账户') : t('请先开启 Ollama 服务并等待本地模型加载')); return
     }
     setAnswering(true); setAnswer(''); setSources([])
     try {
       const hits = useVector
         ? await searchChunks(await embedText(ollamaBase, embedModel, q), 3, q)
         : await searchChunksByKeyword(q, 3)
-      if (!hits.length) { notify('知识库为空或未匹配到相关内容，请先导入文档'); return }
+      if (!hits.length) { notify(t('知识库为空或未匹配到相关内容，请先导入文档')); return }
       const prompt = buildContextPrompt(q, hits)
       const msgs = [{ role: 'user', content: prompt }]
       if (serviceType === 'cloud') {
         // 云端回答：用账户 Key + 选定引擎
         const acct = cloudAccount!
         const pwd = getBiometricPassword() || sessionPwd || pwdInput
-        if (!acct.encryptedKey || !pwd) { notify('请输入主密码以调用云端模型（本次会话只需一次）'); return }
+        if (!acct.encryptedKey || !pwd) { notify(t('请输入主密码以调用云端模型（本次会话只需一次）')); return }
         const apiKey = await decryptSecret(acct.encryptedKey, pwd)
         if (pwdInput && pwdInput === pwd) { onUnlock(pwd); setPwdInput('') }
         const r = await callChat(acct, apiKey, msgs, cloudEngineId || undefined, globalReasoningEffort(thinkingMode))
-        if (!r.ok) { notify(r.error ?? '回答失败'); return }
+        if (!r.ok) { notify(r.error ?? t('回答失败')); return }
         setAnswer(r.text)
       } else {
         // 本地回答：直接调本机 Ollama，无需 Key
         const r = await callLocalChat(ollamaBase, localModel, msgs)
-        if (!r.ok) { notify(r.error ?? '回答失败'); return }
+        if (!r.ok) { notify(r.error ?? t('回答失败')); return }
         setAnswer(r.text)
       }
       setSources([...new Set(hits.map(h => h.chunk.docName))])
     } catch (e) {
-      notify(`回答失败：${(e as Error)?.message ?? String(e)}`)
+      notify(t('回答失败：{msg}', { msg: (e as Error)?.message ?? String(e) }))
     } finally { setAnswering(false) }
   }
 
   if (!supported) {
-    return <div className="docqa-empty"><Info size={16} /> 本地文档问答仅在桌面端可用（需要本机 Ollama 生成向量）。Web / 手机端请使用桌面版。</div>
+    return <div className="docqa-empty"><Info size={16} /> {t('本地文档问答仅在桌面端可用（需要本机 Ollama 生成向量）。Web / 手机端请使用桌面版。')}</div>
   }
 
   const answerLabel = serviceType === 'cloud'
-    ? `${cloudAccount?.label ?? '云端模型'}${cloudEngineId ? ` · ${cloudEngines.find(e => e.id === cloudEngineId)?.name ?? cloudEngineId}` : ''}`
-    : (localModel || '本地对话模型')
+    ? `${cloudAccount?.label ?? t('云端模型')}${cloudEngineId ? ` · ${cloudEngines.find(e => e.id === cloudEngineId)?.name ?? cloudEngineId}` : ''}`
+    : (localModel || t('本地对话模型'))
 
   return (
     <div className="docqa">
       <div className="docqa-intro">
         <Info size={14} />
-        <span>导入本地文本（.txt / .md / .csv 等），追问其中的内容。文档只存本机；检索方式：{useVector ? <>向量（<b>{embedModel}</b>）</> : '关键词匹配'}，回答用 <b>{answerLabel}</b>。</span>
+        <span>{t('导入本地文本（.txt / .md / .csv 等），追问其中的内容。文档只存本机；检索方式：')}{useVector ? <>{t('向量')}（<b>{embedModel}</b>）</> : t('关键词匹配')}{t('，回答用')}{' '}<b>{answerLabel}</b>{t('。')}</span>
       </div>
 
       {/* Ollama 服务开关：向量化与本地回答都依赖它 */}
       {serviceController && <div className="docqa-service-bar">
-        <span className="docqa-service-hint">本地服务</span>
+        <span className="docqa-service-hint">{t('本地服务')}</span>
         <ServiceSwitch controller={serviceController} serviceKey="ollama" />
-        <span className="docqa-service-note">开启 Ollama 可用向量检索；关闭后云端模式自动改用关键词检索，仍可正常使用。</span>
+        <span className="docqa-service-note">{t('开启 Ollama 可用向量检索；关闭后云端模式自动改用关键词检索，仍可正常使用。')}</span>
       </div>}
 
       {/* 回答模型配置：服务类型 / 模型 / 引擎（云端）/ 嵌入（本地+Ollama） */}
       <div className="docqa-config">
         <div className="docqa-config-row">
           <div className="tr-field">
-            <label>服务类型</label>
+            <label>{t('服务类型')}</label>
             <select className="select" value={serviceType} onChange={e => setServiceType(e.target.value as ServiceType)} disabled={importing || answering}>
-              <option value="cloud">☁️ 云端模型</option>
-              {serviceOn && <option value="local">🖥️ 本地模型</option>}
+              <option value="cloud">☁️ {t('云端模型')}</option>
+              {serviceOn && <option value="local">🖥️ {t('本地模型')}</option>}
             </select>
           </div>
           <div className="tr-field">
-            <label>回答模型</label>
+            <label>{t('回答模型')}</label>
             {serviceType === 'cloud' ? (
               <select className="select" value={cloudAccount?.id ?? ''} onChange={e => setCloudAccountId(e.target.value)} disabled={importing || answering}>
-                {cloudAccounts.length === 0 && <option value="">请先在 API Key 管理添加通用/对话型账户</option>}
+                {cloudAccounts.length === 0 && <option value="">{t('请先在 API Key 管理添加通用/对话型账户')}</option>}
                 {cloudAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
               </select>
             ) : (
               <select className="select" value={localModel} onChange={e => setLocalModel(e.target.value)} disabled={importing || answering || !serviceOn || localModels.length === 0}>
-                {localModels.length === 0 && <option value="">{loadingLocal ? '加载本地模型中…' : (serviceDown ? '本机服务未运行' : localLoadFailed ? '连接失败，请点重试' : (!serviceOn ? '请先开启 Ollama 服务' : '未找到可用模型，请先 ollama pull'))}</option>}
+                {localModels.length === 0 && <option value="">{loadingLocal ? t('加载本地模型中…') : (serviceDown ? t('本机服务未运行') : localLoadFailed ? t('连接失败，请点重试') : (!serviceOn ? t('请先开启 Ollama 服务') : t('未找到可用模型，请先 ollama pull')))}</option>}
                 {localModels.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             )}
@@ -297,9 +298,9 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
           {/* 模型引擎：仅云端，选中账户后自动拉取该账户真实引擎（失败回退内置目录），不可手填 */}
           {serviceType === 'cloud' && (
             <div className="tr-field">
-              <label>模型引擎</label>
+              <label>{t('模型引擎')}</label>
               <select className="select" value={cloudEngineId} onChange={e => setCloudEngineId(e.target.value)} disabled={importing || answering || cloudEngines.length === 0}>
-                {cloudEngines.length === 0 && <option value="">{loadingCloudEngines ? '正在获取引擎…' : (cloudAccount ? '该账户暂无可用引擎' : '请先选择回答模型')}</option>}
+                {cloudEngines.length === 0 && <option value="">{loadingCloudEngines ? t('正在获取引擎…') : (cloudAccount ? t('该账户暂无可用引擎') : t('请先选择回答模型'))}</option>}
                 {cloudEngines.map(e => <option key={e.id} value={e.id}>{e.name}{e.tag ? ` · ${e.tag}` : ''}</option>)}
               </select>
             </div>
@@ -308,44 +309,42 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
           {serviceType === 'local' && serviceOn && (
             <div className="tr-field">
               <label>
-                嵌入模型（自动获取，本地检索辅助）
-                <button className="docqa-reload-btn" onClick={() => setReloadTick(t => t + 1)} disabled={loadingLocal || embedLoading} title="重新探测本机模型">↻ 重试</button>
+                {t('嵌入模型（自动获取，本地检索辅助）')}
+                <button className="docqa-reload-btn" onClick={() => setReloadTick(n => n + 1)} disabled={loadingLocal || embedLoading} title={t('重新探测本机模型')}>↻ {t('重试')}</button>
               </label>
-              <span className="docqa-embed-readonly" title="由本机 Ollama 自动探测，不可手动修改">
-                {embedModels.length ? embedModel : (embedLoading ? '探测中…' : (serviceDown ? '本机服务未运行' : embedLoadFailed ? '连接失败，请点「重试」' : '未检测到嵌入模型'))}
+              <span className="docqa-embed-readonly" title={t('由本机 Ollama 自动探测，不可手动修改')}>
+                {embedModels.length ? embedModel : (embedLoading ? t('探测中…') : (serviceDown ? t('本机服务未运行') : embedLoadFailed ? t('连接失败，请点「重试」') : t('未检测到嵌入模型')))}
               </span>
             </div>
           )}
         </div>
         {serviceDown && (
           <div className="docqa-warn">
-            本机 Ollama 服务<strong>未运行</strong>（开关虽显示已开启）。请任选一种方式恢复：
-            ① 顶部「本地服务」开关先关再开；② 终端执行 <code>ollama serve</code>；③ 切换到「云端模型」使用关键词检索（无需 Ollama）。
-            恢复后点嵌入模型旁的「↻ 重试」。
+            {t('本机 Ollama 服务')}<strong>{t('未运行')}</strong>{t('（开关虽显示已开启）。请任选一种方式恢复：① 顶部「本地服务」开关先关再开；② 终端执行')} <code>ollama serve</code>{t('；③ 切换到「云端模型」使用关键词检索（无需 Ollama）。恢复后点嵌入模型旁的「↻ 重试」。')}
           </div>
         )}
         {serviceType === 'local' && serviceOn && embedWarn && !serviceDown && (
-          <div className="docqa-warn">本机未检测到嵌入模型 <b>{embedModel}</b>。请在终端执行 <code>ollama pull {embedModel}</code> 安装后重试。嵌入模型由本机自动探测，安装后刷新即可。</div>
+          <div className="docqa-warn">{t('本机未检测到嵌入模型')} <b>{embedModel}</b>{t('。请在终端执行')} <code>ollama pull {embedModel}</code>{' '}{t('安装后重试。嵌入模型由本机自动探测，安装后刷新即可。')}</div>
         )}
         {serviceType === 'local' && !serviceOn && (
-          <div className="docqa-warn">本地模式需要本机 Ollama 服务。请先开启顶部 Ollama 开关，或切换到「云端模型」使用关键词检索（无需 Ollama）。</div>
+          <div className="docqa-warn">{t('本地模式需要本机 Ollama 服务。请先开启顶部 Ollama 开关，或切换到「云端模型」使用关键词检索（无需 Ollama）。')}</div>
         )}
         {serviceType === 'cloud' && !serviceOn && (
-          <div className="docqa-hint-line">云端模式无需 Ollama：文档将以关键词检索方式入库与检索。开启 Ollama 后可获得更精准的向量检索。</div>
+          <div className="docqa-hint-line">{t('云端模式无需 Ollama：文档将以关键词检索方式入库与检索。开启 Ollama 后可获得更精准的向量检索。')}</div>
         )}
       </div>
 
       <div className="docqa-section">
-        <div className="docqa-section-title"><Upload size={14} /> 知识库文档 <span className="hint">{docs.length}</span></div>
+        <div className="docqa-section-title"><Upload size={14} /> {t('知识库文档')} <span className="hint">{docs.length}</span></div>
         <input ref={fileRef} type="file" accept=".txt,.md,.csv,.json,.log,.text,.docx,.pdf" style={{ display: 'none' }}
           onChange={e => { const f = e.target.files?.[0]; if (f) void importFile(f); e.target.value = '' }} />
-        <button className="btn sm" onClick={() => fileRef.current?.click()} disabled={importing || !embeddingReady}>{importing ? <Loader2 size={13} className="spin" /> : <Upload size={13} />} {importing ? (progress || '导入中…') : '导入文本文档'}</button>
+        <button className="btn sm" onClick={() => fileRef.current?.click()} disabled={importing || !embeddingReady}>{importing ? <Loader2 size={13} className="spin" /> : <Upload size={13} />} {importing ? (progress || t('导入中…')) : t('导入文本文档')}</button>
         {docs.length > 0 && (
           <div className="docqa-docs">
             {docs.map(d => (
               <div className="docqa-doc" key={d.docId}>
-                <FileText size={14} /><span className="doc-name">{d.name}</span><span className="doc-meta">{d.chunkCount} 块</span>
-                <HoldToConfirm title="删除文档" onConfirm={() => void (async () => { await deleteDocument(d.docId); await refreshDocs(); notify('已删除文档') })()} />
+                <FileText size={14} /><span className="doc-name">{d.name}</span><span className="doc-meta">{t('{count} 块', { count: d.chunkCount })}</span>
+                <HoldToConfirm title={t('删除文档')} onConfirm={() => void (async () => { await deleteDocument(d.docId); await refreshDocs(); notify(t('已删除文档')) })()} />
               </div>
             ))}
           </div>
@@ -353,20 +352,20 @@ export function DocQAView({ accounts, sessionPwd, onUnlock, notify, thinkingMode
       </div>
 
       <div className="docqa-section">
-        <div className="docqa-section-title"><Search size={14} /> 提问</div>
+        <div className="docqa-section-title"><Search size={14} /> {t('提问')}</div>
         <div className="docqa-ask-row">
-          <input className="input" placeholder="针对文档提问，例如：怎么重置密码？" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void ask() }} />
-          <button className="btn sm primary" onClick={() => void ask()} disabled={answering || !docs.length || !embeddingReady || !answerReady}>{answering ? '思考中…' : '提问'}</button>
-          <button className="btn sm ghost" onClick={() => { setQuestion(''); setAnswer(''); setSources([]) }} disabled={answering} title="清空输入框与回答">清空</button>
+          <input className="input" placeholder={t('针对文档提问，例如：怎么重置密码？')} value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void ask() }} />
+          <button className="btn sm primary" onClick={() => void ask()} disabled={answering || !docs.length || !embeddingReady || !answerReady}>{answering ? t('思考中…') : t('提问')}</button>
+          <button className="btn sm ghost" onClick={() => { setQuestion(''); setAnswer(''); setSources([]) }} disabled={answering} title={t('清空输入框与回答')}>{t('清空')}</button>
         </div>
         {serviceType === 'cloud' && !getBiometricPassword() && !sessionPwd && (
-          <input className="input" style={{ marginTop: 8 }} type="password" placeholder="主密码（调用云端模型，本次会话只需一次）" value={pwdInput} onChange={e => setPwdInput(e.target.value)} />
+          <input className="input" style={{ marginTop: 8 }} type="password" placeholder={t('主密码（调用云端模型，本次会话只需一次）')} value={pwdInput} onChange={e => setPwdInput(e.target.value)} />
         )}
         {(answer || sources.length > 0) && (
           <div className="docqa-answer">
-            <div className="docqa-answer-label">回答</div>
+            <div className="docqa-answer-label">{t('回答')}</div>
             <div className="docqa-answer-text">{answer || '…'}</div>
-            {sources.length > 0 && <div className="docqa-sources">来源：{sources.join('、')}</div>}
+            {sources.length > 0 && <div className="docqa-sources">{t('来源：{list}', { list: sources.join('、') })}</div>}
           </div>
         )}
       </div>

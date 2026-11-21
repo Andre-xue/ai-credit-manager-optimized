@@ -7,6 +7,7 @@ import { cloud, type CloudUser } from '../core/cloud'
 import type { PasswordResetChallenge } from '@tencent-ai/workbuddy-cloud-sdk'
 import { isDesktopApp, isNativeApp } from '../core/openExternal'
 import { biometricAvailable, biometricBound, bindBiometricCredentials, readBiometricCredentials, unbindBiometric } from '../core/biometric'
+import { t } from '../core/i18n'
 
 /** 默认记住上次登录的账户（只记账号本身，不记密码/验证码），下次打开弹窗自动预填 */
 const LAST_ACCOUNT_KEY = 'acm.cloud.lastAccount'
@@ -34,15 +35,15 @@ const isMobile = (v: string) => /^1\d{10}$/.test(v)
 function friendlyAuthError(message: string): string {
   const m = String(message ?? '')
   if (/password not set|no password|password.*(not set|unset)/i.test(m)) {
-    return '这个手机号/账号没有设置过密码，所以密码登录一定失败。注意：密码是绑定在账号上的，换了新手机号不会自动带着旧密码。请用「手机号 + 验证码」登录（下方有一键切换）；想用密码登录，请用你当初设置过密码的邮箱账号。'
+    return t('这个手机号/账号没有设置过密码，所以密码登录一定失败。注意：密码是绑定在账号上的，换了新手机号不会自动带着旧密码。请用「手机号 + 验证码」登录（下方有一键切换）；想用密码登录，请用你当初设置过密码的邮箱账号。')
   }
   if (/invalid.*(password|credential)|wrong password|password.*incorrect/i.test(m)) {
-    return '密码错误。如果你刚换了新手机号：新号码是另一个账号，旧号码的密码不适用——请用「手机号 + 验证码」登录，或输入你当初设密码的那个邮箱。'
+    return t('密码错误。如果你刚换了新手机号：新号码是另一个账号，旧号码的密码不适用——请用「手机号 + 验证码」登录，或输入你当初设密码的那个邮箱。')
   }
   if (/user not found|no user|account not found|not registered/i.test(m)) {
-    return '这个账号不存在或未注册。换了新手机号的话，请先用「手机号 + 验证码」登录完成注册；旧账号的密码不能用于新号码。'
+    return t('这个账号不存在或未注册。换了新手机号的话，请先用「手机号 + 验证码」登录完成注册；旧账号的密码不能用于新号码。')
   }
-  if (/too many|rate limit|429/i.test(m)) return '尝试次数过多，请稍后再试'
+  if (/too many|rate limit|429/i.test(m)) return t('尝试次数过多，请稍后再试')
   return m
 }
 
@@ -89,8 +90,8 @@ export function CloudLoginModal({ onClose, onSuccess }: {
   const sendCode = async () => {
     setErr('')
     const value = identifier.trim()
-    if (isPhone && !/^1\d{10}$/.test(value)) { setErr('请输入正确的 11 位手机号'); return }
-    if (!isPhone && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) { setErr('请输入正确的邮箱地址'); return }
+    if (isPhone && !/^1\d{10}$/.test(value)) { setErr(t('请输入正确的 11 位手机号')); return }
+    if (!isPhone && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) { setErr(t('请输入正确的邮箱地址')); return }
     setBusy(true)
     try {
       const sent = await cloud.auth.sendOtp(isPhone ? { phone: value } : { email: value })
@@ -105,10 +106,10 @@ export function CloudLoginModal({ onClose, onSuccess }: {
 
   const submitCode = async () => {
     setErr('')
-    if (!pending) { setErr('请先获取验证码'); return }
-    if (pending.target !== identifier.trim()) { setErr('请先获取当前账号的验证码'); return }
-    if (!code.trim()) { setErr('请输入验证码'); return }
-    if (!pending.isExistingUser && regPassword && regPassword.length < 6) { setErr('密码至少 6 位，或留空仅用验证码登录'); return }
+    if (!pending) { setErr(t('请先获取验证码')); return }
+    if (pending.target !== identifier.trim()) { setErr(t('请先获取当前账号的验证码')); return }
+    if (!code.trim()) { setErr(t('请输入验证码')); return }
+    if (!pending.isExistingUser && regPassword && regPassword.length < 6) { setErr(t('密码至少 6 位，或留空仅用验证码登录')); return }
     setBusy(true)
     try {
       const done = await cloud.auth.verifyOtp({
@@ -129,8 +130,8 @@ export function CloudLoginModal({ onClose, onSuccess }: {
     setErr('')
     const v = (creds?.account ?? account).trim()
     const pwd = creds?.password ?? password
-    if (!isMail(v) && !isMobile(v)) { setErr('请输入邮箱地址或 11 位手机号'); return }
-    if (!pwd) { setErr('请输入密码'); return }
+    if (!isMail(v) && !isMobile(v)) { setErr(t('请输入邮箱地址或 11 位手机号')); return }
+    if (!pwd) { setErr(t('请输入密码')); return }
     setBusy(true)
     try {
       const done = isMobile(v)
@@ -138,7 +139,7 @@ export function CloudLoginModal({ onClose, onSuccess }: {
         : await cloud.auth.signInWithPassword({ email: v, password: pwd })
       if (done.error) {
         // 指纹回放的密码已失效（比如改过密码）：解除绑定，避免下次继续拿旧密码撞
-        if (creds) { await unbindBiometric(); setBioBoundState(false); setErr('保存的密码已失效，已解除指纹绑定，请用当前密码登录一次重新绑定'); return }
+        if (creds) { await unbindBiometric(); setBioBoundState(false); setErr(t('保存的密码已失效，已解除指纹绑定，请用当前密码登录一次重新绑定')); return }
         setErr(friendlyAuthError(done.error.message)); return
       }
       saveLastLogin(v, 'password')
@@ -154,7 +155,7 @@ export function CloudLoginModal({ onClose, onSuccess }: {
     setBusy(true)
     try {
       const creds = await readBiometricCredentials()
-      if (!creds) { setErr('指纹验证已取消或失败，可改用密码登录'); return }
+      if (!creds) { setErr(t('指纹验证已取消或失败，可改用密码登录')); return }
       setAccount(creds.username)
       setPassword(creds.password)
       await signInPassword({ account: creds.username, password: creds.password })
@@ -165,21 +166,21 @@ export function CloudLoginModal({ onClose, onSuccess }: {
   const startReset = async () => {
     setErr('')
     const v = account.trim()
-    if (!isMail(v)) { setErr('设置密码需要邮箱地址；手机号账号请改用验证码登录'); return }
+    if (!isMail(v)) { setErr(t('设置密码需要邮箱地址；手机号账号请改用验证码登录')); return }
     setBusy(true)
     try {
       const r = await cloud.auth.resetPasswordForEmail(v)
       if (r.error) { setErr(friendlyAuthError(r.error.message)); return }
       setResetChallenge(r.data)
-      setErr('重置验证码已发送到邮箱，请查收后填写下方验证码与新密码')
+      setErr(t('重置验证码已发送到邮箱，请查收后填写下方验证码与新密码'))
     } finally { setBusy(false) }
   }
 
   const finishReset = async () => {
     setErr('')
-    if (!resetChallenge) { setErr('请先获取邮箱重置验证码'); return }
-    if (!resetCode.trim()) { setErr('请输入邮箱收到的验证码'); return }
-    if (resetNewPwd.length < 6) { setErr('新密码至少 6 位'); return }
+    if (!resetChallenge) { setErr(t('请先获取邮箱重置验证码')); return }
+    if (!resetCode.trim()) { setErr(t('请输入邮箱收到的验证码')); return }
+    if (resetNewPwd.length < 6) { setErr(t('新密码至少 6 位')); return }
     setBusy(true)
     try {
       const r = await resetChallenge.updateUser({ nonce: resetCode.trim(), password: resetNewPwd })
@@ -197,7 +198,7 @@ export function CloudLoginModal({ onClose, onSuccess }: {
   const oauth = async (provider: 'wechat' | 'workbuddy') => {
     setErr('')
     if (oauthBlocked) {
-      setErr('当前是桌面/原生客户端，网页授权无法回到本应用，请使用手机号或邮箱验证码登录。')
+      setErr(t('当前是桌面/原生客户端，网页授权无法回到本应用，请使用手机号或邮箱验证码登录。'))
       return
     }
     setBusy(true)
@@ -215,28 +216,28 @@ export function CloudLoginModal({ onClose, onSuccess }: {
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 440 }}>
         <div className="modal-head">
-          <h3>登录以开启云同步</h3>
+          <h3>{t('登录以开启云同步')}</h3>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div className="notice-box" style={{ marginBottom: 16 }}>
             <ShieldCheck size={15} />
-            <div>登录后用同一账号，在 Web / 桌面 / 安卓 / 小程序任意端的数据都会自动同步。未登录也可继续本地使用。</div>
+            <div>{t('登录后用同一账号，在 Web / 桌面 / 安卓 / 小程序任意端的数据都会自动同步。未登录也可继续本地使用。')}</div>
           </div>
 
           <div className="login-methods">
             <button className={`login-method ${method === 'phone' ? 'active' : ''}`} onClick={() => { setMethod('phone'); setErr(''); setPending(null) }}>
-              <Smartphone size={16} /> 手机号
+              <Smartphone size={16} /> {t('手机号')}
             </button>
             <button className={`login-method ${method === 'email' ? 'active' : ''}`} onClick={() => { setMethod('email'); setErr(''); setPending(null) }}>
-              <Mail size={16} /> 邮箱
+              <Mail size={16} /> {t('邮箱')}
             </button>
             <button className={`login-method ${method === 'password' ? 'active' : ''}`} onClick={() => { setMethod('password'); setErr(''); setPending(null) }}>
-              <KeyRound size={16} /> 密码登录
+              <KeyRound size={16} /> {t('密码登录')}
             </button>
             {!oauthBlocked && (<>
               <button className={`login-method ${method === 'wechat' ? 'active' : ''}`} onClick={() => { setMethod('wechat'); setErr('') }}>
-                <QrCode size={16} /> 微信扫码
+                <QrCode size={16} /> {t('微信扫码')}
               </button>
               <button className={`login-method ${method === 'workbuddy' ? 'active' : ''}`} onClick={() => { setMethod('workbuddy'); setErr('') }}>
                 <ShieldCheck size={16} /> WorkBuddy
@@ -245,62 +246,62 @@ export function CloudLoginModal({ onClose, onSuccess }: {
           </div>
           {oauthBlocked && (
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
-              微信扫码 / WorkBuddy 登录属于网页授权，仅网页版可用；桌面与手机客户端请用手机号或邮箱验证码登录，数据同样全端同步。
+              {t('微信扫码 / WorkBuddy 登录属于网页授权，仅网页版可用；桌面与手机客户端请用手机号或邮箱验证码登录，数据同样全端同步。')}
             </div>
           )}
 
           {(method === 'phone' || method === 'email') && <>
             <label className="form-label" style={{ marginTop: 18 }}>
-              {isPhone ? '手机号' : '邮箱地址'}
+              {isPhone ? t('手机号') : t('邮箱地址')}
               <input className="input" value={identifier} onChange={e => { setIdentifier(e.target.value); setErr('') }}
-                placeholder={isPhone ? '11 位手机号' : 'name@example.com'} disabled={busy} />
+                placeholder={isPhone ? t('11 位手机号') : 'name@example.com'} disabled={busy} />
             </label>
             <label className="form-label" style={{ marginTop: 12 }}>
-              验证码
+              {t('验证码')}
               <div style={{ display: 'flex', gap: 8 }}>
-                <input className="input" value={code} onChange={e => { setCode(e.target.value); setErr('') }} placeholder="6 位验证码" disabled={busy} />
+                <input className="input" value={code} onChange={e => { setCode(e.target.value); setErr('') }} placeholder={t('6 位验证码')} disabled={busy} />
                 <button className="btn" type="button" onClick={sendCode} disabled={busy || countdown > 0} style={{ whiteSpace: 'nowrap' }}>
-                  {countdown > 0 ? `${countdown}s 后重发` : pending ? '重新发送' : '获取验证码'}
+                  {countdown > 0 ? t('{n}s 后重发', { n: countdown }) : pending ? t('重新发送') : t('获取验证码')}
                 </button>
               </div>
             </label>
             {pending && !pending.isExistingUser && (
               <label className="form-label" style={{ marginTop: 12 }}>
-                设置密码（可选，至少 6 位）
+                {t('设置密码（可选，至少 6 位）')}
                 <input className="input" type="password" value={regPassword} onChange={e => { setRegPassword(e.target.value); setErr('') }}
-                  placeholder="设置后可用账号密码登录；留空则仅验证码登录" disabled={busy} />
+                  placeholder={t('设置后可用账号密码登录；留空则仅验证码登录')} disabled={busy} />
               </label>
             )}
             {err && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 10 }}>{err}</div>}
             <button className="btn primary" style={{ width: '100%', marginTop: 18, justifyContent: 'center' }} onClick={submitCode} disabled={busy}>
-              {busy ? <><Loader2 size={14} className="spin" /> 处理中…</> : '登录 / 注册'}
+              {busy ? <><Loader2 size={14} className="spin" /> {t('处理中…')}</> : t('登录 / 注册')}
             </button>
           </>}
 
           {method === 'password' && <>
             <label className="form-label" style={{ marginTop: 18 }}>
-              邮箱或手机号
-              <input className="input" value={account} onChange={e => { setAccount(e.target.value); setErr('') }} placeholder="邮箱地址或 11 位手机号" disabled={busy} />
+              {t('邮箱或手机号')}
+              <input className="input" value={account} onChange={e => { setAccount(e.target.value); setErr('') }} placeholder={t('邮箱地址或 11 位手机号')} disabled={busy} />
             </label>
             <label className="form-label" style={{ marginTop: 12 }}>
-              密码
-              <input className="input" type="password" value={password} onChange={e => { setPassword(e.target.value); setErr('') }} placeholder="账号密码" disabled={busy} />
+              {t('密码')}
+              <input className="input" type="password" value={password} onChange={e => { setPassword(e.target.value); setErr('') }} placeholder={t('账号密码')} disabled={busy} />
             </label>
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
-              只有设置过密码的账号才能用密码登录。早期用手机号验证码注册的账号没有密码，请切回「手机号」用验证码登录；邮箱账号可点下方「设置 / 找回密码」设好后即可用密码登录。
+              {t('只有设置过密码的账号才能用密码登录。早期用手机号验证码注册的账号没有密码，请切回「手机号」用验证码登录；邮箱账号可点下方「设置 / 找回密码」设好后即可用密码登录。')}
             </div>
-            {err && <div style={{ color: err.startsWith('重置验证码') ? 'var(--green)' : 'var(--red)', fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>{err}</div>}
+            {err && <div style={{ color: err === t('重置验证码已发送到邮箱，请查收后填写下方验证码与新密码') ? 'var(--green)' : 'var(--red)', fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>{err}</div>}
             {bioBoundState && (
               <button className="btn" style={{ width: '100%', marginTop: 18, justifyContent: 'center' }} onClick={() => void signInBiometric()} disabled={busy}>
-                <Fingerprint size={15} /> 指纹登录
+                <Fingerprint size={15} /> {t('指纹登录')}
               </button>
             )}
             <button className="btn primary" style={{ width: '100%', marginTop: bioBoundState ? 10 : 18, justifyContent: 'center' }} onClick={() => void signInPassword()} disabled={busy}>
-              {busy ? <><Loader2 size={14} className="spin" /> 登录中…</> : '密码登录'}
+              {busy ? <><Loader2 size={14} className="spin" /> {t('登录中…')}</> : t('密码登录')}
             </button>
             {bioReady && !bioBoundState && (
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
-                本机支持指纹识别：用密码登录成功后将自动绑定，下次可指纹登录（密码只存本机系统钥匙串，不经过本地存储、不上传云端）。
+                {t('本机支持指纹识别：用密码登录成功后将自动绑定，下次可指纹登录（密码只存本机系统钥匙串，不经过本地存储、不上传云端）。')}
               </div>
             )}
             {/* 换了新手机号后用密码登录失败：一键带着号码切到验证码登录 */}
@@ -308,31 +309,31 @@ export function CloudLoginModal({ onClose, onSuccess }: {
               <button className="form-link" style={{ marginTop: 10 }} onClick={() => {
                 setIdentifier(account.trim()); setMethod('phone'); setErr(''); setCode(''); setPending(null)
               }}>
-                这个手机号用不了密码？改用验证码登录 →
+                {t('这个手机号用不了密码？改用验证码登录 →')}
               </button>
             )}
             <button className="form-link" style={{ marginTop: 12 }} onClick={() => { setShowReset(v => !v); setErr(''); setResetChallenge(null); setResetCode(''); setResetNewPwd('') }}>
-              {showReset ? '收起' : '邮箱账号设置 / 找回密码'}
+              {showReset ? t('收起') : t('邮箱账号设置 / 找回密码')}
             </button>
             {showReset && <>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10, lineHeight: 1.6 }}>
-                仅支持邮箱：向注册邮箱发送重置验证码，验证后设置新密码并自动登录。手机号账号无法使用此功能。
+                {t('仅支持邮箱：向注册邮箱发送重置验证码，验证后设置新密码并自动登录。手机号账号无法使用此功能。')}
               </div>
               <label className="form-label" style={{ marginTop: 10 }}>
-                新密码（至少 6 位）
-                <input className="input" type="password" value={resetNewPwd} onChange={e => { setResetNewPwd(e.target.value); setErr('') }} placeholder="设置新密码" disabled={busy} />
+                {t('新密码（至少 6 位）')}
+                <input className="input" type="password" value={resetNewPwd} onChange={e => { setResetNewPwd(e.target.value); setErr('') }} placeholder={t('设置新密码')} disabled={busy} />
               </label>
               <label className="form-label" style={{ marginTop: 10 }}>
-                邮箱验证码
+                {t('邮箱验证码')}
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <input className="input" value={resetCode} onChange={e => { setResetCode(e.target.value); setErr('') }} placeholder="邮箱收到的验证码" disabled={busy} />
+                  <input className="input" value={resetCode} onChange={e => { setResetCode(e.target.value); setErr('') }} placeholder={t('邮箱收到的验证码')} disabled={busy} />
                   <button className="btn" type="button" onClick={() => void startReset()} disabled={busy} style={{ whiteSpace: 'nowrap' }}>
-                    {resetChallenge ? '重新发送' : '发送验证码'}
+                    {resetChallenge ? t('重新发送') : t('发送验证码')}
                   </button>
                 </div>
               </label>
               <button className="btn primary" style={{ width: '100%', marginTop: 12, justifyContent: 'center' }} onClick={() => void finishReset()} disabled={busy}>
-                {busy ? <><Loader2 size={14} className="spin" /> 处理中…</> : '设置密码并登录'}
+                {busy ? <><Loader2 size={14} className="spin" /> {t('处理中…')}</> : t('设置密码并登录')}
               </button>
             </>}
           </>}
@@ -340,29 +341,29 @@ export function CloudLoginModal({ onClose, onSuccess }: {
           {method === 'wechat' && <>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '18px 0' }}>
               {oauthBlocked
-                ? '微信扫码属于网页授权，回调必须回到已登记的 https 域名。桌面客户端与手机 App 的内置页面不是登记域名，授权后会无法返回，因此这两个端暂不支持扫码登录。请改用手机号或邮箱验证码登录（同样开启云同步）。网页版可使用微信扫码。'
-                : '点击下方按钮将跳转到微信授权页，可用微信扫码或快捷登录。登录完成后自动返回本应用。'}
+                ? t('微信扫码属于网页授权，回调必须回到已登记的 https 域名。桌面客户端与手机 App 的内置页面不是登记域名，授权后会无法返回，因此这两个端暂不支持扫码登录。请改用手机号或邮箱验证码登录（同样开启云同步）。网页版可使用微信扫码。')
+                : t('点击下方按钮将跳转到微信授权页，可用微信扫码或快捷登录。登录完成后自动返回本应用。')}
             </p>
             {err && <div style={{ color: 'var(--amber)', fontSize: 12, marginBottom: 10 }}>{err}</div>}
             <button className="btn primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => oauth('wechat')} disabled={busy || oauthBlocked}>
-              <QrCode size={15} /> 使用微信登录
+              <QrCode size={15} /> {t('使用微信登录')}
             </button>
           </>}
 
           {method === 'workbuddy' && <>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '18px 0' }}>
               {oauthBlocked
-                ? 'WorkBuddy 账号登录属于网页授权（带一次性校验），回调必须回到已登记的 https 域名，桌面客户端与手机 App 内置页面无法完成回调。请改用手机号或邮箱验证码登录，数据同样全端同步；网页版可使用 WorkBuddy 登录。'
-                : '使用你的 WorkBuddy 账号登录，授权后自动返回本应用。'}
+                ? t('WorkBuddy 账号登录属于网页授权（带一次性校验），回调必须回到已登记的 https 域名，桌面客户端与手机 App 内置页面无法完成回调。请改用手机号或邮箱验证码登录，数据同样全端同步；网页版可使用 WorkBuddy 登录。')
+                : t('使用你的 WorkBuddy 账号登录，授权后自动返回本应用。')}
             </p>
             {err && <div style={{ color: 'var(--amber)', fontSize: 12, marginBottom: 10 }}>{err}</div>}
             <button className="btn primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => oauth('workbuddy')} disabled={busy || oauthBlocked}>
-              <ShieldCheck size={15} /> 使用 WorkBuddy 登录
+              <ShieldCheck size={15} /> {t('使用 WorkBuddy 登录')}
             </button>
           </>}
 
           <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '16px 0 0', lineHeight: 1.6 }}>
-            支持手机号 / 邮箱验证码、邮箱密码（需先设置）、网页版微信扫码与 WorkBuddy 账号。手机号老账号请用验证码登录，无法补设密码。QQ / 抖音 / 支付宝扫码暂未开放。
+            {t('支持手机号 / 邮箱验证码、邮箱密码（需先设置）、网页版微信扫码与 WorkBuddy 账号。手机号老账号请用验证码登录，无法补设密码。QQ / 抖音 / 支付宝扫码暂未开放。')}
           </p>
         </div>
       </div>

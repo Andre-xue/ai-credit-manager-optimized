@@ -28,6 +28,7 @@ import {
 import { detectModelCapability, capabilityChatCapable } from '../core/modelCapability'
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
+import { t, locale } from '../core/i18n'
 import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
@@ -63,9 +64,9 @@ function welcomeText(userNick?: string): string {
   if (!name || name === '我') {
     const h = new Date().getHours()
     const defaultName = (h >= 22 || h < 5) ? '夜猫子' : '朋友'
-    return `${greet}，${defaultName}`
+    return t('{greet}，{name}', { greet: t(greet), name: t(defaultName) })
   }
-  return `${greet}，${name}`
+  return t('{greet}，{name}', { greet: t(greet), name })
 }
 
 /** AI 助手页只展示这 4 类模型，免费模型排第一（生图型/视频型/文本型不在此页展示） */
@@ -232,7 +233,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       onText: (t) => onInput(joinDictation(dictBaseRef.current, t)),
       onError: (m) => { notify(m); setListening(false) },
       onEnd: () => { speechRef.current = null; setListening(false) },
-      onProcessing: () => notify('录音结束，正在转写成文字…'),
+      onProcessing: () => notify(t('录音结束，正在转写成文字…')),
     })
     if (!session) { setListening(false); return }
     speechRef.current = session
@@ -240,15 +241,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const longPressRef = useRef<number | null>(null)
 
   const avatarContent = (p: BotProfile | UserProfile) => p.avatarDataUrl
-    ? <img className="ai-avatar-img" src={p.avatarDataUrl} alt="头像" />
+    ? <img className="ai-avatar-img" src={p.avatarDataUrl} alt={t('头像')} />
     : getAvatar(p.avatarId).emoji
   const avatarBg = (p: BotProfile | UserProfile) => getAvatar(p.avatarId).color
 
   const copyMessage = async (text: string) => {
-    try { await navigator.clipboard.writeText(text); notify('已复制对话内容') }
+    try { await navigator.clipboard.writeText(text); notify(t('已复制对话内容')) }
     catch {
       const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
-      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); notify('已复制对话内容')
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); notify(t('已复制对话内容'))
     }
   }
   const startLongPress = (text: string) => {
@@ -275,7 +276,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const msg = String((e as Error)?.message ?? e)
       // 未登录云同步时免费模型不可用：不弹错误 toast，只在模型菜单里给登录提示
       if (msg.includes('401') || msg.toLowerCase().includes('login')) { setNeedLogin(true); return }
-      notify(`模型加载失败：${friendlyAiError(e)}`)
+      notify(t('模型加载失败：{msg}', { msg: friendlyAiError(e) }))
     })
     return () => { alive = false }
   }, [notify])
@@ -441,10 +442,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setAiPwdBusy(true)
     try {
       const ok = await verifyVault(aiPwdInput)
-      if (!ok) { notify('主密码错误'); return }
+      if (!ok) { notify(t('主密码错误')); return }
       setAiPwd(aiPwdInput)
       setAiPwdInput('')
-      notify('已验证，本次会话调用自有模型无需再次输入')
+      notify(t('已验证，本次会话调用自有模型无需再次输入'))
     } finally { setAiPwdBusy(false) }
   }
 
@@ -548,11 +549,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     // 用户自己的账户：用其 Key 真正调用
     if (opt?.account) {
       const acct = opt.account
-      if (!acct.encryptedKey) throw new Error('该账户未配置 API Key，请在 API Key 管理页添加')
+      if (!acct.encryptedKey) throw new Error(t('该账户未配置 API Key，请在 API Key 管理页添加'))
       const pwd = resolvePwd()
       if (!pwd) {
         // 不再拦截去 Key 管理页解锁，就地提示输入本次会话密码（见输入区上方的内嵌输入）
-        notify('请输入主密码以调用自有模型（本次会话只需一次）')
+        notify(t('请输入主密码以调用自有模型（本次会话只需一次）'))
         throw Object.assign(new Error('__NEED_AI_PWD__'), { needPwd: true })
       }
       setResolvingKey(true)
@@ -560,7 +561,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       try { apiKey = await decryptSecret(acct.encryptedKey, pwd) }
       catch {
         // 解密失败通常意味着：保险箱材料已变更（改过主密码/重置/云同步覆盖），或该 Key 是用另一个主密码加密的
-        const hint = '此 API Key 无法解密：保险箱主密码已变更或该密钥由另一主密码加密。请到「设置 → 安全」用当前主密码重新添加该 Key'
+        const hint = t('此 API Key 无法解密：保险箱主密码已变更或该密钥由另一主密码加密。请到「设置 → 安全」用当前主密码重新添加该 Key')
         notify(hint)
         throw Object.assign(new Error(hint), { needPwd: true })
       }
@@ -572,9 +573,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const sameAsMain = !optKey || mainOpt?.account?.id === acct.id
       const engForCall = sameAsMain ? (engineId || undefined) : (enginesFor(acct.providerId)[0]?.id || undefined)
       const r = await callByCategory(acct, apiKey, opt.category, msgs, engForCall, effectiveReasoning)
-      if (!r.ok) throw Object.assign(new Error(r.error ?? '调用失败'), { cors: r.cors })
+      if (!r.ok) throw Object.assign(new Error(r.error ?? t('调用失败')), { cors: r.cors })
       if (r.images?.length) {
-        return `${r.text}\n${r.images.map(u => u.startsWith('data:') ? '[已生成图片]' : u).join('\n')}`
+        return `${r.text}\n${r.images.map(u => u.startsWith('data:') ? t('[已生成图片]') : u).join('\n')}`
       }
       return r.text
     }
@@ -586,7 +587,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         { role: 'user', content },
       ]
       const r = await callLocalChat('http://127.0.0.1:11434', opt.localModel, msgs, images)
-      if (!r.ok) throw new Error(r.error ?? '本地模型调用失败')
+      if (!r.ok) throw new Error(r.error ?? t('本地模型调用失败'))
       return r.text
     }
     // 平台免费模型：流式输出（图片附件随多模态消息发送）
@@ -603,20 +604,20 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     if ((!content && !hasAttach) || generating) return
     // 对比模式：同一个问题并行发给所选的 2–3 个模型（换 Key 重试等带 optKey 的调用不走对比）
     if (compareMode && !optKey) {
-      if (hasAttach) { notify('对比模式暂不支持附件，请先移除附件'); return }
-      if (compareKeys.length < 2) { notify('对比模式：请先在上方选择至少 2 个模型'); return }
+      if (hasAttach) { notify(t('对比模式暂不支持附件，请先移除附件')); return }
+      if (compareKeys.length < 2) { notify(t('对比模式：请先在上方选择至少 2 个模型')); return }
       await runCompare(content)
       return
     }
     const effectiveText = content || '请分析这些附件'
-    if (!model && !optKey) { notify('模型尚未就绪，请稍候'); return }
+    if (!model && !optKey) { notify(t('模型尚未就绪，请稍候')); return }
     // 生图型/视频型：允许发送提示词，交给 callByCategory 调用生图/视频接口（不再拦截）
     // 自有模型需要先有解密凭据：给出持久可见的对话提示，避免"打字没反应"
     if (needPwd) {
-      notify('请先在上方的密码框验证主密码，再发送消息')
+      notify(t('请先在上方的密码框验证主密码，再发送消息'))
       setMessages(prev => [...prev,
         { id: `u-${Date.now()}`, role: 'user', content, at: Date.now() },
-        { id: `err-${Date.now()}`, role: 'assistant', content: `🔒 当前使用自有模型「${currentAccount?.label ?? ''}」，需先在上方密码框验证主密码（本次会话只需一次），验证后请重新发送。`, at: Date.now() },
+        { id: `err-${Date.now()}`, role: 'assistant', content: t('🔒 当前使用自有模型「{label}」，需先在上方密码框验证主密码（本次会话只需一次），验证后请重新发送。', { label: currentAccount?.label ?? '' }), at: Date.now() },
       ])
       return
     }
@@ -664,11 +665,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           } catch (e2) { lastErr = e2 }
         }
         if (!switched) throw lastErr
-        failoverNote = `\n\n（原账户调用失败，已自动切换到备用账户「${switched}」）`
-        notify(`已自动切换到备用账户「${switched}」`)
+        failoverNote = `\n\n${t('（原账户调用失败，已自动切换到备用账户「{label}」）', { label: switched })}`
+        notify(t('已自动切换到备用账户「{label}」', { label: switched }))
       }
       setPendingRetry(null)
-      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: (answer || '（无回复内容）') + failoverNote, at: Date.now() }])
+      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: (answer || t('（无回复内容）')) + failoverNote, at: Date.now() }])
       // 自动朗读：AI 回复完成且未被中止时，朗读清洗后的纯文字
       if (autoSpeak && answer && !controller.signal.aborted) {
         const spoken = cleanForAutoSpeech(answer)
@@ -696,7 +697,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         if (prev) setMessages(p => [...p, { id: `${Date.now()}-a`, role: 'assistant', content: prev, at: Date.now() }])
         else {
           // 失败时插入持久提示气泡，避免 toast 一闪而过看着像"没反应"
-          const hint = need ? '🔒 当前为自有模型，请先在上方的密码框验证主密码，然后重新发送。'
+          const hint = need ? t('🔒 当前为自有模型，请先在上方的密码框验证主密码，然后重新发送。')
             : msg !== '已停止生成' && !String(msg).includes('NEED_AI_PWD') ? `⚠️ ${msg}` : null
           if (hint) setMessages(p => [...p, { id: `err-${Date.now()}`, role: 'assistant', content: hint, at: Date.now() }])
         }
@@ -716,7 +717,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     void speakAsync(m.content, botProfile.voiceURI ?? getSavedVoice(), (state) => {
       if (state === 'end' || state === 'error') setSpeakingId(null)
     }, (reason) => notify(reason)).then(ok => {
-      if (!ok) { notify('当前环境不支持语音朗读'); return }
+      if (!ok) { notify(t('当前环境不支持语音朗读')); return }
       setSpeakingId(m.id)
     })
   }
@@ -728,7 +729,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setMessages([])
     setSessionStore(store => ({ ...store, sessions: store.sessions.map(s => s.id === store.activeId ? { ...s, title: '新对话' } : s) }))
     rotateConversationId()
-    notify('已开启新对话')
+    notify(t('已开启新对话'))
   }
 
   // ---- 对话搜索（当前会话内查找，命中高亮 + 上下跳转） ----
@@ -771,7 +772,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setUseMyData(v => {
       const next = !v
       try { localStorage.setItem('acm_ai_use_my_data', next ? '1' : '0') } catch { /* 忽略 */ }
-      notify(next ? '已开启「引用我的数据」：问额度、消费、签到时，助手会按你的真实数据回答' : '已关闭「引用我的数据」：对话不再附带你的本地数据')
+      notify(next ? t('已开启「引用我的数据」：问额度、消费、签到时，助手会按你的真实数据回答') : t('已关闭「引用我的数据」：对话不再附带你的本地数据'))
       return next
     })
   }
@@ -782,7 +783,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const toggleCompareKey = (k: string) => {
     setCompareKeys(prev => {
       if (prev.includes(k)) return prev.filter(x => x !== k)
-      if (prev.length >= 3) { notify('对比最多选 3 个模型'); return prev }
+      if (prev.length >= 3) { notify(t('对比最多选 3 个模型')); return prev }
       return [...prev, k]
     })
   }
@@ -800,9 +801,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       // 每列用独立 conversationId（共用主会话 id 并行发流会被网关互相顶掉）；失败自动重试一次
       const convId = `cmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const errText = (e: unknown): string => {
-        if (e instanceof Error) return e.message || '调用失败'
+        if (e instanceof Error) return e.message || t('调用失败')
         if (typeof e === 'string') return e // Tauri invoke 拒绝值是字符串（Rust 侧的真实报错）
-        return '调用失败'
+        return t('调用失败')
       }
       let lastErr: unknown = null
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -832,11 +833,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [probeResults, setProbeResults] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
   const [probing, setProbing] = useState(false)
   const probeEngines = async () => {
-    if (!currentAccount?.encryptedKey) { notify('当前账户未配置 Key，无法探测'); return }
+    if (!currentAccount?.encryptedKey) { notify(t('当前账户未配置 Key，无法探测')); return }
     const pwd = resolvePwd()
-    if (!pwd) { notify('请先解锁保险箱，再探测引擎可用性'); return }
+    if (!pwd) { notify(t('请先解锁保险箱，再探测引擎可用性')); return }
     let apiKey = ''
-    try { apiKey = await decryptSecret(currentAccount.encryptedKey, pwd) } catch { notify('Key 解密失败，无法探测'); return }
+    try { apiKey = await decryptSecret(currentAccount.encryptedKey, pwd) } catch { notify(t('Key 解密失败，无法探测')); return }
     setProbing(true)
     setProbeResults({})
     const targets = engines.slice(0, 12)
@@ -844,13 +845,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const t0 = Date.now()
       try {
         const r = await callByCategory(currentAccount, apiKey, selectedOption?.category ?? '通用型', [{ role: 'user', content: 'ping' }], e.id, undefined)
-        setProbeResults(prev => ({ ...prev, [e.id]: r.ok ? { ok: true, ms: Date.now() - t0 } : { ok: false, ms: Date.now() - t0, error: r.error ?? '调用失败' } }))
+        setProbeResults(prev => ({ ...prev, [e.id]: r.ok ? { ok: true, ms: Date.now() - t0 } : { ok: false, ms: Date.now() - t0, error: r.error ?? t('调用失败') } }))
       } catch (err) {
-        setProbeResults(prev => ({ ...prev, [e.id]: { ok: false, ms: Date.now() - t0, error: (err as Error)?.message ?? '调用失败' } }))
+        setProbeResults(prev => ({ ...prev, [e.id]: { ok: false, ms: Date.now() - t0, error: (err as Error)?.message ?? t('调用失败') } }))
       }
     }))
     setProbing(false)
-    notify(`引擎探测完成（共 ${targets.length} 个）`)
+    notify(t('引擎探测完成（共 {n} 个）', { n: targets.length }))
   }
   // ---- 顶栏工具显隐（设置「AI 助手工具栏」逐个开关，缺省显示） ----
   const tbShow = (k: keyof AiToolbarPrefs) => settings?.aiToolbar?.[k] !== false
@@ -879,13 +880,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
   const savePrompt = () => {
     const body = promptBody.trim()
-    if (!body) { notify('先写好提示词正文再保存'); return }
+    if (!body) { notify(t('先写好提示词正文再保存')); return }
     if (!onPromptsChange) return
     const title = promptTitle.trim() || body.slice(0, 18)
     onPromptsChange([{ id: `pt-${Date.now()}`, title, body, createdAt: new Date().toISOString() }, ...promptList])
     setPromptTitle('')
     setPromptBody('')
-    notify(`已存为模板「${title}」`)
+    notify(t('已存为模板「{title}」', { title }))
   }
   const insertPrompt = (body: string) => {
     setInput(prev => prev.trim() ? `${prev}\n${body}` : body)
@@ -894,16 +895,16 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
   const buildChatMarkdown = () => {
     const lines = [
-      '# AI 助手对话记录',
+      `# ${t('AI 助手对话记录')}`,
       '',
-      `导出时间：${new Date().toLocaleString('zh-CN')}`,
-      `模型：${currentModel}`,
+      t('导出时间：{time}', { time: new Date().toLocaleString(locale()) }),
+      t('模型：{model}', { model: currentModel }),
       '',
       '---',
       '',
     ]
     for (const m of messages) {
-      lines.push(`**${m.role === 'user' ? '我' : 'AI 助手'}：**`)
+      lines.push(`**${m.role === 'user' ? t('我') : t('AI 助手')}：**`)
       lines.push('')
       lines.push(m.content)
       lines.push('')
@@ -913,10 +914,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const downloadChat = async () => {
     const p = (n: number) => String(n).padStart(2, '0')
     const d = new Date()
-    const r = await saveExportFile(`AI对话记录-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`, buildChatMarkdown())
+    const r = await saveExportFile(`${t('AI对话记录')}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`, buildChatMarkdown())
     if (r.cancelled) return
     setExportOpen(false)
-    notify(r.ok ? `对话记录已导出到：${r.where}` : `导出失败：${r.error ?? '未知错误'}`)
+    notify(r.ok ? t('对话记录已导出到：{where}', { where: r.where ?? '' }) : t('导出失败：{error}', { error: r.error ?? t('未知错误') }))
   }
 
   const onInput = (v: string) => {
@@ -927,7 +928,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
 
   const currentModel = selectedOption?.account
     ? `${PROVIDER_MAP[selectedOption.account.providerId]?.shortName ?? selectedOption.account.label}${selectedEngine ? ` · ${selectedEngine.name}` : ''}`
-    : selectedOption?.label ?? '选择模型'
+    : selectedOption?.label ?? t('选择模型')
   const hasChat = messages.length > 0 || generating
   const callEnabled = !selectedOption || CATEGORY_META[selectedOption.category].canChat
   // 对话态：点击输入框或发送后进入，欢迎语/图标隐藏、输入框落到底部；进入页或切回来时复位居中
@@ -939,8 +940,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
 
   // 工具条下拉：分类 / 模型（与模型下拉联动）
   const categoryDropdown = <div className="ai-model-wrap">
-    <button className="ai-model-btn" onClick={() => { setCategoryOpen(v => !v); setModelOpen(false) }} title="模型分类">
-      <Layers size={13} /> {category} <ChevronDown size={13} />
+    <button className="ai-model-btn" onClick={() => { setCategoryOpen(v => !v); setModelOpen(false) }} title={t('模型分类')}>
+      <Layers size={13} /> {t(category)} <ChevronDown size={13} />
     </button>
     {categoryOpen && <div className="ai-model-menu me-panel-in" key={`cat-${category}`}>
       {AI_CATEGORIES.filter(c => {
@@ -954,23 +955,23 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             const list = allOptions.filter(o => o.category === c)
             if (list.length && !list.some(o => o.key === model)) { setModel(list[0].key); saveModel(list[0].key) }
           }}>
-          <span>{CATEGORY_META[c].icon} {c}</span>
+          <span>{CATEGORY_META[c].icon} {t(c)}</span>
           <small>{allOptions.filter(o => o.category === c).length}</small>
         </button>
       ))}
     </div>}
   </div>
   const modelDropdown = <div className="ai-model-wrap">
-    <button className="ai-model-btn" onClick={() => { setModelOpen(v => !v); setCategoryOpen(false) }} title="切换模型">
+    <button className="ai-model-btn" onClick={() => { setModelOpen(v => !v); setCategoryOpen(false) }} title={t('切换模型')}>
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
-      {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? '免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录' : '该分类暂无模型，请到 API Key 管理页添加'}</div>}
+      {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {visibleOptions.map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
           onClick={() => { setModel(o.key); saveModel(o.key); setModelOpen(false) }}>
           <span>{o.free ? '⚡ ' : o.localModel ? '🖥️ ' : '🔑 '}{o.label}</span>
-          {!o.free && !o.localModel && <small>{o.category}</small>}
+          {!o.free && !o.localModel && <small>{t(o.category)}</small>}
         </button>
       ))}
     </div>}
@@ -985,30 +986,30 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       <div className="ai-page prompts-page">
         <div className="prompts-page-inner">
           <div className="prompts-page-head">
-            <button className="btn sm" onClick={() => setPromptsOpen(false)}><ArrowLeft size={15} /> 返回聊天</button>
+            <button className="btn sm" onClick={() => setPromptsOpen(false)}><ArrowLeft size={15} /> {t('返回聊天')}</button>
             <div className="prompts-page-title">
-              <h2>提示词库</h2>
-              <span>共 {promptList.length} 个模板 · 随云同步，跨设备可用 · 点「插入」放回聊天输入框，正文里的 {'{变量}'} 插入后自己改</span>
+              <h2>{t('提示词库')}</h2>
+              <span>{t('共 {n} 个模板 · 随云同步，跨设备可用 · 点「插入」放回聊天输入框，正文里的 {变量} 插入后自己改', { n: promptList.length })}</span>
             </div>
           </div>
 
           <div className="prompts-new">
-            <div className="prompts-new-title">新建模板</div>
-            <input className="input" placeholder="模板标题（留空取正文前 18 字）" value={promptTitle} onChange={e => setPromptTitle(e.target.value)} />
-            <textarea className="input prompts-new-body" rows={5} placeholder="提示词正文，例如：你是一位资深翻译，把下面的内容翻译成英文：{内容}" value={promptBody} onChange={e => setPromptBody(e.target.value)} />
+            <div className="prompts-new-title">{t('新建模板')}</div>
+            <input className="input" placeholder={t('模板标题（留空取正文前 18 字）')} value={promptTitle} onChange={e => setPromptTitle(e.target.value)} />
+            <textarea className="input prompts-new-body" rows={5} placeholder={t('提示词正文，例如：你是一位资深翻译，把下面的内容翻译成英文：{内容}')} value={promptBody} onChange={e => setPromptBody(e.target.value)} />
             <div className="prompts-new-foot">
-              <span>打开本页时已自动带入聊天输入框里写好的内容，可直接修改后保存</span>
-              <button className="btn primary" onClick={savePrompt}>保存模板</button>
+              <span>{t('打开本页时已自动带入聊天输入框里写好的内容，可直接修改后保存')}</span>
+              <button className="btn primary" onClick={savePrompt}>{t('保存模板')}</button>
             </div>
           </div>
 
           <div className="prompts-search">
             <Search size={15} />
-            <input className="input" placeholder="搜索模板标题或正文…" value={promptQuery} onChange={e => setPromptQuery(e.target.value)} />
+            <input className="input" placeholder={t('搜索模板标题或正文…')} value={promptQuery} onChange={e => setPromptQuery(e.target.value)} />
           </div>
 
-          {promptList.length === 0 && <div className="prompts-empty">还没有模板。在上方写好标题和正文，点「保存模板」就会出现在这里。</div>}
-          {promptList.length > 0 && shownPrompts.length === 0 && <div className="prompts-empty">没有匹配「{promptQuery}」的模板。</div>}
+          {promptList.length === 0 && <div className="prompts-empty">{t('还没有模板。在上方写好标题和正文，点「保存模板」就会出现在这里。')}</div>}
+          {promptList.length > 0 && shownPrompts.length === 0 && <div className="prompts-empty">{t('没有匹配「{q}」的模板。', { q: promptQuery })}</div>}
           <div className="prompts-grid">
             {shownPrompts.map(p => (
               <div key={p.id} className="prompt-card">
@@ -1017,9 +1018,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 <div className="prompt-card-foot">
                   <span className="prompt-card-date">{p.createdAt?.slice(0, 10) ?? ''}</span>
                   <span className="prompt-card-actions">
-                    <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(p.body).then(() => notify('已复制模板正文')).catch(() => notify('复制失败，请手动复制')) }}><Copy size={13} /> 复制</button>
-                    <button className="btn sm primary" onClick={() => insertPrompt(p.body)}>插入</button>
-                    <button className="icon-btn" title="删除模板" onClick={() => onPromptsChange?.(promptList.filter(x => x.id !== p.id))}><Trash2 size={14} /></button>
+                    <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(p.body).then(() => notify(t('已复制模板正文'))).catch(() => notify(t('复制失败，请手动复制'))) }}><Copy size={13} /> {t('复制')}</button>
+                    <button className="btn sm primary" onClick={() => insertPrompt(p.body)}>{t('插入')}</button>
+                    <button className="icon-btn" title={t('删除模板')} onClick={() => onPromptsChange?.(promptList.filter(x => x.id !== p.id))}><Trash2 size={14} /></button>
                   </span>
                 </div>
               </div>
@@ -1039,49 +1040,49 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {/* 顶部栏：朗读开关 / 电话 / 刷新，靠右间距适中 */}
         <div className="ai-topbar">
           <div className="ai-top-actions" ref={toolsRef}>
-            <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip="全部功能">
+            <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip={t('全部功能')}>
               <LayoutGrid size={17} />
             </button>
             {toolsOpen && (
               <div className="ai-tools-menu" role="menu">
                 {tbShow('autoSpeak') && (
                   <button className={`ai-tools-item ${autoSpeak ? 'active' : ''}`} onClick={() => { toggleAutoSpeak(); setToolsOpen(false) }}>
-                    <Volume2 size={16} /><span>自动朗读</span>{autoSpeak && <Check size={15} className="ai-tools-check" />}
+                    <Volume2 size={16} /><span>{t('自动朗读')}</span>{autoSpeak && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('voiceCall') && (
                   <button className="ai-tools-item" disabled={!callEnabled} onClick={() => { setCallOpen(true); setToolsOpen(false) }}>
-                    <Phone size={16} /><span>语音通话{callEnabled ? '' : '（当前模型不支持）'}</span>
+                    <Phone size={16} /><span>{t('语音通话')}{callEnabled ? '' : t('（当前模型不支持）')}</span>
                   </button>
                 )}
                 {tbShow('chatSearch') && (
                   <button className={`ai-tools-item ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(''); setToolsOpen(false) }}>
-                    <Search size={16} /><span>搜索对话</span>{searchOpen && <Check size={15} className="ai-tools-check" />}
+                    <Search size={16} /><span>{t('搜索对话')}</span>{searchOpen && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('chatExport') && (
                   <button className="ai-tools-item" disabled={messages.length === 0} onClick={() => { setExportOpen(true); setToolsOpen(false) }}>
-                    <Download size={16} /><span>导出对话</span>
+                    <Download size={16} /><span>{t('导出对话')}</span>
                   </button>
                 )}
                 {tbShow('myData') && (
                   <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
-                    <Database size={16} /><span>引用我的数据</span>{useMyData && <Check size={15} className="ai-tools-check" />}
+                    <Database size={16} /><span>{t('引用我的数据')}</span>{useMyData && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('compare') && (
                   <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
-                    <Columns2 size={16} /><span>多模型对比</span>{compareMode && <Check size={15} className="ai-tools-check" />}
+                    <Columns2 size={16} /><span>{t('多模型对比')}</span>{compareMode && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('sessions') && (
                   <button className="ai-tools-item" onClick={() => { requestToggleHistory(); setToolsOpen(false) }}>
-                    <MessagesSquare size={16} /><span>会话列表</span>
+                    <MessagesSquare size={16} /><span>{t('会话列表')}</span>
                   </button>
                 )}
                 {tbShow('clearChat') && (
                   <button className="ai-tools-item" onClick={() => { clear(); setToolsOpen(false) }}>
-                    <RotateCcw size={16} /><span>清空对话</span>
+                    <RotateCcw size={16} /><span>{t('清空对话')}</span>
                   </button>
                 )}
               </div>
@@ -1092,12 +1093,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {/* 多模型对比选择条 */}
         {compareMode && (
           <div className="ai-compare-bar">
-            <span className="ai-compare-hint">对比模式：选 2–3 个模型（已选 {compareKeys.length}），发送后并排看回答与耗时</span>
+            <span className="ai-compare-hint">{t('对比模式：选 2–3 个模型（已选 {n}），发送后并排看回答与耗时', { n: compareKeys.length })}</span>
             <div className="ai-compare-chips">
               {allOptions.map(o => (
                 <button key={o.key} className={`ai-compare-chip ${compareKeys.includes(o.key) ? 'active' : ''}`} onClick={() => toggleCompareKey(o.key)}>{o.label}</button>
               ))}
-              {allOptions.length === 0 && <span className="ai-compare-hint">暂无可用模型</span>}
+              {allOptions.length === 0 && <span className="ai-compare-hint">{t('暂无可用模型')}</span>}
             </div>
           </div>
         )}
@@ -1111,11 +1112,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             <Search size={14} />
             <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') jumpMatch(e.shiftKey ? -1 : 1); if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery('') } }}
-              placeholder="搜索当前对话内容…" />
-            <span className="ai-search-count">{searchQuery.trim() ? (searchMatches.length ? `${Math.min(searchIdx + 1, searchMatches.length)}/${searchMatches.length}` : '无结果') : ''}</span>
-            <button className="ai-icon-btn" onClick={() => jumpMatch(-1)} disabled={searchMatches.length === 0} title="上一个（Shift+Enter）"><ChevronUp size={15} /></button>
-            <button className="ai-icon-btn" onClick={() => jumpMatch(1)} disabled={searchMatches.length === 0} title="下一个（Enter）"><ChevronDown size={15} /></button>
-            <button className="ai-icon-btn" onClick={() => { setSearchOpen(false); setSearchQuery('') }} title="关闭搜索"><X size={15} /></button>
+              placeholder={t('搜索当前对话内容…')} />
+            <span className="ai-search-count">{searchQuery.trim() ? (searchMatches.length ? `${Math.min(searchIdx + 1, searchMatches.length)}/${searchMatches.length}` : t('无结果')) : ''}</span>
+            <button className="ai-icon-btn" onClick={() => jumpMatch(-1)} disabled={searchMatches.length === 0} title={t('上一个（Shift+Enter）')}><ChevronUp size={15} /></button>
+            <button className="ai-icon-btn" onClick={() => jumpMatch(1)} disabled={searchMatches.length === 0} title={t('下一个（Enter）')}><ChevronDown size={15} /></button>
+            <button className="ai-icon-btn" onClick={() => { setSearchOpen(false); setSearchQuery('') }} title={t('关闭搜索')}><X size={15} /></button>
           </div>
         )}
 
@@ -1123,15 +1124,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {exportOpen && (
           <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setExportOpen(false) }}>
             <div className="modal" style={{ maxWidth: 520 }}>
-              <div className="modal-head"><h3 style={{ margin: 0 }}>导出对话记录</h3><button className="icon-btn" onClick={() => setExportOpen(false)}><X size={18} /></button></div>
+              <div className="modal-head"><h3 style={{ margin: 0 }}>{t('导出对话记录')}</h3><button className="icon-btn" onClick={() => setExportOpen(false)}><X size={18} /></button></div>
               <div className="modal-body">
-                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>把当前对话导出为 Markdown 文件存档，或复制全文到剪贴板。共 {messages.length} 条消息。</p>
+                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>{t('把当前对话导出为 Markdown 文件存档，或复制全文到剪贴板。共 {n} 条消息。', { n: messages.length })}</p>
                 <textarea className="input" readOnly rows={8} value={buildChatMarkdown()} style={{ width: '100%', fontSize: 12, lineHeight: 1.6 }} />
               </div>
               <div className="modal-foot">
-                <button className="btn" onClick={() => setExportOpen(false)}>取消</button>
-                <button className="btn" onClick={() => void copyMessage(buildChatMarkdown())}><Copy size={14} /> 复制全文</button>
-                <button className="btn primary" onClick={downloadChat}><Download size={14} /> 下载 .md</button>
+                <button className="btn" onClick={() => setExportOpen(false)}>{t('取消')}</button>
+                <button className="btn" onClick={() => void copyMessage(buildChatMarkdown())}><Copy size={14} /> {t('复制全文')}</button>
+                <button className="btn primary" onClick={downloadChat}><Download size={14} /> {t('下载 .md')}</button>
               </div>
             </div>
           </div>
@@ -1142,40 +1143,41 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           <div className="ai-model-notice">
             <Info size={15} />
             <div>
-              <b>{selectedOption.label}</b> 属于「{selectedOption.category}」——{CATEGORY_META[selectedOption.category].desc}。
-              直接在输入框写画面描述并发送，App 会调用该账户 API 地址对应的
-              {selectedOption.category === '生图型' ? '「/images/generations」生图接口' : '生视频接口'}；
-              若该模型不是生图/生视频模型或接口为私有协议，会返回错误提示，此时请改用官方页面生成。
+              <b>{selectedOption.label}</b> {t('属于「{category}」——{desc}。直接在输入框写画面描述并发送，App 会调用该账户 API 地址对应的{endpoint}；若该模型不是生图/生视频模型或接口为私有协议，会返回错误提示，此时请改用官方页面生成。', {
+                category: t(selectedOption.category),
+                desc: t(CATEGORY_META[selectedOption.category].desc),
+                endpoint: t(selectedOption.category === '生图型' ? '「/images/generations」生图接口' : '生视频接口'),
+              })}
             </div>
             <button className="btn sm ghost" onClick={() => {
               const url = PROVIDER_MAP[selectedOption.account!.providerId]?.officialUrl
               if (url) window.open(url, '_blank', 'noopener')
-              else notify('暂无官方地址')
-            }}><ExternalLink size={13} /> 官方</button>
+              else notify(t('暂无官方地址'))
+            }}><ExternalLink size={13} /> {t('官方')}</button>
           </div>
         )}
 
         {/* 自有模型解锁：固定在对话区顶部，不随滚动消失（与 Key 管理页解锁独立） */}
         {needPwd && <div className="ai-pwd-gate">
-          <span className="ai-pwd-gate-label"><Info size={13} /> 正在使用自有模型「{currentAccount?.label}」，需验证主密码后才能调用（本次会话只需一次，与 Key 管理页解锁互不影响）</span>
+          <span className="ai-pwd-gate-label"><Info size={13} /> {t('正在使用自有模型「{label}」，需验证主密码后才能调用（本次会话只需一次，与 Key 管理页解锁互不影响）', { label: currentAccount?.label ?? '' })}</span>
           <div className="ai-pwd-gate-row">
-            <input className="input" type="password" placeholder="输入主密码" value={aiPwdInput}
+            <input className="input" type="password" placeholder={t('输入主密码')} value={aiPwdInput}
               onChange={e => setAiPwdInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') void verifyAiPwd() }} />
             <button className="btn sm primary" disabled={aiPwdBusy || !aiPwdInput} onClick={() => void verifyAiPwd()}>
-              {aiPwdBusy ? <><Loader2 size={13} className="spin" /> 验证</> : '验证'}
+              {aiPwdBusy ? <><Loader2 size={13} className="spin" /> {t('验证')}</> : t('验证')}
             </button>
           </div>
         </div>}
 
         {/* 报错换 Key 重试：当前账户调用失败且同平台有备用账户时出现 */}
         {pendingRetry && <div className="ai-retry-bar">
-          <span className="ai-pwd-gate-label"><Info size={13} /> 当前 Key 调用失败（可能失效或额度不足），同平台还有备用账户。</span>
+          <span className="ai-pwd-gate-label"><Info size={13} /> {t('当前 Key 调用失败（可能失效或额度不足），同平台还有备用账户。')}</span>
           <div className="ai-pwd-gate-row">
             <button className="btn sm primary" onClick={() => { const r = pendingRetry; setPendingRetry(null); setModel(r.altKey); void send(r.text, r.altKey) }}>
-              切换到「{pendingRetry.altLabel}」重试
+              {t('切换到「{label}」重试', { label: pendingRetry.altLabel })}
             </button>
-            <button className="btn sm ghost" onClick={() => setPendingRetry(null)}>不用了</button>
+            <button className="btn sm ghost" onClick={() => setPendingRetry(null)}>{t('不用了')}</button>
           </div>
         </div>}
 
@@ -1183,7 +1185,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         <div className="ai-messages">
           {!enteredChat ? (
             <div className="ai-welcome">
-              <div className="ai-welcome-mark" onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen('bot') }} title="点击更换 AI 头像、名字与音色"><img src={`${import.meta.env.BASE_URL}pwa-512.png`} alt="AI 积分管家" className="app-mark-img" /></div>
+              <div className="ai-welcome-mark" onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen('bot') }} title={t('点击更换 AI 头像、名字与音色')}><img src={`${import.meta.env.BASE_URL}pwa-512.png`} alt={t('AI 积分管家')} className="app-mark-img" /></div>
               <h2>{welcomeText(userProfile.nickname)}</h2>
             </div>
           ) : (
@@ -1192,7 +1194,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 const profile = m.role === 'assistant' ? botProfile : userProfile
                 return (
                 <div key={m.id} id={`aimsg-${m.id}`} className={`ai-msg ${m.role}${searchMatches.includes(m.id) ? ' search-hit' : ''}${currentMatchId === m.id ? ' search-current' : ''}`}>
-                  <div className="ai-avatar avatar-click" title={m.role === 'assistant' ? '点击更换 AI 头像/名字/音色' : '点击更换我的头像/昵称/前缀'}
+                  <div className="ai-avatar avatar-click" title={m.role === 'assistant' ? t('点击更换 AI 头像/名字/音色') : t('点击更换我的头像/昵称/前缀')}
                     style={{ background: avatarBg(profile) }} onClick={() => { setClonedVoices(listClonedVoices()); setIdentityOpen(m.role === 'assistant' ? 'bot' : 'user') }}>{avatarContent(profile)}</div>
                   <div className="ai-msg-body">
                     <div className="ai-bubble" onTouchStart={() => startLongPress(m.content)} onTouchEnd={endLongPress} onTouchMove={endLongPress}>{m.content}</div>
@@ -1200,12 +1202,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                       <div className="ai-msg-tools">
                         {m.role === 'assistant' && (
                           <button className={`ai-speak ${speakingId === m.id ? 'active' : ''}`}
-                            onClick={() => toggleSpeak(m)} title={speakingId === m.id ? '停止朗读' : '朗读此回复'}>
+                            onClick={() => toggleSpeak(m)} title={speakingId === m.id ? t('停止朗读') : t('朗读此回复')}>
                             {speakingId === m.id ? <VolumeX size={14} /> : <Volume2 size={14} />}
-                            <span>{speakingId === m.id ? '停止' : '朗读'}</span>
+                            <span>{speakingId === m.id ? t('停止') : t('朗读')}</span>
                           </button>
                         )}
-                        <button className="ai-copy" onClick={() => void copyMessage(m.content)} title="复制对话内容"><Copy size={13} /></button>
+                        <button className="ai-copy" onClick={() => void copyMessage(m.content)} title={t('复制对话内容')}><Copy size={13} /></button>
                       </div>
                     )}
                   </div>
@@ -1231,13 +1233,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                       <div key={r.key} className="ai-compare-col">
                         <div className="ai-compare-head">
                           <b>{r.label}</b>
-                          <span>{r.status === 'loading' ? '生成中…' : r.status === 'error' ? `失败 · ${(r.ms / 1000).toFixed(1)}s` : `${(r.ms / 1000).toFixed(1)}s · ${r.text.length} 字`}</span>
+                          <span>{r.status === 'loading' ? t('生成中…') : r.status === 'error' ? t('失败 · {s}s', { s: (r.ms / 1000).toFixed(1) }) : t('{s}s · {n} 字', { s: (r.ms / 1000).toFixed(1), n: r.text.length })}</span>
                         </div>
-                        <div className={`ai-compare-body ${r.status === 'error' ? 'error' : ''}`}>{r.text || (r.status === 'loading' ? '…' : '（无回复）')}</div>
+                        <div className={`ai-compare-body ${r.status === 'error' ? 'error' : ''}`}>{r.text || (r.status === 'loading' ? '…' : t('（无回复）'))}</div>
                       </div>
                     ))}
                   </div>
-                  <button className="btn sm ghost" onClick={() => setCompareRuns(null)}>关闭对比结果</button>
+                  <button className="btn sm ghost" onClick={() => setCompareRuns(null)}>{t('关闭对比结果')}</button>
                 </div>
               )}
               <div ref={bottomRef} />
@@ -1253,24 +1255,24 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 {a.mime.startsWith('image/') ? <img src={a.dataUrl} alt={a.name} />
                   : a.mime.startsWith('video/') ? <Video size={18} /> : <FileText size={18} />}
                 <span>{a.name}</span>
-                <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} title="移除"><X size={13} /></button>
+                <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} title={t('移除')}><X size={13} /></button>
               </div>
             ))}
           </div>}
           {/* 输入框上方一行：左=添加附件，右=推理等级 */}
           <div className="ai-compose-top" onClick={() => setComposeActive(true)}>
-            <button className="ai-icon-btn" onClick={() => setAttachPickerOpen(true)} title="添加附件（点击选择或拖拽）"><Plus size={18} /></button>
+            <button className="ai-icon-btn" onClick={() => setAttachPickerOpen(true)} title={t('添加附件（点击选择或拖拽）')}><Plus size={18} /></button>
             <div className="reasoning-wrap">
-              <button className="reasoning-btn" onClick={() => setReasoningOpen(v => !v)} title={REASONING_DESC[reasoning]}>推理 {reasoning} <ChevronDown size={12} /></button>
+              <button className="reasoning-btn" onClick={() => setReasoningOpen(v => !v)} title={t(REASONING_DESC[reasoning])}>{t('推理 {level}', { level: reasoning })} <ChevronDown size={12} /></button>
               {reasoningOpen && <div className="reasoning-menu">
                 {REASONING_LEVELS.map(l => (
-                  <button key={l} className={`reasoning-option ${l === reasoning ? 'active' : ''}`} title={REASONING_DESC[l]}
+                  <button key={l} className={`reasoning-option ${l === reasoning ? 'active' : ''}`} title={t(REASONING_DESC[l])}
                     onClick={() => {
                       setReasoning(l); setReasoningOpen(false)
-                      notify(`${l}：${REASONING_DESC[l]}`)
+                      notify(t('{level}：{desc}', { level: l, desc: t(REASONING_DESC[l]) }))
                     }}>
                     <span className="reasoning-option-label">{l} {l === reasoning && <span>✓</span>}</span>
-                    <small>{REASONING_DESC[l]}</small>
+                    <small>{t(REASONING_DESC[l])}</small>
                   </button>
                 ))}
               </div>}
@@ -1278,18 +1280,18 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           </div>
           <div className="ai-compose-box" onClick={() => setComposeActive(true)}>
             <textarea ref={textareaRef} className="ai-textarea" rows={1}
-              placeholder={attachments.length ? '对这些附件说点什么…（也可直接发送）' : '输入你的问题…'} value={input}
+              placeholder={attachments.length ? t('对这些附件说点什么…（也可直接发送）') : t('输入你的问题…')} value={input}
               onChange={e => onInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
               disabled={generating} />
             <button className={`ai-mic-btn ${listening ? 'listening' : ''}`} onClick={() => void toggleMic()} disabled={generating}
-              title={listening ? '停止语音输入' : '语音输入（点击后说话，文字会填入输入框）'}>
+              title={listening ? t('停止语音输入') : t('语音输入（点击后说话，文字会填入输入框）')}>
               <Mic size={16} />
             </button>
             {generating ? (
-              <button className="ai-send stop" onClick={stop} title="停止生成"><Square size={15} fill="currentColor" /></button>
+              <button className="ai-send stop" onClick={stop} title={t('停止生成')}><Square size={15} fill="currentColor" /></button>
             ) : (
-              <button className="ai-send" onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} title="发送"><Send size={17} /></button>
+              <button className="ai-send" onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} title={t('发送')}><Send size={17} /></button>
             )}
           </div>
           {/* 输入框下方一行：左=模型分组，中=模型名，右=模型引擎，三分分散 */}
@@ -1298,15 +1300,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             {categoryDropdown}
             {modelDropdown}
             {currentAccount && (hasCatalog(currentAccount.providerId) || engines.length > 0 || loadingEngines) && (
-              <button className="ai-model-btn ai-engine-btn" onClick={() => setEnginePanelOpen(v => !v)} title="选择该平台的模型引擎">
-                <Cpu size={13} /> 引擎 <ChevronDown size={13} />
+              <button className="ai-model-btn ai-engine-btn" onClick={() => setEnginePanelOpen(v => !v)} title={t('选择该平台的模型引擎')}>
+                <Cpu size={13} /> {t('引擎')} <ChevronDown size={13} />
               </button>
             )}
-            <button className="ai-model-btn" onClick={openPromptsPage} title="提示词库：常用提示词存成模板，一键插入（可跨设备同步）">
-              <BookMarked size={13} /> 提示词
+            <button className="ai-model-btn" onClick={openPromptsPage} title={t('提示词库：常用提示词存成模板，一键插入（可跨设备同步）')}>
+              <BookMarked size={13} /> {t('提示词')}
             </button>
           </div>
-          {resolvingKey && <div className="ai-hint-inline"><Loader2 size={12} className="spin" /> 正在解锁密钥…</div>}
+          {resolvingKey && <div className="ai-hint-inline"><Loader2 size={12} className="spin" /> {t('正在解锁密钥…')}</div>}
         </div>
       </div>
       {/* 右侧引擎选择面板 */}
@@ -1316,45 +1318,45 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           <aside className="engine-panel">
             <div className="engine-panel-head">
               <div>
-                <div className="engine-panel-title">模型引擎</div>
+                <div className="engine-panel-title">{t('模型引擎')}</div>
                 <div className="engine-panel-sub">
-                  {PROVIDER_MAP[currentAccount.providerId]?.shortName ?? currentAccount.label} · 按 token 消耗从低到高
-                  {loadingEngines && ' · 正在获取实时引擎…'}
-                  {!loadingEngines && engineSource === 'remote' && ' · 实时获取'}
-                  {!loadingEngines && engineSource === 'builtin' && ' · 内置参考'}
+                  {t('{name} · 按 token 消耗从低到高', { name: PROVIDER_MAP[currentAccount.providerId]?.shortName ?? currentAccount.label })}
+                  {loadingEngines && t(' · 正在获取实时引擎…')}
+                  {!loadingEngines && engineSource === 'remote' && t(' · 实时获取')}
+                  {!loadingEngines && engineSource === 'builtin' && t(' · 内置参考')}
                 </div>
               </div>
               <button className="icon-btn" onClick={() => setEnginePanelOpen(false)}><X size={17} /></button>
             </div>
             <div className="engine-probe-bar">
-              <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? '探测中…' : '探测可用性'}</button>
-              <span>给每个引擎发一条极短消息，验证真能出话（最多 12 个，会消耗极少量额度）</span>
+              <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? t('探测中…') : t('探测可用性')}</button>
+              <span>{t('给每个引擎发一条极短消息，验证真能出话（最多 12 个，会消耗极少量额度）')}</span>
             </div>
             <div className="engine-list">
               {engines.map(e => (
                 <button key={e.id} className={`engine-item ${engineId === e.id ? 'active' : ''}`}
-                  onClick={() => { setEngineId(e.id); notify(`已选引擎：${e.name}`) }}>
+                  onClick={() => { setEngineId(e.id); notify(t('已选引擎：{name}', { name: e.name })) }}>
                   <span className="engine-icon">{e.reasoning ? '🧠' : '⚡'}</span>
                   <span className="engine-info">
                     <span className="engine-name">{e.name}
-                      {e.tag && <em className={`engine-tag ${e.tag === '夜间折扣' ? 'discount' : e.tag === '订阅优先' ? 'sub' : ''}`}>{e.tag}</em>}
+                      {e.tag && <em className={`engine-tag ${e.tag === '夜间折扣' ? 'discount' : e.tag === '订阅优先' ? 'sub' : ''}`}>{t(e.tag)}</em>}
                     </span>
                     <span className="engine-id">{e.id}</span>
                   </span>
                   <span className="engine-multi">{e.multiplier.toFixed(2)}x</span>
                   {probeResults[e.id] && (
                     <span className={`engine-probe ${probeResults[e.id].ok ? 'ok' : 'fail'}`} title={probeResults[e.id].error ?? ''}>
-                      {probeResults[e.id].ok ? `● ${probeResults[e.id].ms}ms` : '● 不可用'}
+                      {probeResults[e.id].ok ? `● ${probeResults[e.id].ms}ms` : t('● 不可用')}
                     </span>
                   )}
                   {engineId === e.id && <span className="engine-check">✓</span>}
                 </button>
               ))}
-              {loadingEngines && <div className="engine-empty"><Loader2 size={22} className="spin" /><div style={{ marginTop: 10 }}>正在从官方接口获取可用引擎…</div></div>}
-              {!loadingEngines && engines.length === 0 && <div className="engine-empty">该平台暂无内置引擎目录。<br />请到 API Key 管理页检查账户平台，或手动填写引擎名。</div>}
+              {loadingEngines && <div className="engine-empty"><Loader2 size={22} className="spin" /><div style={{ marginTop: 10 }}>{t('正在从官方接口获取可用引擎…')}</div></div>}
+              {!loadingEngines && engines.length === 0 && <div className="engine-empty">{t('该平台暂无内置引擎目录。')}<br />{t('请到 API Key 管理页检查账户平台，或手动填写引擎名。')}</div>}
             </div>
             <div className="engine-note">
-              <Info size={12} /> 倍率为参考值，用于排序；实际计费以官方账单为准。部分引擎需订阅或支持推理等级。
+              <Info size={12} /> {t('倍率为参考值，用于排序；实际计费以官方账单为准。部分引擎需订阅或支持推理等级。')}
             </div>
           </aside>
         </>
@@ -1365,7 +1367,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         onConfirm={(items) => {
           setAttachments(prev => [...prev, ...items])
           setAttachPickerOpen(false)
-          notify(`已添加 ${items.length} 个附件`)
+          notify(t('已添加 {n} 个附件', { n: items.length }))
         }}
         notify={notify}
       />}
@@ -1376,8 +1378,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         user={userProfile}
         voices={clonedVoices.map(v => ({ id: v.id, name: v.name, voiceId: v.voiceId }))}
         onClose={() => setIdentityOpen(null)}
-        onSaveBot={(p) => { saveBotProfile(p); setBotProfile(p); setIdentityOpen(null); notify('AI 身份已保存，切换模型也不会重置') }}
-        onSaveUser={(p) => { saveUserProfile(p); setUserProfile(p); setIdentityOpen(null); notify('我的身份与回答前缀已保存') }}
+        onSaveBot={(p) => { saveBotProfile(p); setBotProfile(p); setIdentityOpen(null); notify(t('AI 身份已保存，切换模型也不会重置')) }}
+        onSaveUser={(p) => { saveUserProfile(p); setUserProfile(p); setIdentityOpen(null); notify(t('我的身份与回答前缀已保存')) }}
       />}
 
       {callOpen && <VoiceCall
@@ -1391,9 +1393,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         needPwd={needPwd}
         onUnlock={async (pwd) => {
           const ok = await verifyVault(pwd)
-          if (!ok) { notify('主密码错误'); return false }
+          if (!ok) { notify(t('主密码错误')); return false }
           setAiPwd(pwd)
-          notify('已验证，本次会话可正常通话')
+          notify(t('已验证，本次会话可正常通话'))
           return true
         }}
       />}
@@ -1421,16 +1423,16 @@ function IdentityModal({ kind, bot, user, voices, onClose, onSaveBot, onSaveUser
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 460 }}>
-        <div className="modal-head"><h3>{isBot ? '设置 AI 助手' : '设置我的资料'}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{isBot ? t('设置 AI 助手') : t('设置我的资料')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
-          <div className="field-label" style={{ marginTop: 0 }}>头像</div>
+          <div className="field-label" style={{ marginTop: 0 }}>{t('头像')}</div>
           <div className="identity-avatars">
             {AVATAR_PRESETS.map(a => (
-              <button key={a.id} title={a.label} className={`identity-avatar ${avatarId === a.id ? 'active' : ''}`}
+              <button key={a.id} title={t(a.label)} className={`identity-avatar ${avatarId === a.id ? 'active' : ''}`}
                 style={{ background: a.color }} onClick={() => { setAvatarId(a.id); setAvatarDataUrl(undefined) }}>{a.emoji}</button>
             ))}
-            <label className={`identity-avatar identity-upload ${avatarId === 'custom' ? 'active' : ''}`} title="上传自定义图片（等比缩放）">
-              {avatarDataUrl ? <img src={avatarDataUrl} alt="自定义头像" /> : <ImageIcon size={17} />}
+            <label className={`identity-avatar identity-upload ${avatarId === 'custom' ? 'active' : ''}`} title={t('上传自定义图片（等比缩放）')}>
+              {avatarDataUrl ? <img src={avatarDataUrl} alt={t('自定义头像')} /> : <ImageIcon size={17} />}
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => {
                 const file = e.target.files?.[0]
                 if (file) void resizeAvatarImage(file).then(url => { setAvatarDataUrl(url); setAvatarId('custom') }).catch(() => {})
@@ -1439,36 +1441,36 @@ function IdentityModal({ kind, bot, user, voices, onClose, onSaveBot, onSaveUser
             </label>
           </div>
           <label className="form-label" style={{ marginTop: 16 }}>
-            {isBot ? 'AI 名字' : '我的昵称'}
-            <input className="input" value={name} maxLength={20} onChange={e => setName(e.target.value)} placeholder={isBot ? 'AI 助手' : '我'} />
+            {isBot ? t('AI 名字') : t('我的昵称')}
+            <input className="input" value={name} maxLength={20} onChange={e => setName(e.target.value)} placeholder={isBot ? t('AI 助手') : t('我')} />
           </label>
           {isBot ? (
             <label className="form-label" style={{ marginTop: 12 }}>
-              说话音色（AI 复刻音色）
+              {t('说话音色（AI 复刻音色）')}
               <select className="select" value={voiceURI ?? ''} onChange={e => setVoiceURI(e.target.value || null)}>
-                <option value="">跟随全局音色设置</option>
+                <option value="">{t('跟随全局音色设置')}</option>
                 {voices.map(v => <option key={v.id} value={v.voiceId}>{v.name}</option>)}
               </select>
               <span style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
                 {voices.length === 0
-                  ? '还没有克隆音色，请到「语音配置 → 声音克隆」创建一个。'
-                  : '选择后 AI 朗读会用这个克隆音色；在「语音配置」里增删改音色会自动同步到这里。'}
+                  ? t('还没有克隆音色，请到「语音配置 → 声音克隆」创建一个。')
+                  : t('选择后 AI 朗读会用这个克隆音色；在「语音配置」里增删改音色会自动同步到这里。')}
               </span>
             </label>
           ) : (
             <label className="form-label" style={{ marginTop: 12 }}>
-              AI 回答前缀短语 / 词组
-              <input className="input" value={phrase} maxLength={30} onChange={e => setPhrase(e.target.value)} placeholder="例如：请注意" />
-              <span style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>每次回答开头会显示“昵称：短语”，例如“小明：请注意”。</span>
+              {t('AI 回答前缀短语 / 词组')}
+              <input className="input" value={phrase} maxLength={30} onChange={e => setPhrase(e.target.value)} placeholder={t('例如：请注意')} />
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>{t('每次回答开头会显示“昵称：短语”，例如“小明：请注意”。')}</span>
             </label>
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" disabled={!name.trim()} onClick={() => {
             if (isBot) onSaveBot({ avatarId, avatarDataUrl, name: name.trim(), voiceURI })
             else onSaveUser({ avatarId, avatarDataUrl, nickname: name.trim(), phrase: phrase.trim() })
-          }}>完成</button>
+          }}>{t('完成')}</button>
         </div>
       </div>
     </div>

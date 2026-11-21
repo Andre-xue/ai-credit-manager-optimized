@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Trash2, Check } from 'lucide-react'
 import { isNativeApp } from '../core/openExternal'
+import { t } from '../core/i18n'
 
 interface Props {
   onConfirm: () => void
@@ -92,7 +93,7 @@ export function HoldToConfirm({ onConfirm, title = '删除', size = 34, holdMs =
 
   // 桌面端：普通点击删除
   if (!phone) {
-    return <button className={`icon-btn danger ${className}`} title={title} onClick={onConfirm}><Trash2 size={14} /></button>
+    return <button className={`icon-btn danger ${className}`} title={t(title)} onClick={onConfirm}><Trash2 size={14} /></button>
   }
 
   const offset = CIRC * (1 - progress)
@@ -100,7 +101,7 @@ export function HoldToConfirm({ onConfirm, title = '删除', size = 34, holdMs =
     <button
       className={`hold-confirm ${phase === 'done' ? 'done' : ''} ${phase === 'holding' ? 'holding' : ''} ${className}`}
       style={{ width: size, height: size }}
-      title={`长按 ${holdMs / 1000} 秒${title}`}
+      title={t('长按 {sec} 秒{action}', { sec: holdMs / 1000, action: t(title) })}
       onPointerDown={start}
       onPointerUp={cancel}
       onPointerLeave={cancel}
@@ -116,7 +117,7 @@ export function HoldToConfirm({ onConfirm, title = '删除', size = 34, holdMs =
         />
       </svg>
       <span className="hold-icon">{phase === 'done' ? <Check size={15} strokeWidth={2.6} /> : <Trash2 size={14} />}</span>
-      {phase === 'done' && <span className="hold-done-label">已删除</span>}
+      {phase === 'done' && <span className="hold-done-label">{t('已删除')}</span>}
     </button>
   )
 }

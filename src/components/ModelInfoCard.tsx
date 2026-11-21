@@ -3,6 +3,7 @@
 
 import { Info, ThumbsUp, ThumbsDown, Target } from 'lucide-react'
 import { describeModel, type MediaModelInfo } from '../core/mediaAdapters'
+import { t } from '../core/i18n'
 
 export function ModelInfoCard({ modelId, kind }: { modelId: string; kind: 'image' | 'video' }) {
   if (!modelId) return null
@@ -12,15 +13,15 @@ export function ModelInfoCard({ modelId, kind }: { modelId: string; kind: 'image
       <div className="gen-mi-title"><Info size={13} /> {info.tagline}</div>
       <div className="gen-mi-grid">
         <div className="gen-mi-col pros">
-          <span className="gen-mi-label"><ThumbsUp size={12} /> 优点</span>
+          <span className="gen-mi-label"><ThumbsUp size={12} /> {t('优点')}</span>
           {info.pros.length ? info.pros.map((p, i) => <span key={i} className="gen-mi-item">· {p}</span>) : <span className="gen-mi-item">—</span>}
         </div>
         <div className="gen-mi-col cons">
-          <span className="gen-mi-label"><ThumbsDown size={12} /> 缺点 / 注意</span>
+          <span className="gen-mi-label"><ThumbsDown size={12} /> {t('缺点 / 注意')}</span>
           {info.cons.length ? info.cons.map((c, i) => <span key={i} className="gen-mi-item">· {c}</span>) : <span className="gen-mi-item">—</span>}
         </div>
       </div>
-      {info.best && <div className="gen-mi-best"><Target size={12} /> 适合：{info.best}</div>}
+      {info.best && <div className="gen-mi-best"><Target size={12} /> {t('适合：{best}', { best: info.best })}</div>}
     </div>
   )
 }

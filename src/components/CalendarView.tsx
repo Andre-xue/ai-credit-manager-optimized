@@ -7,8 +7,9 @@ import { predictExhaustion } from '../core/forecast'
 import { buildICalendar } from '../core/ical'
 import { saveExportFile } from '../core/saveFile'
 import { buildAchievements } from '../core/achievements'
+import { t } from '../core/i18n'
 
-const WEEK = ['一', '二', '三', '四', '五', '六', '日']
+const WEEK = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
 export function CalendarView({ state }: { state: AppState }) {
   const now = new Date()
@@ -47,26 +48,26 @@ export function CalendarView({ state }: { state: AppState }) {
   return (
     <div>
       <div className="section-head">
-        <h2><CalendarDays size={17} style={{ verticalAlign: -3, marginRight: 6 }} />额度日历
-          <span className="hint">本月签到 {monthCheckinDays} 天 · 用量 ¥{monthCost.toFixed(2)}{streak > 0 ? ` · 🔥 连续签到 ${streak} 天` : ''}</span>
+        <h2><CalendarDays size={17} style={{ verticalAlign: -3, marginRight: 6 }} />{t('额度日历')}
+          <span className="hint">{t('本月签到 {days} 天 · 用量 ¥{cost}', { days: monthCheckinDays, cost: monthCost.toFixed(2) })}{streak > 0 ? t('· 🔥 连续签到 {streak} 天', { streak }) : ''}</span>
         </h2>
         <div className="row" style={{ gap: 6 }}>
           <button className="btn sm ghost" onClick={() => setMonth((m) => shiftMonth(m, -1))}><ChevronLeft size={14} /></button>
-          <b style={{ fontSize: 13.5, minWidth: 74, textAlign: 'center' }}>{month.replace('-', ' 年 ')} 月</b>
+          <b style={{ fontSize: 13.5, minWidth: 74, textAlign: 'center' }}>{t('{year} 年 {month} 月', { year: month.split('-')[0], month: month.split('-')[1] })}</b>
           <button className="btn sm ghost" onClick={() => setMonth((m) => shiftMonth(m, 1))}><ChevronRight size={14} /></button>
-          {month !== curMonth && <button className="btn sm" onClick={() => { setMonth(curMonth); setSelected(today) }}>回到本月</button>}
-          <button className="btn sm" title="把未来 90 天的额度重置/到期日 + 每日签到提醒导出为 .ics 文件，可导入手机/电脑自带日历" onClick={async () => {
+          {month !== curMonth && <button className="btn sm" onClick={() => { setMonth(curMonth); setSelected(today) }}>{t('回到本月')}</button>}
+          <button className="btn sm" title={t('把未来 90 天的额度重置/到期日 + 每日签到提醒导出为 .ics 文件，可导入手机/电脑自带日历')} onClick={async () => {
             const r = await saveExportFile(`AI积分管家日历-${today}.ics`, buildICalendar(state, today))
             if (r.cancelled) return
-            setExportNote(r.ok ? `已导出到：${r.where}` : `导出失败：${r.error ?? '未知错误'}`)
+            setExportNote(r.ok ? t('已导出到：{where}', { where: r.where ?? '' }) : t('导出失败：{error}', { error: r.error ?? t('未知错误') }))
             setTimeout(() => setExportNote(''), 5000)
-          }}>导出日历</button>
+          }}>{t('导出日历')}</button>
           {exportNote && <span style={{ fontSize: 12, color: 'var(--text-3)', alignSelf: 'center' }}>{exportNote}</span>}
         </div>
       </div>
 
       <div className="panel cal-panel">
-        <div className="cal-week">{WEEK.map((w) => <span key={w}>周{w}</span>)}</div>
+        <div className="cal-week">{WEEK.map((w) => <span key={w}>{t(w)}</span>)}</div>
         <div className="cal-grid">
           {cells.map((date, i) => {
             if (!date) return <div key={`e-${i}`} className="cal-cell empty" />
@@ -77,10 +78,10 @@ export function CalendarView({ state }: { state: AppState }) {
               <button key={date} className={`cal-cell ${isToday ? 'today' : ''} ${isSel ? 'selected' : ''}`} onClick={() => setSelected(date)}>
                 <span className="cal-daynum">{Number(date.slice(8))}</span>
                 <span className="cal-marks">
-                  {d?.checkins.length ? <i className="cal-dot checkin" title="已签到" /> : null}
-                  {d?.cost ? <i className="cal-dot usage" title="有用量" /> : null}
-                  {d?.resets.length ? <i className="cal-dot reset" title="额度重置/到期" /> : null}
-                  {exhaustMarks.get(date)?.length ? <i className="cal-dot exhaust" title="预计额度耗尽" /> : null}
+                  {d?.checkins.length ? <i className="cal-dot checkin" title={t('已签到')} /> : null}
+                  {d?.cost ? <i className="cal-dot usage" title={t('有用量')} /> : null}
+                  {d?.resets.length ? <i className="cal-dot reset" title={t('额度重置/到期')} /> : null}
+                  {exhaustMarks.get(date)?.length ? <i className="cal-dot exhaust" title={t('预计额度耗尽')} /> : null}
                 </span>
                 {d?.cost ? <span className="cal-cost">¥{d.cost.toFixed(0)}</span> : null}
               </button>
@@ -88,32 +89,32 @@ export function CalendarView({ state }: { state: AppState }) {
           })}
         </div>
         <div className="cal-legend">
-          <span><i className="cal-dot checkin" /> 已签到</span>
-          <span><i className="cal-dot usage" /> 有用量</span>
-          <span><i className="cal-dot reset" /> 额度重置/到期</span>
-          <span><i className="cal-dot exhaust" /> 预计耗尽</span>
+          <span><i className="cal-dot checkin" /> {t('已签到')}</span>
+          <span><i className="cal-dot usage" /> {t('有用量')}</span>
+          <span><i className="cal-dot reset" /> {t('额度重置/到期')}</span>
+          <span><i className="cal-dot exhaust" /> {t('预计耗尽')}</span>
         </div>
       </div>
 
       <div className="panel" style={{ padding: 16, marginTop: 14 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <b style={{ fontSize: 13.5 }}>签到热力图</b>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>最近 18 周{streak > 0 ? ` · 🔥 已连续签到 ${streak} 天` : ''}</span>
+          <b style={{ fontSize: 13.5 }}>{t('签到热力图')}</b>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('最近 18 周')}{streak > 0 ? t('· 🔥 已连续签到 {streak} 天', { streak }) : ''}</span>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            少 <i className="heat-cell lv0" /><i className="heat-cell lv1" /><i className="heat-cell lv2" /><i className="heat-cell lv3" /><i className="heat-cell lv4" /> 多
+            {t('少')} <i className="heat-cell lv0" /><i className="heat-cell lv1" /><i className="heat-cell lv2" /><i className="heat-cell lv3" /><i className="heat-cell lv4" /> {t('多')}
           </span>
         </div>
         <div className="heatmap" style={{ marginTop: 10 }}>
           {Array.from({ length: heatLead }).map((_, i) => <i key={`b-${i}`} className="heat-cell blank" />)}
           {heat.map((d) => (
-            <i key={d.date} className={`heat-cell lv${Math.min(4, d.count)}`} title={`${d.date} · 签到 ${d.count} 个工具`} />
+            <i key={d.date} className={`heat-cell lv${Math.min(4, d.count)}`} title={t('{date} · 签到 {count} 个工具', { date: d.date, count: d.count })} />
           ))}
         </div>
       </div>
 
       <div className="panel" style={{ padding: 16, marginTop: 14 }}>
-        <b style={{ fontSize: 13.5 }}>签到成就</b>
-        <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>已点亮 {achievements.filter((a) => a.earned).length} / {achievements.length} 枚徽章</span>
+        <b style={{ fontSize: 13.5 }}>{t('签到成就')}</b>
+        <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>{t('已点亮 {earned} / {total} 枚徽章', { earned: achievements.filter((a) => a.earned).length, total: achievements.length })}</span>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginTop: 12 }}>
           {achievements.map((a) => (
             <div key={a.id} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: '10px 12px', opacity: a.earned ? 1 : 0.62, background: a.earned ? 'rgba(109,40,217,.07)' : 'transparent' }}>
@@ -129,14 +130,14 @@ export function CalendarView({ state }: { state: AppState }) {
       </div>
 
       <div className="panel" style={{ padding: 16, marginTop: 14 }}>
-        <b style={{ fontSize: 13.5 }}>{selected} 明细</b>
+        <b style={{ fontSize: 13.5 }}>{t('{date} 明细', { date: selected })}</b>
         {(!sel || (!sel.checkins.length && !sel.cost && !sel.resets.length)) && !selExhaust?.length
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 8 }}>这一天没有签到、用量或额度事件。</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 8 }}>{t('这一天没有签到、用量或额度事件。')}</div>
           : <div style={{ marginTop: 8, display: 'grid', gap: 6, fontSize: 13 }}>
-              {sel && sel.checkins.length > 0 && <div>✅ 已签到：{sel.checkins.join('、')}</div>}
-              {sel && sel.cost > 0 && <div>💰 用量：¥{sel.cost.toFixed(2)} · {sel.tokens.toLocaleString()} Tokens</div>}
-              {sel && sel.resets.length > 0 && <div>⏰ 额度重置/到期：{sel.resets.join('、')}</div>}
-              {selExhaust && selExhaust.length > 0 && <div>🔻 预计额度耗尽：{selExhaust.join('、')}（按当前消耗速度预测）</div>}
+              {sel && sel.checkins.length > 0 && <div>{t('✅ 已签到：{list}', { list: sel.checkins.join('、') })}</div>}
+              {sel && sel.cost > 0 && <div>{t('💰 用量：¥{cost} · {tokens} Tokens', { cost: sel.cost.toFixed(2), tokens: sel.tokens.toLocaleString() })}</div>}
+              {sel && sel.resets.length > 0 && <div>{t('⏰ 额度重置/到期：{list}', { list: sel.resets.join('、') })}</div>}
+              {selExhaust && selExhaust.length > 0 && <div>{t('🔻 预计额度耗尽：{list}（按当前消耗速度预测）', { list: selExhaust.join('、') })}</div>}
             </div>}
       </div>
     </div>

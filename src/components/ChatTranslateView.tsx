@@ -17,6 +17,7 @@ import { isAccountServiceEnabled, LOCAL_SERVICE_CHANGED_EVENT } from '../core/lo
 import type { Account, AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
 import { ServiceSwitch } from './ServiceSwitch'
+import { t } from '../core/i18n'
 
 interface ChatMsg { id: string; role: 'user' | 'assistant'; text: string; at: number }
 
@@ -66,14 +67,14 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
   const [localModels, setLocalModels] = useState<string[]>([])
   const [localModel, setLocalModel] = useState('')
   const loadLocal = async () => {
-    if (!ollamaOn) { notify('请先开启 Ollama 服务'); return }
+    if (!ollamaOn) { notify(t('请先开启 Ollama 服务')); return }
     const base = localBase || 'http://127.0.0.1:11434'
     try {
       const ids = await fetchLocalChatModels(base)
       setLocalModels(ids)
       setLocalModel(prev => ids.includes(prev) ? prev : (ids[0] ?? ''))
-      notify(`已找到 ${ids.length} 个本地文本模型`)
-    } catch (e) { notify(`拉取失败：${(e as Error)?.message ?? String(e)}`) }
+      notify(t('已找到 {n} 个本地文本模型', { n: ids.length }))
+    } catch (e) { notify(t('拉取失败：{msg}', { msg: (e as Error)?.message ?? String(e) })) }
   }
   useEffect(() => { if (ollamaOn && localBase) void loadLocal() }, [ollamaOn, localBase])
 
@@ -134,54 +135,54 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
         account: engine === 'account' ? account ?? undefined : undefined,
       }
       const out = await translateText(text, opts)
-      setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'assistant', text: out || '（翻译结果为空）', at: Date.now() }])
+      setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'assistant', text: out || t('（翻译结果为空）'), at: Date.now() }])
     } catch (e) {
-      notify(`翻译失败：${(e as Error)?.message ?? String(e)}`)
+      notify(t('翻译失败：{msg}', { msg: (e as Error)?.message ?? String(e) }))
     } finally { setBusy(false) }
   }
 
   const clear = () => { setMessages([]); setInput('') }
-  const targetName = TARGET_LANGUAGES.find(l => l.code === target)?.name ?? target
+  const targetName = t(TARGET_LANGUAGES.find(l => l.code === target)?.name ?? target)
 
   return (
     <div className="chat-translate">
       <div className="ct-topbar">
-        <button className="btn sm ghost sd-back" onClick={onBack}><Languages size={15} /> 返回 AI 翻译</button>
-        <div className="ct-topbar-title">对话式翻译 <span>· 逐条输入，即时译为{targetName}</span></div>
+        <button className="btn sm ghost sd-back" onClick={onBack}><Languages size={15} /> {t('返回 AI 翻译')}</button>
+        <div className="ct-topbar-title">{t('对话式翻译')} <span>· {t('逐条输入，即时译为{name}', { name: targetName })}</span></div>
       </div>
 
       {/* 配置区 */}
       <div className="ct-config">
         <div className="ct-config-row">
           <div className="tr-field">
-            <label>翻译引擎</label>
+            <label>{t('翻译引擎')}</label>
             <select className="select" value={engine} onChange={e => setEngine(e.target.value as TranslateEngine)} disabled={busy}>
-              <option value="free">免费公共 API（无需 Key）</option>
-              <option value="account">我的模型账户</option>
-              {ollamaOn && <option value="local">本地服务（Ollama）</option>}
+              <option value="free">{t('免费公共 API（无需 Key）')}</option>
+              <option value="account">{t('我的模型账户')}</option>
+              {ollamaOn && <option value="local">{t('本地服务（Ollama）')}</option>}
             </select>
           </div>
           {engine === 'free' && (
             <div className="tr-field">
-              <label>免费引擎</label>
+              <label>{t('免费引擎')}</label>
               <select className="select" value={freeEngine} onChange={e => setFreeEngine(e.target.value as FreeEngine)} disabled={busy}>
-                {FREE_ENGINES.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                {FREE_ENGINES.map(f => <option key={f.id} value={f.id}>{t(f.name)}</option>)}
               </select>
             </div>
           )}
           {engine === 'account' && (
             <>
               <div className="tr-field">
-                <label>模型账户</label>
+                <label>{t('模型账户')}</label>
                 <select className="select" value={account?.id ?? ''} onChange={e => setAccountId(e.target.value)} disabled={busy}>
-                  {usableAccounts.length === 0 && <option value="">请先添加账户</option>}
+                  {usableAccounts.length === 0 && <option value="">{t('请先添加账户')}</option>}
                   {usableAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                 </select>
               </div>
               <div className="tr-field">
-                <label>模型引擎</label>
+                <label>{t('模型引擎')}</label>
                 <select className="select" value={engineId} onChange={e => setEngineId(e.target.value)} disabled={busy || engines.length === 0}>
-                  {engines.length === 0 && <option value="">{account ? '该账户暂无可用引擎' : '请先选择账户'}</option>}
+                  {engines.length === 0 && <option value="">{account ? t('该账户暂无可用引擎') : t('请先选择账户')}</option>}
                   {engines.map(e => <option key={e.id} value={e.id}>{e.name}{e.tag ? ` · ${e.tag}` : ''}</option>)}
                 </select>
               </div>
@@ -190,39 +191,39 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
           {engine === 'local' && (
             <>
               <div className="tr-field">
-                <label>本地服务地址（自动探测）</label>
-                <span className="tr-local-url" title="地址由后台自动探测">{detecting ? '探测中…' : (localBase || '未探测到 Ollama 服务')}</span>
+                <label>{t('本地服务地址（自动探测）')}</label>
+                <span className="tr-local-url" title={t('地址由后台自动探测')}>{detecting ? t('探测中…') : (localBase || t('未探测到 Ollama 服务'))}</span>
               </div>
               <div className="tr-field">
-                <label>翻译模型</label>
+                <label>{t('翻译模型')}</label>
                 <div className="tr-local-row">
                   <select className="select" value={localModel} onChange={e => setLocalModel(e.target.value)} disabled={busy || localModels.length === 0}>
-                    {localModels.length === 0 && <option value="">{localModels.length === 0 ? '请先拉取模型' : ''}</option>}
+                    {localModels.length === 0 && <option value="">{t('请先拉取模型')}</option>}
                     {localModels.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
-                  <button className="btn sm ghost" onClick={() => void loadLocal()} disabled={busy} title="拉取本地文本模型"><RefreshCw size={13} /> 拉取</button>
+                  <button className="btn sm ghost" onClick={() => void loadLocal()} disabled={busy} title={t('拉取本地文本模型')}><RefreshCw size={13} /> {t('拉取')}</button>
                 </div>
               </div>
             </>
           )}
           <div className="tr-field">
-            <label>源语言</label>
+            <label>{t('源语言')}</label>
             <select className="select" value={source} onChange={e => setSource(e.target.value)} disabled={busy}>
-              {SOURCE_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+              {SOURCE_LANGUAGES.map(l => <option key={l.code} value={l.code}>{t(l.name)}</option>)}
             </select>
           </div>
           <div className="tr-field">
-            <label>目标语言</label>
+            <label>{t('目标语言')}</label>
             <select className="select" value={target} onChange={e => setTarget(e.target.value)} disabled={busy}>
-              {TARGET_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+              {TARGET_LANGUAGES.map(l => <option key={l.code} value={l.code}>{t(l.name)}</option>)}
             </select>
           </div>
         </div>
         {serviceController && (
           <div className="ct-service">
-            <span className="docqa-service-hint">本地服务</span>
+            <span className="docqa-service-hint">{t('本地服务')}</span>
             <ServiceSwitch controller={serviceController} serviceKey="ollama" />
-            <span className="docqa-service-note">仅「本地服务」引擎需要开启 Ollama；免费与账户引擎无需开启。</span>
+            <span className="docqa-service-note">{t('仅「本地服务」引擎需要开启 Ollama；免费与账户引擎无需开启。')}</span>
           </div>
         )}
       </div>
@@ -232,8 +233,8 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
         {messages.length === 0 ? (
           <div className="ai-welcome">
             <div className="ai-welcome-mark"><Languages size={26} /></div>
-            <h2>对话式翻译</h2>
-            <p className="ct-welcome-hint">输入任意文本，逐条翻译成{targetName}。支持免费 / 自有账户 / 本地 Ollama 三种引擎。</p>
+            <h2>{t('对话式翻译')}</h2>
+            <p className="ct-welcome-hint">{t('输入任意文本，逐条翻译成{name}。支持免费 / 自有账户 / 本地 Ollama 三种引擎。', { name: targetName })}</p>
           </div>
         ) : (
           <div className="ai-thread">
@@ -242,8 +243,8 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
                 <div className="ai-msg-body">
                   <div className="ai-bubble">{m.text}</div>
                   <div className="ai-msg-tools">
-                    <button className="ai-copy" onClick={() => void navigator.clipboard.writeText(m.text)} title="复制"><Copy size={13} /></button>
-                    <span className="ct-msg-role">{m.role === 'user' ? '原文' : `译文 · ${targetName}`}</span>
+                    <button className="ai-copy" onClick={() => void navigator.clipboard.writeText(m.text)} title={t('复制')}><Copy size={13} /></button>
+                    <span className="ct-msg-role">{m.role === 'user' ? t('原文') : t('译文 · {name}', { name: targetName })}</span>
                   </div>
                 </div>
               </div>
@@ -257,16 +258,16 @@ export function ChatTranslateView({ accounts, notify, settings, serviceControlle
       {/* 输入区 */}
       <div className="ai-compose ct-compose">
         <div className="ct-compose-row">
-          <textarea className="input ct-input" placeholder="输入要翻译的文本，Enter 发送，Shift+Enter 换行" value={input}
+          <textarea className="input ct-input" placeholder={t('输入要翻译的文本，Enter 发送，Shift+Enter 换行')} value={input}
             onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} rows={2} disabled={busy} />
           <div className="ct-compose-actions">
-            <button className="btn sm ghost" onClick={clear} disabled={busy || messages.length === 0} title="清空对话"><Trash2 size={14} /> 清空</button>
+            <button className="btn sm ghost" onClick={clear} disabled={busy || messages.length === 0} title={t('清空对话')}><Trash2 size={14} /> {t('清空')}</button>
             <button className="btn sm primary" onClick={() => void send()} disabled={busy || !input.trim()}>
-              {busy ? <Loader2 size={14} className="spin" /> : <Send size={14} />} {busy ? '翻译中…' : '翻译'}
+              {busy ? <Loader2 size={14} className="spin" /> : <Send size={14} />} {busy ? t('翻译中…') : t('翻译')}
             </button>
           </div>
         </div>
-        <div className="ct-compose-tip"><Info size={12} /> 逐条独立翻译，不保留上下文；长文本建议用「AI 翻译」的文档模式。</div>
+        <div className="ct-compose-tip"><Info size={12} /> {t('逐条独立翻译，不保留上下文；长文本建议用「AI 翻译」的文档模式。')}</div>
       </div>
     </div>
   )

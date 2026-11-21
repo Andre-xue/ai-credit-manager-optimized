@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Power, Loader2 } from 'lucide-react'
 import type { LocalServiceKey } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
+import { t } from '../core/i18n'
 
 export function ServiceSwitch({
   controller, serviceKey, label, compact,
@@ -41,12 +42,14 @@ export function ServiceSwitch({
       onClick={() => void controller.toggle(serviceKey)}
       disabled={busy}
       title={enabled
-        ? `${name} 已启用${running ? `（运行中：${controller.status[serviceKey]}）` : '（未检测到运行）'}，点击关闭`
-        : `${name} 未启用，点击开启并启动服务`}
+        ? running
+          ? t('{name} 已启用（运行中：{url}），点击关闭', { name, url: controller.status[serviceKey] ?? '' })
+          : t('{name} 已启用（未检测到运行），点击关闭', { name })
+        : t('{name} 未启用，点击开启并启动服务', { name })}
     >
       {busy ? <Loader2 size={14} className="spin" /> : <Power size={14} className={running ? 'svc-running' : ''} />}
       <span className="service-switch-label">{name}</span>
-      <span className={`service-switch-state ${enabled ? 'on' : ''}`}>{enabled ? (running ? '运行中' : '已开启') : '已关闭'}</span>
+      <span className={`service-switch-state ${enabled ? 'on' : ''}`}>{enabled ? (running ? t('运行中') : t('已开启')) : t('已关闭')}</span>
       <span className={`jelly-toggle mini ${enabled ? 'is-on' : ''}`} aria-hidden="true">
         <span className={`jelly-dot ${anim ? `anim-${anim}` : (enabled ? 'static-on' : 'static-off')}`} />
       </span>

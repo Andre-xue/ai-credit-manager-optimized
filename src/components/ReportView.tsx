@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, ClipboardCopy, FileBarChart } from 'lucide-r
 import type { AppState } from '../core/types'
 import { buildMonthlyReport, buildYearReport, reportToText, yearReportToText } from '../core/monthlyReport'
 import { shiftMonth } from '../core/calendar'
+import { t } from '../core/i18n'
 
 export function ReportView({ state, notify }: { state: AppState; notify: (msg: string) => void }) {
   const now = new Date()
@@ -15,8 +16,8 @@ export function ReportView({ state, notify }: { state: AppState; notify: (msg: s
   const yr = useMemo(() => buildYearReport(state, year), [state, year])
 
   const copy = async () => {
-    try { await navigator.clipboard.writeText(mode === 'year' ? yearReportToText(yr) : reportToText(r)); notify('报告文本已复制') }
-    catch { notify('复制失败，请检查浏览器权限') }
+    try { await navigator.clipboard.writeText(mode === 'year' ? yearReportToText(yr) : reportToText(r)); notify(t('报告文本已复制')) }
+    catch { notify(t('复制失败，请检查浏览器权限')) }
   }
 
   if (mode === 'year') {
@@ -24,45 +25,45 @@ export function ReportView({ state, notify }: { state: AppState; notify: (msg: s
     return (
       <div>
         <div className="section-head">
-          <h2><FileBarChart size={17} style={{ verticalAlign: -3, marginRight: 6 }} />年度总结</h2>
+          <h2><FileBarChart size={17} style={{ verticalAlign: -3, marginRight: 6 }} />{t('年度总结')}</h2>
           <div className="row" style={{ gap: 6 }}>
-            <button className="btn sm ghost" onClick={() => setMode('month')}>月报</button>
-            <button className="btn sm primary">年报</button>
+            <button className="btn sm ghost" onClick={() => setMode('month')}>{t('月报')}</button>
+            <button className="btn sm primary">{t('年报')}</button>
             <button className="btn sm ghost" onClick={() => setYear((y) => String(Number(y) - 1))}><ChevronLeft size={14} /></button>
-            <b style={{ fontSize: 13.5, minWidth: 56, textAlign: 'center' }}>{year} 年</b>
+            <b style={{ fontSize: 13.5, minWidth: 56, textAlign: 'center' }}>{t('{year} 年', { year })}</b>
             <button className="btn sm ghost" disabled={year >= curMonth.slice(0, 4)} onClick={() => setYear((y) => String(Number(y) + 1))}><ChevronRight size={14} /></button>
-            <button className="btn sm" onClick={() => void copy()}><ClipboardCopy size={13} /> 复制总结</button>
+            <button className="btn sm" onClick={() => void copy()}><ClipboardCopy size={13} /> {t('复制总结')}</button>
           </div>
         </div>
         <div className="bento-grid">
           <div className="bento-tile">
-            <div className="bento-label">全年总消费</div>
+            <div className="bento-label">{t('全年总消费')}</div>
             <div className="bento-num">¥{yr.totalCost.toFixed(2)}</div>
-            <div className="bento-sub">{yr.recordCount} 条记录 · 活跃 {yr.activeDays} 天</div>
+            <div className="bento-sub">{t('{count} 条记录 · 活跃 {days} 天', { count: yr.recordCount, days: yr.activeDays })}</div>
           </div>
           <div className="bento-tile">
-            <div className="bento-label">总 Tokens</div>
+            <div className="bento-label">{t('总 Tokens')}</div>
             <div className="bento-num">{yr.totalTokens.toLocaleString()}</div>
-            <div className="bento-sub">账户 {yr.accountCount} 个</div>
+            <div className="bento-sub">{t('账户 {count} 个', { count: yr.accountCount })}</div>
           </div>
           <div className="bento-tile">
-            <div className="bento-label">签到</div>
-            <div className="bento-num">{yr.checkinCount} 次</div>
-            <div className="bento-sub">覆盖 {yr.checkinDays} 天</div>
+            <div className="bento-label">{t('签到')}</div>
+            <div className="bento-num">{t('{count} 次', { count: yr.checkinCount })}</div>
+            <div className="bento-sub">{t('覆盖 {days} 天', { days: yr.checkinDays })}</div>
           </div>
           <div className="bento-tile">
-            <div className="bento-label">年度之最</div>
+            <div className="bento-label">{t('年度之最')}</div>
             <div className="bento-sub" style={{ fontSize: 12.5, lineHeight: 1.7 }}>
-              {yr.topPlatform ? <>平台：{yr.topPlatform.name}（¥{yr.topPlatform.cost.toFixed(2)}）<br /></> : '暂无数据'}
-              {yr.topModel && <>模型：{yr.topModel.name}（¥{yr.topModel.cost.toFixed(2)}）<br /></>}
-              {yr.bestMonth && <>最烧钱的月份：{yr.bestMonth.month}（¥{yr.bestMonth.cost.toFixed(2)}）</>}
+              {yr.topPlatform ? <>{t('平台：{name}（¥{cost}）', { name: yr.topPlatform.name, cost: yr.topPlatform.cost.toFixed(2) })}<br /></> : t('暂无数据')}
+              {yr.topModel && <>{t('模型：{name}（¥{cost}）', { name: yr.topModel.name, cost: yr.topModel.cost.toFixed(2) })}<br /></>}
+              {yr.bestMonth && <>{t('最烧钱的月份：{month}（¥{cost}）', { month: yr.bestMonth.month, cost: yr.bestMonth.cost.toFixed(2) })}</>}
             </div>
           </div>
         </div>
-        <div className="section-head"><h2>分月消费</h2></div>
+        <div className="section-head"><h2>{t('分月消费')}</h2></div>
         <div className="panel" style={{ padding: 18 }}>
           {yr.byMonth.length === 0
-            ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>这一年暂无用量记录。</div>
+            ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('这一年暂无用量记录。')}</div>
             : yr.byMonth.map((m) => (
               <div key={m.month} className="row" style={{ gap: 10, padding: '5px 0', alignItems: 'center' }}>
                 <span style={{ fontSize: 13, minWidth: 74 }}>{m.month}</span>
@@ -80,48 +81,48 @@ export function ReportView({ state, notify }: { state: AppState; notify: (msg: s
   return (
     <div>
       <div className="section-head">
-        <h2><FileBarChart size={17} style={{ verticalAlign: -3, marginRight: 6 }} />月度报告</h2>
+        <h2><FileBarChart size={17} style={{ verticalAlign: -3, marginRight: 6 }} />{t('月度报告')}</h2>
         <div className="row" style={{ gap: 6 }}>
-          <button className="btn sm primary">月报</button>
-          <button className="btn sm ghost" onClick={() => setMode('year')}>年报</button>
+          <button className="btn sm primary">{t('月报')}</button>
+          <button className="btn sm ghost" onClick={() => setMode('year')}>{t('年报')}</button>
           <button className="btn sm ghost" onClick={() => setMonth((m) => shiftMonth(m, -1))}><ChevronLeft size={14} /></button>
-          <b style={{ fontSize: 13.5, minWidth: 74, textAlign: 'center' }}>{month.replace('-', ' 年 ')} 月</b>
+          <b style={{ fontSize: 13.5, minWidth: 74, textAlign: 'center' }}>{t('{year} 年 {month} 月', { year: month.split('-')[0], month: month.split('-')[1] })}</b>
           <button className="btn sm ghost" disabled={month >= curMonth} onClick={() => setMonth((m) => shiftMonth(m, 1))}><ChevronRight size={14} /></button>
-          <button className="btn sm" onClick={() => void copy()}><ClipboardCopy size={13} /> 复制报告</button>
+          <button className="btn sm" onClick={() => void copy()}><ClipboardCopy size={13} /> {t('复制报告')}</button>
         </div>
       </div>
 
       <div className="bento-grid">
         <div className="bento-tile">
-          <div className="bento-label">总消费</div>
+          <div className="bento-label">{t('总消费')}</div>
           <div className="bento-num">¥{r.totalCost.toFixed(2)}</div>
           <div className="bento-sub">
             {r.costDeltaPct !== null
-              ? `环比上月 ${r.costDeltaPct >= 0 ? '↑' : '↓'} ${Math.abs(r.costDeltaPct * 100).toFixed(0)}%（上月 ¥${r.prevCost.toFixed(2)}）`
-              : `上月 ¥${r.prevCost.toFixed(2)}`}
+              ? t('环比上月 {arrow} {pct}%（上月 ¥{prev}）', { arrow: r.costDeltaPct >= 0 ? '↑' : '↓', pct: Math.abs(r.costDeltaPct * 100).toFixed(0), prev: r.prevCost.toFixed(2) })
+              : t('上月 ¥{prev}', { prev: r.prevCost.toFixed(2) })}
           </div>
         </div>
         <div className="bento-tile">
-          <div className="bento-label">总 Tokens</div>
+          <div className="bento-label">{t('总 Tokens')}</div>
           <div className="bento-num">{r.totalTokens.toLocaleString()}</div>
-          <div className="bento-sub">{r.recordCount} 条记录 · 活跃 {r.activeDays} 天</div>
+          <div className="bento-sub">{t('{count} 条记录 · 活跃 {days} 天', { count: r.recordCount, days: r.activeDays })}</div>
         </div>
         <div className="bento-tile">
-          <div className="bento-label">签到</div>
-          <div className="bento-num">{r.checkinCount} 次</div>
-          <div className="bento-sub">覆盖 {r.checkinDays} 天</div>
+          <div className="bento-label">{t('签到')}</div>
+          <div className="bento-num">{t('{count} 次', { count: r.checkinCount })}</div>
+          <div className="bento-sub">{t('覆盖 {days} 天', { days: r.checkinDays })}</div>
         </div>
         <div className="bento-tile">
-          <div className="bento-label">预算使用</div>
-          <div className="bento-num">{r.budgetRate !== null ? `${(r.budgetRate * 100).toFixed(0)}%` : '未设置'}</div>
-          <div className="bento-sub">{r.budgetRate !== null ? `月预算 ¥${r.budget.toFixed(0)}` : '在用量页或设置里设置月预算'}</div>
+          <div className="bento-label">{t('预算使用')}</div>
+          <div className="bento-num">{r.budgetRate !== null ? `${(r.budgetRate * 100).toFixed(0)}%` : t('未设置')}</div>
+          <div className="bento-sub">{r.budgetRate !== null ? t('月预算 ¥{budget}', { budget: r.budget.toFixed(0) }) : t('在用量页或设置里设置月预算')}</div>
         </div>
       </div>
 
-      <div className="section-head"><h2>分平台消费</h2></div>
+      <div className="section-head"><h2>{t('分平台消费')}</h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {r.byPlatform.length === 0
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>这个月暂无用量记录</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('这个月暂无用量记录')}</div>
           : r.byPlatform.map((p) => (
             <div key={p.providerId} style={{ marginBottom: 13 }}>
               <div className="row between" style={{ fontSize: 12.5, marginBottom: 6 }}>
@@ -134,7 +135,7 @@ export function ReportView({ state, notify }: { state: AppState; notify: (msg: s
       </div>
 
       {r.topModels.length > 0 && <>
-        <div className="section-head"><h2>模型消费 Top</h2></div>
+        <div className="section-head"><h2>{t('模型消费 Top')}</h2></div>
         <div className="panel" style={{ padding: 18 }}>
           {r.topModels.map((m) => (
             <div key={m.model} className="row between" style={{ fontSize: 13, padding: '5px 0' }}>

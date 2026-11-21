@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Phone, PhoneOff, Mic, MicOff, Volume2, Loader2, Keyboard, Send, ShieldCheck,
 } from 'lucide-react'
+import { t } from '../core/i18n'
 import { speakAsync, stopSpeak, getSavedVoice, unlockTts } from '../core/tts'
 import { isNativeApp, isDesktopApp, openMicSettings, openSpeechSettings } from '../core/openExternal'
 
@@ -88,11 +89,11 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
         const asked = await capRecRef.current.requestPermissions()
         const ok = asked.speechRecognition === 'granted'
         setMicPerm(ok ? 'granted' : 'denied')
-        if (!ok) notifyRef.current('麦克风/语音识别权限被拒绝，请在系统设置中允许，或改用文字输入')
+        if (!ok) notifyRef.current(t('麦克风/语音识别权限被拒绝，请在系统设置中允许，或改用文字输入'))
         return ok
       } catch {
         setMicPerm('denied')
-        notifyRef.current('无法申请语音权限，请在系统设置中允许，或改用文字输入')
+        notifyRef.current(t('无法申请语音权限，请在系统设置中允许，或改用文字输入'))
         return false
       }
     }
@@ -111,12 +112,12 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
         return true
       } catch {
         setMicPerm('denied')
-        notifyRef.current('麦克风权限被拒绝，请点击地址栏的授权图标允许，或改用文字输入')
+        notifyRef.current(t('麦克风权限被拒绝，请点击地址栏的授权图标允许，或改用文字输入'))
         return false
       }
     }
     setMicPerm('unsupported')
-    notifyRef.current('当前环境不提供麦克风授权接口，请用文字输入通话')
+    notifyRef.current(t('当前环境不提供麦克风授权接口，请用文字输入通话'))
     return false
   }
 
@@ -161,18 +162,18 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
       if (!ok) {
         setStatus('idle')
         speakingRef.current = false
-        notifyRef.current('当前环境不支持语音朗读，回复已显示为文字')
+        notifyRef.current(t('当前环境不支持语音朗读，回复已显示为文字'))
         if (sessionActive.current) window.setTimeout(() => void startListeningRef.current(), 350)
       }
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e)
       const needUnlock = /NEED_AI_PWD|主密码|解锁/.test(msg)
       setCallError(needUnlock
-        ? '当前为自有模型，请先验证主密码后再说话'
-        : `回复失败：${msg.slice(0, 80)}`)
+        ? t('当前为自有模型，请先验证主密码后再说话')
+        : t('回复失败：{msg}', { msg: msg.slice(0, 80) }))
       setStatus('idle')
       speakingRef.current = false
-      notifyRef.current(needUnlock ? '请先验证主密码' : `回复失败：${msg.slice(0, 80)}`)
+      notifyRef.current(needUnlock ? t('请先验证主密码') : t('回复失败：{msg}', { msg: msg.slice(0, 80) }))
     } finally {
       busyRef.current = false
       setBusy(false)
@@ -211,7 +212,7 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
         await capRecRef.current.start({ language: 'zh-CN', partialResults: true, popup: false })
       } catch (e) {
         setStatus('idle')
-        notifyRef.current(`启动语音识别失败：${(e as Error).message?.slice(0, 50) ?? '未知'}，请用文字输入`)
+        notifyRef.current(t('启动语音识别失败：{msg}，请用文字输入', { msg: (e as Error).message?.slice(0, 50) ?? t('未知') }))
         setFallbackOpen(true)
       }
       return
@@ -268,12 +269,12 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
           const hint = code === 'not-allowed' || code === 'service-not-allowed'
             ? (isDesktopApp()
               ? (code === 'service-not-allowed'
-                ? '语音识别服务被系统拒绝：请在「系统设置 → 隐私与安全性 → 语音识别」中允许本应用（麦克风之外还需这一项）'
-                : '麦克风权限被拒绝：请在「系统设置 → 隐私与安全性 → 麦克风」中允许本应用，或点下方按钮打开设置')
-              : '语音识别权限被拒绝，请在系统设置中允许，或改用文字输入')
+                ? t('语音识别服务被系统拒绝：请在「系统设置 → 隐私与安全性 → 语音识别」中允许本应用（麦克风之外还需这一项）')
+                : t('麦克风权限被拒绝：请在「系统设置 → 隐私与安全性 → 麦克风」中允许本应用，或点下方按钮打开设置'))
+              : t('语音识别权限被拒绝，请在系统设置中允许，或改用文字输入'))
             : code === 'network'
-              ? '语音识别需要联网，当前网络不可用，请改用文字输入'
-              : '语音识别在当前环境不可用，请改用文字输入'
+              ? t('语音识别需要联网，当前网络不可用，请改用文字输入')
+              : t('语音识别在当前环境不可用，请改用文字输入')
           notifyRef.current(hint)
           setPermCode(code)
           setStatus('idle')
@@ -334,8 +335,8 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
     setCallPwdBusy(true)
     try {
       const ok = await onUnlock(callPwd)
-      if (ok) { setCallPwd(''); setCallError(''); notifyRef.current('已验证，可继续语音通话') }
-      else notifyRef.current('主密码错误')
+      if (ok) { setCallPwd(''); setCallError(''); notifyRef.current(t('已验证，可继续语音通话')) }
+      else notifyRef.current(t('主密码错误'))
     } finally { setCallPwdBusy(false) }
   }
 
@@ -346,7 +347,7 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
   return (
     <div className="call-overlay">
       <div className="call-panel">
-        <div className="call-title">AI 语音通话</div>
+        <div className="call-title">{t('AI 语音通话')}</div>
         <div className="call-timer">{mm}:{ss}</div>
         <div className={`call-orb ${status}`}>
           {status === 'thinking' ? <Loader2 size={44} className="spin" />
@@ -355,34 +356,34 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
                 : <Phone size={40} />}
         </div>
         <div className="call-status">
-          {status === 'listening' ? '正在聆听…' : status === 'thinking' ? '思考中…' : status === 'speaking' ? '正在说话'
-            : voiceAvailable ? '点击麦克风开始说话（说完自动回复）' : '当前设备不支持语音识别，请用文字通话'}
+          {status === 'listening' ? t('正在聆听…') : status === 'thinking' ? t('思考中…') : status === 'speaking' ? t('正在说话')
+            : voiceAvailable ? t('点击麦克风开始说话（说完自动回复）') : t('当前设备不支持语音识别，请用文字通话')}
         </div>
 
         {micPerm !== 'granted' && (
           <div className="call-perm">
             <div className="call-perm-text">
               {micPerm === 'denied' ? (isDesktopApp()
-                ? '麦克风权限被拒绝：请到「系统设置 → 隐私与安全性 → 麦克风」勾选本应用'
-                : '麦克风权限被拒绝，点击授权后再说话')
-                : micPerm === 'unsupported' ? '当前环境无法申请麦克风权限，可用文字通话'
-                  : micPerm === 'system' ? '点击麦克风后由系统语音服务请求授权'
-                    : '首次使用需要授权麦克风'}
+                ? t('麦克风权限被拒绝：请到「系统设置 → 隐私与安全性 → 麦克风」勾选本应用')
+                : t('麦克风权限被拒绝，点击授权后再说话'))
+                : micPerm === 'unsupported' ? t('当前环境无法申请麦克风权限，可用文字通话')
+                  : micPerm === 'system' ? t('点击麦克风后由系统语音服务请求授权')
+                    : t('首次使用需要授权麦克风')}
             </div>
             <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
               {micPerm === 'denied' && isDesktopApp() && permCode === 'service-not-allowed' && (
-                <button className="btn sm" onClick={() => void openSpeechSettings().then(ok => { if (!ok) notify('无法打开系统设置，请前往 系统设置→隐私与安全性→语音识别') })}>
-                  <ShieldCheck size={14} /> 语音识别设置
+                <button className="btn sm" onClick={() => void openSpeechSettings().then(ok => { if (!ok) notify(t('无法打开系统设置，请前往 系统设置→隐私与安全性→语音识别')) })}>
+                  <ShieldCheck size={14} /> {t('语音识别设置')}
                 </button>
               )}
               {micPerm === 'denied' && isDesktopApp() && permCode !== 'service-not-allowed' && (
-                <button className="btn sm" onClick={() => void openMicSettings().then(ok => { if (!ok) notify('无法打开系统设置，请手动前往隐私设置') })}>
-                  <ShieldCheck size={14} /> 打开设置
+                <button className="btn sm" onClick={() => void openMicSettings().then(ok => { if (!ok) notify(t('无法打开系统设置，请手动前往隐私设置')) })}>
+                  <ShieldCheck size={14} /> {t('打开设置')}
                 </button>
               )}
               {micPerm !== 'system' && micPerm !== 'unsupported' && micPerm !== 'denied' && (
                 <button className="btn sm primary" onClick={() => void ensurePermission()}>
-                  <ShieldCheck size={14} /> 授权麦克风
+                  <ShieldCheck size={14} /> {t('授权麦克风')}
                 </button>
               )}
             </div>
@@ -391,13 +392,13 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
 
         {needPwd && (
           <div className="call-unlock">
-            <div className="call-unlock-label">当前为自有模型，请先输入主密码（本次会话只需一次）</div>
+            <div className="call-unlock-label">{t('当前为自有模型，请先输入主密码（本次会话只需一次）')}</div>
             <div className="call-unlock-row">
-              <input className="input" type="password" placeholder="主密码" value={callPwd}
+              <input className="input" type="password" placeholder={t('主密码')} value={callPwd}
                 onChange={e => setCallPwd(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') void toggleUnlock() }} />
               <button className="btn sm primary" disabled={callPwdBusy || !callPwd || !onUnlock} onClick={() => void toggleUnlock()}>
-                {callPwdBusy ? '验证中' : '验证'}
+                {callPwdBusy ? t('验证中') : t('验证')}
               </button>
             </div>
           </div>
@@ -408,29 +409,29 @@ export function VoiceCall({ onSend, onClose, notify, needPwd = false, onUnlock, 
 
         <div className="call-controls">
           {voiceAvailable && (
-            <button className={`call-btn mic ${status === 'listening' ? 'active' : ''}`} onClick={toggleMic} disabled={busy} title={status === 'listening' ? '停止聆听' : '开始说话'}>
+            <button className={`call-btn mic ${status === 'listening' ? 'active' : ''}`} onClick={toggleMic} disabled={busy} title={status === 'listening' ? t('停止聆听') : t('开始说话')}>
               {status === 'listening' ? <MicOff size={24} /> : <Mic size={24} />}
             </button>
           )}
-          <button className={`call-btn mic ${fallbackOpen ? 'active' : ''}`} onClick={() => setFallbackOpen(v => !v)} title="文字输入通话">
+          <button className={`call-btn mic ${fallbackOpen ? 'active' : ''}`} onClick={() => setFallbackOpen(v => !v)} title={t('文字输入通话')}>
             <Keyboard size={22} />
           </button>
-          <button className="call-btn hangup" onClick={() => { stopRecognizers(); stopSpeak(); sessionActive.current = false; onClose() }} title="挂断">
+          <button className="call-btn hangup" onClick={() => { stopRecognizers(); stopSpeak(); sessionActive.current = false; onClose() }} title={t('挂断')}>
             <PhoneOff size={26} />
           </button>
         </div>
 
         {fallbackOpen && (
           <div className="call-fallback">
-            <input className="input" placeholder="输入你想说的话…" value={fallbackText}
+            <input className="input" placeholder={t('输入你想说的话…')} value={fallbackText}
               onChange={e => setFallbackText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') submitFallback() }} />
             <button className="btn sm primary" disabled={!fallbackText.trim() || busy} onClick={submitFallback}><Send size={14} /></button>
           </div>
         )}
         <div className="call-hint">{isDesktopApp()
-          ? '点麦克风直接说话；若系统麦克风未授权，请先到隐私设置开启。也可随时用下方键盘图标切换文字输入'
-          : voiceAvailable ? '说完停顿一下即自动回复，并继续聆听 · 也可切换文字输入' : '输入文字后 AI 会语音朗读回复'}</div>
+          ? t('点麦克风直接说话；若系统麦克风未授权，请先到隐私设置开启。也可随时用下方键盘图标切换文字输入')
+          : voiceAvailable ? t('说完停顿一下即自动回复，并继续聆听 · 也可切换文字输入') : t('输入文字后 AI 会语音朗读回复')}</div>
       </div>
     </div>
   )

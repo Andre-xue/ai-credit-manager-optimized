@@ -245,6 +245,8 @@ export interface AppSettings {
   aiMemory?: boolean
   /** 手机端底部菜单栏：开启才固定显示（缺省关闭，用左上角按钮开侧边栏切换页面） */
   showBottomNav?: boolean
+  /** 界面语言（v0.1.262）：缺省 zh-CN；随设置云同步 */
+  language?: 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
 }
 
 /** AI 助手顶栏 8 个工具的显隐偏好 */

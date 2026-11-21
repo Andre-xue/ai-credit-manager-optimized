@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
+import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
@@ -171,21 +172,21 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
   }
   return (
     <div className="side-history">
-      <button className="side-history-head" onClick={onToggle} title="AI 助手的历史会话">
+      <button className="side-history-head" onClick={onToggle} title={t('AI 助手的历史会话')}>
         <History size={13} />
-        <span>历史会话</span>
-        <span className="side-history-more">{open ? '收起' : '展示更多'}</span>
+        <span>{t('历史会话')}</span>
+        <span className="side-history-more">{open ? t('收起') : t('展示更多')}</span>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
       </button>
       {open && (
         <div className="side-history-list">
           <button className="side-history-new" onClick={() => { onNavigate(); requestNewSession() }}>
-            <Plus size={13} /> 新建会话
+            <Plus size={13} /> {t('新建会话')}
           </button>
-          {visibleSessions.length === 0 && <div className="side-history-empty">暂无历史会话</div>}
+          {visibleSessions.length === 0 && <div className="side-history-empty">{t('暂无历史会话')}</div>}
           {pageSessions.map(s => (
             <div key={s.id} className="side-history-swipe">
-              <button className="side-history-del" tabIndex={swipe === s.id ? 0 : -1} onClick={() => { setSwipe(null); deleteStoredSession(s.id) }}>删除</button>
+              <button className="side-history-del" tabIndex={swipe === s.id ? 0 : -1} onClick={() => { setSwipe(null); deleteStoredSession(s.id) }}>{t('删除')}</button>
               <div className={`side-history-item ${s.id === list.activeId ? 'active' : ''} ${drag?.id === s.id ? 'dragging' : ''}`}
                 style={{ transform: `translateX(${swipeOffset(s.id)}px)` }}
                 onTouchStart={e => onSwipeStart(e, s.id)} onTouchMove={e => onSwipeMove(e, s.id)} onTouchEnd={() => onSwipeEnd(s.id)} onTouchCancel={() => onSwipeEnd(s.id)}>
@@ -200,38 +201,38 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
                     onNavigate(); requestOpenSession(s.id)
                   }}>
                     <b>{s.title}</b>
-                    <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                    <span>{t('{count} 条 · {time}', { count: s.count, time: fmtTime(s.updatedAt) })}</span>
                   </button>
                 )}
-                <button className="icon-btn side-history-act" title="重命名" onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
-                <button className="icon-btn side-history-act" title="归档" onClick={() => setSessionArchived(s.id, true)}><Archive size={12} /></button>
-                <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+                <button className="icon-btn side-history-act" title={t('重命名')} onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
+                <button className="icon-btn side-history-act" title={t('归档')} onClick={() => setSessionArchived(s.id, true)}><Archive size={12} /></button>
+                <button className="icon-btn side-history-act" title={t('删除会话')} onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
               </div>
             </div>
           ))}
           {histPages > 1 && (
             <div className="side-history-pager">
-              <button disabled={histCur <= 1} onClick={() => setHistPage(histCur - 1)}>上一页</button>
-              <span>第 {histCur}/{histPages} 页 · 共 {visibleSessions.length} 条</span>
-              <button disabled={histCur >= histPages} onClick={() => setHistPage(histCur + 1)}>下一页</button>
+              <button disabled={histCur <= 1} onClick={() => setHistPage(histCur - 1)}>{t('上一页')}</button>
+              <span>{t('第 {cur}/{pages} 页 · 共 {total} 条', { cur: histCur, pages: histPages, total: visibleSessions.length })}</span>
+              <button disabled={histCur >= histPages} onClick={() => setHistPage(histCur + 1)}>{t('下一页')}</button>
             </div>
           )}
           {archivedList.length > 0 && (
             <>
-              <button className="side-history-arch-head" onClick={() => setArchOpen(o => !o)} title="已归档的会话">
+              <button className="side-history-arch-head" onClick={() => setArchOpen(o => !o)} title={t('已归档的会话')}>
                 <Archive size={12} />
-                <span>已归档</span>
+                <span>{t('已归档')}</span>
                 <span className="side-history-arch-count">{archivedList.length}</span>
                 {archOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               </button>
               {archOpen && archivedList.map(s => (
                 <div key={s.id} className="side-history-item archived">
-                  <button className="side-history-main" title={`${s.title}（点击恢复并打开）`} onClick={() => { setSessionArchived(s.id, false); onNavigate(); requestOpenSession(s.id) }}>
+                  <button className="side-history-main" title={t('{title}（点击恢复并打开）', { title: s.title })} onClick={() => { setSessionArchived(s.id, false); onNavigate(); requestOpenSession(s.id) }}>
                     <b>{s.title}</b>
-                    <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                    <span>{t('{count} 条 · {time}', { count: s.count, time: fmtTime(s.updatedAt) })}</span>
                   </button>
-                  <button className="icon-btn side-history-act" title="恢复" onClick={() => setSessionArchived(s.id, false)}><ArchiveRestore size={12} /></button>
-                  <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+                  <button className="icon-btn side-history-act" title={t('恢复')} onClick={() => setSessionArchived(s.id, false)}><ArchiveRestore size={12} /></button>
+                  <button className="icon-btn side-history-act" title={t('删除会话')} onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
                 </div>
               ))}
             </>
@@ -244,6 +245,13 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
 
 function App() {
   const [state, setState] = useState<AppState>(() => loadState())
+
+  // 界面语言：settings.language 为准（随云同步），驱动 i18n 当前语言；useLang 让全树随切换重渲染
+  useLang()
+  useEffect(() => {
+    const want = (state.settings.language as Lang | undefined) ?? 'zh-CN'
+    if (want !== getLang()) setLang(want)
+  }, [state.settings.language])
 
   // 启动时拉取最新官方 Key 页地址表（平台改版地址后无需发版即可生效；失败则用内置地址）
   useEffect(() => { void refreshKeyUrls() }, [])
@@ -436,13 +444,13 @@ function App() {
 
   /** 设置页快捷解锁：生物验证通过后（原生端密码在系统钥匙串、桌面端系统验证），把凭据带入 Key 管理页自动解锁 */
   const handleBioUnlock = useCallback(async () => {
-    const pwd = await resolveBiometricVaultPassword('验证身份以解锁 API Key 管理')
-    if (!pwd) { notify(`${bioLabel}验证未通过，或未配置解锁凭据（请先在「解锁方式」中开启）`); return }
+    const pwd = await resolveBiometricVaultPassword(t('验证身份以解锁 API Key 管理'))
+    if (!pwd) { notify(t('{bio}验证未通过，或未配置解锁凭据（请先在「解锁方式」中开启）', { bio: t(bioLabel) })); return }
     if (!(await verifyVault(pwd))) { notify('解锁凭据已失效，请重新开启'); return }
     setKeyPageInitialPwd('')
     window.setTimeout(() => setKeyPageInitialPwd(pwd), 0)
     setTab('keys')
-    notify(`已通过${bioLabel}验证，正在解锁 API Key 管理页`)
+    notify(t('已通过{bio}验证，正在解锁 API Key 管理页', { bio: t(bioLabel) }))
   }, [notify, bioLabel])
 
   // ============ 云同步 ============
@@ -483,7 +491,7 @@ function App() {
       const result = await pullPayload()
       if (!result.ok) {
         setSyncError(result.error ?? '云端连接失败')
-        if (announce) notify(`云端连接失败：${result.error}`)
+        if (announce) notify(t('云端连接失败：{err}', { err: result.error ?? '' }))
       } else if (result.payload) {
         applyRemote(result.payload, result.remoteVersion)
         if (announce) notify('已从云端同步最新数据')
@@ -511,7 +519,7 @@ function App() {
         if (url.searchParams.has('code') && (provider === 'wechat' || provider === 'workbuddy')) {
           const handle = provider === 'wechat' ? cloud.auth.handleWechatWebCallback : cloud.auth.handleWorkBuddyCallback
           const { data: session, error } = await handle.call(cloud.auth)
-          if (error) { notify(`登录失败：${error.message}`); return }
+          if (error) { notify(t('登录失败：{err}', { err: error.message })); return }
           if (session) {
             for (const k of ['code', 'state', 'provider']) url.searchParams.delete(k)
             history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
@@ -600,7 +608,7 @@ function App() {
     syncingRef.current = true
     try {
       const result = await pullPayload()
-      if (!result.ok) { setSyncError(result.error ?? '拉取失败'); notify(`拉取失败：${result.error}`) }
+      if (!result.ok) { setSyncError(result.error ?? '拉取失败'); notify(t('拉取失败：{err}', { err: result.error ?? '' })) }
       else if (result.payload) {
         applyRemote(result.payload, result.remoteVersion)
         notify('已同步云端最新数据')
@@ -611,7 +619,7 @@ function App() {
   const handleCloudLogin = useCallback(async (user: CloudUser) => {
     setLoginOpen(false)
     setState(s => appendAudit(s, makeAuditEntry('云登录', user.name ?? undefined)))
-    notify(`已登录：${user.name ?? '用户'}`)
+    notify(t('已登录：{name}', { name: user.name ?? t('用户') }))
     await bootstrapCloud(user)
   }, [notify, bootstrapCloud])
 
@@ -688,7 +696,7 @@ function App() {
         const invoke = w.__TAURI_INTERNALS__?.invoke
         if (!invoke) throw new Error('桌面端接口不可用')
         const path = await invoke('write_file_to_dir', { dir, filename, content })
-        notify(`已导出到：${path}`)
+        notify(t('已导出到：{path}', { path }))
       } catch (e: any) { notify(e.message ?? '写入文件失败') }
     } else {
       // Web 端：浏览器下载
@@ -716,7 +724,7 @@ function App() {
         return true
       }
       setSyncError(r.error ?? '推送失败')
-      notify(`云端备份失败：${r.error ?? '未知错误'}`)
+      notify(t('云端备份失败：{err}', { err: r.error ?? t('未知错误') }))
       return false
     } finally { syncingRef.current = false; setSyncing(false) }
   }, [notify])
@@ -827,10 +835,10 @@ function App() {
         setPriceAlerts(prev => { const next = [...r.changes, ...prev].slice(0, 30); savePriceAlerts(next); return next })
         const fmt = (c: PriceChange) => `${PROVIDER_MAP[c.providerId]?.shortName ?? c.providerId} ${c.newPrice > c.oldPrice ? '涨价' : '降价'} ¥${c.oldPrice}→¥${c.newPrice}`
         const mine = r.changes.filter(c => stateRef.current.accounts.some(a => a.providerId === c.providerId))
-        if (mine.length) notify(`价格变动提醒：${mine.slice(0, 3).map(fmt).join('；')}${mine.length > 3 ? ` 等 ${mine.length} 处` : ''}`)
-        else if (!silent) notify(`价格表有 ${r.changes.length} 处变动（不涉及你已添加的平台），详见用量页「价格动态」`)
+        if (mine.length) notify(t('价格变动提醒：{list}{more}', { list: mine.slice(0, 3).map(fmt).join('；'), more: mine.length > 3 ? t(' 等 {n} 处', { n: mine.length }) : '' }))
+        else if (!silent) notify(t('价格表有 {n} 处变动（不涉及你已添加的平台），详见用量页「价格动态」', { n: r.changes.length }))
       } else if (!silent) {
-        notify(r.ok ? '已检查，暂无价格变动' : `检查失败（${r.error ?? '网络不可用'}），请稍后再试`)
+        notify(r.ok ? t('已检查，暂无价格变动') : t('检查失败（{err}），请稍后再试', { err: r.error ?? t('网络不可用') }))
       }
     } finally { setCheckingPrices(false) }
   }, [notify])
@@ -866,7 +874,7 @@ function App() {
     const lock = () => {
       setSessionPwd('')
       window.dispatchEvent(new Event('acm-autolock'))
-      notify(`保险箱已自动上锁（闲置 ${mins} 分钟）`)
+      notify(t('保险箱已自动上锁（闲置 {mins} 分钟）', { mins }))
     }
     let timer = window.setTimeout(lock, mins * 60_000)
     const reset = () => { window.clearTimeout(timer); timer = window.setTimeout(lock, mins * 60_000) }
@@ -1028,13 +1036,13 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   const paletteItems: PaletteItem[] = useMemo(() => {
-    const pages: PaletteItem[] = tabs.map(t => ({ id: `page-${t.id}`, group: '页面', title: t.label, keywords: t.id, run: () => openTab(t.id) }))
-    pages.push({ id: 'page-report', group: '页面', title: '月度报告', keywords: 'report month 月度 报告 汇总', run: () => openTab('report') })
+    const pages: PaletteItem[] = tabs.map(tabDef => ({ id: `page-${tabDef.id}`, group: t('页面'), title: t(tabDef.label), keywords: tabDef.id, run: () => openTab(tabDef.id) }))
+    pages.push({ id: 'page-report', group: t('页面'), title: t('月度报告'), keywords: 'report month 月度 报告 汇总', run: () => openTab('report') })
     const actions: PaletteItem[] = [
-      { id: 'act-add', group: '操作', title: '添加账户', keywords: 'add account new 添加 账户 新建 key', run: () => setAddOpen(true) },
+      { id: 'act-add', group: t('操作'), title: t('添加账户'), keywords: 'add account new 添加 账户 新建 key', run: () => setAddOpen(true) },
     ]
     const accounts: PaletteItem[] = state.accounts.map(a => ({
-      id: `acc-${a.id}`, group: '账户',
+      id: `acc-${a.id}`, group: t('账户'),
       title: a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId,
       hint: PROVIDER_MAP[a.providerId]?.shortName,
       keywords: `${a.providerId} ${a.note ?? ''}`,
@@ -1042,9 +1050,9 @@ function App() {
     }))
     let tools: PaletteItem[] = []
     try {
-      tools = currentCatalog().tools.map(t => ({
-        id: `tool-${t.id}`, group: 'AI 工具', title: t.name, hint: t.nameEn,
-        keywords: `${t.id} ${t.nameEn} ${t.category}`, run: () => openTab('checkin'),
+      tools = currentCatalog().tools.map(tool => ({
+        id: `tool-${tool.id}`, group: t('AI 工具'), title: tool.name, hint: tool.nameEn,
+        keywords: `${tool.id} ${tool.nameEn} ${tool.category}`, run: () => openTab('checkin'),
       }))
     } catch { /* 工具目录不可用时跳过 */ }
     return [...pages, ...actions, ...accounts, ...tools]
@@ -1075,40 +1083,40 @@ function App() {
   return (
     <div className={shellClass}>
       {/* 手机端抽屉遮罩：点击关闭侧栏 */}
-      {isPhone && sidebarVisible && <button className="phone-scrim" aria-label="关闭菜单" onClick={() => setSidebarVisible(false)} />}
+      {isPhone && sidebarVisible && <button className="phone-scrim" aria-label={t('关闭菜单')} onClick={() => setSidebarVisible(false)} />}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><img src="./pwa-512.png" alt="AI 积分管家" className="app-mark-img" /></div>
+          <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 积分管家')} className="app-mark-img" /></div>
           <div className="brand-text">
-            <div className="brand-name">AI 积分管家</div>
+            <div className="brand-name">{t('AI 积分管家')}</div>
             <div className="brand-sub">AI CREDIT MANAGER</div>
           </div>
-          {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title="关闭菜单"><X size={19} /></button>}
-          {!isPhone && <button className="icon-btn sidebar-toggle sidebar-head-toggle" onClick={toggleSidebar} title={sidebarVisible ? '收起侧边栏（只显示图标）' : '展开侧边栏'} aria-label="切换侧边栏">{sidebarVisible ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>}
+          {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title={t('关闭菜单')}><X size={19} /></button>}
+          {!isPhone && <button className="icon-btn sidebar-toggle sidebar-head-toggle" onClick={toggleSidebar} title={sidebarVisible ? t('收起侧边栏（只显示图标）') : t('展开侧边栏')} aria-label={t('切换侧边栏')}>{sidebarVisible ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>}
         </div>
-        <nav className="nav" aria-label="主导航">
+        <nav className="nav" aria-label={t('主导航')}>
           {navGroups.map((group) => {
             const visibleIds = group.ids.filter((id) => (isPhone ? drawerTabs : tabs.map((t) => t.id)).includes(id))
             if (!visibleIds.length) return null
             const groupClosed = sidebarVisible && closedNavGroups.includes(group.label)
             return (
               <div className="nav-group" key={group.label}>
-                <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? '展开分组' : '收起分组'}>
-                  <span>{group.label}</span>
+                <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? t('展开分组') : t('收起分组')}>
+                  <span>{t(group.label)}</span>
                   {groupClosed && <span className="nav-group-count">{visibleIds.length}</span>}
                   <ChevronDown size={12} className={`nav-group-chevron ${groupClosed ? '' : 'open'}`} />
                 </div>
                 {!groupClosed && visibleIds.map((id) => {
-                  const t = tabs.find((x) => x.id === id)!
-                  const Icon = t.icon
+                  const tabDef = tabs.find((x) => x.id === id)!
+                  const Icon = tabDef.icon
                   const badge = id === 'dashboard' && runningOut.length > 0 ? runningOut.length : id === 'checkin' && pendingCheckins.length > 0 ? pendingCheckins.length : null
                   return (
-                    <Fragment key={t.id}>
-                      <button className={`nav-item ${tab === t.id ? 'active' : ''}`}
-                        onClick={() => openTab(t.id)} title={t.label}>
+                    <Fragment key={tabDef.id}>
+                      <button className={`nav-item ${tab === tabDef.id ? 'active' : ''}`}
+                        onClick={() => openTab(tabDef.id)} title={t(tabDef.label)}>
                         <span className="nav-item-icon"><Icon size={17} /></span>
-                        <span className="nav-item-label">{t.label}</span>
-                        {id === 'checkin' && catalogNews.length > 0 ? <span className="nav-new-dot" title={`目录新增 ${catalogNews.length} 款工具`} /> : null}
+                        <span className="nav-item-label">{t(tabDef.label)}</span>
+                        {id === 'checkin' && catalogNews.length > 0 ? <span className="nav-new-dot" title={t('目录新增 {n} 款工具', { n: catalogNews.length })} /> : null}
                         {badge ? <span className="badge nav-badge">{badge}</span> : null}
                       </button>
                       {id === 'ai' && sidebarVisible && (
@@ -1121,9 +1129,9 @@ function App() {
             )
           })}
         </nav>
-        <button className="cmdk-trigger" onClick={() => setPaletteOpen(true)} title="全局搜索（Ctrl/⌘ + K）">
+        <button className="cmdk-trigger" onClick={() => setPaletteOpen(true)} title={t('全局搜索（Ctrl/⌘ + K）')}>
           <Search size={15} />
-          <span className="cmdk-trigger-label">搜索页面 / 账户 / 工具</span>
+          <span className="cmdk-trigger-label">{t('搜索页面 / 账户 / 工具')}</span>
           <kbd>⌘K</kbd>
         </button>
         <button
@@ -1132,111 +1140,111 @@ function App() {
             if (!cloudUser) { setLoginOpen(true); return }
             if (!syncing) void pullCloud()
           }}
-          title={!cloudUser ? '登录后开启云同步' : syncError ? `同步失败：${syncError}，点击重试` : '点击立即同步'}
+          title={!cloudUser ? t('登录后开启云同步') : syncError ? t('同步失败：{err}，点击重试', { err: syncError }) : t('点击立即同步')}
         >
           <span className={`status-dot ${!cloudUser ? 'off' : syncing ? 'busy' : syncError ? 'err' : 'ok'}`} />
           <div className="sync-status-text">
-            <b>{!cloudUser ? '本地模式' : syncing ? '同步中…' : syncError ? '同步失败' : '已云同步'}</b>
+            <b>{!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}</b>
             <span>{!cloudUser
-              ? '未登录云同步 · 点此登录'
+              ? t('未登录云同步 · 点此登录')
               : syncing
-                ? (cloudUser.name ?? cloudUser.email ?? '正在与云端同步')
+                ? (cloudUser.name ?? cloudUser.email ?? t('正在与云端同步'))
                 : syncError
-                  ? '点此重试'
-                  : `最近 ${syncTimeText(lastSyncAt)} · 点此刷新`}</span>
+                  ? t('点此重试')
+                  : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
           </div>
           <span className="sync-status-icon">{!cloudUser ? <CloudOff size={16} /> : syncError ? <AlertTriangle size={16} /> : <Cloud size={16} />}</span>
         </button>
         <div className="sidebar-foot">
           <div className="sidebar-status">
             <span className="status-dot" />
-            <div><b>本地优先</b><span>数据只保存在此设备</span></div>
+            <div><b>{t('本地优先')}</b><span>{t('数据只保存在此设备')}</span></div>
           </div>
           <div className="compliance">
-            仅只读官方接口 · 签到跳转官方页本人操作
+            {t('仅只读官方接口 · 签到跳转官方页本人操作')}
           </div>
         </div>
       </aside>
 
       <main className="main">
         {/* 手机端：悬浮玻璃菜单按钮，点击打开侧栏抽屉 */}
-        {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label="打开菜单" onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
+        {isPhone && !sidebarVisible && <button className="phone-menu-fab" aria-label={t('打开菜单')} onClick={() => setSidebarVisible(true)}><Menu size={22} /></button>}
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
-          <Suspense fallback={<div style={{ padding: 32, color: 'var(--text-3)', fontSize: 13 }}>加载中…</div>}>
+          <Suspense fallback={<div style={{ padding: 32, color: 'var(--text-3)', fontSize: 13 }}>{t('加载中…')}</div>}>
           {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
-            <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title="不再显示"><X size={15} /></button>
-            <h3>三步上手 AI 积分管家</h3>
+            <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title={t('不再显示')}><X size={15} /></button>
+            <h3>{t('三步上手 AI 积分管家')}</h3>
             <div className="onboarding-steps">
               <div className="onboarding-step">
-                <b>1 · 添加账户</b>
-                <span>把你在用的 AI 平台账户（DeepSeek、Kimi、智谱等）加进来。</span>
-                <button className="btn sm primary" onClick={() => setAddOpen(true)}><Plus size={14} /> 添加账户</button>
+                <b>{t('1 · 添加账户')}</b>
+                <span>{t('把你在用的 AI 平台账户（DeepSeek、Kimi、智谱等）加进来。')}</span>
+                <button className="btn sm primary" onClick={() => setAddOpen(true)}><Plus size={14} /> {t('添加账户')}</button>
               </div>
               <div className="onboarding-step">
-                <b>2 · 录入额度</b>
-                <span>在账户卡片上点「录入/更新额度」，看板会自动预测到期时间与耗尽风险。</span>
+                <b>{t('2 · 录入额度')}</b>
+                <span>{t('在账户卡片上点「录入/更新额度」，看板会自动预测到期时间与耗尽风险。')}</span>
               </div>
               <div className="onboarding-step">
-                <b>3 · 开提醒与同步</b>
-                <span>开启签到/到期提醒，登录云同步后手机与电脑自动对齐。</span>
+                <b>{t('3 · 开提醒与同步')}</b>
+                <span>{t('开启签到/到期提醒，登录云同步后手机与电脑自动对齐。')}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn sm" onClick={() => setSettingsOpen(true)}>开启提醒</button>
-                  <button className="btn sm" onClick={() => setLoginOpen(true)}>登录同步</button>
+                  <button className="btn sm" onClick={() => setSettingsOpen(true)}>{t('开启提醒')}</button>
+                  <button className="btn sm" onClick={() => setLoginOpen(true)}>{t('登录同步')}</button>
                 </div>
               </div>
             </div>
           </div>}
           <div className="bento-greeting">
-            <h2>{runningOut.length ? `今天先处理这 ${runningOut.length} 件` : '今天一切正常'}</h2>
-            {runningOut.length ? <span className="bento-alert-pill">{runningOut.length} 个账户告急</span> : pendingCheckins.length ? <span className="bento-alert-pill warn">{pendingCheckins.length} 个待签到</span> : <span className="bento-alert-pill ok">额度健康</span>}
+            <h2>{runningOut.length ? t('今天先处理这 {n} 件', { n: runningOut.length }) : t('今天一切正常')}</h2>
+            {runningOut.length ? <span className="bento-alert-pill">{t('{n} 个账户告急', { n: runningOut.length })}</span> : pendingCheckins.length ? <span className="bento-alert-pill warn">{t('{n} 个待签到', { n: pendingCheckins.length })}</span> : <span className="bento-alert-pill ok">{t('额度健康')}</span>}
           </div>
-          <section className="bento-grid" aria-label="概览">
+          <section className="bento-grid" aria-label={t('概览')}>
             <div className="bento-tile bento-main">
-              <div className="bento-label">资源总估值 · {state.accounts.length} 个账户</div>
+              <div className="bento-label">{t('资源总估值 · {n} 个账户', { n: state.accounts.length })}</div>
               <div className="bento-big">¥{portfolioValue.toFixed(0)}</div>
-              <div className="bento-sub">本月已用 ¥{monthCost.toFixed(2)} / 预算 ¥{state.settings.monthlyBudget}<br />单价可在用量页校准</div>
-              <button className="btn bento-cta" onClick={() => setAddOpen(true)}><Plus size={15} /> 添加账户</button>
+              <div className="bento-sub">{t('本月已用 ¥{used} / 预算 ¥{budget}', { used: monthCost.toFixed(2), budget: state.settings.monthlyBudget ?? 0 })}<br />{t('单价可在用量页校准')}</div>
+              <button className="btn bento-cta" onClick={() => setAddOpen(true)}><Plus size={15} /> {t('添加账户')}</button>
             </div>
             <button className="bento-tile bento-amber" onClick={() => openTab('checkin')}>
-              <div className="bento-label">今日待签到</div>
-              <div className="bento-num">{pendingCheckins.length}<small> 个</small></div>
-              <div className="bento-sub">{pendingCheckins.length ? '去领取免费额度 →' : '今日已全部完成'}</div>
+              <div className="bento-label">{t('今日待签到')}</div>
+              <div className="bento-num">{pendingCheckins.length}<small> {t('个')}</small></div>
+              <div className="bento-sub">{pendingCheckins.length ? t('去领取免费额度 →') : t('今日已全部完成')}</div>
             </button>
             <button className="bento-tile bento-red" onClick={() => openTab('usage')}>
-              <div className="bento-label">即将耗尽</div>
-              <div className="bento-num">{runningOut.length}<small> 个</small></div>
-              <div className="bento-sub">{runningOut.length ? `${state.settings.alertDays} 天内优先处理 →` : `${lowQuota.length} 个用量超 80%`}</div>
+              <div className="bento-label">{t('即将耗尽')}</div>
+              <div className="bento-num">{runningOut.length}<small> {t('个')}</small></div>
+              <div className="bento-sub">{runningOut.length ? t('{days} 天内优先处理 →', { days: state.settings.alertDays ?? 0 }) : t('{n} 个用量超 80%', { n: lowQuota.length })}</div>
             </button>
             <button className="bento-tile bento-green" onClick={() => openTab('image')}>
-              <div className="bento-label">AI 图像</div>
-              <div className="bento-action">开始生成 →</div>
-              <div className="bento-sub">用你的模型账户生图</div>
+              <div className="bento-label">{t('AI 图像')}</div>
+              <div className="bento-action">{t('开始生成 →')}</div>
+              <div className="bento-sub">{t('用你的模型账户生图')}</div>
             </button>
             <button className="bento-tile bento-blue" onClick={() => openTab('video')}>
-              <div className="bento-label">AI 视频</div>
-              <div className="bento-action">开始生成 →</div>
-              <div className="bento-sub">用你的模型账户生视频</div>
+              <div className="bento-label">{t('AI 视频')}</div>
+              <div className="bento-action">{t('开始生成 →')}</div>
+              <div className="bento-sub">{t('用你的模型账户生视频')}</div>
             </button>
             <button className="bento-tile bento-violet" onClick={() => openTab('ai')}>
-              <div className="bento-label">AI 助手</div>
-              <div className="bento-action">开始对话 →</div>
-              <div className="bento-sub">对话、推理与附件分析</div>
+              <div className="bento-label">{t('AI 助手')}</div>
+              <div className="bento-action">{t('开始对话 →')}</div>
+              <div className="bento-sub">{t('对话、推理与附件分析')}</div>
             </button>
             <button className="bento-tile bento-teal" onClick={() => openTab('usage')}>
-              <div className="bento-label">本月预估费用</div>
+              <div className="bento-label">{t('本月预估费用')}</div>
               <div className="bento-num">¥{monthCost.toFixed(2)}</div>
-              <div className="bento-sub">预算 ¥{state.settings.monthlyBudget} · 查看趋势 →</div>
+              <div className="bento-sub">{t('预算 ¥{budget} · 查看趋势 →', { budget: state.settings.monthlyBudget ?? 0 })}</div>
             </button>
           </section>
 
           {healthRows.length > 0 && (
             <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
               <div className="row between">
-                <b style={{ fontSize: 13.5 }}>账户体检 <span className="hint">按分数从低到高 · 先救最差的</span></b>
-                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>告急 {healthRows.filter(h => h.grade === '告急').length} · 注意 {healthRows.filter(h => h.grade === '注意').length} · 健康 {healthRows.filter(h => h.grade === '健康').length}</span>
+                <b style={{ fontSize: 13.5 }}>{t('账户体检')} <span className="hint">{t('按分数从低到高 · 先救最差的')}</span></b>
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('告急 {a} · 注意 {b} · 健康 {c}', { a: healthRows.filter(h => h.grade === '告急').length, b: healthRows.filter(h => h.grade === '注意').length, c: healthRows.filter(h => h.grade === '健康').length })}</span>
               </div>
               <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
                 {healthRows.slice(0, 5).map(h => (
@@ -1244,7 +1252,7 @@ function App() {
                     <b style={{ fontSize: 15, minWidth: 34, textAlign: 'center', color: h.grade === '告急' ? 'var(--red)' : h.grade === '注意' ? '#d97706' : '#16a34a' }}>{h.score}</b>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13 }}>{h.label} <span className="hint">{h.platform}</span></div>
-                      <div style={{ fontSize: 11.5, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.reasons.length ? h.reasons.join('；') : '状态良好'}</div>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.reasons.length ? h.reasons.join('；') : t('状态良好')}</div>
                     </div>
                     <div style={{ width: 90, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', flex: 'none' }}>
                       <div style={{ height: '100%', width: `${h.score}%`, background: h.grade === '告急' ? 'var(--red)' : h.grade === '注意' ? '#d97706' : '#16a34a' }} />
@@ -1258,9 +1266,9 @@ function App() {
           <DashboardView views={views} onAdd={() => setAddOpen(true)} onRemove={(id) => {
             const acc = state.accounts.find(a => a.id === id)
             const doRemove = () => {
-              scheduleUndo(stateRef.current, '账户已移除')
+              scheduleUndo(stateRef.current, t('账户已移除'))
               setState(s => removeAccount(s, id))
-              notify(`账户「${acc?.label ?? ''}」及关联数据已移除（5 秒内可撤回）`)
+              notify(t('账户「{label}」及关联数据已移除（5 秒内可撤回）', { label: acc?.label ?? '' }))
             }
             // 本地模型删除无需备份（仅存本机、无密钥价值）
             if (acc && isLocalProvider(acc.providerId)) doRemove()
@@ -1271,9 +1279,9 @@ function App() {
               return a && isLocalProvider(a.providerId)
             })
             const doRemove = () => {
-              scheduleUndo(stateRef.current, `已删除 ${ids.length} 个账户`)
+              scheduleUndo(stateRef.current, t('已删除 {n} 个账户', { n: ids.length }))
               setState(s => ids.reduce((acc, id) => removeAccount(acc, id), s))
-              notify(`已删除 ${ids.length} 个账户（5 秒内可撤回）`)
+              notify(t('已删除 {n} 个账户（5 秒内可撤回）', { n: ids.length }))
             }
             if (localOnly) doRemove()
             else requestBackup(ids, '删除前必须备份', '确认删除', doRemove)
@@ -1294,11 +1302,11 @@ function App() {
 
           {tab === 'video' && <VideoView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={isPhone ? undefined : () => openTab('local-video')} />}
 
-          {!isPhone && tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('image')}><X size={15} /> 返回 AI 图像</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('image')}><X size={15} /> {t('返回 AI 图像')}</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
 
-          {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> 返回 AI 视频</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> {t('返回 AI 视频')}</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
-          {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> 智能粘贴</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> 添加账户</button></div>}
+          {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> {t('智能粘贴')}</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> {t('添加账户')}</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify} isPhone={isPhone}
             onAudit={audit}
@@ -1311,10 +1319,10 @@ function App() {
             onRemoveKeys={(ids) => {
               audit('删除账户', ids.length === 1 ? (state.accounts.find(a => a.id === ids[0])?.label ?? '账户') : `${ids.length} 个账户`)
               scheduleUndo(stateRef.current, ids.length === 1
-                ? `已删除「${state.accounts.find(a => a.id === ids[0])?.label ?? '账户'}」`
-                : `已删除 ${ids.length} 个账户`)
+                ? t('已删除「{label}」', { label: state.accounts.find(a => a.id === ids[0])?.label ?? t('账户') })
+                : t('已删除 {n} 个账户', { n: ids.length }))
               setState(s => ids.reduce((acc, id) => removeAccount(acc, id), s))
-              notify(`已删除 ${ids.length} 个账户及关联数据（5 秒内可撤回）`)
+              notify(t('已删除 {n} 个账户及关联数据（5 秒内可撤回）', { n: ids.length }))
             }}
             onRequestBackup={(ids, title, confirmLabel, after, backupOnly) => {
               // 本地模型删除跳过备份门禁；真 API Key 保持原流程
@@ -1357,7 +1365,7 @@ function App() {
                 ...s.usage,
                 ...events.map(e => ({ ...e, id: uid('u') })),
               ] }))
-              notify(`已导入 ${events.length} 条用量记录`)
+              notify(t('已导入 {n} 条用量记录', { n: events.length }))
             }}
           />}
 
@@ -1449,7 +1457,7 @@ function App() {
           onClear={() => {
             requestBackup(state.accounts.map(a => a.id), '清空前必须备份', '确认清空', () => {
               void (async () => {
-                const bioOk = await biometricAuth('验证身份以清空全部业务数据')
+                const bioOk = await biometricAuth(t('验证身份以清空全部业务数据'))
                 if (!bioOk) {
                   const unlocked = !!(sessionPwd || getBiometricPassword())
                   if (!unlocked) { notify('请先解锁保险箱或在支持生物识别的设备上验证，未执行清空'); return }
@@ -1473,8 +1481,8 @@ function App() {
           <div className="set-modal-backdrop" onClick={() => setSettingsOpen(false)}>
             <div className="set-modal" onClick={e => e.stopPropagation()}>
               <div className="set-modal-head">
-                <h2>设置</h2>
-                <button className="icon-btn" onClick={() => setSettingsOpen(false)} title="关闭"><X size={18} /></button>
+                <h2>{t('设置')}</h2>
+                <button className="icon-btn" onClick={() => setSettingsOpen(false)} title={t('关闭')}><X size={18} /></button>
               </div>
               <div className="set-modal-body">{node}</div>
             </div>
@@ -1485,12 +1493,12 @@ function App() {
       {/* 移动端底部导航：仅当设置「底部菜单栏（手机端）」开启时显示（缺省关闭，页面切换用左上角抽屉） */}
       {state.settings.showBottomNav && <nav className="bottom-nav">
         {bottomTabs.map(id => {
-          const t = tabs.find(x => x.id === id)!
-          const Icon = t.icon
+          const tabDef = tabs.find(x => x.id === id)!
+          const Icon = tabDef.icon
           return (
-            <button key={t.id} className={`bottom-nav-item ${tab === t.id ? 'active' : ''} ${t.id === 'ai' ? 'center' : ''}`} onClick={() => openTab(t.id)}>
+            <button key={tabDef.id} className={`bottom-nav-item ${tab === tabDef.id ? 'active' : ''} ${tabDef.id === 'ai' ? 'center' : ''}`} onClick={() => openTab(tabDef.id)}>
               <Icon size={20} />
-              <span>{shortLabel[t.id]}</span>
+              <span>{t(shortLabel[tabDef.id])}</span>
             </button>
           )
         })}
@@ -1514,7 +1522,7 @@ function App() {
           setState(s => ({ ...s, accounts: [{ ...account }, ...s.accounts] }))
           if (pwd && !sessionPwd) setSessionPwd(pwd)
           setFormProviderId(null); setAddOpen(true)
-          notify(`已添加本地模型「${account.label}」，可继续添加或关闭选择平台`)
+          notify(t('已添加本地模型「{label}」，可继续添加或关闭选择平台', { label: account.label }))
         }}
         notify={notify}
       />}
@@ -1536,12 +1544,12 @@ function App() {
               const plain = await decryptSecret(data.account.encryptedKey, data.pwd)
               saveTtsConfig({ provider: data.account.voiceProvider as import('./core/voice-download').TtsProviderConfig['provider'], endpoint: '', mode: 'direct', apiKey: plain })
               if (data.pwd) setVoiceSessionPwd(data.pwd)
-              notify(`已添加「${data.account.label}」，并同步到语音配置模块`)
+              notify(t('已添加「{label}」，并同步到语音配置模块', { label: data.account.label }))
             } catch {
-              notify(`已添加「${data.account.label}」，但同步语音配置失败，请在语音配置页手动填写`)
+              notify(t('已添加「{label}」，但同步语音配置失败，请在语音配置页手动填写', { label: data.account.label }))
             }
           } else {
-            notify(`已添加「${data.account.label}」，已置顶到 API Key 管理列表`)
+            notify(t('已添加「{label}」，已置顶到 API Key 管理列表', { label: data.account.label }))
           }
           setFormProviderId(null); setPasteSecret(''); setAddOpen(true)
         }}
@@ -1579,10 +1587,10 @@ function App() {
           const before = stateRef.current
           if (mode === 'replace') {
             setState(importData)
-            notify(`已覆盖导入 ${importData.accounts.length} 个账户`)
+            notify(t('已覆盖导入 {n} 个账户', { n: importData.accounts.length }))
           } else {
             setState(s => mergeState(s, importData))
-            notify(`已合并，新增 ${importData.accounts.filter(a => !before.accounts.some(x => x.id === a.id)).length} 个账户`)
+            notify(t('已合并，新增 {n} 个账户', { n: importData.accounts.filter(a => !before.accounts.some(x => x.id === a.id)).length }))
           }
           setImportData(null)
         }}
@@ -1600,7 +1608,7 @@ function App() {
             if (p.kind === 'quotas') return { ...s, quotas: [...s.quotas, ...p.quotas.quotas] }
             return { ...s, usage: [...s.usage, ...p.events.map(e => ({ ...e, id: uid('u') }))] }
           })
-          notify(`已导入 ${counts} 条${p.kind === 'accounts' ? '账户' : p.kind === 'quotas' ? '额度' : '用量'}记录`)
+          notify(t('已导入 {n} 条{kind}记录', { n: counts, kind: t(p.kind === 'accounts' ? '账户' : p.kind === 'quotas' ? '额度' : '用量') }))
           setCsvPreview(null)
         }}
       />}
@@ -1620,7 +1628,7 @@ function App() {
           })
           if (pwd) setSessionPwd(pwd)
           setServicePreview(null)
-          notify(`已安全导入 ${accounts.length} 个服务（密钥已加密）`)
+          notify(t('已安全导入 {n} 个服务（密钥已加密）', { n: accounts.length }))
         }}
       />}
       {exportOpen && <ExportModal state={state} onClose={() => setExportOpen(false)} onExport={(fmt, dir) => { void doExport(fmt, dir); setExportOpen(false) }} />}
@@ -1644,32 +1652,32 @@ function App() {
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
       {undo && <div className="undo-bar">
         <span><Check size={15} /> {undo.label}</span>
-        <button onClick={doUndo}><RotateCcw size={14} /> 撤回</button>
+        <button onClick={doUndo}><RotateCcw size={14} /> {t('撤回')}</button>
         <i className="undo-countdown" />
       </div>}
       {backupDue && !undo && <div className="backup-due-bar">
         <AlertTriangle size={15} />
-        <span>已超过 {state.settings.backupReminderDays ?? 7} 天未备份数据。</span>
-        <button onClick={() => { void doExport('json') }}>立即导出备份</button>
-        <button onClick={() => { if (cloudUser) { void pushCloud().then(ok => { if (ok) setBackupDue(false) }) } else setLoginOpen(true) }}>{cloudUser ? '备份到云端' : '登录后云备份'}</button>
-        <button onClick={() => { try { localStorage.setItem('acm.backup.snoozeUntil', String(Date.now() + 3 * 86400000)) } catch { /* 忽略 */ } setBackupDue(false) }}>3 天后再提醒</button>
-        <button className="backup-due-close" onClick={() => setBackupDue(false)} title="本次忽略"><X size={14} /></button>
+        <span>{t('已超过 {days} 天未备份数据。', { days: state.settings.backupReminderDays ?? 7 })}</span>
+        <button onClick={() => { void doExport('json') }}>{t('立即导出备份')}</button>
+        <button onClick={() => { if (cloudUser) { void pushCloud().then(ok => { if (ok) setBackupDue(false) }) } else setLoginOpen(true) }}>{cloudUser ? t('备份到云端') : t('登录后云备份')}</button>
+        <button onClick={() => { try { localStorage.setItem('acm.backup.snoozeUntil', String(Date.now() + 3 * 86400000)) } catch { /* 忽略 */ } setBackupDue(false) }}>{t('3 天后再提醒')}</button>
+        <button className="backup-due-close" onClick={() => setBackupDue(false)} title={t('本次忽略')}><X size={14} /></button>
       </div>}
-      {toast && !undo && <div className="toast"><Check size={15} /> {toast}</div>}
+      {toast && !undo && <div className="toast"><Check size={15} /> {t(toast)}</div>}
     </div>
   )
 }
 
 /** 同步时间相对文案：刚刚 / N 分钟前 / N 小时前 / 日期 */
 function syncTimeText(iso: string | null): string {
-  if (!iso) return '尚未同步'
-  const t = new Date(iso).getTime()
-  if (Number.isNaN(t)) return '尚未同步'
-  const diff = Date.now() - t
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  return new Date(iso).toLocaleDateString('zh-CN')
+  if (!iso) return t('尚未同步')
+  const ts = new Date(iso).getTime()
+  if (Number.isNaN(ts)) return t('尚未同步')
+  const diff = Date.now() - ts
+  if (diff < 60_000) return t('刚刚')
+  if (diff < 3_600_000) return t('{n} 分钟前', { n: Math.max(1, Math.floor(diff / 60_000)) })
+  if (diff < 86_400_000) return t('{n} 小时前', { n: Math.floor(diff / 3_600_000) })
+  return new Date(iso).toLocaleDateString(locale())
 }
 
 function StatCard({ icon, color, label, value, hint }: { icon: React.ReactNode; color: string; label: string; value: string; hint: string }) {
@@ -1684,10 +1692,10 @@ function StatCard({ icon, color, label, value, hint }: { icon: React.ReactNode; 
     <div className="stat-card">
       <div className="stat-top">
         <div className="stat-icon" style={{ background: c.bg, color: c.fg }}>{icon}</div>
-        <span className="stat-label">{label}</span>
+        <span className="stat-label">{t(label)}</span>
       </div>
       <div className="stat-value"><span className="me-num" key={value}>{value}</span></div>
-      <div className="stat-hint">{hint}</div>
+      <div className="stat-hint">{t(hint)}</div>
     </div>
   )
 }
@@ -1721,11 +1729,11 @@ function KeyPageButton({ provider, notify }: { provider: ProviderDefinition; not
   const url = getKeyPageUrl(provider)
   const isLocal = provider.id.startsWith('local-')
   return (
-    <button className="icon-btn key-page-btn" title={isLocal ? `打开官网：${url}` : `前往官方创建 / 管理 Key：${url}`}
+    <button className="icon-btn key-page-btn" title={isLocal ? t('打开官网：{url}', { url }) : t('前往官方创建 / 管理 Key：{url}', { url })}
       onClick={async () => {
         const ok = await openExternal(url)
-        if (!ok) notify(`打开失败，请手动访问：${url}`)
-        else if (!isDesktopApp()) notify(isLocal ? '已在新标签页打开官网' : '已在新标签页打开官方 Key 页面')
+        if (!ok) notify(t('打开失败，请手动访问：{url}', { url }))
+        else if (!isDesktopApp()) notify(isLocal ? t('已在新标签页打开官网') : t('已在新标签页打开官方 Key 页面'))
       }}>
       {isLocal ? <Globe size={15} /> : <KeyRound size={15} />}
     </button>
@@ -1741,8 +1749,8 @@ function OutLink({ url, label, className = 'btn sm ghost', title, notify, style 
     <button className={className} style={{ ...style, display: 'inline-flex', alignItems: 'center', gap: 5 }} title={title}
       onClick={async () => {
         const ok = await openExternal(url)
-        if (!ok) notify(`${isDesktopApp() ? '系统浏览器打开失败' : '弹窗被拦截'}，请手动复制：${url}`)
-        else if (!isDesktopApp()) notify('已在新标签页打开官方页面，请本人操作')
+        if (!ok) notify(t('{reason}，请手动复制：{url}', { reason: isDesktopApp() ? t('系统浏览器打开失败') : t('弹窗被拦截'), url }))
+        else if (!isDesktopApp()) notify(t('已在新标签页打开官方页面，请本人操作'))
       }}>
       {label} <ExternalLink size={12} />
     </button>
@@ -1756,17 +1764,17 @@ function ToolLink({ tool, label, className = 'btn sm ghost', title, notify, icon
 }) {
   const url = tool.checkinUrl ?? tool.downloadUrl
   return (
-    <button className={className} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }} title={title ?? `${tool.name} 官方站点`}
+    <button className={className} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }} title={title ?? t('{name} 官方站点', { name: tool.name })}
       onClick={async () => {
         if (forceWeb) {
           const ok = await openExternal(tool.downloadUrl)
-          if (!ok) notify(`打开失败，请手动访问：${tool.downloadUrl}`)
+          if (!ok) notify(t('打开失败，请手动访问：{url}', { url: tool.downloadUrl }))
           return
         }
         const { opened, via } = await openTool(tool.localApp, url)
-        if (!opened) notify(`打开失败，请手动访问官方站点：${url}`)
-        else if (via === 'local') notify(`已唤醒本机「${tool.name}」客户端`)
-        else if (!isDesktopApp()) notify('已在新标签页打开官方页面，请本人操作')
+        if (!opened) notify(t('打开失败，请手动访问官方站点：{url}', { url }))
+        else if (via === 'local') notify(t('已唤醒本机「{name}」客户端', { name: tool.name }))
+        else if (!isDesktopApp()) notify(t('已在新标签页打开官方页面，请本人操作'))
       }}>
       {label} <Icon size={12} />
     </button>
@@ -1774,47 +1782,47 @@ function ToolLink({ tool, label, className = 'btn sm ghost', title, notify, icon
 }
 
 /** 工具卡片（模块级 memo：搜索/筛选时避免整墙卸载重挂载） */
-const AgentToolCard = memo(function AgentToolCard({ t, done, hasLocal, notify, onToggle }: {
+const AgentToolCard = memo(function AgentToolCard({ t: tool, done, hasLocal, notify, onToggle }: {
   t: AgentTool; done: boolean; hasLocal: boolean; notify: (m: string) => void; onToggle: (id: string) => void
 }) {
   return (
     <article className="agent-card">
       <div className="agent-card-top">
-        <div className="agent-logo" style={{ background: `${t.color}14` }}>
-          <img src={t.icon} alt={`${t.name} 官方图标`} width={36} height={36} loading="lazy"
+        <div className="agent-logo" style={{ background: `${tool.color}14` }}>
+          <img src={tool.icon} alt={t('{name} 官方图标', { name: tool.name })} width={36} height={36} loading="lazy"
             onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />
         </div>
         <div className="agent-card-title">
-          <div className="agent-name">{t.name}</div>
-          <div className="agent-name-en">{t.nameEn}</div>
+          <div className="agent-name">{tool.name}</div>
+          <div className="agent-name-en">{tool.nameEn}</div>
         </div>
-        {t.canCheckin && <span className={`tag ${done ? 'green' : 'amber'}`} style={{ flex: 'none' }}>
-          {done ? <><Check size={11} /> 已签到</> : '可签到'}
+        {tool.canCheckin && <span className={`tag ${done ? 'green' : 'amber'}`} style={{ flex: 'none' }}>
+          {done ? <><Check size={11} /> {t('已签到')}</> : t('可签到')}
         </span>}
       </div>
       <div className="agent-card-badges">
-        <span className="agent-chip" style={{ color: t.color, background: `${t.color}12` }}>{t.category}</span>
-        <span className="agent-chip muted">{t.region === 'cn' ? '国内' : '海外'}</span>
-        {hasLocal && <span className="agent-chip local"><Monitor size={10} /> 本机已装</span>}
+        <span className="agent-chip" style={{ color: tool.color, background: `${tool.color}12` }}>{t(tool.category)}</span>
+        <span className="agent-chip muted">{tool.region === 'cn' ? t('国内') : t('海外')}</span>
+        {hasLocal && <span className="agent-chip local"><Monitor size={10} /> {t('本机已装')}</span>}
       </div>
-      <p className="agent-desc" title={t.desc}>{t.desc}</p>
+      <p className="agent-desc" title={tool.desc}>{tool.desc}</p>
       <div className="agent-card-meta">
-        <span className="agent-usage" title="按公开月访问量/月活估算，由高到低排序"><TrendingUp size={12} /> {t.usageLabel}</span>
-        <span className="agent-platforms">{t.platforms.map(p => <i key={p} title={p}>{p === '浏览器插件' ? '插件' : p}</i>)}</span>
+        <span className="agent-usage" title={t('按公开月访问量/月活估算，由高到低排序')}><TrendingUp size={12} /> {tool.usageLabel}</span>
+        <span className="agent-platforms">{tool.platforms.map(p => <i key={p} title={p}>{p === '浏览器插件' ? t('插件') : p}</i>)}</span>
       </div>
-      <div className={`agent-tip ${t.canCheckin ? 'checkin' : 'benefit'}`}
-        title={t.canCheckin ? t.checkinTip : t.benefitTip}>
-        <span className="agent-tip-label">{t.canCheckin ? '签到规则' : '福利说明'}</span>
-        {t.canCheckin ? t.checkinTip : t.benefitTip}
+      <div className={`agent-tip ${tool.canCheckin ? 'checkin' : 'benefit'}`}
+        title={tool.canCheckin ? tool.checkinTip : tool.benefitTip}>
+        <span className="agent-tip-label">{tool.canCheckin ? t('签到规则') : t('福利说明')}</span>
+        {tool.canCheckin ? tool.checkinTip : tool.benefitTip}
       </div>
       <div className="agent-card-actions">
-        <ToolLink tool={t} label={hasLocal ? '直达客户端' : '官方网站'} className={`btn sm ${hasLocal ? 'primary' : 'ghost'}`}
-          title={hasLocal ? `唤醒本机 ${t.name} 客户端（未安装则打开官网）` : `打开 ${t.name} 官方站点`} notify={notify} />
+        <ToolLink tool={tool} label={hasLocal ? t('直达客户端') : t('官方网站')} className={`btn sm ${hasLocal ? 'primary' : 'ghost'}`}
+          title={hasLocal ? t('唤醒本机 {name} 客户端（未安装则打开官网）', { name: tool.name }) : t('打开 {name} 官方站点', { name: tool.name })} notify={notify} />
         {/* 官方下载直达：始终打开官网下载页，不唤醒本地客户端 */}
-        <ToolLink tool={t} label="官方下载" className="btn sm ghost" icon={Download} forceWeb
-          title={`打开 ${t.name} 官方下载/主页`} notify={notify} />
-        {t.canCheckin && <button className="btn sm" onClick={() => onToggle(t.id)} title={done ? '标记为未签到' : '标记今日已签到'}>
-          {done ? '撤销标记' : '标记完成'}
+        <ToolLink tool={tool} label={t('官方下载')} className="btn sm ghost" icon={Download} forceWeb
+          title={t('打开 {name} 官方下载/主页', { name: tool.name })} notify={notify} />
+        {tool.canCheckin && <button className="btn sm" onClick={() => onToggle(tool.id)} title={done ? t('标记为未签到') : t('标记今日已签到')}>
+          {done ? t('撤销标记') : t('标记完成')}
         </button>}
       </div>
     </article>
@@ -1828,14 +1836,14 @@ function AgentPager({ page, pages, onChange }: { page: number; pages: number; on
     n === 1 || n === pages || Math.abs(n - page) <= 1)
   return (
     <div className="agent-pager">
-      <button disabled={page <= 1} onClick={() => onChange(page - 1)}>上一页</button>
+      <button disabled={page <= 1} onClick={() => onChange(page - 1)}>{t('上一页')}</button>
       {nums.map((n, i) => (
         <span key={n}>
           {i > 0 && n - nums[i - 1] > 1 && <em>…</em>}
           <button className={n === page ? 'active' : ''} onClick={() => onChange(n)}>{n}</button>
         </span>
       ))}
-      <button disabled={page >= pages} onClick={() => onChange(page + 1)}>下一页</button>
+      <button disabled={page >= pages} onClick={() => onChange(page + 1)}>{t('下一页')}</button>
       <span className="agent-pager-info">{page} / {pages}</span>
     </div>
   )
@@ -1883,48 +1891,48 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
     return (
       <div className="empty me-stack">
         <div className="stat-icon" style={{ background: 'var(--primary-soft)', color: 'var(--primary)', margin: '0 auto' }}><Wallet size={22} /></div>
-        <h3 className="me-text-layer">还没有账户</h3>
-        <p className="me-text-layer">添加一个你自己的 AI 平台账户，开始统一管理积分与额度</p>
-        <button className="btn primary" onClick={onAdd}><Plus size={15} /> 添加第一个账户</button>
+        <h3 className="me-text-layer">{t('还没有账户')}</h3>
+        <p className="me-text-layer">{t('添加一个你自己的 AI 平台账户，开始统一管理积分与额度')}</p>
+        <button className="btn primary" onClick={onAdd}><Plus size={15} /> {t('添加第一个账户')}</button>
       </div>
     )
   }
   return (
     <>
       <div className="section-head">
-        <h2>账户额度 <span className="hint">{filtering ? `${filtered.length} / ${views.length} 个账户` : `${views.length} 个账户`}</span></h2>
-        <button className="btn sm" onClick={onAdd}><Plus size={14} /> 添加</button>
+        <h2>{t('账户额度')} <span className="hint">{filtering ? t('{f} / {n} 个账户', { f: filtered.length, n: views.length }) : t('{n} 个账户', { n: views.length })}</span></h2>
+        <button className="btn sm" onClick={onAdd}><Plus size={14} /> {t('添加')}</button>
       </div>
       <div className="dash-filters">
         <label className="dash-search">
           <Search size={14} />
-          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索账户名 / 平台…" />
-          {query && <button className="dash-search-clear" onClick={() => setQuery('')} title="清除搜索"><X size={13} /></button>}
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('搜索账户名 / 平台…')} />
+          {query && <button className="dash-search-clear" onClick={() => setQuery('')} title={t('清除搜索')}><X size={13} /></button>}
         </label>
-        <select className="select dash-filter-select" value={statusF} onChange={e => setStatusF(e.target.value as typeof statusF)} title="按额度状态筛选">
-          <option value="all">全部状态</option>
-          <option value="has">已录入额度</option>
-          <option value="none">未录入额度</option>
-          <option value="low">额度告急（已用 ≥70%）</option>
+        <select className="select dash-filter-select" value={statusF} onChange={e => setStatusF(e.target.value as typeof statusF)} title={t('按额度状态筛选')}>
+          <option value="all">{t('全部状态')}</option>
+          <option value="has">{t('已录入额度')}</option>
+          <option value="none">{t('未录入额度')}</option>
+          <option value="low">{t('额度告急（已用 ≥70%）')}</option>
         </select>
-        <select className="select dash-filter-select" value={groupF} onChange={e => setGroupF(e.target.value)} title="按分组筛选">
-          <option value="all">全部分组</option>
+        <select className="select dash-filter-select" value={groupF} onChange={e => setGroupF(e.target.value)} title={t('按分组筛选')}>
+          <option value="all">{t('全部分组')}</option>
           {dashGroups.map(g => <option key={g} value={g}>{g}</option>)}
-          <option value="__none">未分组</option>
+          <option value="__none">{t('未分组')}</option>
         </select>
-        <select className="select dash-filter-select" value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)} title="排序方式">
-          <option value="default">默认排序</option>
-          <option value="remainDesc">剩余：高 → 低</option>
-          <option value="remainAsc">剩余：低 → 高</option>
-          <option value="percentDesc">已用占比：高 → 低</option>
-          <option value="name">名称 A–Z</option>
+        <select className="select dash-filter-select" value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)} title={t('排序方式')}>
+          <option value="default">{t('默认排序')}</option>
+          <option value="remainDesc">{t('剩余：高 → 低')}</option>
+          <option value="remainAsc">{t('剩余：低 → 高')}</option>
+          <option value="percentDesc">{t('已用占比：高 → 低')}</option>
+          <option value="name">{t('名称 A–Z')}</option>
         </select>
-        {filtering && <button className="btn sm ghost" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>清除筛选</button>}
+        {filtering && <button className="btn sm ghost" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>{t('清除筛选')}</button>}
       </div>
       {filtered.length === 0 && (
         <div className="empty" style={{ padding: '28px 0' }}>
-          <p>当前筛选下没有账户</p>
-          <button className="btn sm" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>清除筛选</button>
+          <p>{t('当前筛选下没有账户')}</p>
+          <button className="btn sm" onClick={() => { setQuery(''); setStatusF('all'); setGroupF('all') }}>{t('清除筛选')}</button>
         </div>
       )}
       <SelectionBar
@@ -1940,7 +1948,7 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
         actions={<button className="btn sm danger" onClick={() => {
           onRemoveMany(Array.from(selected))
           setSelected(new Set())
-        }}><Trash2 size={13} /> 批量删除</button>}
+        }}><Trash2 size={13} /> {t('批量删除')}</button>}
       />
       <div className="account-grid">
         {pageViews.map((v) => {
@@ -1949,7 +1957,7 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
           const hasQuota = !!v.quota
           return (
             <div className={`account-card selectable ${selected.has(v.account.id) ? 'selected' : ''}`} key={v.account.id}>
-              <input className="item-check" type="checkbox" title="选择此账户"
+              <input className="item-check" type="checkbox" title={t('选择此账户')}
                 checked={selected.has(v.account.id)} onChange={e => {
                   const next = new Set(selected)
                   if (e.target.checked) next.add(v.account.id); else next.delete(v.account.id)
@@ -1962,13 +1970,13 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
                   <div className="ac-mode">
                     <span>{v.provider.name}</span>
                     <span style={{ color: 'var(--border-strong)' }}>·</span>
-                    <span>{MODE_LABEL[v.account.mode]}</span>
+                    <span>{t(MODE_LABEL[v.account.mode])}</span>
                   </div>
                 </div>
                 <div className="ac-menu">
                   <div className="dots">
-                    <button className="icon-btn" title="录入/更新额度" onClick={() => onEditQuota(v.account.id)}><RefreshCw size={14} /></button>
-                    <HoldToConfirm title="移除账户" onConfirm={() => onRemove(v.account.id)} />
+                    <button className="icon-btn" title={t('录入/更新额度')} onClick={() => onEditQuota(v.account.id)}><RefreshCw size={14} /></button>
+                    <HoldToConfirm title={t('移除账户')} onConfirm={() => onRemove(v.account.id)} />
                   </div>
                 </div>
               </div>
@@ -1977,21 +1985,21 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
                   <div className="ac-quota">
                     <div className="ac-quota-num">
                       <span className="me-num" key={`q-${v.account.id}-${v.quota!.used}`}>{(v.quota!.total - v.quota!.used).toLocaleString()}</span>
-                      <small>{UNIT_LABEL[v.quota!.unit]}</small>
+                      <small>{t(UNIT_LABEL[v.quota!.unit])}</small>
                     </div>
-                    <div className="ac-quota-label">剩余 / 共 {v.quota!.total.toLocaleString()}</div>
+                    <div className="ac-quota-label">{t('剩余 / 共 {total}', { total: v.quota!.total.toLocaleString() })}</div>
                   </div>
                   <div className="progress"><div style={{ width: `${Math.max(percent, 2)}%`, background: color }} /></div>
                   <div className="ac-foot">
                     <span className={`tag ${percent >= 90 ? 'red' : percent >= 70 ? 'amber' : 'green'}`}>
-                      已用 {percent}%
+                      {t('已用 {percent}%', { percent })}
                     </span>
                     {v.daysUntilReset !== undefined
-                      ? <span><Clock size={11} style={{ verticalAlign: '-1px' }} /> {v.daysUntilReset > 0 ? `${v.daysUntilReset} 天后重置` : '即将重置'}</span>
-                      : <span style={{ color: 'var(--text-3)' }}>更新日期：{v.quota!.capturedAt.slice(0, 10)}</span>}
+                      ? <span><Clock size={11} style={{ verticalAlign: '-1px' }} /> {v.daysUntilReset > 0 ? t('{days} 天后重置', { days: v.daysUntilReset }) : t('即将重置')}</span>
+                      : <span style={{ color: 'var(--text-3)' }}>{t('更新日期：{date}', { date: v.quota!.capturedAt.slice(0, 10) })}</span>}
                   </div>
                   {v.forecast && v.forecast.level !== 'insufficient' && (
-                    <div className={`forecast ${v.forecast.level}`} title={`依据：${v.forecast.basis === 'quota-history' ? '额度历史' : '用量记录'} · ${v.forecast.samples} 个样本${v.forecast.exhaustDate ? ` · 预计 ${v.forecast.exhaustDate}` : ''}`}>
+                    <div className={`forecast ${v.forecast.level}`} title={t('依据：{basis} · {samples} 个样本{exhaust}', { basis: v.forecast.basis === 'quota-history' ? t('额度历史') : t('用量记录'), samples: v.forecast.samples, exhaust: v.forecast.exhaustDate ? t(' · 预计 {date}', { date: v.forecast.exhaustDate }) : '' })}>
                       <TrendingUp size={13} />
                       <span>{forecastText(v.forecast)}</span>
                     </div>
@@ -1999,10 +2007,10 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
                 </>
               ) : (
                 <>
-                  <div style={{ padding: '10px 0 14px', fontSize: 13, color: 'var(--text-3)' }}>尚未录入额度</div>
+                  <div style={{ padding: '10px 0 14px', fontSize: 13, color: 'var(--text-3)' }}>{t('尚未录入额度')}</div>
                   <div className="ac-foot">
-                    <button className="btn sm" onClick={() => onEditQuota(v.account.id)}><RefreshCw size={13} /> 录入额度</button>
-                    <OutLink url={v.provider.usageUrl} label="官方用量页" notify={notify} style={{ color: 'var(--primary)' }} />
+                    <button className="btn sm" onClick={() => onEditQuota(v.account.id)}><RefreshCw size={13} /> {t('录入额度')}</button>
+                    <OutLink url={v.provider.usageUrl} label={t('官方用量页')} notify={notify} style={{ color: 'var(--primary)' }} />
                   </div>
                 </>
               )}
@@ -2071,8 +2079,8 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
       if (r.ok && r.snapshot) {
         setTools(r.snapshot.tools)
         setUpdatedAt(r.snapshot.updatedAt)
-        notify(`目录已更新 · ${r.snapshot.tools.length} 款工具`)
-      } else notify(`更新失败（${r.error ?? '网络不可用'}），当前显示本地数据`)
+        notify(t('目录已更新 · {n} 款工具', { n: r.snapshot.tools.length }))
+      } else notify(t('更新失败（{err}），当前显示本地数据', { err: r.error ?? t('网络不可用') }))
     } finally { setSyncing(false) }
   }
 
@@ -2107,16 +2115,16 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
     : undefined
   const guideDone = guideQueue ? guideQueue.filter(id => doneIds.has(id)).length : 0
   const startGuide = () => {
-    if (!pendingTools.length) { notify('今日待签到已全部完成'); return }
+    if (!pendingTools.length) { notify(t('今日待签到已全部完成')); return }
     setGuideSkipped([])
     setGuideQueue(pendingTools.map(t => t.id))
   }
   // 一键全部打开待签到页（桌面/Web）：逐个错峰打开，签完回工具页点卡片上的签到按钮登记
   const openAllCheckins = () => {
-    const urls = pendingTools.map(t => t.checkinUrl ?? t.downloadUrl).filter((u): u is string => !!u)
-    if (!urls.length) { notify('待签到工具暂无可打开的签到页'); return }
+    const urls = pendingTools.map(x => x.checkinUrl ?? x.downloadUrl).filter((u): u is string => !!u)
+    if (!urls.length) { notify(t('待签到工具暂无可打开的签到页')); return }
     urls.forEach((u, i) => { window.setTimeout(() => { void openExternal(u) }, i * 350) })
-    notify(`正在打开 ${urls.length} 个签到页面，挨个领取即可（浏览器若拦截多标签，请允许弹窗后重试）`)
+    notify(t('正在打开 {n} 个签到页面，挨个领取即可（浏览器若拦截多标签，请允许弹窗后重试）', { n: urls.length }))
   }
   const endGuide = () => { setGuideQueue(null); setGuideSkipped([]) }
   const q = keyword.trim().toLowerCase()
@@ -2147,36 +2155,36 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
 
   const handleToggle = useCallback((id: string) => onToggle(id), [onToggle])
   const updatedLabel = updatedAt
-    ? new Date(updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-    : '内置数据'
+    ? new Date(updatedAt).toLocaleString(locale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : t('内置数据')
 
   return (
     <div className="agent-tools">
       {catalogNews && catalogNews.length > 0 && <div className="catalog-news-bar">
         <Sparkles size={15} />
-        <span>目录上新：{catalogNews.slice(0, 3).map(t => t.name).join('、')}{catalogNews.length > 3 ? ` 等 ${catalogNews.length} 款新工具` : ''}，去看看有没有免费额度可领。</span>
-        <button onClick={onCatalogNewsAck}>知道了</button>
+        <span>{t('目录上新：{names}{more}，去看看有没有免费额度可领。', { names: catalogNews.slice(0, 3).map(x => x.name).join('、'), more: catalogNews.length > 3 ? t(' 等 {n} 款新工具', { n: catalogNews.length }) : '' })}</span>
+        <button onClick={onCatalogNewsAck}>{t('知道了')}</button>
       </div>}
       <div className="checkin-guide">
         {!guideQueue ? (
           <div className="cg-row">
             <div className="cg-info">
-              <div className="cg-title"><CalendarCheck2 size={16} /> 今日签到助手</div>
+              <div className="cg-title"><CalendarCheck2 size={16} /> {t('今日签到助手')}</div>
               <div className="cg-sub">{pendingTools.length > 0
-                ? `还有 ${pendingTools.length} 个工具待签到：逐个打开签到页，你点完领取，这边自动跳下一个`
-                : '今日可签到的工具已全部完成 🎉'}</div>
+                ? t('还有 {n} 个工具待签到：逐个打开签到页，你点完领取，这边自动跳下一个', { n: pendingTools.length })
+                : t('今日可签到的工具已全部完成 🎉')}</div>
             </div>
             {pendingTools.length > 0 && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn primary" onClick={startGuide}>开始签到（{pendingTools.length}）</button>
-              {!isNativeApp() && <button className="btn" onClick={openAllCheckins} title="把今天待签到的页面一次全部打开，挨个领取"><ExternalLink size={14} /> 全部打开</button>}
+              <button className="btn primary" onClick={startGuide}>{t('开始签到（{n}）', { n: pendingTools.length })}</button>
+              {!isNativeApp() && <button className="btn" onClick={openAllCheckins} title={t('把今天待签到的页面一次全部打开，挨个领取')}><ExternalLink size={14} /> {t('全部打开')}</button>}
             </div>}
           </div>
         ) : guideCurrent ? (
           <div className="cg-active">
             <div className="cg-progress-row">
-              <span className="cg-progress-label">进度 {guideDone + guideSkipped.length}/{guideQueue.length}</span>
+              <span className="cg-progress-label">{t('进度 {done}/{total}', { done: guideDone + guideSkipped.length, total: guideQueue.length })}</span>
               <div className="cg-bar"><i style={{ width: `${((guideDone + guideSkipped.length) / guideQueue.length) * 100}%` }} /></div>
-              <button className="btn sm ghost" onClick={endGuide}>结束</button>
+              <button className="btn sm ghost" onClick={endGuide}>{t('结束')}</button>
             </div>
             <div className="cg-current">
               <span className="cg-tool-ic" style={{ background: guideCurrent.color }}>{guideCurrent.name.slice(0, 1)}</span>
@@ -2186,35 +2194,35 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
               </div>
             </div>
             <div className="cg-actions">
-              <button className="btn" onClick={() => { void openExternal(guideCurrent.checkinUrl ?? guideCurrent.downloadUrl) }}><ExternalLink size={14} /> 打开签到页</button>
-              <button className="btn primary" onClick={() => handleToggle(guideCurrent.id)}><Check size={14} /> 我已签到</button>
-              <button className="btn ghost" onClick={() => setGuideSkipped(sk => [...sk, guideCurrent.id])}>跳过</button>
+              <button className="btn" onClick={() => { void openExternal(guideCurrent.checkinUrl ?? guideCurrent.downloadUrl) }}><ExternalLink size={14} /> {t('打开签到页')}</button>
+              <button className="btn primary" onClick={() => handleToggle(guideCurrent.id)}><Check size={14} /> {t('我已签到')}</button>
+              <button className="btn ghost" onClick={() => setGuideSkipped(sk => [...sk, guideCurrent.id])}>{t('跳过')}</button>
             </div>
           </div>
         ) : (
           <div className="cg-row">
             <div className="cg-info">
-              <div className="cg-title">🎉 本轮签到完成</div>
-              <div className="cg-sub">完成 {guideDone} 个{guideSkipped.length ? `，跳过 ${guideSkipped.length} 个` : ''}，明天再来领新额度。</div>
+              <div className="cg-title">{t('🎉 本轮签到完成')}</div>
+              <div className="cg-sub">{t('完成 {done} 个{skipped}，明天再来领新额度。', { done: guideDone, skipped: guideSkipped.length ? t('，跳过 {n} 个', { n: guideSkipped.length }) : '' })}</div>
             </div>
-            <button className="btn" onClick={endGuide}>关闭</button>
+            <button className="btn" onClick={endGuide}>{t('关闭')}</button>
           </div>
         )}
       </div>
       <div className="agent-toolbar">
         <div className="agent-search">
           <Search size={15} />
-          <input value={keyword} onChange={e => setKeywordP(e.target.value)} placeholder="搜索工具名称 / 英文名 / 简介" />
-          {keyword && <button className="icon-btn" onClick={() => setKeywordP('')} title="清除"><X size={13} /></button>}
+          <input value={keyword} onChange={e => setKeywordP(e.target.value)} placeholder={t('搜索工具名称 / 英文名 / 简介')} />
+          {keyword && <button className="icon-btn" onClick={() => setKeywordP('')} title={t('清除')}><X size={13} /></button>}
         </div>
         <div className="agent-toolbar-meta">
-          <span className="agent-quick-stat" title="已收录工具总数"><b>{tools.length}</b> 款</span>
-          <span className="agent-quick-stat checkin" title="今日已签到 / 可签到"><b>{doneCount}</b>/{tools.filter(t => t.canCheckin).length} 已签</span>
+          <span className="agent-quick-stat" title={t('已收录工具总数')}><b>{tools.length}</b> {t('款')}</span>
+          <span className="agent-quick-stat checkin" title={t('今日已签到 / 可签到')}><b>{doneCount}</b>/{tools.filter(x => x.canCheckin).length} {t('已签')}</span>
         </div>
-        <button className="btn sm" onClick={() => void refreshCatalog()} disabled={syncing} title="从数据源抓取最新使用量与签到规则">
-          <RefreshCw size={13} className={syncing ? 'spin' : ''} /> {syncing ? '更新中' : '更新数据'}
+        <button className="btn sm" onClick={() => void refreshCatalog()} disabled={syncing} title={t('从数据源抓取最新使用量与签到规则')}>
+          <RefreshCw size={13} className={syncing ? 'spin' : ''} /> {syncing ? t('更新中') : t('更新数据')}
         </button>
-        <span className="agent-sync-time" title="目录数据最后更新时间">更新于 {updatedLabel}</span>
+        <span className="agent-sync-time" title={t('目录数据最后更新时间')}>{t('更新于 {label}', { label: updatedAt ? updatedLabel : t('内置数据') })}</span>
       </div>
 
       {/* 筛选：四组默认收起为一颗按钮，点开下拉多选（与 AI 助手工具菜单同样的呈现方式） */}
@@ -2222,24 +2230,24 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
         {filterGroups.map(g => (
           <button key={g.key} className={`agent-filter-chip ${g.sel.size ? 'active' : ''} ${filterOpen === g.key ? 'open' : ''}`}
             onClick={() => setFilterOpen(filterOpen === g.key ? null : g.key)}>
-            {g.label}
+            {t(g.label)}
             {g.sel.size > 0 && <span className="agent-filter-count">{g.sel.size}</span>}
             <ChevronDown size={13} style={filterOpen === g.key ? { transform: 'rotate(180deg)' } : undefined} />
           </button>
         ))}
-        {anyFilter && <button className="agent-filter-clear" onClick={clearAllFilters}>清除筛选</button>}
+        {anyFilter && <button className="agent-filter-clear" onClick={clearAllFilters}>{t('清除筛选')}</button>}
         {filterOpen && (() => {
           const g = filterGroups.find(x => x.key === filterOpen)!
           return (
             <div className="agent-filter-menu">
               <div className="agent-filter-menu-head">
-                <span>{g.label} · 可多选（不选 = 全部）</span>
-                {g.sel.size > 0 && <button onClick={() => { g.setter(new Set()); setPage(1) }}>清除本组</button>}
+                <span>{t('{label} · 可多选（不选 = 全部）', { label: t(g.label) })}</span>
+                {g.sel.size > 0 && <button onClick={() => { g.setter(new Set()); setPage(1) }}>{t('清除本组')}</button>}
               </div>
               <div className="agent-filter-options">
                 {g.options.map(o => (
                   <button key={o.v} className={`agent-filter-btn ${g.sel.has(o.v) ? 'active' : ''}`} onClick={() => toggleSel(g.sel, g.setter, o.v)}>
-                    {o.label}{g.sel.has(o.v) && <Check size={13} style={{ marginLeft: 4 }} />}
+                    {t(o.label)}{g.sel.has(o.v) && <Check size={13} style={{ marginLeft: 4 }} />}
                   </button>
                 ))}
               </div>
@@ -2249,8 +2257,8 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
       </div>
 
       <div className="agent-result-head">
-        <span>共 <b>{filtered.length}</b> 款 · 按使用量由高到低</span>
-        <span>每页 {PAGE_SIZE} 项</span>
+        <span>{t('共 {n} 款 · 按使用量由高到低', { n: filtered.length })}</span>
+        <span>{t('每页 {n} 项', { n: PAGE_SIZE })}</span>
       </div>
 
       {pageItems.length > 0 ? (
@@ -2262,7 +2270,7 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
           <AgentPager page={safePage} pages={pages} onChange={setPage} />
         </>
       ) : (
-        <div className="agent-empty" style={{ padding: 56 }}>当前分类下暂无工具，换个筛选条件试试</div>
+        <div className="agent-empty" style={{ padding: 56 }}>{t('当前分类下暂无工具，换个筛选条件试试')}</div>
       )}
     </div>
   )
@@ -2313,7 +2321,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
       setHealth(prev => { const next = { ...prev, [a.id]: r }; saveKeyHealth(next); return next })
       setChecking(s => { const n = new Set(s); n.delete(a.id); return n })
     }))
-    if (list.length > 1) notify(`健康检查完成：正常 ${okN}${badN ? ` · 异常 ${badN}` : ''}${skipN ? ` · 跳过 ${skipN}（未解锁或无地址）` : ''}`)
+    if (list.length > 1) notify(t('健康检查完成：正常 {ok}{bad}{skip}', { ok: okN, bad: badN ? t(' · 异常 {n}', { n: badN }) : '', skip: skipN ? t(' · 跳过 {n}（未解锁或无地址）', { n: skipN }) : '' }))
   }
   const PAGE_SIZE = 3
   const keyAccounts = state.accounts.filter(a => a.encryptedKey)
@@ -2384,7 +2392,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     const provider = PROVIDER_MAP[a.providerId]
     const plain = revealed[a.id]
     const q = latestQuota(state.quotas, a.id)
-    const balance = q ? `${(q.total - q.used).toLocaleString()} ${UNIT_LABEL[q.unit]}` : '未录入'
+    const balance = q ? `${(q.total - q.used).toLocaleString()} ${t(UNIT_LABEL[q.unit])}` : t('未录入')
     const adapter = getAdapter(a.providerId)
     const h = health[a.id]
     const busyH = checking.has(a.id)
@@ -2402,23 +2410,23 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
             <div className="key-sub">{provider?.shortName ?? a.providerId}</div>
           </div>
           <button className={`health-badge ${busyH ? 'checking' : h ? h.status : 'none'}`} disabled={busyH}
-            title={busyH ? '正在检查…' : h ? `${HEALTH_LABEL[h.status]}：${h.message}${h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : ''}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '未检查 · 点击检查该 Key 是否可用'}
+            title={busyH ? t('正在检查…') : h ? t('{label}：{msg}{lat}（{time}）· 点击重新检查', { label: t(HEALTH_LABEL[h.status]), msg: h.message, lat: h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : '', time: new Date(h.checkedAt).toLocaleString(locale()) }) : t('未检查 · 点击检查该 Key 是否可用')}
             onClick={() => void runHealthCheck([a])}>
             {busyH ? <Loader2 size={16} style={{ animation: 'acm-spin 1s linear infinite' }} /> : <HeartPulse size={16} />}
           </button>
         </div>
         <div className="key-card-row">
-          <span className="key-card-label">余额</span>
+          <span className="key-card-label">{t('余额')}</span>
           <div className="row" style={{ gap: 5 }}>
             {showBalance[a.id] && <span className="mono" style={{ fontSize: 12 }}>{balance}</span>}
-            <button className="icon-btn" title={showBalance[a.id] ? '隐藏余额' : '显示余额（需先解锁保险箱）'}
+            <button className="icon-btn" title={showBalance[a.id] ? t('隐藏余额') : t('显示余额（需先解锁保险箱）')}
               onClick={() => {
                 if (showBalance[a.id]) { setShowBalance(s => ({ ...s, [a.id]: false })); return }
                 if (vaultPwd) { setShowBalance(s => ({ ...s, [a.id]: true })); return }
                 setPendingView({ kind: 'balance', id: a.id })
                 setUnlockOpen(true)
               }}>{showBalance[a.id] ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-            {adapter.supported && <button className="icon-btn" title="刷新官方余额"
+            {adapter.supported && <button className="icon-btn" title={t('刷新官方余额')}
               disabled={refreshing.has(a.id)}
               onClick={async () => {
                 if (!plain) { notify('请先解锁保险箱'); return }
@@ -2426,7 +2434,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                 try {
                   const r = await adapter.fetchUsage!(plain)
                   onQuotaFetched(a.id, r.used, r.total, r.unit)
-                  notify(`余额已更新：${formatUsageBalance(r)}`)
+                  notify(t('余额已更新：{balance}', { balance: formatUsageBalance(r) }))
                 } catch (e: any) { notify(errorText(e, '获取官方余额失败')) }
                 finally { setRefreshing(s => { const n = new Set(s); n.delete(a.id); return n }) }
               }}><RefreshCw size={14} style={refreshing.has(a.id) ? { animation: 'acm-spin 1s linear infinite' } : undefined} /></button>}
@@ -2434,7 +2442,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         </div>
         <div className="key-card-row">
           <span className="key-card-label">API Key</span>
-          <button className="icon-btn" title="查看完整 Key（需先解锁保险箱）"
+          <button className="icon-btn" title={t('查看完整 Key（需先解锁保险箱）')}
             onClick={() => {
               if (plain) { onAudit('查看Key', a.label); setRevealKeyTarget({ id: a.id, label: a.label, plain }); return }
               setPendingView({ kind: 'key', id: a.id })
@@ -2442,34 +2450,34 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
             }}><Eye size={14} /></button>
         </div>
         <div className="key-card-row">
-          <span className="key-card-label">官方 Key 页</span>
+          <span className="key-card-label">{t('官方 Key 页')}</span>
           <KeyPageButton provider={provider.id === 'voice-config' && a.voiceProvider && VOICE_KEY_PROVIDER[a.voiceProvider]
             ? (PROVIDER_MAP[VOICE_KEY_PROVIDER[a.voiceProvider]] ?? provider)
             : provider} notify={notify} />
         </div>
-        {a.note && <div className="key-card-row"><span className="key-card-label">备注</span><span className="key-note">{a.note}</span></div>}
+        {a.note && <div className="key-card-row"><span className="key-card-label">{t('备注')}</span><span className="key-note">{a.note}</span></div>}
         <div className="key-card-row">
-          <span className="key-card-label">分组</span>
-          {a.group ? <span className="group-chip">{a.group}</span> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>未分组</span>}
+          <span className="key-card-label">{t('分组')}</span>
+          {a.group ? <span className="group-chip">{a.group}</span> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('未分组')}</span>}
         </div>
         <div className="key-card-actions">
-          <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
-          <button className="key-action" title="复制 Key" onClick={async () => {
+          <button className="key-action" title={t('编辑')} onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
+          <button className="key-action" title={t('复制 Key')} onClick={async () => {
             if (!plain) { notify('请先解锁保险箱'); return }
             const okCopy = await copyKeyWithAutoClear(plain)
             if (okCopy) { onAudit('复制Key', a.label); notify('API Key 已复制（30 秒后自动清除剪贴板）') }
             else notify('复制失败，请检查浏览器权限')
           }}><Copy size={15} /></button>
-          <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
-          {adapter.supported && <button className="key-action" title="查询官方用量" onClick={async () => {
+          <button className="key-action" title={t('备份密钥')} onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
+          {adapter.supported && <button className="key-action" title={t('查询官方用量')} onClick={async () => {
             if (!plain) { notify('请先解锁保险箱'); return }
             try {
               const r = await adapter.fetchUsage!(plain)
               onQuotaFetched(a.id, r.used, r.total, r.unit)
-              notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
+              notify(r.remaining !== undefined || r.label ? t('查询成功：{balance}', { balance: formatUsageBalance(r) }) : t('查询成功：已用 {used} {unit}', { used: r.used.toLocaleString(), unit: r.unit }))
             } catch (e: any) { notify(errorText(e, '查询失败')) }
           }}><RefreshCw size={15} /></button>}
-          <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
+          <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
             onRemoveKeys([a.id])
             setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
             setRevealed(prev => { const n = { ...prev }; delete n[a.id]; return n })
@@ -2483,39 +2491,39 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     <>
       <div className="keys-header">
         <div>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>API Key 管理</h2>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{keyAccounts.length} 个密钥 · 本地加密存储</div>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('API Key 管理')}</h2>
+          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{t('{n} 个密钥 · 本地加密存储', { n: keyAccounts.length })}</div>
         </div>
         <div className="keys-header-tools">
           <button className="btn sm" disabled={checking.size > 0 || keyAccounts.length === 0}
             onClick={() => void runHealthCheck(keyAccounts)}
-            title="用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）">
-            <Activity size={14} /> {checking.size > 0 ? `检查中（剩 ${checking.size}）` : '健康检查'}
+            title={t('用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）')}>
+            <Activity size={14} /> {checking.size > 0 ? t('检查中（剩 {n}）', { n: checking.size }) : t('健康检查')}
           </button>
           {categories.length > 0 && (
             <select className="select keys-filter-select" value={category} onChange={e => setCategory(e.target.value)}>
-              <option value="__all__">全部分类 ({keyAccounts.length})</option>
+              <option value="__all__">{t('全部分类 ({n})', { n: keyAccounts.length })}</option>
               {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
             </select>
           )}
-          <select className="select keys-filter-select" value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title="按保险箱分组筛选（在编辑条目里给 Key 填分组）">
-            <option value="__all__">全部分组 ({keyAccounts.length})</option>
+          <select className="select keys-filter-select" value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title={t('按保险箱分组筛选（在编辑条目里给 Key 填分组）')}>
+            <option value="__all__">{t('全部分组 ({n})', { n: keyAccounts.length })}</option>
             {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
-            <option value="__none__">未分组 ({keyAccounts.filter(a => !a.group).length})</option>
+            <option value="__none__">{t('未分组 ({n})', { n: keyAccounts.filter(a => !a.group).length })}</option>
           </select>
           <div className="keys-unlock-group">
-            <label className="btn sm" style={{ cursor: 'pointer' }} title="导入备份">
-              <Download size={14} style={{ transform: 'rotate(180deg)' }} /> 导入
+            <label className="btn sm" style={{ cursor: 'pointer' }} title={t('导入备份')}>
+              <Download size={14} style={{ transform: 'rotate(180deg)' }} /> {t('导入')}
               <input type="file" accept=".json,.csv,.txt,application/json,text/csv" style={{ display: 'none' }} onChange={e => {
                 onImportFile(e.target.files?.[0]); e.target.value = ''
               }} />
             </label>
-            <button className="btn sm" onClick={onExport} title="导出备份（不含密钥）"><Download size={14} /> 导出</button>
-            {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> 创建保险箱</button>}
+            <button className="btn sm" onClick={onExport} title={t('导出备份（不含密钥）')}><Download size={14} /> {t('导出')}</button>
+            {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> {t('创建保险箱')}</button>}
             {vaultPwd ? (
-              <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); setShowBalance({}); setPendingView(null); notify('已锁定') }}><Lock size={14} /> 锁定</button>
+              <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); setShowBalance({}); setPendingView(null); notify('已锁定') }}><Lock size={14} /> {t('锁定')}</button>
             ) : (
-              <button className="btn sm primary" onClick={() => setUnlockOpen(true)}><Unlock size={14} /> 解锁</button>
+              <button className="btn sm primary" onClick={() => setUnlockOpen(true)}><Unlock size={14} /> {t('解锁')}</button>
             )}
           </div>
         </div>
@@ -2523,13 +2531,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
 
       {groups.length === 0 && keyAccounts.length > 0 && (
         <div className="group-stats">
-          <span className="group-stats-label">保险箱分组</span>
-          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后这里会按组统计剩余额度，表头下拉可按组筛选。</span>
+          <span className="group-stats-label">{t('保险箱分组')}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{t('点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后这里会按组统计剩余额度，表头下拉可按组筛选。')}</span>
         </div>
       )}
       {groups.length > 0 && (
         <div className="group-stats">
-          <span className="group-stats-label">分组额度</span>
+          <span className="group-stats-label">{t('分组额度')}</span>
           {groups.map(g => {
             const members = state.accounts.filter(a => a.group === g)
             const remain = members.reduce((sum, a) => {
@@ -2539,14 +2547,14 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
             return (
               <button key={g} className={`group-stat-chip ${groupFilter === g ? 'active' : ''}`}
                 onClick={() => { setGroupFilter(groupFilter === g ? '__all__' : g); setPage(1) }}
-                title="点击按此分组筛选">
-                {g} · {members.length} 个账户 · 剩余 ¥{remain.toFixed(1)}
+                title={t('点击按此分组筛选')}>
+                {t('{g} · {n} 个账户 · 剩余 ¥{remain}', { g, n: members.length, remain: remain.toFixed(1) })}
               </button>
             )
           })}
           <button className={`group-stat-chip ${groupFilter === '__none__' ? 'active' : ''}`}
             onClick={() => { setGroupFilter(groupFilter === '__none__' ? '__all__' : '__none__'); setPage(1) }}>
-            未分组 · {keyAccounts.filter(a => !a.group).length} 个密钥
+            {t('未分组 · {n} 个密钥', { n: keyAccounts.filter(a => !a.group).length })}
           </button>
         </div>
       )}
@@ -2554,7 +2562,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
       {isPhone ? (
         <div className="key-cards">
           {pageItems.length === 0
-            ? <div className="key-cards-empty">{keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前筛选下没有密钥'}</div>
+            ? <div className="key-cards-empty">{keyAccounts.length === 0 ? t('暂无密钥。添加账户时选择「官方 API」模式即可保存。') : t('当前筛选下没有密钥')}</div>
             : pageItems.map(a => renderKeyCard(a))}
         </div>
       ) : (
@@ -2563,7 +2571,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <thead>
             <tr>
               <th style={{ width: 32 }}>
-                <input type="checkbox" title="全选本页"
+                <input type="checkbox" title={t('全选本页')}
                   checked={pageItems.length > 0 && pageItems.every(a => selectedKeys.has(a.id))}
                   onChange={e => {
                     const next = new Set(selectedKeys)
@@ -2572,26 +2580,26 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                     setSelectedKeys(next)
                   }} />
               </th>
-              <th style={{ width: 150 }}>名称</th>
-              <th style={{ width: 110 }}>余额</th>
-              <th style={{ width: 160 }}>链接地址 (API)</th>
+              <th style={{ width: 150 }}>{t('名称')}</th>
+              <th style={{ width: 110 }}>{t('余额')}</th>
+              <th style={{ width: 160 }}>{t('链接地址 (API)')}</th>
               <th style={{ width: 130 }}>API Key</th>
-              <th style={{ width: 118 }}>健康状态</th>
-              <th>备注 (用途)</th>
-              <th style={{ width: 110 }}>分组</th>
-              <th style={{ width: 210 }}>操作</th>
+              <th style={{ width: 118 }}>{t('健康状态')}</th>
+              <th>{t('备注 (用途)')}</th>
+              <th style={{ width: 110 }}>{t('分组')}</th>
+              <th style={{ width: 210 }}>{t('操作')}</th>
             </tr>
           </thead>
           <tbody>
             {pageItems.length === 0 ? (
               <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
-                {keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前筛选下没有密钥'}
+                {keyAccounts.length === 0 ? t('暂无密钥。添加账户时选择「官方 API」模式即可保存。') : t('当前筛选下没有密钥')}
               </td></tr>
             ) : pageItems.map(a => {
               const provider = PROVIDER_MAP[a.providerId]
               const plain = revealed[a.id]
               const q = latestQuota(state.quotas, a.id)
-              const balance = q ? `${(q.total - q.used).toLocaleString()} ${UNIT_LABEL[q.unit]}` : '未录入'
+              const balance = q ? `${(q.total - q.used).toLocaleString()} ${t(UNIT_LABEL[q.unit])}` : t('未录入')
               const adapter = getAdapter(a.providerId)
               return (
                 <tr key={a.id}>
@@ -2616,7 +2624,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                       {showBalance[a.id] && (
                         <span className="mono" style={{ fontSize: 11.5, minWidth: 42 }}>{balance}</span>
                       )}
-                      <button className="icon-btn" title={showBalance[a.id] ? '隐藏余额' : '显示余额（需先解锁保险箱）'}
+                      <button className="icon-btn" title={showBalance[a.id] ? t('隐藏余额') : t('显示余额（需先解锁保险箱）')}
                         onClick={() => {
                           if (showBalance[a.id]) { setShowBalance(s => ({ ...s, [a.id]: false })); return }
                           if (vaultPwd) { setShowBalance(s => ({ ...s, [a.id]: true })); return }
@@ -2624,7 +2632,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           setPendingView({ kind: 'balance', id: a.id })
                           setUnlockOpen(true)
                         }}>{showBalance[a.id] ? <EyeOff size={13} /> : <Eye size={13} />}</button>
-                      {adapter.supported && <button className="icon-btn" title="刷新官方余额"
+                      {adapter.supported && <button className="icon-btn" title={t('刷新官方余额')}
                         disabled={refreshing.has(a.id)}
                         onClick={async () => {
                           if (!plain) { notify('请先解锁保险箱'); return }
@@ -2632,7 +2640,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           try {
                             const r = await adapter.fetchUsage!(plain)
                             onQuotaFetched(a.id, r.used, r.total, r.unit)
-                            notify(`余额已更新：${formatUsageBalance(r)}`)
+                            notify(t('余额已更新：{balance}', { balance: formatUsageBalance(r) }))
                           } catch (e: any) { notify(errorText(e, '获取官方余额失败')) }
                           finally { setRefreshing(s => { const n = new Set(s); n.delete(a.id); return n }) }
                         }}><RefreshCw size={13} style={refreshing.has(a.id) ? { animation: 'acm-spin 1s linear infinite' } : undefined} /></button>}
@@ -2645,7 +2653,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
-                      <button className="icon-btn" title="查看完整 Key（需先解锁保险箱）"
+                      <button className="icon-btn" title={t('查看完整 Key（需先解锁保险箱）')}
                         onClick={() => {
                           if (plain) { onAudit('查看Key', a.label); setRevealKeyTarget({ id: a.id, label: a.label, plain }); return }
                           // 未解锁：先走解锁流程，解锁成功后自动打开查看弹窗
@@ -2657,7 +2665,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   <td>
                     {(() => { const h = health[a.id]; const busyH = checking.has(a.id); return (
                       <button className={`health-badge ${busyH ? 'checking' : h ? h.status : 'none'}`} disabled={busyH}
-                        title={busyH ? '正在检查…' : h ? `${HEALTH_LABEL[h.status]}：${h.message}${h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : ''}（${new Date(h.checkedAt).toLocaleString()}）· 点击重新检查` : '未检查 · 点击检查该 Key 是否可用'}
+                        title={busyH ? t('正在检查…') : h ? t('{label}：{msg}{lat}（{time}）· 点击重新检查', { label: t(HEALTH_LABEL[h.status]), msg: h.message, lat: h.status === 'ok' && h.latencyMs ? `（${h.latencyMs}ms）` : '', time: new Date(h.checkedAt).toLocaleString(locale()) }) : t('未检查 · 点击检查该 Key 是否可用')}
                         onClick={() => void runHealthCheck([a])}>
                         {busyH
                           ? <Loader2 size={16} style={{ animation: 'acm-spin 1s linear infinite' }} />
@@ -2667,26 +2675,26 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   <td><span className="key-note" title={a.note ?? ''}>{a.note ?? '—'}</span></td>
                   <td>{a.group
                     ? <span className="group-chip">{a.group}</span>
-                    : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>未分组</span>}</td>
+                    : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('未分组')}</span>}</td>
                   <td>
                     <div className="key-actions">
-                      <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
-                      <button className="key-action" title="复制 Key" onClick={async () => {
+                      <button className="key-action" title={t('编辑')} onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
+                      <button className="key-action" title={t('复制 Key')} onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
                         const okCopy = await copyKeyWithAutoClear(plain)
                         if (okCopy) { onAudit('复制Key', a.label); notify('API Key 已复制（30 秒后自动清除剪贴板）') }
                         else notify('复制失败，请检查浏览器权限')
                       }}><Copy size={15} /></button>
-                      <button className="key-action" title="备份密钥" onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
-                      {adapter.supported && <button className="key-action" title="查询官方用量" onClick={async () => {
+                      <button className="key-action" title={t('备份密钥')} onClick={() => onRequestBackup([a.id], '备份密钥', '完成备份', () => notify('备份已完成'), true)}><Download size={15} /></button>
+                      {adapter.supported && <button className="key-action" title={t('查询官方用量')} onClick={async () => {
                         if (!plain) { notify('请先解锁保险箱'); return }
                         try {
                           const r = await adapter.fetchUsage!(plain)
                           onQuotaFetched(a.id, r.used, r.total, r.unit)
-                          notify(r.remaining !== undefined || r.label ? `查询成功：${formatUsageBalance(r)}` : `查询成功：已用 ${r.used.toLocaleString()} ${r.unit}`)
+                          notify(r.remaining !== undefined || r.label ? t('查询成功：{balance}', { balance: formatUsageBalance(r) }) : t('查询成功：已用 {used} {unit}', { used: r.used.toLocaleString(), unit: r.unit }))
                         } catch (e: any) { notify(errorText(e, '查询失败')) }
                       }}><RefreshCw size={15} /></button>}
-                      <HoldToConfirm title={isLocalProvider(a.providerId) ? '删除本地模型' : '删除前必须先备份'} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
+                      <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
                         onRemoveKeys([a.id])
                         setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
                         setRevealed(prev => { const n = { ...prev }; delete n[a.id]; return n })
@@ -2712,7 +2720,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         }}
         onClear={() => setSelectedKeys(new Set())}
         actions={<>
-          <button className="btn sm" disabled={selectedKeys.size === 0} onClick={() => setToolExportOpen(true)}><Download size={13} /> 导出工具配置</button>
+          <button className="btn sm" disabled={selectedKeys.size === 0} onClick={() => setToolExportOpen(true)}><Download size={13} /> {t('导出工具配置')}</button>
           <button className="btn sm danger" disabled={selectedKeys.size === 0} onClick={() => {
             const ids = Array.from(selectedKeys)
             onRequestBackup(ids, '删除前必须备份', '确认删除', () => {
@@ -2720,7 +2728,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               setRevealed(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n })
               setSelectedKeys(new Set())
             })
-          }}><Trash2 size={13} /> 批量删除账户</button>
+          }}><Trash2 size={13} /> {t('批量删除账户')}</button>
         </>}
       />
       <Pager total={filtered.length} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
@@ -2764,30 +2772,30 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           const content = toolExportFormat === 'env' ? buildEnvExport(items) : buildJsonExport(items)
           const r = await saveExportFile(toolExportFormat === 'env' ? 'ai-keys.env' : 'ai-keys.json', content)
           if (r.cancelled) return
-          if (!r.ok) { notify(`导出失败：${r.error ?? '未知错误'}`); return }
+          if (!r.ok) { notify(t('导出失败：{err}', { err: r.error ?? t('未知错误') })); return }
           onAudit('导出工具配置', `${items.length} 个 Key · ${toolExportFormat === 'env' ? '.env' : 'JSON'}`)
-          notify(`已导出到：${r.where}（${items.length} 个 Key 的配置，明文请妥善保管）`)
+          notify(t('已导出到：{where}（{n} 个 Key 的配置，明文请妥善保管）', { where: r.where ?? '', n: items.length }))
           setToolExportOpen(false)
         }
         return (
           <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setToolExportOpen(false) }}>
             <div className="modal" style={{ maxWidth: 460 }}>
-              <div className="modal-head"><h3 style={{ margin: 0 }}>导出工具配置</h3><button className="icon-btn" onClick={() => setToolExportOpen(false)}><X size={18} /></button></div>
+              <div className="modal-head"><h3 style={{ margin: 0 }}>{t('导出工具配置')}</h3><button className="icon-btn" onClick={() => setToolExportOpen(false)}><X size={18} /></button></div>
               <div className="modal-body">
-                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>把所选 Key 生成其他工具（如 Cursor、各类 CLI / SDK）能直接使用的配置文件。</p>
+                <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0 }}>{t('把所选 Key 生成其他工具（如 Cursor、各类 CLI / SDK）能直接使用的配置文件。')}</p>
                 <div className="form-row">
-                  <label className="form-label">格式</label>
+                  <label className="form-label">{t('格式')}</label>
                   <div className="row" style={{ gap: 8 }}>
-                    <button className={`btn sm ${toolExportFormat === 'env' ? 'primary' : ''}`} onClick={() => setToolExportFormat('env')}>.env 环境变量</button>
+                    <button className={`btn sm ${toolExportFormat === 'env' ? 'primary' : ''}`} onClick={() => setToolExportFormat('env')}>{t('.env 环境变量')}</button>
                     <button className={`btn sm ${toolExportFormat === 'json' ? 'primary' : ''}`} onClick={() => setToolExportFormat('json')}>JSON</button>
                   </div>
                 </div>
-                <p style={{ fontSize: 12.5, color: '#dc2626', lineHeight: 1.6 }}>⚠️ 导出文件包含明文 Key，请妥善保管，不要发给他人或提交到代码仓库。</p>
-                <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>可导出 {items.length} 个{missing.length ? `；${missing.length} 个未解锁/无 Key 已跳过（${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' 等' : ''}）` : ''}</p>
+                <p style={{ fontSize: 12.5, color: '#dc2626', lineHeight: 1.6 }}>{t('⚠️ 导出文件包含明文 Key，请妥善保管，不要发给他人或提交到代码仓库。')}</p>
+                <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{t('可导出 {n} 个{skipped}', { n: items.length, skipped: missing.length ? t('；{m} 个未解锁/无 Key 已跳过（{names}{more}）', { m: missing.length, names: missing.slice(0, 3).join('、'), more: missing.length > 3 ? t(' 等') : '' }) : '' })}</p>
               </div>
               <div className="modal-foot">
-                <button className="btn" onClick={() => setToolExportOpen(false)}>取消</button>
-                <button className="btn primary" disabled={items.length === 0} onClick={doExport}><Download size={14} /> 生成并下载</button>
+                <button className="btn" onClick={() => setToolExportOpen(false)}>{t('取消')}</button>
+                <button className="btn primary" disabled={items.length === 0} onClick={doExport}><Download size={14} /> {t('生成并下载')}</button>
               </div>
             </div>
           </div>
@@ -2799,8 +2807,8 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         onClose={() => { setUnlockOpen(false); setUnlockPwd(''); setPendingView(null) }}
         onPassword={(pwd) => void unlockWith(pwd)}
         onBiometric={async () => {
-          const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
-          if (!pwd) { notify(`未通过${bioLabel ?? '生物'}验证，或未配置解锁凭据（请在设置中开启）`); return false }
+          const pwd = await resolveBiometricVaultPassword(t('验证身份以解锁保险箱'))
+          if (!pwd) { notify(t('未通过{bio}验证，或未配置解锁凭据（请在设置中开启）', { bio: bioLabel ?? t('生物') })); return false }
           await unlockWith(pwd)
           return true
         }}
@@ -2842,7 +2850,7 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
   const [codeInput, setCodeInput] = useState('')
 
   const targets = state.accounts.filter(a => accountIds.includes(a.id))
-  const names = targets.slice(0, 3).map(a => a.label).join('、') + (targets.length > 3 ? ` 等 ${targets.length} 个` : '')
+  const names = targets.slice(0, 3).map(a => a.label).join('、') + (targets.length > 3 ? t(' 等 {n} 个', { n: targets.length }) : '')
   const effectiveFormat: KeyBackupFormat = mode === 'notes' ? 'plain' : format
   const needPwd = effectiveFormat === 'plain' && !unlockedPwd
 
@@ -2878,35 +2886,35 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 560 }}>
-        <div className="modal-head"><h3>{title}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t(title)}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
-          <div className="upd-current">即将处理 <b>{names}</b></div>
-          {!backupOnly && <div className="backup-warn"><AlertTriangle size={15} /> 删除后只有 5 秒可撤回。请先完成一份长期备份，否则密钥将无法恢复。</div>}
+          <div className="upd-current">{t('即将处理')} <b>{names}</b></div>
+          {!backupOnly && <div className="backup-warn"><AlertTriangle size={15} /> {t('删除后只有 5 秒可撤回。请先完成一份长期备份，否则密钥将无法恢复。')}</div>}
 
           <div className="backup-options">
             <button className={`backup-option ${mode === 'cloud' ? 'active' : ''}`} onClick={() => resetBackup('cloud', 'cipher')} disabled={busy}>
               <Cloud size={17} />
-              <span><b>密文备份到云</b><small>密钥仍为密文，含保险箱材料，可跨设备恢复</small></span>
+              <span><b>{t('密文备份到云')}</b><small>{t('密钥仍为密文，含保险箱材料，可跨设备恢复')}</small></span>
             </button>
             <button className={`backup-option ${mode === 'local' ? 'active' : ''}`} onClick={() => resetBackup('local', 'cipher')} disabled={busy}>
               <HardDrive size={17} />
-              <span><b>备份到本机文件夹</b><small>桌面下载到「下载」，手机写入 Documents 目录</small></span>
+              <span><b>{t('备份到本机文件夹')}</b><small>{t('桌面下载到「下载」，手机写入 Documents 目录')}</small></span>
             </button>
             <button className={`backup-option ${mode === 'notes' ? 'active' : ''}`} onClick={() => resetBackup('notes', 'plain')} disabled={busy}>
               <Download size={17} />
-              <span><b>备份到本机备忘录</b><small>仅明文；调起系统分享或复制到剪贴板，由你粘贴保存</small></span>
+              <span><b>{t('备份到本机备忘录')}</b><small>{t('仅明文；调起系统分享或复制到剪贴板，由你粘贴保存')}</small></span>
             </button>
           </div>
 
           {mode === 'local' && (
             <>
               <div className="backup-format">
-                <span className="field-label" style={{ margin: '0 8px 0 0' }}>文件格式</span>
-                <button className={`btn sm ${format === 'cipher' ? 'primary' : ''}`} onClick={() => resetBackup('local', 'cipher')}><Lock size={13} /> 密文</button>
-                <button className={`btn sm ${format === 'plain' ? 'primary' : ''}`} onClick={() => resetBackup('local', 'plain')}><Unlock size={13} /> 明文</button>
+                <span className="field-label" style={{ margin: '0 8px 0 0' }}>{t('文件格式')}</span>
+                <button className={`btn sm ${format === 'cipher' ? 'primary' : ''}`} onClick={() => resetBackup('local', 'cipher')}><Lock size={13} /> {t('密文')}</button>
+                <button className={`btn sm ${format === 'plain' ? 'primary' : ''}`} onClick={() => resetBackup('local', 'plain')}><Unlock size={13} /> {t('明文')}</button>
               </div>
               <div className="backup-format" style={{ marginTop: 10 }}>
-                <span className="field-label" style={{ margin: '0 8px 0 0' }}>文件容器</span>
+                <span className="field-label" style={{ margin: '0 8px 0 0' }}>{t('文件容器')}</span>
                 {(['json', 'csv', 'txt'] as BackupFileFormat[]).map(f => (
                   <button key={f} className={`btn sm ${fileFormat === f ? 'primary' : ''}`} onClick={() => { setFileFormat(f); setBackup(null); setConfirmed(false) }}>{f.toUpperCase()}</button>
                 ))}
@@ -2914,46 +2922,46 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
               {isDesktopApp() && (
                 <button className="btn sm" style={{ marginTop: 10 }} onClick={async () => {
                   const dir = await chooseBackupFolder()
-                  if (dir) { setBackupDir(dir); setBackup(null); setConfirmed(false); notify(`备份目录：${dir}`) }
+                  if (dir) { setBackupDir(dir); setBackup(null); setConfirmed(false); notify(t('备份目录：{dir}', { dir })) }
                   else notify('已取消选择目录')
-                }}><HardDrive size={13} /> {backupDir ? `目录：${backupDir}` : '选择备份文件夹'}</button>
+                }}><HardDrive size={13} /> {backupDir ? t('目录：{dir}', { dir: backupDir }) : t('选择备份文件夹')}</button>
               )}
             </>
           )}
 
           {needPwd && (
             <div className="backup-pwd">
-              <span className="field-label" style={{ margin: 0 }}>主密码（仅用于本次明文备份，不保存）</span>
-              <input className="input" type="password" value={pwd} onChange={e => { setPwd(e.target.value); setBackup(null) }} placeholder="输入保险箱主密码" disabled={busy} />
+              <span className="field-label" style={{ margin: 0 }}>{t('主密码（仅用于本次明文备份，不保存）')}</span>
+              <input className="input" type="password" value={pwd} onChange={e => { setPwd(e.target.value); setBackup(null) }} placeholder={t('输入保险箱主密码')} disabled={busy} />
             </div>
           )}
 
           <button className="btn primary" style={{ width: '100%', marginTop: 16 }} onClick={() => void doBackup()} disabled={busy}>
             {busy ? <RefreshCw size={15} className="spin" /> : <ShieldCheck size={15} />}
-            {busy ? '正在备份…' : mode === 'cloud' ? '备份到云' : mode === 'local' ? '生成备份文件' : '生成备忘录备份内容'}
+            {busy ? t('正在备份…') : mode === 'cloud' ? t('备份到云') : mode === 'local' ? t('生成备份文件') : t('生成备忘录备份内容')}
           </button>
 
           {backup && (
             <div className="backup-success">
-              <div className="upd-new ok"><Check size={16} /> 备份已完成</div>
+              <div className="upd-new ok"><Check size={16} /> {t('备份已完成')}</div>
               <div className="hint" style={{ marginTop: 6 }}>{location}</div>
               {mode === 'notes' && (
                 <>
-                  <div className="backup-code">确认码 {backup.confirmationCode}</div>
-                  <input className="input" style={{ marginTop: 8 }} value={codeInput} onChange={e => setCodeInput(e.target.value)} placeholder="请在备忘录保存后输入确认码" />
+                  <div className="backup-code">{t('确认码 {code}', { code: backup.confirmationCode })}</div>
+                  <input className="input" style={{ marginTop: 8 }} value={codeInput} onChange={e => setCodeInput(e.target.value)} placeholder={t('请在备忘录保存后输入确认码')} />
                 </>
               )}
               <label className="backup-confirm">
                 <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
-                {mode === 'notes' ? '我已将明文备份粘贴到备忘录并保存' : mode === 'local' ? '我已保存备份文件' : '我确认密文备份已存入云端'}
+                {mode === 'notes' ? t('我已将明文备份粘贴到备忘录并保存') : mode === 'local' ? t('我已保存备份文件') : t('我确认密文备份已存入云端')}
               </label>
             </div>
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className={`btn ${backupOnly ? 'primary' : 'danger'}`} disabled={!canDelete} onClick={() => onDone()}>
-            {backupOnly ? <Check size={15} /> : <Trash2 size={15} />} {confirmLabel}
+            {backupOnly ? <Check size={15} /> : <Trash2 size={15} />} {t(confirmLabel)}
           </button>
         </div>
       </div>
@@ -2968,7 +2976,7 @@ function KeyRevealModal({ label, plain, onClose, onCopied }: {
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <div className="modal-head"><h3>查看 API Key</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('查看 API Key')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 10 }}>{label}</div>
           <div className="secret-reveal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
@@ -2976,10 +2984,10 @@ function KeyRevealModal({ label, plain, onClose, onCopied }: {
           </div>
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>关闭</button>
+          <button className="btn" onClick={onClose}>{t('关闭')}</button>
           <button className="btn primary" onClick={async () => {
             if (await copyKeyWithAutoClear(plain)) onCopied()
-          }}><Copy size={14} /> 复制 Key</button>
+          }}><Copy size={14} /> {t('复制 Key')}</button>
         </div>
       </div>
     </div>
@@ -3012,7 +3020,7 @@ function UnlockModal({ method, bioAvailable, bioLabel, onClose, onPassword, onBi
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 420 }}>
-        <div className="modal-head"><h3>解锁密钥保险箱</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('解锁密钥保险箱')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           {useBio ? (
             <div style={{ textAlign: 'center', padding: '12px 0' }}>
@@ -3021,28 +3029,28 @@ function UnlockModal({ method, bioAvailable, bioLabel, onClose, onPassword, onBi
                 background: 'var(--primary-soft)', color: 'var(--primary)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}><Fingerprint size={36} /></div>
-              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>使用{bioLabel}解锁</div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 22 }}>{bioPrompting ? `请在系统弹窗中完成${bioLabel}验证` : `验证${bioLabel === '人脸' ? 'Face ID' : bioLabel === '指纹' ? 'Touch ID' : bioLabel}后显示全部 API Key 明文`}</div>
+              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>{t('使用{bio}解锁', { bio: t(bioLabel) })}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 22 }}>{bioPrompting ? t('请在系统弹窗中完成{bio}验证', { bio: t(bioLabel) }) : t('验证{bio}后显示全部 API Key 明文', { bio: bioLabel === '人脸' ? 'Face ID' : bioLabel === '指纹' ? 'Touch ID' : t(bioLabel) })}</div>
               {bioFailed && <button className="btn primary" style={{ width: '100%' }} onClick={() => void runBio()} disabled={busy || bioPrompting}>
-                <Fingerprint size={16} /> 重新验证{bioLabel}
+                <Fingerprint size={16} /> {t('重新验证{bio}', { bio: t(bioLabel) })}
               </button>}
             </div>
           ) : (
             <>
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 14 }}>输入主密码解锁，解密后本页所有 API Key 将以明文展示。</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 14 }}>{t('输入主密码解锁，解密后本页所有 API Key 将以明文展示。')}</div>
               <div className="field">
-                <label>主密码</label>
-                <input className="input" type="password" autoFocus placeholder="输入主密码" value={pwd}
+                <label>{t('主密码')}</label>
+                <input className="input" type="password" autoFocus placeholder={t('输入主密码')} value={pwd}
                   onChange={e => setPwd(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && pwd) onPassword(pwd) }} />
               </div>
               <button className="btn primary" style={{ width: '100%' }} onClick={() => onPassword(pwd)} disabled={busy || !pwd}>
-                <Unlock size={15} /> 解锁
+                <Unlock size={15} /> {t('解锁')}
               </button>
             </>
           )}
         </div>
-        <div className="modal-foot"><button className="btn" onClick={onClose}>取消</button></div>
+        <div className="modal-foot"><button className="btn" onClick={onClose}>{t('取消')}</button></div>
       </div>
     </div>
   )
@@ -3071,65 +3079,65 @@ function KeyEditModal({ account, provider, currentKey, onClose, onSave, notify, 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <div className="modal-head"><h3>编辑密钥条目</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('编辑密钥条目')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           <div className="row" style={{ gap: 10, marginBottom: 16 }}>
             <ProviderLogo provider={provider} size={28} />
-            <div style={{ fontSize: 13, fontWeight: 500 }}>{provider.name} · {currentKey ? '已配置密钥' : '未配置'}</div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{provider.name} · {currentKey ? t('已配置密钥') : t('未配置')}</div>
           </div>
           <div className="field">
-            <label>名称</label>
+            <label>{t('名称')}</label>
             <input className="input" value={label} onChange={e => setLabel(e.target.value)} />
           </div>
           <div className="field">
-            <label>链接地址 (API)</label>
+            <label>{t('链接地址 (API)')}</label>
             <div className="row" style={{ gap: 6 }}>
               <input className="input" placeholder={provider.apiBaseUrl ?? 'https://api.example.com/v1'} value={apiUrl} onChange={e => setApiUrl(e.target.value)} />
-              {provider.apiBaseUrl && <button className="btn sm" title="恢复官方地址" onClick={() => setApiUrl(provider.apiBaseUrl!)}>官方</button>}
+              {provider.apiBaseUrl && <button className="btn sm" title={t('恢复官方地址')} onClick={() => setApiUrl(provider.apiBaseUrl!)}>{t('官方')}</button>}
             </div>
-            {provider.apiBaseUrl && <div className="desc">官方地址：{provider.apiBaseUrl}（留空则自动使用此地址）</div>}
+            {provider.apiBaseUrl && <div className="desc">{t('官方地址：{url}（留空则自动使用此地址）', { url: provider.apiBaseUrl })}</div>}
           </div>
           <div className="field">
-            <label>模型分类</label>
+            <label>{t('模型分类')}</label>
             <select className="select" value={noteCat} onChange={e => setNoteCat(e.target.value as NoteCategory)}>
-              {NOTE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              {NOTE_CATEGORIES.map(c => <option key={c} value={c}>{t(c)}</option>)}
             </select>
-            <input className="input" style={{ marginTop: 8 }} placeholder="补充说明（可选）" value={noteExtra} onChange={e => setNoteExtra(e.target.value)} />
-            <div className="desc">分类决定 AI 助手里该模型的用途与联动</div>
+            <input className="input" style={{ marginTop: 8 }} placeholder={t('补充说明（可选）')} value={noteExtra} onChange={e => setNoteExtra(e.target.value)} />
+            <div className="desc">{t('分类决定 AI 助手里该模型的用途与联动')}</div>
           </div>
           <div className="field">
-            <label>保险箱分组（可选）</label>
-            <input className="input" list="acm-group-list" placeholder="如：工作 / 个人 / 项目（留空 = 未分组）" value={group} onChange={e => setGroup(e.target.value)} />
+            <label>{t('保险箱分组（可选）')}</label>
+            <input className="input" list="acm-group-list" placeholder={t('如：工作 / 个人 / 项目（留空 = 未分组）')} value={group} onChange={e => setGroup(e.target.value)} />
             <datalist id="acm-group-list">{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
-            <div className="desc">按用途分组管理密钥；Key 管理页可按组筛选，并按组统计剩余额度</div>
+            <div className="desc">{t('按用途分组管理密钥；Key 管理页可按组筛选，并按组统计剩余额度')}</div>
           </div>
           <div className="field">
-            <label>订阅续费（可选）</label>
-            <label className="row" style={{ gap: 6, fontSize: 13, alignItems: 'center' }}><input type="checkbox" checked={subOn} onChange={e => setSubOn(e.target.checked)} /> 这是订阅制账户（包月/包年）</label>
+            <label>{t('订阅续费（可选）')}</label>
+            <label className="row" style={{ gap: 6, fontSize: 13, alignItems: 'center' }}><input type="checkbox" checked={subOn} onChange={e => setSubOn(e.target.checked)} /> {t('这是订阅制账户（包月/包年）')}</label>
             {subOn && (
               <div className="row" style={{ gap: 6, marginTop: 8 }}>
-                <input className="input" type="number" min="0" step="0.01" placeholder="价格（元）" value={subPrice} onChange={e => setSubPrice(e.target.value)} style={{ flex: 1 }} />
+                <input className="input" type="number" min="0" step="0.01" placeholder={t('价格（元）')} value={subPrice} onChange={e => setSubPrice(e.target.value)} style={{ flex: 1 }} />
                 <select className="select" value={subCycle} onChange={e => setSubCycle(e.target.value as 'monthly' | 'yearly')}>
-                  <option value="monthly">每月</option>
-                  <option value="yearly">每年</option>
+                  <option value="monthly">{t('每月')}</option>
+                  <option value="yearly">{t('每年')}</option>
                 </select>
-                <input className="input" type="date" value={subRenewAt} onChange={e => setSubRenewAt(e.target.value)} style={{ flex: 1.2 }} title="下次续费日" />
+                <input className="input" type="date" value={subRenewAt} onChange={e => setSubRenewAt(e.target.value)} style={{ flex: 1.2 }} title={t('下次续费日')} />
               </div>
             )}
-            <div className="desc">填好后会出现在用量页「订阅续费」总览里，临近续费日会收到提醒</div>
+            <div className="desc">{t('填好后会出现在用量页「订阅续费」总览里，临近续费日会收到提醒')}</div>
           </div>
           <div className="field">
-            <label>更换 API Key（留空表示不修改）</label>
-            <input className="input" type="password" placeholder="留空保持不变" value={newKey} onChange={e => setNewKey(e.target.value)} />
-            <div className="desc">修改密钥需先在主界面解锁保险箱；新密钥将以主密码重新加密。</div>
+            <label>{t('更换 API Key（留空表示不修改）')}</label>
+            <input className="input" type="password" placeholder={t('留空保持不变')} value={newKey} onChange={e => setNewKey(e.target.value)} />
+            <div className="desc">{t('修改密钥需先在主界面解锁保险箱；新密钥将以主密码重新加密。')}</div>
           </div>
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" onClick={() => {
             if (!label.trim()) { notify('名称不能为空'); return }
             onSave({ label: label.trim(), apiUrl: apiUrl.trim(), note: buildNote(noteCat, noteExtra), group: group.trim() || undefined, subscription: subOn && Number(subPrice) > 0 && subRenewAt ? { price: Number(subPrice), cycle: subCycle, renewAt: subRenewAt } : undefined }, newKey.trim() || undefined)
-          }}>保存</button>
+          }}>{t('保存')}</button>
         </div>
       </div>
     </div>
@@ -3183,15 +3191,15 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
     <>
       <div className="stats-grid">
         <StatCard icon={<Wallet size={17} />} color="blue" label="本月费用" value={`¥${totalCost.toFixed(2)}`} hint="本地估算" />
-        <StatCard icon={<BarChart3 size={17} />} color="green" label="本月 Tokens" value={(totalIn + totalOut).toLocaleString()} hint={`输入 ${totalIn.toLocaleString()} · 输出 ${totalOut.toLocaleString()}`} />
-        <StatCard icon={<TrendingUp size={17} />} color="amber" label="预算使用" value={`${budgetPct}%`} hint={`预算 ¥${budget.toFixed(0)}`} />
+        <StatCard icon={<BarChart3 size={17} />} color="green" label="本月 Tokens" value={(totalIn + totalOut).toLocaleString()} hint={t('输入 {input} · 输出 {output}', { input: totalIn.toLocaleString(), output: totalOut.toLocaleString() })} />
+        <StatCard icon={<TrendingUp size={17} />} color="amber" label="预算使用" value={`${budgetPct}%`} hint={t('预算 ¥{budget}', { budget: budget.toFixed(0) })} />
         <StatCard icon={<CalendarCheck2 size={17} />} color="blue" label="记录天数" value={String(new Set(monthEvents.map(u => u.date)).size)} hint="本月已记录" />
       </div>
 
       <div className="split">
         <div className="panel" style={{ padding: 18 }}>
-          <div className="section-head" style={{ marginTop: 0 }}><h2>费用趋势 <span className="hint">近 14 天</span></h2></div>
-          {byDay.length === 0 ? <div style={{ color: 'var(--text-3)', fontSize: 13, padding: '20px 0' }}>暂无数据</div> : (
+          <div className="section-head" style={{ marginTop: 0 }}><h2>{t('费用趋势')} <span className="hint">{t('近 14 天')}</span></h2></div>
+          {byDay.length === 0 ? <div style={{ color: 'var(--text-3)', fontSize: 13, padding: '20px 0' }}>{t('暂无数据')}</div> : (
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 130, paddingTop: 10 }}>
               {byDay.map(([date, cost]) => (
                 <div key={date} style={{ flex: 1, textAlign: 'center' }} title={`${date}: ¥${cost.toFixed(2)}`}>
@@ -3203,24 +3211,24 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
           )}
         </div>
         <div className="panel" style={{ padding: 18 }}>
-          <div className="section-head" style={{ marginTop: 0 }}><h2>预算设置</h2></div>
+          <div className="section-head" style={{ marginTop: 0 }}><h2>{t('预算设置')}</h2></div>
           <div className="field">
-            <label>每月预算（元）</label>
+            <label>{t('每月预算（元）')}</label>
             <input className="input" type="number" min="0" step="10" defaultValue={budget}
                    onBlur={e => { const v = Number(e.target.value); if (!isNaN(v) && v >= 0) { onBudget(v); notify('预算已更新') } }} />
           </div>
           <div className="progress" style={{ height: 8 }}><div style={{ width: `${budgetPct}%`, background: budgetPct >= 90 ? 'var(--red)' : 'var(--primary)' }} /></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }}>
-            <span>已用 ¥{totalCost.toFixed(2)}</span><span>预算 ¥{budget.toFixed(0)}</span>
+            <span>{t('已用 ¥{used}', { used: totalCost.toFixed(2) })}</span><span>{t('预算 ¥{budget}', { budget: budget.toFixed(0) })}</span>
           </div>
-          <button className="btn sm" style={{ marginTop: 12 }} onClick={onOpenReport}>查看月度报告 →</button>
+          <button className="btn sm" style={{ marginTop: 12 }} onClick={onOpenReport}>{t('查看月度报告 →')}</button>
         </div>
       </div>
 
-      <div className="section-head"><h2>按平台消费结构 <span className="hint">本月</span></h2></div>
+      <div className="section-head"><h2>{t('按平台消费结构')} <span className="hint">{t('本月')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {spendByPlatform.length === 0 ? (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无消费数据</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('暂无消费数据')}</div>
         ) : spendByPlatform.map(p => (
           <div key={p.providerId} style={{ marginBottom: 13 }}>
             <div className="row between" style={{ fontSize: 12.5, marginBottom: 6 }}>
@@ -3232,10 +3240,10 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         ))}
       </div>
 
-      <div className="section-head"><h2>分平台预算 <span className="hint">本月 · 留空或 0 表示不限；超 90% 会提醒</span></h2></div>
+      <div className="section-head"><h2>{t('分平台预算')} <span className="hint">{t('本月 · 留空或 0 表示不限；超 90% 会提醒')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {ownedProviders.length === 0 ? (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可为各平台单独设置月预算</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('添加账户后可为各平台单独设置月预算')}</div>
         ) : Array.from(new Set([...ownedProviders, ...Object.keys(state.settings.providerBudgets ?? {})])).map(pid => {
           const spend = spendByPlatform.find(p => p.providerId === pid)?.cost ?? 0
           const pb = state.settings.providerBudgets?.[pid] ?? 0
@@ -3243,14 +3251,14 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
           return (
             <div className="settings-row" key={pid}>
               <span style={{ fontSize: 13 }}>{PROVIDER_MAP[pid]?.shortName ?? pid}
-                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>本月已花 ¥{spend.toFixed(2)}{pb > 0 ? ` · ${pct}%` : ''}</span>
+                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{t('本月已花 ¥{spend}{pct}', { spend: spend.toFixed(2), pct: pb > 0 ? ` · ${pct}%` : '' })}</span>
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {pb > 0 && <span className="progress" style={{ width: 90 }}><span style={{ display: 'block', height: '100%', width: `${pct}%`, background: pct >= 100 ? 'var(--red)' : pct >= 90 ? 'var(--amber)' : 'var(--primary)' }} /></span>}
-                <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>预算 ¥</span>
+                <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{t('预算 ¥')}</span>
                 <input className="input" type="number" min="0" step="10" style={{ width: 96 }}
                   defaultValue={pb || ''}
-                  placeholder="不限"
+                  placeholder={t('不限')}
                   key={`${pid}-${pb}`}
                   onBlur={e => { const v = Number(e.target.value); if (!isNaN(v) && v >= 0 && v !== pb) { onProviderBudget(pid, v); notify(v > 0 ? '分平台预算已更新' : '已取消该平台预算') } }} />
               </span>
@@ -3259,10 +3267,10 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         })}
       </div>
 
-      <div className="section-head"><h2>分账户预算 <span className="hint">本月 · 给单个 Key/账户单独设上限；留空或 0 表示不限，超 90% 会提醒</span></h2></div>
+      <div className="section-head"><h2>{t('分账户预算')} <span className="hint">{t('本月 · 给单个 Key/账户单独设上限；留空或 0 表示不限，超 90% 会提醒')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {state.accounts.length === 0 ? (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可为单个账户单独设置月预算</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('添加账户后可为单个账户单独设置月预算')}</div>
         ) : state.accounts
           .filter(a => (state.settings.accountBudgets?.[a.id] ?? 0) > 0 || monthEvents.some(u => u.accountId === a.id))
           .map(a => {
@@ -3272,14 +3280,14 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             return (
               <div className="settings-row" key={a.id}>
                 <span style={{ fontSize: 13 }}>{a.label || PROVIDER_MAP[a.providerId]?.shortName || a.providerId}
-                  <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId} · 本月已花 ¥{spend.toFixed(2)}{ab > 0 ? ` · ${pct}%` : ''}</span>
+                  <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{t('{platform} · 本月已花 ¥{spend}{pct}', { platform: PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId, spend: spend.toFixed(2), pct: ab > 0 ? ` · ${pct}%` : '' })}</span>
                 </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {ab > 0 && <span className="progress" style={{ width: 90 }}><span style={{ display: 'block', height: '100%', width: `${pct}%`, background: pct >= 100 ? 'var(--red)' : pct >= 90 ? 'var(--amber)' : 'var(--primary)' }} /></span>}
-                  <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>预算 ¥</span>
+                  <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{t('预算 ¥')}</span>
                   <input className="input" type="number" min="0" step="10" style={{ width: 96 }}
                     defaultValue={ab || ''}
-                    placeholder="不限"
+                    placeholder={t('不限')}
                     key={`${a.id}-${ab}`}
                     onBlur={e => { const v = Number(e.target.value); if (!isNaN(v) && v >= 0 && v !== ab) { onAccountBudget(a.id, v); notify(v > 0 ? '分账户预算已更新' : '已取消该账户预算') } }} />
                 </span>
@@ -3287,105 +3295,105 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             )
           })}
         {state.accounts.length > 0 && state.accounts.every(a => (state.settings.accountBudgets?.[a.id] ?? 0) <= 0 && !monthEvents.some(u => u.accountId === a.id)) && (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>本月暂无消费的账户不显示；给账户所在行填预算即可单独管控</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('本月暂无消费的账户不显示；给账户所在行填预算即可单独管控')}</div>
         )}
       </div>
 
-      <div className="section-head"><h2>订阅续费 <span className="hint">订阅制账户的固定支出与下次续费日 · 在 API Key 管理里编辑账户填写订阅信息</span></h2></div>
+      <div className="section-head"><h2>{t('订阅续费')} <span className="hint">{t('订阅制账户的固定支出与下次续费日 · 在 API Key 管理里编辑账户填写订阅信息')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {subSummary.rows.length === 0
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无订阅账户。订阅制账户（如包月/包年套餐）在 API Key 管理里编辑该账户，勾选「这是订阅制账户」并填价格、周期和下次续费日，就会汇总到这里。</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('暂无订阅账户。订阅制账户（如包月/包年套餐）在 API Key 管理里编辑该账户，勾选「这是订阅制账户」并填价格、周期和下次续费日，就会汇总到这里。')}</div>
           : <>
             {subSummary.rows.map(r => (
               <div key={r.accountId} className="row between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
                 <span style={{ fontSize: 13.5 }}>{r.label} <span className="hint">{r.platform}</span></span>
-                <span style={{ fontSize: 13.5 }}>¥{r.price.toFixed(2)} / {r.cycle === 'monthly' ? '月' : '年'} · 下次续费 {r.nextRenewAt} <b style={{ color: r.daysLeft <= 7 ? 'var(--red)' : r.daysLeft <= 30 ? 'var(--amber, #d97706)' : 'var(--text-3)' }}>{r.daysLeft === 0 ? '今天' : `${r.daysLeft} 天后`}</b></span>
+                <span style={{ fontSize: 13.5 }}>{t('¥{price} / {cycle} · 下次续费 {date}', { price: r.price.toFixed(2), cycle: r.cycle === 'monthly' ? t('月') : t('年'), date: r.nextRenewAt })} <b style={{ color: r.daysLeft <= 7 ? 'var(--red)' : r.daysLeft <= 30 ? 'var(--amber, #d97706)' : 'var(--text-3)' }}>{r.daysLeft === 0 ? t('今天') : t('{days} 天后', { days: r.daysLeft })}</b></span>
               </div>
             ))}
             <div className="row between" style={{ paddingTop: 10 }}>
-              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>每月固定支出合计（年付按月摊销）</span>
+              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{t('每月固定支出合计（年付按月摊销）')}</span>
               <b>¥{subSummary.monthlyTotal.toFixed(2)}</b>
             </div>
           </>}
       </div>
 
-      <div className="section-head"><h2>性价比榜 <span className="hint">按你的实际用量统计 · ¥/百万 token，越低越划算（样本需 ≥1 万 token）</span></h2>
+      <div className="section-head"><h2>{t('性价比榜')} <span className="hint">{t('按你的实际用量统计 · ¥/百万 token，越低越划算（样本需 ≥1 万 token）')}</span></h2>
         <div className="row" style={{ gap: 6 }}>
-          <button className={`btn sm ${rankTab === 'provider' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('provider')}>按平台</button>
-          <button className={`btn sm ${rankTab === 'model' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('model')}>按模型</button>
+          <button className={`btn sm ${rankTab === 'provider' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('provider')}>{t('按平台')}</button>
+          <button className={`btn sm ${rankTab === 'model' ? 'primary' : 'ghost'}`} onClick={() => setRankTab('model')}>{t('按模型')}</button>
         </div>
       </div>
       <div className="panel" style={{ padding: 18 }}>
         {rankRows.length === 0
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无足够样本：某个{rankTab === 'provider' ? '平台' : '模型'}的累计用量达到 1 万 token 后会出现在这里。</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('暂无足够样本：某个{kind}的累计用量达到 1 万 token 后会出现在这里。', { kind: rankTab === 'provider' ? t('平台') : t('模型') })}</div>
           : rankRows.slice(0, 10).map((r, i) => (
             <div key={r.key} className="row between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 13.5 }}>{i + 1}. {r.name}</span>
-              <span style={{ fontSize: 13.5 }}><b>¥{r.perMillion.toFixed(2)}</b> / 百万 token <span className="hint">共 {(r.tokens / 10000).toFixed(1)} 万 token · 花 ¥{r.cost.toFixed(2)}</span></span>
+              <span style={{ fontSize: 13.5 }}><b>¥{r.perMillion.toFixed(2)}</b> {t('/ 百万 token')} <span className="hint">{t('共 {tokens} 万 token · 花 ¥{cost}', { tokens: (r.tokens / 10000).toFixed(1), cost: r.cost.toFixed(2) })}</span></span>
             </div>
           ))}
       </div>
 
-      <div className="section-head"><h2>本月消费预测 <span className="hint">按本月日均速度推算到月底，提前看会不会超预算</span></h2></div>
+      <div className="section-head"><h2>{t('本月消费预测')} <span className="hint">{t('按本月日均速度推算到月底，提前看会不会超预算')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {spendFc.spent <= 0
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>本月暂无消费记录。</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('本月暂无消费记录。')}</div>
           : <div style={{ fontSize: 13.5, lineHeight: 1.9 }}>
-              本月已过 {spendFc.daysElapsed}/{spendFc.daysInMonth} 天 · 已花 <b>¥{spendFc.spent.toFixed(2)}</b> · 日均 ¥{spendFc.dailyAvg.toFixed(2)}<br />
-              按当前速度，月底预计总消费 <b style={{ fontSize: 15 }}>¥{spendFc.projected.toFixed(2)}</b>
+              {t('本月已过 {elapsed}/{total} 天 · 已花', { elapsed: spendFc.daysElapsed, total: spendFc.daysInMonth })} <b>¥{spendFc.spent.toFixed(2)}</b> {t('· 日均 ¥{avg}', { avg: spendFc.dailyAvg.toFixed(2) })}<br />
+              {t('按当前速度，月底预计总消费')} <b style={{ fontSize: 15 }}>¥{spendFc.projected.toFixed(2)}</b>
               {state.settings.monthlyBudget > 0 && (
-                <> · 月预算 ¥{state.settings.monthlyBudget.toFixed(0)} —— {spendFc.projected > state.settings.monthlyBudget
-                  ? <b style={{ color: 'var(--red)' }}>预计超支 ¥{(spendFc.projected - state.settings.monthlyBudget).toFixed(2)}，注意控制</b>
-                  : <span style={{ color: '#16a34a' }}>在预算内（预计用 {(spendFc.projected / state.settings.monthlyBudget * 100).toFixed(0)}%）</span>}</>
+                <> {t('· 月预算 ¥{budget} ——', { budget: state.settings.monthlyBudget.toFixed(0) })} {spendFc.projected > state.settings.monthlyBudget
+                  ? <b style={{ color: 'var(--red)' }}>{t('预计超支 ¥{over}，注意控制', { over: (spendFc.projected - state.settings.monthlyBudget).toFixed(2) })}</b>
+                  : <span style={{ color: '#16a34a' }}>{t('在预算内（预计用 {pct}%）', { pct: (spendFc.projected / state.settings.monthlyBudget * 100).toFixed(0) })}</span>}</>
               )}
             </div>}
       </div>
 
-      <div className="section-head"><h2>按项目汇总 <span className="hint">给用量记录打项目标签后，这里看每个项目花了多少 · 添加用量记录时填写「项目标签」</span></h2></div>
+      <div className="section-head"><h2>{t('按项目汇总')} <span className="hint">{t('给用量记录打项目标签后，这里看每个项目花了多少 · 添加用量记录时填写「项目标签」')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {projectRows.length === 0
-          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无用量记录。</div>
+          ? <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('暂无用量记录。')}</div>
           : projectRows.map(r => (
             <div key={r.project} className="row between" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 13.5 }}>{r.project} <span className="hint">{r.count} 笔</span></span>
-              <span style={{ fontSize: 13 }}>本月 ¥{r.monthCost.toFixed(2)} · 累计 <b>¥{r.totalCost.toFixed(2)}</b> · {(r.tokens / 10000).toFixed(1)} 万 token</span>
+              <span style={{ fontSize: 13.5 }}>{r.project} <span className="hint">{t('{count} 笔', { count: r.count })}</span></span>
+              <span style={{ fontSize: 13 }}>{t('本月 ¥{month} · 累计', { month: r.monthCost.toFixed(2) })} <b>¥{r.totalCost.toFixed(2)}</b> {t('· {tokens} 万 token', { tokens: (r.tokens / 10000).toFixed(1) })}</span>
             </div>
           ))}
       </div>
 
-      <div className="section-head"><h2>价格动态 <span className="hint">官方参考单价变动订阅 · 每 6 小时自动检查</span></h2></div>
+      <div className="section-head"><h2>{t('价格动态')} <span className="hint">{t('官方参考单价变动订阅 · 每 6 小时自动检查')}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         <div className="row between" style={{ marginBottom: priceAlerts.length ? 10 : 6 }}>
           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
             {priceCheckedAt
-              ? `上次检查：${new Date(priceCheckedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
-              : '尚未检查'} · 平台调价时自动记录，涉及你账户的变动会弹窗提醒
+              ? t('上次检查：{time}', { time: new Date(priceCheckedAt).toLocaleString(locale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) })
+              : t('尚未检查')} {t('· 平台调价时自动记录，涉及你账户的变动会弹窗提醒')}
           </span>
-          <button className="btn sm" disabled={checkingPrices} onClick={onCheckPrices}>{checkingPrices ? '检查中…' : '检查更新'}</button>
+          <button className="btn sm" disabled={checkingPrices} onClick={onCheckPrices}>{checkingPrices ? t('检查中…') : t('检查更新')}</button>
         </div>
         {priceAlerts.length === 0 ? (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>暂无价格变动</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('暂无价格变动')}</div>
         ) : <>
           {priceAlerts.map((c, i) => (
             <div key={`${c.providerId}-${c.detectedAt}-${i}`} className="settings-row">
               <span style={{ fontSize: 13 }}>{PROVIDER_MAP[c.providerId]?.name ?? c.providerId}
-                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{new Date(c.detectedAt).toLocaleDateString('zh-CN')} 检测到</span>
+                <span style={{ color: 'var(--text-3)', fontSize: 11.5, marginLeft: 8 }}>{t('{date} 检测到', { date: new Date(c.detectedAt).toLocaleDateString(locale()) })}</span>
               </span>
               <span style={{ fontSize: 12.5, fontWeight: 500, color: c.newPrice > c.oldPrice ? '#dc2626' : '#16a34a' }}>
-                {c.newPrice > c.oldPrice ? '↑ 涨价' : '↓ 降价'} ¥{c.oldPrice} → ¥{c.newPrice} / 单位
+                {c.newPrice > c.oldPrice ? t('↑ 涨价') : t('↓ 降价')} ¥{c.oldPrice} → ¥{c.newPrice} {t('/ 单位')}
               </span>
             </div>
           ))}
           <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <button className="btn sm ghost" onClick={onAckPriceAlerts}>全部知道了</button>
+            <button className="btn sm ghost" onClick={onAckPriceAlerts}>{t('全部知道了')}</button>
           </div>
         </>}
       </div>
 
-      <div className="section-head"><h2>额度单价校准 <span className="hint">用于资源总估值 · 官方参考价 {OFFICIAL_PRICES_AS_OF}</span></h2></div>
+      <div className="section-head"><h2>{t('额度单价校准')} <span className="hint">{t('用于资源总估值 · 官方参考价 {asOf}', { asOf: OFFICIAL_PRICES_AS_OF })}</span></h2></div>
       <div className="panel" style={{ padding: 18 }}>
         {ownedProviders.length === 0 ? (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>添加账户后可校准对应平台的单价</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('添加账户后可校准对应平台的单价')}</div>
         ) : (<>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
             <button className="btn sm" onClick={() => {
@@ -3394,16 +3402,16 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
                 const off = officialUnitPrice(pid)
                 if (off !== undefined && priceDrifted(effectivePrices[pid] ?? DEFAULT_UNIT_PRICES.default, off)) { onPriceChange(pid, off); changed++ }
               }
-              notify(changed ? `已按官方参考价校准 ${changed} 个平台` : '所有平台单价已与官方参考价一致')
-            }} title="把已收录平台的单价一键填为官方参考价（不同模型价格差异较大，仅作估值参考）">按官方价自动校准</button>
+              notify(changed ? t('已按官方参考价校准 {n} 个平台', { n: changed }) : '所有平台单价已与官方参考价一致')
+            }} title={t('把已收录平台的单价一键填为官方参考价（不同模型价格差异较大，仅作估值参考）')}>{t('按官方价自动校准')}</button>
           </div>
           {ownedProviders.map(pid => { const off = officialUnitPrice(pid); const eff = effectivePrices[pid] ?? DEFAULT_UNIT_PRICES.default; const drift = priceDrifted(eff, off); return (
           <div className="settings-row" key={pid}>
             <span style={{ fontSize: 13 }}>{PROVIDER_MAP[pid]?.shortName ?? pid}</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {drift && <span style={{ fontSize: 11.5, color: 'var(--amber, #d97706)' }}>官方参考 ¥{off}</span>}
-              {drift && <button className="btn sm ghost" onClick={() => onPriceChange(pid, off!)}>采用</button>}
-              <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>元 / {UNIT_LABEL[state.quotas.find(q => q.accountId === state.accounts.find(a => a.providerId === pid)?.id)?.unit ?? 'credit']}</span>
+              {drift && <span style={{ fontSize: 11.5, color: 'var(--amber, #d97706)' }}>{t('官方参考 ¥{price}', { price: off ?? 0 })}</span>}
+              {drift && <button className="btn sm ghost" onClick={() => onPriceChange(pid, off!)}>{t('采用')}</button>}
+              <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{t('元 / {unit}', { unit: t(UNIT_LABEL[state.quotas.find(q => q.accountId === state.accounts.find(a => a.providerId === pid)?.id)?.unit ?? 'credit']) })}</span>
               <input className="input" type="number" min="0" step="0.0001"
                 value={eff}
                 onChange={e => onPriceChange(pid, Math.max(0, Number(e.target.value)))}
@@ -3413,7 +3421,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         </>)}
       </div>
 
-      <div className="section-head"><h2>用量记录 <span className="hint">{monthEvents.length} 条</span></h2></div>
+      <div className="section-head"><h2>{t('用量记录')} <span className="hint">{t('{n} 条', { n: monthEvents.length })}</span></h2></div>
       <SelectionBar
         selectedCount={selectedUsage.size} totalOnPage={pagedUsage.length}
         allSelected={pagedUsage.length > 0 && pagedUsage.every(u => selectedUsage.has(u.id))}
@@ -3425,23 +3433,23 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
         }}
         onClear={() => setSelectedUsage(new Set())}
         actions={<button className="btn sm danger" onClick={() => {
-          onDeleteUsage(Array.from(selectedUsage)); notify(`已删除 ${selectedUsage.size} 条记录`); setSelectedUsage(new Set())
-        }}><Trash2 size={13} /> 批量删除</button>}
+          onDeleteUsage(Array.from(selectedUsage)); notify(t('已删除 {n} 条记录', { n: selectedUsage.size })); setSelectedUsage(new Set())
+        }}><Trash2 size={13} /> {t('批量删除')}</button>}
       />
       <div className="panel">
         <table>
           <thead><tr>
-            <th style={{ width: 32 }}><input type="checkbox" title="全选本页"
+            <th style={{ width: 32 }}><input type="checkbox" title={t('全选本页')}
               checked={pagedUsage.length > 0 && pagedUsage.every(u => selectedUsage.has(u.id))}
               onChange={e => {
                 const next = new Set(selectedUsage)
                 if (e.target.checked) pagedUsage.forEach(u => next.add(u.id)); else pagedUsage.forEach(u => next.delete(u.id))
                 setSelectedUsage(next)
               }} /></th>
-            <th>日期</th><th>账户</th><th>模型</th><th>输入 Tokens</th><th>输出 Tokens</th><th>估算费用</th>
+            <th>{t('日期')}</th><th>{t('账户')}</th><th>{t('模型')}</th><th>{t('输入 Tokens')}</th><th>{t('输出 Tokens')}</th><th>{t('估算费用')}</th>
           </tr></thead>
           <tbody>
-            {monthEvents.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 30 }}>暂无记录</td></tr> :
+            {monthEvents.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 30 }}>{t('暂无记录')}</td></tr> :
               pagedUsage.map(u => {
                 const acc = state.accounts.find(a => a.id === u.accountId)
                 return (
@@ -3465,9 +3473,9 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
       </div>
       <Pager total={monthEvents.length} page={usagePage} pageSize={USAGE_PAGE_SIZE} onChange={setUsagePage} />
       <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn sm" onClick={onAddUsage}><Plus size={13} /> 手动添加记录</button>
+        <button className="btn sm" onClick={onAddUsage}><Plus size={13} /> {t('手动添加记录')}</button>
         <label className="btn sm" style={{ cursor: 'pointer' }}>
-          <Download size={13} style={{ transform: 'rotate(180deg)' }} /> 导入 CSV
+          <Download size={13} style={{ transform: 'rotate(180deg)' }} /> {t('导入 CSV')}
           <input type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={(e) => {
             const file = e.target.files?.[0]
             if (!file) return
@@ -3475,7 +3483,7 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
             reader.onload = () => {
               try {
                 const events = parseUsageCsv(String(reader.result), state.accounts)
-                if (events.length === 0) { notify('未解析到有效记录，请检查 CSV 格式'); return }
+                if (events.length === 0) { notify(t('未解析到有效记录，请检查 CSV 格式')); return }
                 onImport(events)
               } catch (err: any) { notify(err.message ?? 'CSV 解析失败') }
             }
@@ -3487,9 +3495,9 @@ function UsageView({ state, notify, onBudget, onAddUsage, onImport, onPriceChang
           const csv = 'date,account,inputTokens,outputTokens,cost,model\n2026-01-01,我的账户,1000,500,0.15,gpt-4o\n'
           const r = await saveExportFile('usage-template.csv', '\ufeff' + csv)
           if (r.cancelled) return
-          notify(r.ok ? `模板已保存到：${r.where}` : `导出失败：${r.error ?? '未知错误'}`)
-        }}><Download size={13} /> CSV 模板</button>
-        <span style={{ fontSize: 11.5, color: 'var(--text-3)', alignSelf: 'center' }}>列：date, account, inputTokens, outputTokens, cost, model</span>
+          notify(r.ok ? t('模板已保存到：{where}', { where: r.where ?? '' }) : t('导出失败：{err}', { err: r.error ?? t('未知错误') }))
+        }}><Download size={13} /> {t('CSV 模板')}</button>
+        <span style={{ fontSize: 11.5, color: 'var(--text-3)', alignSelf: 'center' }}>{t('列：date, account, inputTokens, outputTokens, cost, model')}</span>
       </div>
     </>
   )
@@ -3595,20 +3603,20 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
           <div className="row" style={{ gap: 10 }}>
             <ProviderLogo provider={provider} size={30} />
             <div>
-              <h3 style={{ margin: 0 }}>添加本地模型 · {provider.shortName}</h3>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>网关地址由本机实时探测，不可修改</div>
+              <h3 style={{ margin: 0 }}>{t('添加本地模型 · {name}', { name: provider.shortName })}</h3>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{t('网关地址由本机实时探测，不可修改')}</div>
             </div>
           </div>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div className="form-row">
-            <label className="form-label">本机服务（实时探测 · 网关与端口不可改）</label>
-            {detecting ? <div className="form-static">正在探测本机服务…</div> : services.length === 0
+            <label className="form-label">{t('本机服务（实时探测 · 网关与端口不可改）')}</label>
+            {detecting ? <div className="form-static">{t('正在探测本机服务…')}</div> : services.length === 0
               ? <div className="form-static" style={{ color: 'var(--red)' }}>
                   {detectErr || (expectService
-                    ? `未检测到运行中的 ${expectService} 服务，请先在本机启动${expectService === 'Ollama' ? '（默认端口 11434）' : expectService === 'ComfyUI' ? '（默认端口 8188）' : ''}后点「重新探测」`
-                    : '未检测到本机本地模型服务，请确认服务已启动')}
+                    ? t('未检测到运行中的 {service} 服务，请先在本机启动{portHint}后点「重新探测」', { service: expectService, portHint: expectService === 'Ollama' ? t('（默认端口 11434）') : expectService === 'ComfyUI' ? t('（默认端口 8188）') : '' })
+                    : t('未检测到本机本地模型服务，请确认服务已启动'))}
                 </div>
               : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {services.map(s => (
@@ -3617,30 +3625,30 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
                   </button>
                 ))}
               </div>}
-            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => void detect()} disabled={detecting}>重新探测</button>
+            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => void detect()} disabled={detecting}>{t('重新探测')}</button>
           </div>
           <div className="form-row" style={{ marginTop: 12 }}>
-            <label className="form-label">选择模型
-              <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 11 }}>（作为标识加密保存）</span>
+            <label className="form-label">{t('选择模型')}
+              <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 11 }}>{t('（作为标识加密保存）')}</span>
             </label>
             {/* 主入口：从服务已加载的模型列表选择（自动标注能力类型） */}
             {availModels.length > 0 ? (
               <select className="select" value={path} onChange={e => setPath(e.target.value)} disabled={busy} style={{ width: '100%' }}>
-                <option value="">请选择模型…</option>
+                <option value="">{t('请选择模型…')}</option>
                 {availModels.map(m => {
                   const cap = detectModelCapability(m)
-                  return <option key={m} value={m}>{m}　[{cap.label}]</option>
+                  return <option key={m} value={m}>{m}　[{t(cap.label)}]</option>
                 })}
               </select>
             ) : modelsLoading ? (
-              <div className="me-skeleton-stack" aria-label="正在从本机服务读取模型列表">
+              <div className="me-skeleton-stack" aria-label={t('正在从本机服务读取模型列表')}>
                 <div className="me-skeleton" style={{ height: 14, width: '72%' }} />
                 <div className="me-skeleton" style={{ height: 14, width: '55%', marginTop: 8 }} />
                 <div className="me-skeleton" style={{ height: 14, width: '63%', marginTop: 8 }} />
               </div>
             ) : (
               <div className="local-model-hint">
-                {modelsErr ? `未能自动读取模型列表：${modelsErr}` : '本机服务暂无可读取的模型列表'}
+                {modelsErr ? t('未能自动读取模型列表：{err}', { err: modelsErr }) : t('本机服务暂无可读取的模型列表')}
               </div>
             )}
             {/* 选中模型的能力标注与提示 */}
@@ -3649,50 +3657,50 @@ function LocalAccountFormModal({ provider, sessionPwd, onClose, onSave, notify }
               const hidden = shouldHideFromChat(cap)
               return (
                 <div className={`model-cap-hint ${hidden ? 'warn' : ''}`}>
-                  <span className="cap-badge">{cap.label}</span>
+                  <span className="cap-badge">{t(cap.label)}</span>
                   <span>{hidden
-                    ? `${cap.reason}识别为「${cap.label}」模型，不能用于 AI 聊天对话；添加后会在聊天列表自动隐藏。`
+                    ? t('{reason}识别为「{label}」模型，不能用于 AI 聊天对话；添加后会在聊天列表自动隐藏。', { reason: cap.reason, label: t(cap.label) })
                     : cap.capability === 'translation'
-                      ? '翻译专用模型，可走对话接口但更适合翻译任务。'
+                      ? t('翻译专用模型，可走对话接口但更适合翻译任务。')
                       : cap.capability === 'unknown'
-                        ? '未识别类型，默认允许聊天；如实际不能对话请留意。'
-                        : '识别为对话模型，可用于 AI 聊天。'}</span>
+                        ? t('未识别类型，默认允许聊天；如实际不能对话请留意。')
+                        : t('识别为对话模型，可用于 AI 聊天。')}</span>
                 </div>
               )
             })()}
             <div className="local-model-actions">
               <button className="btn sm" disabled={busy || modelsLoading} onClick={() => { if (selected) void loadModels(selected) }}>
-                {modelsLoading ? '读取中…' : '刷新模型列表'}
+                {modelsLoading ? t('读取中…') : t('刷新模型列表')}
               </button>
               <button className="btn sm" disabled={busy} onClick={async () => {
                 const picked = await chooseModelFile()
                 if (picked) setPath(picked.split(/[\\/]/).pop() || picked)
-              }}>浏览本地文件…</button>
+              }}>{t('浏览本地文件…')}</button>
             </div>
             {/* 兜底：手动输入 */}
             <input className="input" style={{ marginTop: 8 }} value={path} onChange={e => setPath(e.target.value)}
-              placeholder="也可手动输入模型名，如 llama3:latest" disabled={busy} />
+              placeholder={t('也可手动输入模型名，如 llama3:latest')} disabled={busy} />
             <div className="local-model-note">
-              优先从服务已加载的模型中选择；「浏览本地文件」仅取文件名作标识。支持格式：Ollama 用自身管理的模型（如 llama3、qwen2.5:7b）；ComfyUI 支持 .gguf / .safetensors / .ckpt / .bin（需放在 ComfyUI 的 models 目录）；LM Studio 支持 .gguf。App 不直接加载文件，实际调用由本机服务完成。
+              {t('优先从服务已加载的模型中选择；「浏览本地文件」仅取文件名作标识。支持格式：Ollama 用自身管理的模型（如 llama3、qwen2.5:7b）；ComfyUI 支持 .gguf / .safetensors / .ckpt / .bin（需放在 ComfyUI 的 models 目录）；LM Studio 支持 .gguf。App 不直接加载文件，实际调用由本机服务完成。')}
             </div>
           </div>
           <div className="form-row" style={{ marginTop: 12 }}>
-            <label className="form-label">备注（可选）</label>
-            <input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="用途说明" disabled={busy} />
+            <label className="form-label">{t('备注（可选）')}</label>
+            <input className="input" value={note} onChange={e => setNote(e.target.value)} placeholder={t('用途说明')} disabled={busy} />
           </div>
           {needInlinePwd && (
             <div className="form-row" style={{ marginTop: 12 }}>
-              <label className="form-label">主密码 <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· 用于加密本次保存，输入后本次会话记住</span></label>
-              <input ref={pwdRef} className="input" type="password" value={formPwd} onChange={e => setFormPwd(e.target.value)} placeholder="输入保险箱主密码" disabled={busy} />
+              <label className="form-label">{t('主密码')} <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 用于加密本次保存，输入后本次会话记住')}</span></label>
+              <input ref={pwdRef} className="input" type="password" value={formPwd} onChange={e => setFormPwd(e.target.value)} placeholder={t('输入保险箱主密码')} disabled={busy} />
             </div>
           )}
           <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10, lineHeight: 1.6 }}>
-            本地模型仅保存在本机，不参与云同步、备份与导出（路径含本机信息，无跨端意义）。
+            {t('本地模型仅保存在本机，不参与云同步、备份与导出（路径含本机信息，无跨端意义）。')}
           </div>
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={() => void submit()} disabled={busy || !selected}>{busy ? '保存中…' : '添加本地模型'}</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
+          <button className="btn primary" onClick={() => void submit()} disabled={busy || !selected}>{busy ? t('保存中…') : t('添加本地模型')}</button>
         </div>
       </div>
     </div>
@@ -3715,29 +3723,29 @@ function PlatformPickerModal({ onClose, onPick }: {
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal picker-modal" style={{ maxWidth: 640 }}>
-        <div className="modal-head"><h3>选择平台</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('选择平台')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
-          <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 12 }}>按模型功能分类 · 共 {PROVIDERS.length} 个平台</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 12 }}>{t('按模型功能分类 · 共 {n} 个平台', { n: PROVIDERS.length })}</div>
           <div className="row" style={{ gap: 8, marginBottom: 12 }}>
             <div className="search-wrap" style={{ flex: 1 }}>
               <Search size={14} />
-              <input className="input" placeholder="搜索平台名称…" value={query} onChange={e => setQuery(e.target.value)} />
+              <input className="input" placeholder={t('搜索平台名称…')} value={query} onChange={e => setQuery(e.target.value)} />
             </div>
           </div>
           <div className="category-chips">
-            <button className={`chip ${category === 'all' ? 'active' : ''}`} onClick={() => setCategory('all')}>全部</button>
+            <button className={`chip ${category === 'all' ? 'active' : ''}`} onClick={() => setCategory('all')}>{t('全部')}</button>
             {CATEGORY_ORDER.map(cat => (
-              <button key={cat} className={`chip ${category === cat ? 'active' : ''}`} onClick={() => setCategory(cat)}>{CATEGORY_LABEL[cat]}</button>
+              <button key={cat} className={`chip ${category === cat ? 'active' : ''}`} onClick={() => setCategory(cat)}>{t(CATEGORY_LABEL[cat])}</button>
             ))}
           </div>
           <div className="platform-groups">
-            {grouped.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>没有匹配的平台</div>}
+            {grouped.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>{t('没有匹配的平台')}</div>}
             {grouped.map(g => (
               <div className="platform-group" key={g.cat}>
-                <div className="platform-group-title"><span className={`cat-dot cat-${g.cat}`} />{CATEGORY_LABEL[g.cat]} <span className="hint">{g.items.length}</span></div>
+                <div className="platform-group-title"><span className={`cat-dot cat-${g.cat}`} />{t(CATEGORY_LABEL[g.cat])} <span className="hint">{g.items.length}</span></div>
                 <div className="provider-picker" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                   {g.items.map(p => (
-                    <button key={p.id} className="provider-opt" onClick={() => onPick(p.id)} title={`添加 ${p.name}`}>
+                    <button key={p.id} className="provider-opt" onClick={() => onPick(p.id)} title={t('添加 {name}', { name: p.name })}>
                       <ProviderLogo provider={p} size={30} />
                       <span className="p-name">{p.shortName}</span>
                     </button>
@@ -3747,7 +3755,7 @@ function PlatformPickerModal({ onClose, onPick }: {
             ))}
           </div>
         </div>
-        <div className="modal-foot"><button className="btn" onClick={onClose}>取消</button></div>
+        <div className="modal-foot"><button className="btn" onClick={onClose}>{t('取消')}</button></div>
       </div>
     </div>
   )
@@ -3768,32 +3776,32 @@ function SmartPasteModal({ onClose, onConfirm }: {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
-        <div className="modal-head"><h3 style={{ margin: 0 }}>智能粘贴添加账户</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3 style={{ margin: 0 }}>{t('智能粘贴添加账户')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div style={{ padding: '4px 18px 18px' }}>
-          <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0, color: 'var(--text-2)' }}>把 API Key 粘贴进来（带说明文字也没关系），按格式自动识别平台；识别不准可以在下面改选。</p>
+          <p style={{ fontSize: 13, lineHeight: 1.6, marginTop: 0, color: 'var(--text-2)' }}>{t('把 API Key 粘贴进来（带说明文字也没关系），按格式自动识别平台；识别不准可以在下面改选。')}</p>
           <textarea
             value={text} onChange={e => setText(e.target.value)} rows={3} autoFocus
-            placeholder="粘贴 API Key，例如 sk-… / gsk_… / sk-ant-…"
+            placeholder={t('粘贴 API Key，例如 sk-… / gsk_… / sk-ant-…')}
             style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 12.5 }}
           />
-          {text.trim() && !key && <p style={{ fontSize: 12.5, color: 'var(--red)' }}>没识别到像 Key 的内容（需要一段至少 16 位的字母数字串）。</p>}
+          {text.trim() && !key && <p style={{ fontSize: 12.5, color: 'var(--red)' }}>{t('没识别到像 Key 的内容（需要一段至少 16 位的字母数字串）。')}</p>}
           {key && (
             <div style={{ marginTop: 10 }}>
               {detection
-                ? <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>识别结果：<b>{PROVIDER_MAP[detection.providerId]?.name ?? detection.providerId}</b>{detection.confidence === 'low' ? '（低置信，请确认）' : ''} · {detection.reason}</p>
-                : <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>这个 Key 的格式没有特征，请手动选择平台：</p>}
+                ? <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>{t('识别结果：')}<b>{PROVIDER_MAP[detection.providerId]?.name ?? detection.providerId}</b>{detection.confidence === 'low' ? t('（低置信，请确认）') : ''} · {detection.reason}</p>
+                : <p style={{ fontSize: 12.5, margin: 0, color: 'var(--text-2)' }}>{t('这个 Key 的格式没有特征，请手动选择平台：')}</p>}
               <div className="row" style={{ gap: 8, marginTop: 10, alignItems: 'center' }}>
-                <span style={{ fontSize: 13 }}>平台</span>
+                <span style={{ fontSize: 13 }}>{t('平台')}</span>
                 <select className="select" value={picked} onChange={e => setPicked(e.target.value)} style={{ flex: 1 }}>
-                  <option value="">请选择平台</option>
+                  <option value="">{t('请选择平台')}</option>
                   {candidates.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
             </div>
           )}
           <div className="row" style={{ gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-            <button className="btn" onClick={onClose}>取消</button>
-            <button className="btn primary" disabled={!key || !picked} onClick={() => onConfirm(picked, key)}>下一步：填写账户信息</button>
+            <button className="btn" onClick={onClose}>{t('取消')}</button>
+            <button className="btn primary" disabled={!key || !picked} onClick={() => onConfirm(picked, key)}>{t('下一步：填写账户信息')}</button>
           </div>
         </div>
       </div>
@@ -3901,8 +3909,8 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
           <div className="row" style={{ gap: 10 }}>
             <ProviderLogo provider={provider} size={30} />
             <div>
-              <h3 style={{ margin: 0 }}>添加账户</h3>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>填写下方信息以添加并加密保存</div>
+              <h3 style={{ margin: 0 }}>{t('添加账户')}</h3>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{t('填写下方信息以添加并加密保存')}</div>
             </div>
           </div>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
@@ -3910,80 +3918,80 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
         <div className="modal-body">
           {/* 行1：平台名（固定写死） */}
           <div className="form-row">
-            <label className="form-label">平台名称</label>
-            <div className="form-static"><ProviderLogo provider={provider} size={22} /> <b>{provider.name}</b><span className="tag gray" style={{ marginLeft: 'auto' }}>固定</span></div>
+            <label className="form-label">{t('平台名称')}</label>
+            <div className="form-static"><ProviderLogo provider={provider} size={22} /> <b>{provider.name}</b><span className="tag gray" style={{ marginLeft: 'auto' }}>{t('固定')}</span></div>
           </div>
           {/* 行2：API 链接地址（只读可点击直达创建 key 页） */}
           <div className="form-row">
-            <label className="form-label">API 链接地址 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· 点击前往官方创建 Key</span></label>
+            <label className="form-label">API {t('链接地址')} <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 点击前往官方创建 Key')}</span></label>
             <button className="form-link" onClick={() => { void openExternal(keyUrl); }} title={keyUrl}>
               <span>{isVoiceCfg ? (chosenVoice?.name ?? keyUrl) : (provider.apiBaseUrl || '—')}</span><ExternalLink size={13} />
             </button>
-            <div className="form-hint">只读 · 点击上述地址可直达官方 API Key 管理页</div>
+            <div className="form-hint">{t('只读 · 点击上述地址可直达官方 API Key 管理页')}</div>
           </div>
           {/* 行3：模型分类（语音配置固定，其余写死下拉）+ 可选说明 */}
           <div className="form-row">
             {isVoiceCfg ? (
               <>
-                <label className="form-label">语音服务商 <span className="req">*</span></label>
+                <label className="form-label">{t('语音服务商')} <span className="req">*</span></label>
                 <select className="select" value={voiceProvider} onChange={e => { setVoiceProvider(e.target.value); setBalance(null) }}>
                   {voiceProviderChoices.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
                 <div className="form-hint" style={{ marginTop: 6 }}>{chosenVoice?.desc}</div>
-                <div className="voice-fixed-cat" style={{ marginTop: 10 }}>🔊 语音配置(APP) · 专用于语音朗读/声音克隆</div>
-                <input className="input" style={{ marginTop: 8 }} placeholder="备注（可选），例如：我的百炼 Key" value={note} onChange={e => setNote(e.target.value)} />
-                <div className="form-hint">此 Key 仅「语音配置」模块使用；AI 聊天不会调用，也不会在聊天模型列表里出现。添加后会自动同步到「语音配置」页。</div>
+                <div className="voice-fixed-cat" style={{ marginTop: 10 }}>{t('🔊 语音配置(APP) · 专用于语音朗读/声音克隆')}</div>
+                <input className="input" style={{ marginTop: 8 }} placeholder={t('备注（可选），例如：我的百炼 Key')} value={note} onChange={e => setNote(e.target.value)} />
+                <div className="form-hint">{t('此 Key 仅「语音配置」模块使用；AI 聊天不会调用，也不会在聊天模型列表里出现。添加后会自动同步到「语音配置」页。')}</div>
               </>
             ) : (
               <>
-                <label className="form-label">模型分类 <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· 决定 AI 助手里该模型的用途与联动</span></label>
+                <label className="form-label">{t('模型分类')} <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 决定 AI 助手里该模型的用途与联动')}</span></label>
                 <select className="select" value={noteCat} onChange={e => setNoteCat(e.target.value as NoteCategory)}>
-                  {NOTE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {NOTE_CATEGORIES.map(c => <option key={c} value={c}>{t(c)}</option>)}
                 </select>
-                <input className="input" style={{ marginTop: 8 }} placeholder="补充说明（可选），例如：日常对话 / 批量生图" value={note} onChange={e => setNote(e.target.value)} />
-                <div className="form-hint">分类按该模型的官方真实用途选择；AI 助手将按此分类展示与调用</div>
+                <input className="input" style={{ marginTop: 8 }} placeholder={t('补充说明（可选），例如：日常对话 / 批量生图')} value={note} onChange={e => setNote(e.target.value)} />
+                <div className="form-hint">{t('分类按该模型的官方真实用途选择；AI 助手将按此分类展示与调用')}</div>
               </>
             )}
           </div>
           {/* 行3.5：保险箱分组（可选） */}
           <div className="form-row">
-            <label className="form-label">保险箱分组（可选）</label>
-            <input className="input" list="acm-group-list-add" placeholder="如：工作 / 个人 / 项目（留空 = 未分组）" value={group} onChange={e => setGroup(e.target.value)} />
+            <label className="form-label">{t('保险箱分组（可选）')}</label>
+            <input className="input" list="acm-group-list-add" placeholder={t('如：工作 / 个人 / 项目（留空 = 未分组）')} value={group} onChange={e => setGroup(e.target.value)} />
             <datalist id="acm-group-list-add">{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
-            <div className="form-hint">按用途分组管理；Key 管理页可按组筛选与统计剩余额度</div>
+            <div className="form-hint">{t('按用途分组管理；Key 管理页可按组筛选与统计剩余额度')}</div>
           </div>
           {/* 行4：API Key 输入（语音配置无需余额） */}
           <div className="form-row">
             <label className="form-label">API Key <span className="req">*</span>
-              {provider.id !== 'voice-config' && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· 输入后自动获取余额</span>}
+              {provider.id !== 'voice-config' && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 输入后自动获取余额')}</span>}
             </label>
             <div className="row" style={{ gap: 8 }}>
-              <input className="input" style={{ flex: 1 }} type="text" placeholder="粘贴你的 API Key（明文输入）" value={secret} onChange={e => { setSecret(e.target.value); setBalance(null) }} />
+              <input className="input" style={{ flex: 1 }} type="text" placeholder={t('粘贴你的 API Key（明文输入）')} value={secret} onChange={e => { setSecret(e.target.value); setBalance(null) }} />
               {provider.id !== 'voice-config' && (
                 <button className="btn sm" onClick={() => void fetchBalance()} disabled={fetching || !secret.trim()}>
-                  <RefreshCw size={13} style={fetching ? { animation: 'acm-spin 1s linear infinite' } : undefined} /> {fetching ? '获取中' : '获取余额'}
+                  <RefreshCw size={13} style={fetching ? { animation: 'acm-spin 1s linear infinite' } : undefined} /> {fetching ? t('获取中') : t('获取余额')}
                 </button>
               )}
             </div>
             {provider.id !== 'voice-config' && (
               <div className={`balance-box ${balance ? 'has' : ''}`}>
-                <Wallet size={13} /> {balance ?? '余额未获取（可选，可稍后手动录入）'}
+                <Wallet size={13} /> {balance ?? t('余额未获取（可选，可稍后手动录入）')}
               </div>
             )}
           </div>
           {needInlinePwd && (
             <div className="form-row">
-              <label className="form-label">主密码 <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· 用于加密本次保存，输入后本次会话记住</span></label>
-              <input ref={pwdRef} className="input" type="password" value={formPwd} onChange={e => setFormPwd(e.target.value)} placeholder="输入保险箱主密码" disabled={busy} />
-              <div className="form-hint">Key 会加密保存在本机。查看/删除已保存的 Key 仍需解锁保险箱。</div>
+              <label className="form-label">{t('主密码')} <span className="req">*</span> <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 用于加密本次保存，输入后本次会话记住')}</span></label>
+              <input ref={pwdRef} className="input" type="password" value={formPwd} onChange={e => setFormPwd(e.target.value)} placeholder={t('输入保险箱主密码')} disabled={busy} />
+              <div className="form-hint">{t('Key 会加密保存在本机。查看/删除已保存的 Key 仍需解锁保险箱。')}</div>
             </div>
           )}
-          {err && <div className="form-error">{err}</div>}
+          {err && <div className="form-error">{t(err)}</div>}
         </div>
         <div className="modal-foot account-form-foot">
-          <button className="btn btn-close" onClick={onClose}>关闭</button>
-          <button className="btn btn-reset" onClick={reset}>重置</button>
-          <button className="btn btn-add" onClick={() => void submit()} disabled={busy}>{busy ? '添加中…' : '添加'}</button>
+          <button className="btn btn-close" onClick={onClose}>{t('关闭')}</button>
+          <button className="btn btn-reset" onClick={reset}>{t('重置')}</button>
+          <button className="btn btn-add" onClick={() => void submit()} disabled={busy}>{busy ? t('添加中…') : t('添加')}</button>
         </div>
       </div>
     </div>
@@ -4026,29 +4034,29 @@ function VaultModal({ initialized, currentPwd, onClose, onInit, notify }: {
     return (
       <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
         <div className="modal" style={{ maxWidth: 440 }}>
-          <div className="modal-head"><h3>本地保险箱</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+          <div className="modal-head"><h3>{t('本地保险箱')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
           <div className="modal-body">
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>当前主密码（明文）</div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>{t('当前主密码（明文）')}</div>
             {revealed ? (
               <div className="secret-reveal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                 <span className="mono" style={{ fontSize: 15, letterSpacing: 1 }}>{revealed}</span>
-                <button className="icon-btn" title="复制主密码" onClick={() => { navigator.clipboard.writeText(revealed); notify('主密码已复制') }}><Copy size={14} /></button>
+                <button className="icon-btn" title={t('复制主密码')} onClick={() => { navigator.clipboard.writeText(revealed); notify('主密码已复制') }}><Copy size={14} /></button>
               </div>
             ) : (
               <div className="field">
-                <label>输入主密码以查看</label>
+                <label>{t('输入主密码以查看')}</label>
                 <div className="row" style={{ gap: 8 }}>
-                  <input className="input" type="password" placeholder="输入主密码" value={viewPwd}
+                  <input className="input" type="password" placeholder={t('输入主密码')} value={viewPwd}
                     onChange={e => setViewPwd(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && viewPwd) void reveal() }} />
-                  <button className="btn sm primary" onClick={() => void reveal()} disabled={!viewPwd}>查看</button>
+                  <button className="btn sm primary" onClick={() => void reveal()} disabled={!viewPwd}>{t('查看')}</button>
                 </div>
               </div>
             )}
           </div>
           <div className="modal-foot">
-            <button className="btn danger" style={{ marginRight: 'auto' }} onClick={resetPage}>重置</button>
-            <button className="btn" onClick={onClose}>关闭</button>
+            <button className="btn danger" style={{ marginRight: 'auto' }} onClick={resetPage}>{t('重置')}</button>
+            <button className="btn" onClick={onClose}>{t('关闭')}</button>
           </div>
         </div>
       </div>
@@ -4059,15 +4067,15 @@ function VaultModal({ initialized, currentPwd, onClose, onInit, notify }: {
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 440 }}>
-        <div className="modal-head"><h3>创建本地保险箱</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('创建本地保险箱')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
-          <div className="field"><label>设置主密码（至少 6 位）</label><input className="input" type="text" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
-          <div className="field"><label>确认主密码</label><input className="input" type="text" value={confirm} onChange={e => setConfirm(e.target.value)} /></div>
+          <div className="field"><label>{t('设置主密码（至少 6 位）')}</label><input className="input" type="text" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
+          <div className="field"><label>{t('确认主密码')}</label><input className="input" type="text" value={confirm} onChange={e => setConfirm(e.target.value)} /></div>
         </div>
         <div className="modal-foot">
-          <button className="btn danger" style={{ marginRight: 'auto' }} onClick={resetPage}>重置</button>
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={submit} disabled={busy}>创建</button>
+          <button className="btn danger" style={{ marginRight: 'auto' }} onClick={resetPage}>{t('重置')}</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
+          <button className="btn primary" onClick={submit} disabled={busy}>{t('创建')}</button>
         </div>
       </div>
     </div>
@@ -4093,7 +4101,7 @@ function QuotaModal({ account, provider, existing, defaultUnit, onClose, onSave 
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 460 }}>
         <div className="modal-head">
-          <h3>{existing ? '更新额度' : '录入额度'}</h3>
+          <h3>{existing ? t('更新额度') : t('录入额度')}</h3>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="modal-body">
@@ -4103,44 +4111,44 @@ function QuotaModal({ account, provider, existing, defaultUnit, onClose, onSave 
           </div>
           <div className="field-row">
             <div className="field">
-              <label>单位</label>
+              <label>{t('单位')}</label>
               <select className="select" value={unit} onChange={e => setUnit(e.target.value as CreditUnit)}>
-                {(Object.keys(UNIT_LABEL) as CreditUnit[]).map(u => <option key={u} value={u}>{UNIT_LABEL[u]}</option>)}
+                {(Object.keys(UNIT_LABEL) as CreditUnit[]).map(u => <option key={u} value={u}>{t(UNIT_LABEL[u])}</option>)}
               </select>
             </div>
             <div className="field">
-              <label>重置/到期日（可选）</label>
+              <label>{t('重置/到期日（可选）')}</label>
               <input className="input" type="date" value={resetAt} onChange={e => setResetAt(e.target.value)} />
             </div>
           </div>
           <div className="field-row">
             <div className="field">
-              <label>总额度</label>
-              <input className="input" type="number" min="0" placeholder="如 100" value={total} onChange={e => setTotal(e.target.value)} />
+              <label>{t('总额度')}</label>
+              <input className="input" type="number" min="0" placeholder={t('如 100')} value={total} onChange={e => setTotal(e.target.value)} />
             </div>
             <div className="field">
-              <label>已使用</label>
-              <input className="input" type="number" min="0" placeholder="如 20" value={used} onChange={e => setUsed(e.target.value)} />
+              <label>{t('已使用')}</label>
+              <input className="input" type="number" min="0" placeholder={t('如 20')} value={used} onChange={e => setUsed(e.target.value)} />
             </div>
           </div>
           {valid && totalNum > 0 && (
             <div style={{ background: 'var(--panel-2)', borderRadius: 8, padding: 12 }}>
               <div className="row between" style={{ fontSize: 12.5, marginBottom: 8 }}>
-                <span style={{ color: 'var(--text-2)' }}>剩余 <b style={{ color: 'var(--text)' }}>{Math.max(0, totalNum - usedNum).toLocaleString()} {UNIT_LABEL[unit]}</b></span>
-                <span className={`tag ${pct >= 90 ? 'red' : pct >= 70 ? 'amber' : 'green'}`}>已用 {pct}%</span>
+                <span style={{ color: 'var(--text-2)' }}>{t('剩余')} <b style={{ color: 'var(--text)' }}>{Math.max(0, totalNum - usedNum).toLocaleString()} {t(UNIT_LABEL[unit])}</b></span>
+                <span className={`tag ${pct >= 90 ? 'red' : pct >= 70 ? 'amber' : 'green'}`}>{t('已用 {pct}%', { pct })}</span>
               </div>
               <div className="progress"><div style={{ width: `${Math.max(pct, 2)}%`, background: pct >= 90 ? 'var(--red)' : pct >= 70 ? 'var(--amber)' : 'var(--green)' }} /></div>
             </div>
           )}
-          <div className="desc" style={{ marginTop: 10 }}>来源：手动录入 {existing ? `· 上次更新 ${existing.capturedAt.slice(0, 10)}` : ''}</div>
+          <div className="desc" style={{ marginTop: 10 }}>{t('来源：手动录入')}{existing ? t(' · 上次更新 {date}', { date: existing.capturedAt.slice(0, 10) }) : ''}</div>
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" disabled={!valid} onClick={() => onSave({
             unit, used: usedNum, total: totalNum,
             resetAt: resetAt ? new Date(`${resetAt}T23:59:59`).toISOString() : undefined,
             source: 'manual',
-          })}>保存</button>
+          })}>{t('保存')}</button>
         </div>
       </div>
     </div>
@@ -4167,61 +4175,61 @@ function UsageModal({ accounts, projectSuggestions: projSug, onClose, onSave }: 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <div className="modal-head"><h3>添加用量记录</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('添加用量记录')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           {accounts.length === 0 ? (
-            <div style={{ color: 'var(--text-3)', fontSize: 13 }}>请先添加一个账户后再录入用量。</div>
+            <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('请先添加一个账户后再录入用量。')}</div>
           ) : (
             <>
               <div className="field-row">
                 <div className="field">
-                  <label>账户</label>
+                  <label>{t('账户')}</label>
                   <select className="select" value={accountId} onChange={e => setAccountId(e.target.value)}>
                     {accounts.map(a => <option key={a.id} value={a.id}>{a.label} · {PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId}</option>)}
                   </select>
                 </div>
                 <div className="field">
-                  <label>日期</label>
+                  <label>{t('日期')}</label>
                   <input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} />
                 </div>
               </div>
               <div className="field-row">
                 <div className="field">
-                  <label>输入 Tokens</label>
+                  <label>{t('输入 Tokens')}</label>
                   <input className="input" type="number" min="0" value={inputTokens} onChange={e => setInputTokens(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label>输出 Tokens</label>
+                  <label>{t('输出 Tokens')}</label>
                   <input className="input" type="number" min="0" value={outputTokens} onChange={e => setOutputTokens(e.target.value)} />
                 </div>
               </div>
               <div className="field-row">
                 <div className="field">
-                  <label>估算费用（元）</label>
+                  <label>{t('估算费用（元）')}</label>
                   <input className="input" type="number" min="0" step="0.001" value={estimatedCost} onChange={e => setEstimatedCost(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label>模型（可选）</label>
-                  <input className="input" placeholder="如 gpt-4o" value={model} onChange={e => setModel(e.target.value)} />
+                  <label>{t('模型（可选）')}</label>
+                  <input className="input" placeholder={t('如 gpt-4o')} value={model} onChange={e => setModel(e.target.value)} />
                 </div>
               </div>
               <div className="field">
-                <label>项目标签（可选）</label>
-                <input className="input" list="acm-project-list" placeholder="如：短视频项目 / 客户 A（用量页可按项目汇总）" value={project} onChange={e => setProject(e.target.value)} />
+                <label>{t('项目标签（可选）')}</label>
+                <input className="input" list="acm-project-list" placeholder={t('如：短视频项目 / 客户 A（用量页可按项目汇总）')} value={project} onChange={e => setProject(e.target.value)} />
                 <datalist id="acm-project-list">{(projSug ?? []).map(p => <option key={p} value={p} />)}</datalist>
               </div>
-              <div className="desc">费用为本地估算，以平台官方账单为准。</div>
+              <div className="desc">{t('费用为本地估算，以平台官方账单为准。')}</div>
             </>
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" disabled={!valid} onClick={() => onSave({
             accountId, date,
             inputTokens: Number(inputTokens), outputTokens: Number(outputTokens),
             estimatedCost: Number(estimatedCost), model: model.trim() || undefined,
             project: project.trim() || undefined,
-          })}>保存记录</button>
+          })}>{t('保存记录')}</button>
         </div>
       </div>
     </div>
@@ -4236,24 +4244,24 @@ function ExportModal({ state, onClose, onExport }: {
   const [dir, setDir] = useState<string | null>(null)
   const [picking, setPicking] = useState(false)
   const options: { fmt: ExportFormat; icon: React.ReactNode; title: string; desc: string; tag?: string }[] = [
-    { fmt: 'json', icon: <Download size={18} />, title: 'JSON 完整备份', tag: '推荐',
-      desc: `全部数据（${state.accounts.length} 账户 / ${state.quotas.length} 额度 / ${state.usage.length} 用量），可完整导回，不含密钥` },
-    { fmt: 'accounts-csv', icon: <KeyRound size={18} />, title: '账户 CSV',
-      desc: `平台、名称、模式、API 地址、备注（${state.accounts.length} 条），Excel 可直接打开，不含密钥` },
-    { fmt: 'quotas-csv', icon: <Wallet size={18} />, title: '额度 CSV',
-      desc: '每个账户最新额度（单位/总额/已用/重置日），可导回匹配账户' },
-    { fmt: 'usage-csv', icon: <BarChart3 size={18} />, title: '用量 CSV',
-      desc: `日期、账户、输入/输出 Tokens、费用、模型（${state.usage.length} 条），可导回` },
+    { fmt: 'json', icon: <Download size={18} />, title: t('JSON 完整备份'), tag: t('推荐'),
+      desc: t('全部数据（{a} 账户 / {q} 额度 / {u} 用量），可完整导回，不含密钥', { a: state.accounts.length, q: state.quotas.length, u: state.usage.length }) },
+    { fmt: 'accounts-csv', icon: <KeyRound size={18} />, title: t('账户 CSV'),
+      desc: t('平台、名称、模式、API 地址、备注（{n} 条），Excel 可直接打开，不含密钥', { n: state.accounts.length }) },
+    { fmt: 'quotas-csv', icon: <Wallet size={18} />, title: t('额度 CSV'),
+      desc: t('每个账户最新额度（单位/总额/已用/重置日），可导回匹配账户') },
+    { fmt: 'usage-csv', icon: <BarChart3 size={18} />, title: t('用量 CSV'),
+      desc: t('日期、账户、输入/输出 Tokens、费用、模型（{n} 条），可导回', { n: state.usage.length }) },
   ]
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 520 }}>
-        <div className="modal-head"><h3>选择导出格式</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('选择导出格式')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           {/* 保存位置选择（桌面端可选目录，Web 端走浏览器下载） */}
           <div className="export-dir-box">
             <div className="row" style={{ gap: 8 }}>
-              <span style={{ fontSize: 12.5, color: 'var(--text-2)', flex: 1 }}>保存位置</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text-2)', flex: 1 }}>{t('保存位置')}</span>
               {isDesktopApp() && <button className="btn sm" disabled={picking} onClick={async () => {
                 setPicking(true)
                 try {
@@ -4264,12 +4272,12 @@ function ExportModal({ state, onClose, onExport }: {
                   if (picked) setDir(picked)
                 } catch { /* 用户取消或不支持 */ }
                 finally { setPicking(false) }
-              }}><Download size={13} style={{ transform: 'rotate(180deg)' }} /> {picking ? '选择中…' : '选择文件夹'}</button>}
+              }}><Download size={13} style={{ transform: 'rotate(180deg)' }} /> {picking ? t('选择中…') : t('选择文件夹')}</button>}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6, wordBreak: 'break-all' }}>
-              {dir ? `将保存到：${dir}` : (isDesktopApp() ? '未选择 → 使用系统默认下载目录' : '浏览器下载 → 由浏览器决定保存位置')}
+              {dir ? t('将保存到：{dir}', { dir }) : (isDesktopApp() ? t('未选择 → 使用系统默认下载目录') : t('浏览器下载 → 由浏览器决定保存位置'))}
             </div>
-            {dir && <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setDir(null)}>清除，改回默认位置</button>}
+            {dir && <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setDir(null)}>{t('清除，改回默认位置')}</button>}
           </div>
           <div className="provider-picker" style={{ gridTemplateColumns: '1fr', maxHeight: 'none', gap: 8 }}>
             {options.map(o => (
@@ -4283,7 +4291,7 @@ function ExportModal({ state, onClose, onExport }: {
             ))}
           </div>
         </div>
-        <div className="modal-foot"><button className="btn" onClick={onClose}>取消</button></div>
+        <div className="modal-foot"><button className="btn" onClick={onClose}>{t('取消')}</button></div>
       </div>
     </div>
   )
@@ -4300,9 +4308,9 @@ function CsvImportModal({ preview, current, onClose, onImport }: {
       ? preview.quotas.quotas.length
       : preview.events.length
   const rows: string[][] = preview.kind === 'accounts'
-    ? preview.accounts.accounts.slice(0, 8).map(a => [a.label, PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId, MODE_LABEL[a.mode], a.note ?? ''])
+    ? preview.accounts.accounts.slice(0, 8).map(a => [a.label, PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId, t(MODE_LABEL[a.mode]), a.note ?? ''])
     : preview.kind === 'quotas'
-      ? preview.quotas.quotas.slice(0, 8).map(q => [current.accounts.find(a => a.id === q.accountId)?.label ?? q.accountId, UNIT_LABEL[q.unit], String(q.total), String(q.used)])
+      ? preview.quotas.quotas.slice(0, 8).map(q => [current.accounts.find(a => a.id === q.accountId)?.label ?? q.accountId, t(UNIT_LABEL[q.unit]), String(q.total), String(q.used)])
       : preview.events.slice(0, 8).map(e => [e.date, current.accounts.find(a => a.id === e.accountId)?.label ?? e.accountId, String(e.inputTokens), String(e.outputTokens), `¥${e.estimatedCost}`])
   const heads = preview.kind === 'accounts' ? ['名称', '平台', '模式', '备注']
     : preview.kind === 'quotas' ? ['账户', '单位', '总额', '已用']
@@ -4310,30 +4318,30 @@ function CsvImportModal({ preview, current, onClose, onImport }: {
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 560 }}>
-        <div className="modal-head"><h3>导入{title} CSV</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('导入{title} CSV', { title: t(title) })}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
-          <div style={{ fontSize: 13, marginBottom: 12 }}>识别到 <b>{count}</b> 条{title}记录，将追加到现有数据（不会删除已有内容）：</div>
+          <div style={{ fontSize: 13, marginBottom: 12 }}>{t('识别到 {count} 条{title}记录，将追加到现有数据（不会删除已有内容）：', { count, title: t(title) })}</div>
           {count === 0 ? (
-            <div style={{ color: 'var(--text-3)', fontSize: 12.5, padding: 20, textAlign: 'center' }}>未解析到有效数据行，请检查表头格式</div>
+            <div style={{ color: 'var(--text-3)', fontSize: 12.5, padding: 20, textAlign: 'center' }}>{t('未解析到有效数据行，请检查表头格式')}</div>
           ) : (
             <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
               <table className="key-table" style={{ fontSize: 12 }}>
-                <thead><tr>{heads.map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{heads.map(h => <th key={h}>{t(h)}</th>)}</tr></thead>
                 <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
               </table>
             </div>
           )}
-          {count > 8 && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 8 }}>仅预览前 8 条，共 {count} 条</div>}
+          {count > 8 && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 8 }}>{t('仅预览前 8 条，共 {count} 条', { count })}</div>}
           {preview.kind === 'accounts' && preview.accounts.unknownProviders.length > 0 && (
-            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>未识别平台：{preview.accounts.unknownProviders.join('、')}（将按原 id 保存）</div>
+            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>{t('未识别平台：{list}（将按原 id 保存）', { list: preview.accounts.unknownProviders.join('、') })}</div>
           )}
           {preview.kind === 'quotas' && preview.quotas.unmatched.length > 0 && (
-            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>未匹配账户：{preview.quotas.unmatched.slice(0, 5).join('、')}{preview.quotas.unmatched.length > 5 ? '…' : ''}（这些行已跳过）</div>
+            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>{t('未匹配账户：{list}{more}（这些行已跳过）', { list: preview.quotas.unmatched.slice(0, 5).join('、'), more: preview.quotas.unmatched.length > 5 ? '…' : '' })}</div>
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={count === 0} onClick={() => onImport(count)}>确认导入 {count} 条</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
+          <button className="btn primary" disabled={count === 0} onClick={() => onImport(count)}>{t('确认导入 {count} 条', { count })}</button>
         </div>
       </div>
     </div>
@@ -4352,7 +4360,7 @@ function ServiceImportModal({ entries, current, sessionPwd, onClose, onImport }:
   const known = new Set(current.accounts.map(a => `${a.providerId}|${a.label}`))
   const dupCount = entries.filter(e => known.has(`${e.providerId}|${e.label}`)).length
 
-  const maskKey = (k: string) => k.length > 12 ? `${k.slice(0, 6)}…${k.slice(-4)}` : (k ? '••••' : '（空）')
+  const maskKey = (k: string) => k.length > 12 ? `${k.slice(0, 6)}…${k.slice(-4)}` : (k ? '••••' : t('（空）'))
 
   const doImport = async () => {
     setErr('')
@@ -4396,15 +4404,15 @@ function ServiceImportModal({ entries, current, sessionPwd, onClose, onImport }:
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 660 }}>
-        <div className="modal-head"><h3>导入 API 服务清单</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('导入 API 服务清单')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 10 }}>
-            识别到 <b>{entries.length}</b> 个服务（含密钥）。请选择要导入的项，密钥将用主密码 <b>AES-256-GCM 加密</b>后仅存本机。
+            {t('识别到 {n} 个服务（含密钥）。请选择要导入的项，密钥将用主密码 AES-256-GCM 加密后仅存本机。', { n: entries.length })}
           </div>
-          {dupCount > 0 && <div style={{ fontSize: 11.5, color: 'var(--amber)', marginBottom: 8 }}>{dupCount} 项与现有账户重名，将自动跳过。</div>}
+          {dupCount > 0 && <div style={{ fontSize: 11.5, color: 'var(--amber)', marginBottom: 8 }}>{t('{n} 项与现有账户重名，将自动跳过。', { n: dupCount })}</div>}
           <div style={{ maxHeight: 280, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
             <table className="key-table" style={{ fontSize: 12 }}>
-              <thead><tr><th style={{ width: 34 }}></th><th>名称 / 用途</th><th>平台</th><th>API Key</th><th>额度</th></tr></thead>
+              <thead><tr><th style={{ width: 34 }}></th><th>{t('名称 / 用途')}</th><th>{t('平台')}</th><th>API Key</th><th>{t('额度')}</th></tr></thead>
               <tbody>
                 {entries.map((e, i) => {
                   const p = PROVIDER_MAP[e.providerId]
@@ -4423,15 +4431,15 @@ function ServiceImportModal({ entries, current, sessionPwd, onClose, onImport }:
             </table>
           </div>
           <div className="field" style={{ marginTop: 14 }}>
-            <label>主密码（用于加密密钥{isVaultInitialized() ? '' : ' · 保险箱尚未创建'}）</label>
-            <input className="input" type="text" placeholder="输入主密码" value={pwd} onChange={e => setPwd(e.target.value)} />
+            <label>{t('主密码（用于加密密钥{extra}）', { extra: isVaultInitialized() ? '' : t(' · 保险箱尚未创建') })}</label>
+            <input className="input" type="text" placeholder={t('输入主密码')} value={pwd} onChange={e => setPwd(e.target.value)} />
           </div>
-          {err && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{err}</div>}
+          {err && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{t(err)}</div>}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={onClose}>{t('取消')}</button>
           <button className="btn primary" disabled={busy || selected.size === 0} onClick={() => void doImport()}>
-            {busy ? '加密导入中…' : `安全导入 ${selected.size} 项`}
+            {busy ? t('加密导入中…') : t('安全导入 {n} 项', { n: selected.size })}
           </button>
         </div>
       </div>
@@ -4446,29 +4454,29 @@ function ImportModal({ incoming, current, onClose, onImport }: {
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <div className="modal-head"><h3>导入数据</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>{t('导入数据')}</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-body">
           <div className="field">
-            <label>导入方式</label>
+            <label>{t('导入方式')}</label>
             <div className="provider-picker" style={{ gridTemplateColumns: '1fr', maxHeight: 'none' }}>
               <button className="provider-opt" style={{ padding: 14 }} onClick={() => onImport('merge')}>
                 <RefreshCw size={18} style={{ color: 'var(--primary)' }} />
                 <div style={{ textAlign: 'left' }}>
-                  <div className="p-name">合并（推荐）</div>
-                  <div className="desc" style={{ marginTop: 4 }}>保留当前数据，追加 {newIds} 个新账户；相同 id 不重复</div>
+                  <div className="p-name">{t('合并（推荐）')}</div>
+                  <div className="desc" style={{ marginTop: 4 }}>{t('保留当前数据，追加 {n} 个新账户；相同 id 不重复', { n: newIds })}</div>
                 </div>
               </button>
               <button className="provider-opt" style={{ padding: 14 }} onClick={() => onImport('replace')}>
                 <Trash2 size={18} style={{ color: 'var(--red)' }} />
                 <div style={{ textAlign: 'left' }}>
-                  <div className="p-name">覆盖</div>
-                  <div className="desc" style={{ marginTop: 4 }}>清空当前全部数据，仅保留备份内容（不可撤销）</div>
+                  <div className="p-name">{t('覆盖')}</div>
+                  <div className="desc" style={{ marginTop: 4 }}>{t('清空当前全部数据，仅保留备份内容（不可撤销）')}</div>
                 </div>
               </button>
             </div>
           </div>
         </div>
-        <div className="modal-foot"><button className="btn" onClick={onClose}>取消</button></div>
+        <div className="modal-foot"><button className="btn" onClick={onClose}>{t('取消')}</button></div>
       </div>
     </div>
   )
@@ -4484,13 +4492,13 @@ function Pager({ total, page, pageSize, onChange }: {
   const cur = Math.min(page, pages)
   return (
     <div className="keys-pagination">
-      <span>共 {total} 条 · 第 {cur}/{pages} 页</span>
+      <span>{t('共 {total} 条 · 第 {cur}/{pages} 页', { total, cur, pages })}</span>
       <div className="row" style={{ gap: 6 }}>
-        <button className="btn sm" disabled={cur <= 1} onClick={() => onChange(Math.max(1, cur - 1))}>上一页</button>
+        <button className="btn sm" disabled={cur <= 1} onClick={() => onChange(Math.max(1, cur - 1))}>{t('上一页')}</button>
         {Array.from({ length: pages }, (_, i) => i + 1).map(n => (
           <button key={n} className={`btn sm ${n === cur ? 'primary' : ''}`} onClick={() => onChange(n)}>{n}</button>
         ))}
-        <button className="btn sm" disabled={cur >= pages} onClick={() => onChange(Math.min(pages, cur + 1))}>下一页</button>
+        <button className="btn sm" disabled={cur >= pages} onClick={() => onChange(Math.min(pages, cur + 1))}>{t('下一页')}</button>
       </div>
     </div>
   )
@@ -4504,14 +4512,14 @@ function SelectionBar({ selectedCount, totalOnPage, allSelected, onToggleAll, on
   if (totalOnPage === 0 && selectedCount === 0) return null
   return (
     <div className="selection-bar">
-      <label className="selection-all" title="全选/取消本页">
-        <input type="checkbox" checked={allSelected} onChange={onToggleAll} /> 全选本页
+      <label className="selection-all" title={t('全选/取消本页')}>
+        <input type="checkbox" checked={allSelected} onChange={onToggleAll} /> {t('全选本页')}
       </label>
-      <span className="selection-count">已选 <b>{selectedCount}</b> 项</span>
+      <span className="selection-count">{t('已选')} <b>{selectedCount}</b> {t('项')}</span>
       {selectedCount > 0 && (
         <>
           {actions}
-          <button className="btn sm ghost" onClick={onClear}>清空选择</button>
+          <button className="btn sm ghost" onClick={onClear}>{t('清空选择')}</button>
         </>
       )}
     </div>
@@ -4536,7 +4544,7 @@ function Toggle({ checked, onChange, danger }: { checked: boolean; onChange: (v:
       role="switch" aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`jelly-toggle ${checked ? 'is-on' : ''} ${danger ? 'danger' : ''}`}
-      aria-label={checked ? '关闭' : '开启'}
+      aria-label={checked ? t('关闭') : t('开启')}
     >
       <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
     </button>
@@ -4551,11 +4559,11 @@ function SettingsSection({ title, desc, icon: Icon, tone = 'indigo', children }:
   const [open, setOpen] = useState(true)
   return (
     <section className={`set-card ${open ? '' : 'collapsed'}`}>
-      <div className="set-card-head collapsible" onClick={() => setOpen(o => !o)} title={open ? '点击收起' : '点击展开'}>
+      <div className="set-card-head collapsible" onClick={() => setOpen(o => !o)} title={open ? t('点击收起') : t('点击展开')}>
         {Icon && <span className={`set-card-icon ${tone}`}><Icon size={17} /></span>}
         <div className="set-card-heading">
-          <h3>{title}</h3>
-          {desc && <p>{desc}</p>}
+          <h3>{t(title)}</h3>
+          {desc && <p>{t(desc)}</p>}
         </div>
         <ChevronDown size={16} className={`set-card-chevron ${open ? 'open' : ''}`} />
       </div>
@@ -4569,8 +4577,8 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
   return (
     <div className="settings-row">
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 500 }}>{title}</div>
-        {desc && <div className="settings-row-desc" style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 3, lineHeight: 1.5 }}>{desc}</div>}
+        <div style={{ fontSize: 13, fontWeight: 500 }}>{t(title)}</div>
+        {desc && <div className="settings-row-desc" style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 3, lineHeight: 1.5 }}>{t(desc)}</div>}
       </div>
       <div style={{ flexShrink: 0 }}>{children}</div>
     </div>
@@ -4635,7 +4643,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const doExportBackup = async () => {
     const r = await saveExportFile(`ai-credit-manager-backup-${todayISO()}.json`, buildBackup(state, APP_VERSION))
     if (r.cancelled) return
-    notify(r.ok ? `完整备份已导出到：${r.where}（包含全部数据；密钥为加密密文）` : `导出失败：${r.error ?? '未知错误'}`)
+    notify(r.ok ? t('完整备份已导出到：{where}（包含全部数据；密钥为加密密文）', { where: r.where ?? '' }) : t('导出失败：{err}', { err: r.error ?? t('未知错误') }))
   }
   const onBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -4662,7 +4670,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     let perm = await getNotificationPermission()
     if (perm !== 'granted') { perm = await requestNotificationPermission(); setNotifyPerm(perm) }
     if (perm !== 'granted') { notify('未获得通知权限，无法发送测试通知'); return }
-    const ok = await showNotification('AI 积分管家', '这是一条测试通知，提醒功能工作正常。', 'acm-test')
+    const ok = await showNotification(t('AI 积分管家'), t('这是一条测试通知，提醒功能工作正常。'), 'acm-test')
     notify(ok ? '测试通知已发送，请留意系统通知' : '当前平台不支持系统通知')
   }
   // ---- 桌面外壳（仅 Tauri 桌面端）：开机自启开关 ----
@@ -4695,9 +4703,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       if (!models) { notify('没有可注册的模型：需要已配 Key、且平台在引擎目录里的账户'); setGwBusy(false); return }
       await gatewaySetRoutes(routes)
       const msg = await gatewayStart(s.gatewayPort || 8787, tok)
-      notify(`${msg} · 已注册 ${models} 个模型`)
+      notify(t('{msg} · 已注册 {n} 个模型', { msg, n: models }))
       await refreshGw()
-    } catch (e) { notify(`开启网关失败：${(e as Error)?.message ?? e}`) }
+    } catch (e) { notify(t('开启网关失败：{err}', { err: (e as Error)?.message ?? e })) }
     setGwBusy(false)
   }
   const gwStopFlow = async () => {
@@ -4726,12 +4734,12 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       if (key === ' ') key = 'Space'
       else if (key.length === 1) key = key.toUpperCase()
       else if (/^f\d{1,2}$/i.test(key)) key = key.toUpperCase()
-      else { notify(`主键「${key}」暂不支持，请用字母、数字、空格或 F 键`); return }
+      else { notify(t('主键「{key}」暂不支持，请用字母、数字、空格或 F 键', { key })); return }
       const accel = [...mods, key].join('+')
       if ((recording === 'ai' ? accelMini : accelAi) === accel) { notify('与另一个快捷键冲突，换个组合'); return }
       onChange(recording === 'ai' ? { shortcutAi: accel } : { shortcutMini: accel })
       setRecording(null)
-      notify(`已设为 ${fmtAccel(accel)}`)
+      notify(t('已设为 {accel}', { accel: fmtAccel(accel) }))
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -4809,17 +4817,17 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       setManagedKeys(prev => ({ ...prev, [oldKey]: false }))
       notifyLocalServiceChanged(oldKey, false)
       const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : 'LM Studio'
-      if (r.ok) notify(`已关闭 ${oldName} 以释放内存（${r.message}）`)
+      if (r.ok) notify(t('已关闭 {name} 以释放内存（{msg}）', { name: oldName, msg: r.message }))
     }
     if (enabled) {
       // 开启：若端口已有服务在跑则直接复用，否则拉起进程（LM Studio 无 CLI，跳过）
       const already = await checkLocalService(key)
       if (already) {
         setServiceStatus(prev => ({ ...prev, [key]: already }))
-        notify(`${name} 服务已在运行，已直接启用（${already}）`)
+        notify(t('{name} 服务已在运行，已直接启用（{already}）', { name, already }))
       } else if (key !== 'lmstudio') {
         const r = await startLocalService(key)
-        notify(`${name}：${r.message}`)
+        notify(t('{name}：{msg}', { name, msg: r.message }))
         if (r.ok) {
           let tries = 0
           const poll = window.setInterval(() => {
@@ -4830,12 +4838,12 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           }, 2000)
         }
       } else {
-        notify(`${name} 无 CLI 后台启动方式，请在 LM Studio 应用内手动开启本地服务器`)
+        notify(t('{name} 无 CLI 后台启动方式，请在 LM Studio 应用内手动开启本地服务器', { name }))
       }
     } else {
       // 关闭：停止端口上的进程（含外部启动的），真正释放端口与内存
       const r = await stopServiceByPort(key)
-      notify(`${name}：${r.ok ? r.message : `停止失败：${r.message}`}`)
+      notify(t('{name}：{msg}', { name, msg: r.ok ? r.message : t('停止失败：{msg}', { msg: r.message }) }))
       setServiceStatus(prev => ({ ...prev, [key]: '' }))
       setManagedKeys(prev => ({ ...prev, [key]: false }))
     }
@@ -4862,28 +4870,37 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       <div className="set-hero">
         <div className="set-hero-mark"><Settings size={26} /></div>
         <div className="set-hero-text">
-          <h2>设置中心</h2>
-          <p>管理你的账户、偏好与数据安全 · 所有设置仅保存在此设备</p>
+          <h2>{t('设置中心')}</h2>
+          <p>{t('管理你的账户、偏好与数据安全 · 所有设置仅保存在此设备')}</p>
         </div>
         <div className="set-hero-badges">
-          <span className={`set-badge ${cloudUser ? 'on' : ''}`}><Cloud size={13} /> {cloudUser ? '云同步已开启' : '仅本机存储'}</span>
+          <span className={`set-badge ${cloudUser ? 'on' : ''}`}><Cloud size={13} /> {cloudUser ? t('云同步已开启') : t('仅本机存储')}</span>
           <span className="set-badge">v{APP_VERSION}</span>
         </div>
       </div>
 
       <nav className="set-tabs">
-        <button className={setTab === 'general' ? 'active' : ''} onClick={() => setSetTab('general')}><Palette size={15} /> 偏好设置</button>
-        <button className={setTab === 'data' ? 'active' : ''} onClick={() => setSetTab('data')}><Database size={15} /> 账户与数据</button>
-        <button className={setTab === 'security' ? 'active' : ''} onClick={() => setSetTab('security')}><ShieldCheck size={15} /> 安全隐私</button>
+        <button className={setTab === 'general' ? 'active' : ''} onClick={() => setSetTab('general')}><Palette size={15} /> {t('偏好设置')}</button>
+        <button className={setTab === 'data' ? 'active' : ''} onClick={() => setSetTab('data')}><Database size={15} /> {t('账户与数据')}</button>
+        <button className={setTab === 'security' ? 'active' : ''} onClick={() => setSetTab('security')}><ShieldCheck size={15} /> {t('安全隐私')}</button>
       </nav>
 
       <div className="set-content" key={setTab}>
         {setTab === 'general' && <>
           <SettingsSection title="外观设计" desc="界面风格与动态效果" icon={Palette} tone="indigo">
+            <SettingsRow title="语言" desc="界面显示语言，切换立即生效并同步到其他设备">
+              <select className="select" value={(s.language as Lang | undefined) ?? 'zh-CN'} onChange={e => onChange({ language: e.target.value as Lang })}>
+                <option value="zh-CN">简体中文</option>
+                <option value="zh-TW">繁體中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+            </SettingsRow>
             <SettingsRow title="主题" desc="深色模式护眼省电；跟随系统时随系统外观自动切换">
               <div className="seg-control">
                 {([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] as const).map(([v, label]) => (
-                  <button key={v} className={`seg-btn ${(s.theme ?? 'system') === v ? 'active' : ''}`} onClick={() => onChange({ theme: v })}>{label}</button>
+                  <button key={v} className={`seg-btn ${(s.theme ?? 'system') === v ? 'active' : ''}`} onClick={() => onChange({ theme: v })}>{t(label)}</button>
                 ))}
               </div>
             </SettingsRow>
@@ -4924,19 +4941,19 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           {!phoneShell && (<SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">
             <div className="local-mem-info">
               <span className="local-mem-badge">
-                {memDetected ? `已检测物理内存 ${memGb.toFixed(1)} GB` : '未获取到系统内存（请在下方选择档位）'}
+                {memDetected ? t('已检测物理内存 {gb} GB', { gb: memGb.toFixed(1) }) : t('未获取到系统内存（请在下方选择档位）')}
               </span>
-              <span className="local-mem-tier">当前档位：{memTier}G · 最多同时开启 {maxServicesForTier(memTier)} 个</span>
+              <span className="local-mem-tier">{t('当前档位：{tier}G · 最多同时开启 {n} 个', { tier: memTier, n: maxServicesForTier(memTier) })}</span>
             </div>
-            <div className="local-mem-advice">{tierAdvice(memTier)}</div>
+            <div className="local-mem-advice">{t(tierAdvice(memTier))}</div>
             {!memDetected && (
               <div className="local-mem-override">
-                <span>内存档位：</span>
+                <span>{t('内存档位：')}</span>
                 <select className="select" style={{ width: 110 }} value={memTier}
                   onChange={e => onChange({ memoryTierOverride: Number(e.target.value) as MemoryTier })}>
-                  <option value={8}>8G 及以下</option>
-                  <option value={16}>16G 左右</option>
-                  <option value={32}>16G 以上</option>
+                  <option value={8}>{t('8G 及以下')}</option>
+                  <option value={16}>{t('16G 左右')}</option>
+                  <option value={32}>{t('16G 以上')}</option>
                 </select>
               </div>
             )}
@@ -4950,40 +4967,40 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <div className="local-service-row" key={key}>
                   <div className="local-service-main">
                     <div className="local-service-title">
-                      <span>允许 App 使用 {label}</span>
+                      <span>{t('允许 App 使用 {label}', { label })}</span>
                       <span className={`local-status-badge ${enabled && running ? 'running' : ''}`}>
-                        {!enabled ? '已停用' : status === undefined || status === null ? '未检测' : running ? (managed ? '运行中 · App启动' : '运行中 · 外部') : '未运行'}
+                        {!enabled ? t('已停用') : status === undefined || status === null ? t('未检测') : running ? (managed ? t('运行中 · App启动') : t('运行中 · 外部')) : t('未运行')}
                       </span>
                     </div>
                     <div className="local-service-desc">
                       {!enabled
-                        ? '已停用：端口进程已停止、内存已释放。打开开关将重新启动服务。'
+                        ? t('已停用：端口进程已停止、内存已释放。打开开关将重新启动服务。')
                         : running
-                          ? `服务地址 ${status} · ${managed ? '由本 App 启动' : '由你或其他软件启动'}`
-                          : '本机后台服务未启动，打开开关或点「启动」将拉起服务进程（不开图形界面）'}
+                          ? t('服务地址 {status} · {by}', { status, by: managed ? t('由本 App 启动') : t('由你或其他软件启动') })
+                          : t('本机后台服务未启动，打开开关或点「启动」将拉起服务进程（不开图形界面）')}
                     </div>
                   </div>
                   <div className="local-service-actions">
                     {enabled && !running && (
                       <button className="btn sm" disabled={busyKey === key}
-                        onClick={() => void onStartService(key)} title="仅启动后台服务进程，不打开 GUI">
-                        {busyKey === key ? '处理中…' : '启动'}
+                        onClick={() => void onStartService(key)} title={t('仅启动后台服务进程，不打开 GUI')}>
+                        {busyKey === key ? t('处理中…') : t('启动')}
                       </button>
                     )}
                     {enabled && running && managed && (
                       <button className="btn sm" disabled={busyKey === key}
-                        onClick={() => void onStopService(key)} title="停止由本 App 启动的进程">
-                        {busyKey === key ? '处理中…' : '停止'}
+                        onClick={() => void onStopService(key)} title={t('停止由本 App 启动的进程')}>
+                        {busyKey === key ? t('处理中…') : t('停止')}
                       </button>
                     )}
-                    {enabled && running && <button className="btn sm" onClick={refreshServiceStatus} title="刷新运行状态">刷新</button>}
+                    {enabled && running && <button className="btn sm" onClick={refreshServiceStatus} title={t('刷新运行状态')}>{t('刷新')}</button>}
                     <Toggle checked={enabled} onChange={() => void onToggleLocalService(key)} />
                   </div>
                 </div>
               )
             })}
             <div className="local-mem-note">
-              「允许 App 使用」开启会拉起服务进程，关闭会停止该服务端口上的进程（含其他软件启动的）并释放内存；「启动/停止」单独管理服务进程（不开图形界面、不改系统自启）。LM Studio 无 CLI 后台启动方式，需在其应用内手动开启。
+              {t('「允许 App 使用」开启会拉起服务进程，关闭会停止该服务端口上的进程（含其他软件启动的）并释放内存；「启动/停止」单独管理服务进程（不开图形界面、不改系统自启）。LM Studio 无 CLI 后台启动方式，需在其应用内手动开启。')}
             </div>
           </SettingsSection>)}
 
@@ -4991,14 +5008,14 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="签到提醒" desc="在看板与侧栏显示 AI Agent 工具今日待签到数量">
               <Toggle checked={s.checkinReminder} onChange={v => onChange({ checkinReminder: v })} />
             </SettingsRow>
-            <SettingsRow title="耗尽预警阈值" desc={`额度预计剩余不超过 ${s.alertDays} 天时计入"即将耗尽"`}>
+            <SettingsRow title="耗尽预警阈值" desc={t('额度预计剩余不超过 {days} 天时计入"即将耗尽"', { days: s.alertDays })}>
               <select className="select" style={{ width: 90 }} value={s.alertDays} onChange={e => onChange({ alertDays: Number(e.target.value) })}>
-                {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{d} 天</option>)}
+                {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{t('{d} 天', { d })}</option>)}
               </select>
             </SettingsRow>
             <SettingsRow title="默认额度单位" desc="新账户录入额度时的预选单位">
               <select className="select" style={{ width: 110 }} value={s.defaultUnit} onChange={e => onChange({ defaultUnit: e.target.value as CreditUnit })}>
-                {(Object.keys(UNIT_LABEL) as CreditUnit[]).map(u => <option key={u} value={u}>{UNIT_LABEL[u]}</option>)}
+                {(Object.keys(UNIT_LABEL) as CreditUnit[]).map(u => <option key={u} value={u}>{t(UNIT_LABEL[u])}</option>)}
               </select>
             </SettingsRow>
             <SettingsRow title="每月预算" desc="人民币，超出 90% 时提示">
@@ -5019,7 +5036,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   <Toggle checked={np.checkin} onChange={v => patchNotify({ checkin: v })} />
                 </div>
               </SettingsRow>
-              <SettingsRow title="到期提醒" desc={`订阅/额度在 ${s.alertDays} 天内到期时提醒`}>
+              <SettingsRow title="到期提醒" desc={t('订阅/额度在 {days} 天内到期时提醒', { days: s.alertDays })}>
                 <Toggle checked={np.expiry} onChange={v => patchNotify({ expiry: v })} />
               </SettingsRow>
               <SettingsRow title="额度告急提醒" desc="按当前用量预测，账户额度即将耗尽时提醒">
@@ -5043,7 +5060,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <Toggle checked={np.monthlyReport} onChange={v => patchNotify({ monthlyReport: v })} />
               </SettingsRow>
               <SettingsRow title="测试通知" desc="立即发送一条测试通知，确认系统能收到">
-                <button className="btn sm" onClick={() => void onTestNotification()}>发送测试</button>
+                <button className="btn sm" onClick={() => void onTestNotification()}>{t('发送测试')}</button>
               </SettingsRow>
             </>}
           </SettingsSection>
@@ -5052,49 +5069,49 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="应用图标显示" desc="仅菜单栏：不在 Dock 显示；仅 Dock：无菜单栏图标，关闭主窗口即退出应用；迷你窗打开后无操作且鼠标移开约 5 秒会自动收起">
               <div style={{ display: 'flex', gap: 6 }}>
                 {([['both', '两者都显示'], ['dock', '仅 Dock'], ['menubar', '仅菜单栏']] as const).map(([v, label]) => (
-                  <button key={v} className={`btn sm ${((s.iconDisplay ?? 'both') === v) ? 'primary' : ''}`} onClick={() => onChange({ iconDisplay: v })}>{label}</button>
+                  <button key={v} className={`btn sm ${((s.iconDisplay ?? 'both') === v) ? 'primary' : ''}`} onClick={() => onChange({ iconDisplay: v })}>{t(label)}</button>
                 ))}
               </div>
             </SettingsRow>
             <SettingsRow title="开机自启（登录系统后常驻菜单栏）" desc="开启后开机自动启动，点菜单栏图标打开迷你窗">
               {autostart === null
-                ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>不可用</span>
+                ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{t('不可用')}</span>
                 : <Toggle checked={autostart} onChange={(v) => void onToggleAutostart(v)} />}
             </SettingsRow>
             <SettingsRow title="全局快捷键" desc="关闭后两个组合键都不再生效（托盘图标与迷你窗不受影响）">
               <Toggle checked={s.shortcutsEnabled ?? true} onChange={v => onChange({ shortcutsEnabled: v })} />
             </SettingsRow>
             <SettingsRow title="快捷键：呼出 AI 助手" desc="在任何应用中按下即可呼出主窗口并打开 AI 助手；点按钮后按新组合录制">
-              <button className="btn sm" onClick={() => setRecording('ai')}>{recording === 'ai' ? '请按下组合键…（Esc 取消）' : fmtAccel(accelAi)}</button>
+              <button className="btn sm" onClick={() => setRecording('ai')}>{recording === 'ai' ? t('请按下组合键…（Esc 取消）') : fmtAccel(accelAi)}</button>
             </SettingsRow>
             <SettingsRow title="快捷键：菜单栏迷你窗" desc="点菜单栏图标也可弹出速览；关闭主窗口后应用仍常驻，退出请用托盘菜单">
-              <button className="btn sm" onClick={() => setRecording('mini')}>{recording === 'mini' ? '请按下组合键…（Esc 取消）' : fmtAccel(accelMini)}</button>
+              <button className="btn sm" onClick={() => setRecording('mini')}>{recording === 'mini' ? t('请按下组合键…（Esc 取消）') : fmtAccel(accelMini)}</button>
             </SettingsRow>
             {(s.shortcutAi || s.shortcutMini) && <SettingsRow title="恢复默认快捷键" desc="回到 ⌘/Ctrl+Shift+A（AI 助手）与 ⌘/Ctrl+Shift+M（迷你窗）">
-              <button className="btn sm" onClick={() => onChange({ shortcutAi: undefined, shortcutMini: undefined })}>恢复默认</button>
+              <button className="btn sm" onClick={() => onChange({ shortcutAi: undefined, shortcutMini: undefined })}>{t('恢复默认')}</button>
             </SettingsRow>}
           </SettingsSection>}
 
           {desktopShell && <SettingsSection title="本地统一网关" desc="在本机开一个 OpenAI 兼容接口（仅 127.0.0.1），Cursor 等工具填这个地址即可用管家里的 Key；按模型名路由，同模型多账户自动故障转移；真实 Key 只存内存，停止即清除" icon={Network} tone="indigo">
-            <SettingsRow title={gwStatus?.running ? `运行中 · ${gwStatus.modelCount} 个模型 / ${gwStatus.routeCount} 条路由 · 已处理 ${gwStatus.requests} 次请求` : '网关未运行'} desc="开启需要先解锁保险箱（解密 Key 注册路由，只存内存不落盘）">
+            <SettingsRow title={gwStatus?.running ? t('运行中 · {models} 个模型 / {routes} 条路由 · 已处理 {reqs} 次请求', { models: gwStatus.modelCount, routes: gwStatus.routeCount, reqs: gwStatus.requests }) : '网关未运行'} desc="开启需要先解锁保险箱（解密 Key 注册路由，只存内存不落盘）">
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="btn sm" onClick={() => void refreshGw()}>刷新</button>
+                <button className="btn sm" onClick={() => void refreshGw()}>{t('刷新')}</button>
                 {gwStatus?.running
-                  ? <button className="btn sm" disabled={gwBusy} onClick={() => void gwStopFlow()}>停止并清除 Key</button>
-                  : <button className="btn sm primary" disabled={gwBusy} onClick={() => void gwStartFlow()}>{gwBusy ? '开启中…' : '开启网关'}</button>}
+                  ? <button className="btn sm" disabled={gwBusy} onClick={() => void gwStopFlow()}>{t('停止并清除 Key')}</button>
+                  : <button className="btn sm primary" disabled={gwBusy} onClick={() => void gwStartFlow()}>{gwBusy ? t('开启中…') : t('开启网关')}</button>}
               </div>
             </SettingsRow>
             <SettingsRow title="接口地址（填到 Cursor 等工具的 OpenAI Base URL）" desc="模型名填引擎目录里的 id（如 deepseek-chat），工具会自动按名路由">
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <code style={{ fontSize: 12 }}>http://127.0.0.1:{s.gatewayPort || 8787}/v1</code>
-                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(`http://127.0.0.1:${s.gatewayPort || 8787}/v1`); notify('接口地址已复制') }}>复制</button>
+                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(`http://127.0.0.1:${s.gatewayPort || 8787}/v1`); notify('接口地址已复制') }}>{t('复制')}</button>
               </div>
             </SettingsRow>
             <SettingsRow title="访问令牌（工具里的 API Key 填这个）" desc="不是你的真实平台 Key；泄露了重新生成即可（生成后需重启网关生效）">
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input className="input" style={{ width: 190 }} value={s.gatewayToken ?? ''} placeholder="尚未生成" onChange={e => onChange({ gatewayToken: e.target.value })} />
-                <button className="btn sm" onClick={() => onChange({ gatewayToken: genGatewayToken() })}>生成</button>
-                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(s.gatewayToken ?? ''); notify('令牌已复制') }}>复制</button>
+                <input className="input" style={{ width: 190 }} value={s.gatewayToken ?? ''} placeholder={t('尚未生成')} onChange={e => onChange({ gatewayToken: e.target.value })} />
+                <button className="btn sm" onClick={() => onChange({ gatewayToken: genGatewayToken() })}>{t('生成')}</button>
+                <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(s.gatewayToken ?? ''); notify('令牌已复制') }}>{t('复制')}</button>
               </div>
             </SettingsRow>
             <SettingsRow title="监听端口" desc="改端口后需停止再重新开启网关">
@@ -5109,23 +5126,23 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
         {setTab === 'data' && <>
           <SettingsSection title="云同步" desc="同一账号跨 Web / 桌面 / 安卓 / 小程序自动同步" icon={Cloud} tone="indigo">
             <SettingsRow
-              title={cloudUser ? `已登录${cloudUser.name ? `：${cloudUser.name}` : ''}` : '未登录（仅本机存储）'}
+              title={cloudUser ? (cloudUser.name ? t('已登录：{name}', { name: cloudUser.name }) : t('已登录')) : '未登录（仅本机存储）'}
               desc={cloudUser
-                ? `数据自动同步 · 最近同步 ${lastSyncAt ? new Date(lastSyncAt).toLocaleString('zh-CN') : '待同步'}`
+                ? t('数据自动同步 · 最近同步 {time}', { time: lastSyncAt ? new Date(lastSyncAt).toLocaleString(locale()) : t('待同步') })
                 : '登录后在任意客户端的数据都会自动同步；不登录也可正常本地使用'}
             >
               {cloudUser ? <div style={{ display: 'flex', gap: 6 }}>
-                <button className="btn sm" onClick={onSync} disabled={syncing}>{syncing ? '同步中…' : '立即同步'}</button>
-                <button className="btn sm ghost" onClick={onLogout}>退出</button>
-              </div> : <button className="btn sm primary" onClick={onLogin}>登录 / 注册</button>}
+                <button className="btn sm" onClick={onSync} disabled={syncing}>{syncing ? t('同步中…') : t('立即同步')}</button>
+                <button className="btn sm ghost" onClick={onLogout}>{t('退出')}</button>
+              </div> : <button className="btn sm primary" onClick={onLogin}>{t('登录 / 注册')}</button>}
             </SettingsRow>
             {cloudUser && syncError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12.5, color: 'var(--red, #d92d20)' }}>
-              <AlertTriangle size={14} /> 同步失败：{syncError}（点「立即同步」重试）
+              <AlertTriangle size={14} /> {t('同步失败：{err}（点「立即同步」重试）', { err: syncError })}
             </div>}
             <SettingsRow title="同步本地模型账户" desc="把 Ollama / ComfyUI 等本地模型账户也同步到云端（其他设备上仅显示记录，仍需本机服务才能调用）">
               <Toggle checked={!!s.syncLocalProviders} onChange={v => onChange({ syncLocalProviders: v })} />
             </SettingsRow>
-            <p className="set-note">支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。</p>
+            <p className="set-note">{t('支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。')}</p>
           </SettingsSection>
 
           <SettingsSection title="账号管理" desc="已登录账号、登录方式与本机可见设备" icon={Fingerprint} tone="blue">
@@ -5133,31 +5150,31 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {/* 账号信息必须渲染为可见内容：主题会隐藏 settings-row-desc，写进 desc 等于不显示 */}
                 {cloudUser
-                  ? <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>ID：{cloudUser.id.slice(0, 12)}… · 来源：{cloudUser.provider ?? (cloudUser.email ? '邮箱' : cloudUser.phone ? '手机号' : '第三方')}</span>
-                  : <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>未登录</span>}
-                <button className="btn sm" onClick={onLogin}>{cloudUser ? '切换账号' : '登录'}</button>
+                  ? <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{t('ID：{id}… · 来源：{src}', { id: cloudUser.id.slice(0, 12), src: cloudUser.provider ?? (cloudUser.email ? t('邮箱') : cloudUser.phone ? t('手机号') : t('第三方')) })}</span>
+                  : <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{t('未登录')}</span>}
+                <button className="btn sm" onClick={onLogin}>{cloudUser ? t('切换账号') : t('登录')}</button>
               </div>
             </SettingsRow>
             {cloudUser && <>
               <SettingsRow title="账号标识" desc="登录所用的邮箱或手机号">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{cloudUser.email ?? cloudUser.phone ?? cloudUser.name ?? '未公开'}</span>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{cloudUser.email ?? cloudUser.phone ?? cloudUser.name ?? t('未公开')}</span>
                   <span className="set-status-dot ok" />
                 </div>
               </SettingsRow>
             </>}
-            <div className="voice-section-label" style={{ marginTop: 12 }}>本机可见登录设备 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>（{devices.length}）</span></div>
-            {devices.length === 0 ? <div className="voice-empty">暂无设备记录</div> : devices.map(d => (
+            <div className="voice-section-label" style={{ marginTop: 12 }}>{t('本机可见登录设备')} <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>（{devices.length}）</span></div>
+            {devices.length === 0 ? <div className="voice-empty">{t('暂无设备记录')}</div> : devices.map(d => (
               <div key={d.clientId} className="set-stat" style={{ justifyContent: 'space-between' }}>
                 <span>{d.label} · {d.platform}</span>
-                <b style={{ fontSize: 11, color: 'var(--text-3)' }}>{new Date(d.lastSeen).toLocaleString('zh-CN')}</b>
+                <b style={{ fontSize: 11, color: 'var(--text-3)' }}>{new Date(d.lastSeen).toLocaleString(locale())}</b>
               </div>
             ))}
-            <div className="voice-hint"><Info size={13} /> 当前云服务接口不提供服务端会话列表，这里显示的是本机登记过的设备；同一账号的实际登录设备请到官方账号中心查看。</div>
-            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setDevices([...loadDevices()])}><RefreshCw size={13} /> 刷新设备列表</button>
+            <div className="voice-hint"><Info size={13} /> {t('当前云服务接口不提供服务端会话列表，这里显示的是本机登记过的设备；同一账号的实际登录设备请到官方账号中心查看。')}</div>
+            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setDevices([...loadDevices()])}><RefreshCw size={13} /> {t('刷新设备列表')}</button>
           </SettingsSection>
 
-          <SettingsSection title="应用更新" desc={`当前版本 v${APP_VERSION} · 检查并安装新版本`} icon={RefreshCw} tone="green">
+          <SettingsSection title="应用更新" desc={t('当前版本 v{ver} · 检查并安装新版本', { ver: APP_VERSION })} icon={RefreshCw} tone="green">
             <SettingsRow title="检查更新" desc={isDesktopApp()
               ? '桌面端自动下载安装，完成后点击重启生效'
               : currentPlatform() === 'docker'
@@ -5165,7 +5182,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 : currentPlatform() === 'android'
                   ? '安卓端下载最新 APK 覆盖安装，数据不丢失'
                   : '检测新版本并按平台提示更新方式'}>
-              <button className="btn sm primary" onClick={onCheckUpdate}><RefreshCw size={14} /> 检查更新</button>
+              <button className="btn sm primary" onClick={onCheckUpdate}><RefreshCw size={14} /> {t('检查更新')}</button>
             </SettingsRow>
           </SettingsSection>
 
@@ -5174,9 +5191,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <select className="select" style={{ width: 76 }} value={s.backupReminderDays ?? 7}
                   onChange={e => onChange({ backupReminderDays: Number(e.target.value) as 3 | 7 | 15 })}>
-                  <option value={3}>3 天</option>
-                  <option value={7}>7 天</option>
-                  <option value={15}>15 天</option>
+                  <option value={3}>{t('{d} 天', { d: 3 })}</option>
+                  <option value={7}>{t('{d} 天', { d: 7 })}</option>
+                  <option value={15}>{t('{d} 天', { d: 15 })}</option>
                 </select>
                 <Toggle checked={s.backupReminder} onChange={v => onChange({ backupReminder: v })} />
               </span>
@@ -5184,20 +5201,20 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="清空全部数据" desc="删除全部账户、额度、签到、用量记录与 AI 聊天历史（含归档）；设置与保险箱保留">
               {confirmClear ? (
                 <span style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn sm danger" onClick={() => { onClear(); setConfirmClear(false) }}>确认清空</button>
-                  <button className="btn sm ghost" onClick={() => setConfirmClear(false)}>取消</button>
+                  <button className="btn sm danger" onClick={() => { onClear(); setConfirmClear(false) }}>{t('确认清空')}</button>
+                  <button className="btn sm ghost" onClick={() => setConfirmClear(false)}>{t('取消')}</button>
                 </span>
-              ) : <button className="btn sm danger" onClick={() => setConfirmClear(true)}><Trash2 size={13} /> 清空</button>}
+              ) : <button className="btn sm danger" onClick={() => setConfirmClear(true)}><Trash2 size={13} /> {t('清空')}</button>}
             </SettingsRow>
             <SettingsRow title="清空历史与数据" desc="按类别勾选要清空的数据（可多选），执行前会再次确认">
               <button className="btn sm danger" disabled={clearSel.length === 0} onClick={() => setClearConfirmOpen(true)}>
-                <Trash2 size={13} /> 清空所选{clearSel.length > 0 ? `（${clearSel.length}）` : ''}
+                <Trash2 size={13} /> {t('清空所选')}{clearSel.length > 0 ? `（${clearSel.length}）` : ''}
               </button>
             </SettingsRow>
             <div className="clear-cat-list">
               {CLEAR_CATS.map(c => (
                 <div key={c.key} className="clear-cat">
-                  <div className="clear-cat-text"><span>{c.label}</span><small>{c.hint}</small></div>
+                  <div className="clear-cat-text"><span>{t(c.label)}</span><small>{t(c.hint)}</small></div>
                   <Toggle danger checked={clearSel.includes(c.key)} onChange={() => toggleClearCat(c.key)} />
                 </div>
               ))}
@@ -5206,17 +5223,17 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           {clearConfirmOpen && (
             <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setClearConfirmOpen(false) }}>
               <div className="modal" style={{ maxWidth: 420 }}>
-                <div className="modal-head"><h3>确认清空</h3><button className="icon-btn" onClick={() => setClearConfirmOpen(false)}><X size={18} /></button></div>
+                <div className="modal-head"><h3>{t('确认清空')}</h3><button className="icon-btn" onClick={() => setClearConfirmOpen(false)}><X size={18} /></button></div>
                 <div className="modal-body">
-                  <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10 }}>以下数据将被永久删除，无法恢复：</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10 }}>{t('以下数据将被永久删除，无法恢复：')}</div>
                   <ul style={{ margin: '0 0 6px', paddingLeft: 18, fontSize: 13, lineHeight: 1.9 }}>
-                    {CLEAR_CATS.filter(c => clearSel.includes(c.key)).map(c => <li key={c.key}>{c.label}</li>)}
+                    {CLEAR_CATS.filter(c => clearSel.includes(c.key)).map(c => <li key={c.key}>{t(c.label)}</li>)}
                   </ul>
-                  {clearSel.includes('api') && <div style={{ fontSize: 12, color: 'var(--red)' }}>含 API 密钥：点「确认清空」后会先要求完成一次备份，备份成功才会真正执行清空。</div>}
+                  {clearSel.includes('api') && <div style={{ fontSize: 12, color: 'var(--red)' }}>{t('含 API 密钥：点「确认清空」后会先要求完成一次备份，备份成功才会真正执行清空。')}</div>}
                 </div>
                 <div className="modal-foot">
-                  <button className="btn" onClick={() => setClearConfirmOpen(false)}>取消</button>
-                  <button className="btn danger" onClick={() => { onClearData?.(clearSel); setClearSel([]); setClearConfirmOpen(false) }}>确认清空</button>
+                  <button className="btn" onClick={() => setClearConfirmOpen(false)}>{t('取消')}</button>
+                  <button className="btn danger" onClick={() => { onClearData?.(clearSel); setClearSel([]); setClearConfirmOpen(false) }}>{t('确认清空')}</button>
                 </div>
               </div>
             </div>
@@ -5224,10 +5241,10 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
 
           <SettingsSection title="数据备份" desc="导出/导入完整数据文件，不依赖云同步" icon={Database} tone="green">
             <SettingsRow title="导出完整备份" desc="账户、额度、签到、用量与设置导出为一个 JSON 文件；密钥只含加密密文，文件请妥善保管">
-              <button className="btn sm" onClick={doExportBackup}><Download size={13} /> 导出备份</button>
+              <button className="btn sm" onClick={doExportBackup}><Download size={13} /> {t('导出备份')}</button>
             </SettingsRow>
             <SettingsRow title="导入备份" desc="用备份文件覆盖当前全部数据；导入前会自动把当前数据另存到本机（localStorage），后悔了可用那份文件再导回">
-              <button className="btn sm" onClick={() => backupInputRef.current?.click()}><Upload size={13} /> 选择备份文件</button>
+              <button className="btn sm" onClick={() => backupInputRef.current?.click()}><Upload size={13} /> {t('选择备份文件')}</button>
               <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={e => void onBackupFile(e)} />
             </SettingsRow>
           </SettingsSection>
@@ -5235,18 +5252,18 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           {pendingImport && (
             <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingImport(null) }}>
               <div className="modal" style={{ maxWidth: 440 }}>
-                <div className="modal-head"><h3 style={{ margin: 0 }}>确认导入备份</h3><button className="icon-btn" onClick={() => setPendingImport(null)}><X size={18} /></button></div>
+                <div className="modal-head"><h3 style={{ margin: 0 }}>{t('确认导入备份')}</h3><button className="icon-btn" onClick={() => setPendingImport(null)}><X size={18} /></button></div>
                 <div className="modal-body">
                   <p style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
-                    备份内容：账户 {pendingImport.summary.accounts} 个 · 用量 {pendingImport.summary.usage} 条 · 签到 {pendingImport.summary.checkins} 条 · 额度快照 {pendingImport.summary.quotas} 条。
+                    {t('备份内容：账户 {a} 个 · 用量 {u} 条 · 签到 {c} 条 · 额度快照 {q} 条。', { a: pendingImport.summary.accounts, u: pendingImport.summary.usage, c: pendingImport.summary.checkins, q: pendingImport.summary.quotas })}
                   </p>
                   <p style={{ fontSize: 13, lineHeight: 1.7, color: '#dc2626' }}>
-                    导入将覆盖当前全部数据（导入前会自动另存当前数据到本机）。备份里的密钥是密文，导入后请用备份来源设备的同一主密码解锁保险箱。
+                    {t('导入将覆盖当前全部数据（导入前会自动另存当前数据到本机）。备份里的密钥是密文，导入后请用备份来源设备的同一主密码解锁保险箱。')}
                   </p>
                 </div>
                 <div className="modal-foot">
-                  <button className="btn" onClick={() => setPendingImport(null)}>取消</button>
-                  <button className="btn primary" onClick={() => { onImportBackup(pendingImport.state); setPendingImport(null) }}>确认导入并覆盖</button>
+                  <button className="btn" onClick={() => setPendingImport(null)}>{t('取消')}</button>
+                  <button className="btn primary" onClick={() => { onImportBackup(pendingImport.state); setPendingImport(null) }}>{t('确认导入并覆盖')}</button>
                 </div>
               </div>
             </div>
@@ -5254,15 +5271,15 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
 
           <div className="set-grid-2">
             <SettingsSection title="数据概览" desc="当前本地存储的内容" icon={Database} tone="blue">
-              <div className="set-stat"><span>账户</span><b>{state.accounts.length}</b></div>
-              <div className="set-stat"><span>额度快照</span><b>{state.quotas.length}</b></div>
-              <div className="set-stat"><span>签到记录</span><b>{state.checkins.length}</b></div>
-              <div className="set-stat"><span>用量记录</span><b>{state.usage.length}</b></div>
+              <div className="set-stat"><span>{t('账户')}</span><b>{state.accounts.length}</b></div>
+              <div className="set-stat"><span>{t('额度快照')}</span><b>{state.quotas.length}</b></div>
+              <div className="set-stat"><span>{t('签到记录')}</span><b>{state.checkins.length}</b></div>
+              <div className="set-stat"><span>{t('用量记录')}</span><b>{state.usage.length}</b></div>
             </SettingsSection>
             <SettingsSection title="关于" desc="版本与合规说明" icon={Info} tone="indigo">
-              <div className="set-stat"><span>版本</span><b className="mono">v{APP_VERSION}</b></div>
-              <div className="set-stat"><span>定位</span><b style={{ fontSize: 12 }}>本地优先 · 个人资源管理工具</b></div>
-              <div className="set-about-note"><ShieldCheck size={14} /> 数据仅存本机，密钥经 AES-256-GCM 加密，不上传明文</div>
+              <div className="set-stat"><span>{t('版本')}</span><b className="mono">v{APP_VERSION}</b></div>
+              <div className="set-stat"><span>{t('定位')}</span><b style={{ fontSize: 12 }}>{t('本地优先 · 个人资源管理工具')}</b></div>
+              <div className="set-about-note"><ShieldCheck size={14} /> {t('数据仅存本机，密钥经 AES-256-GCM 加密，不上传明文')}</div>
             </SettingsSection>
           </div>
         </>}
@@ -5270,19 +5287,19 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
         {setTab === 'security' && <>
           <SettingsSection title="操作审计日志" desc="查看/复制/删除 Key、导出、改密码、云登录等敏感操作的时间线（只记动作，不记密钥内容；随云同步跨端合并）" icon={ClipboardList} tone="indigo">
             {(auditEntries ?? []).length === 0
-              ? <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '6px 2px' }}>暂无审计记录。进行查看 Key、导出备份等敏感操作后会出现在这里。</div>
+              ? <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '6px 2px' }}>{t('暂无审计记录。进行查看 Key、导出备份等敏感操作后会出现在这里。')}</div>
               : <>
                 <div className="audit-list">
                   {[...(auditEntries ?? [])].slice(-30).reverse().map(e => (
                     <div key={e.id} className="audit-row">
-                      <span className="audit-time">{new Date(e.at).toLocaleString()}</span>
-                      <span className="audit-action">{e.action}</span>
+                      <span className="audit-time">{new Date(e.at).toLocaleString(locale())}</span>
+                      <span className="audit-action">{t(e.action)}</span>
                       {e.detail && <span className="audit-detail">{e.detail}</span>}
                     </div>
                   ))}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <button className="btn sm ghost" onClick={onClearAudit}>清空日志</button>
+                  <button className="btn sm ghost" onClick={onClearAudit}>{t('清空日志')}</button>
                 </div>
               </>}
           </SettingsSection>
@@ -5290,11 +5307,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="保险箱状态" desc={s.vaultInitialized ? '已启用 · API Key 加密保存' : '未创建 · API Key 将无法加密保存'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span className={`set-status-dot ${s.vaultInitialized ? 'ok' : ''}`} />
-                <button className="btn sm" onClick={onOpenVault}>{s.vaultInitialized ? '管理' : '创建'}</button>
+                <button className="btn sm" onClick={onOpenVault}>{s.vaultInitialized ? t('管理') : t('创建')}</button>
               </div>
             </SettingsRow>
             <SettingsRow title="解锁方式" desc={onBioAvailable
-              ? (bioLabel.includes('人脸') ? '可选密码或系统人脸解锁（Face ID）' : `可选密码或系统生物识别解锁（${bioLabel}）`)
+              ? (bioLabel.includes('人脸') ? t('可选密码或系统人脸解锁（Face ID）') : t('可选密码或系统生物识别解锁（{bio}）', { bio: t(bioLabel) }))
               : '当前设备不支持生物识别，仅可用密码'}>
               <select className="select" style={{ width: 150 }} value={bioSwitchOpen ? 'biometric' : s.unlockMethod}
                 onChange={e => {
@@ -5309,81 +5326,81 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                     setBioSwitchOpen(true)
                   }
                 }}>
-                <option value="password">密码解锁</option>
+                <option value="password">{t('密码解锁')}</option>
                 {onBioAvailable && <option value="biometric">
-                  {bioLabel.includes('人脸') ? '系统人脸解锁 (Face ID)' : bioLabel.includes('触控') ? '系统触控解锁 (Touch ID)' : `${bioLabel}解锁`}
+                  {bioLabel.includes('人脸') ? t('系统人脸解锁 (Face ID)') : bioLabel.includes('触控') ? t('系统触控解锁 (Touch ID)') : t('{bio}解锁', { bio: t(bioLabel) })}
                 </option>}
               </select>
             </SettingsRow>
             {onBioAvailable && s.vaultInitialized && (
-              <SettingsRow title={`${bioLabel}快速解锁`} desc={`验证${bioLabel}后直接进入 API Key 管理页并解锁密钥（仅作用于该页）`}>
-                <button className="btn sm" onClick={onBioUnlock}><Fingerprint size={14} /> 验证解锁</button>
+              <SettingsRow title={t('{bio}快速解锁', { bio: t(bioLabel) })} desc={t('验证{bio}后直接进入 API Key 管理页并解锁密钥（仅作用于该页）', { bio: t(bioLabel) })}>
+                <button className="btn sm" onClick={onBioUnlock}><Fingerprint size={14} /> {t('验证解锁')}</button>
               </SettingsRow>
             )}
             {bioSwitchOpen && (
               <div className="set-inline-panel">
-                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>输入主密码以启用{bioLabel}解锁（验证后本机保存）</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>{t('输入主密码以启用{bio}解锁（验证后本机保存）', { bio: t(bioLabel) })}</div>
                 <div className="field">
-                  <input className="input" type="password" autoFocus placeholder="主密码" value={bioSwitchPwd}
+                  <input className="input" type="password" autoFocus placeholder={t('主密码')} value={bioSwitchPwd}
                     onChange={e => setBioSwitchPwd(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && bioSwitchPwd) void enableBio() }} />
                 </div>
                 <div className="row" style={{ gap: 8 }}>
-                  <button className="btn sm primary" disabled={bioSwitchBusy || !bioSwitchPwd} onClick={() => void enableBio()}>确认启用</button>
-                  <button className="btn sm" onClick={() => { setBioSwitchOpen(false); setBioSwitchPwd('') }}>取消</button>
+                  <button className="btn sm primary" disabled={bioSwitchBusy || !bioSwitchPwd} onClick={() => void enableBio()}>{t('确认启用')}</button>
+                  <button className="btn sm" onClick={() => { setBioSwitchOpen(false); setBioSwitchPwd('') }}>{t('取消')}</button>
                 </div>
               </div>
             )}
             <SettingsRow title="闲置自动上锁" desc="解锁后无操作达到此时长，自动清空会话密码并重新上锁（活动会重置计时）">
               <select className="select" style={{ width: 150 }} value={s.autoLockMinutes ?? 0} onChange={e => onChange({ autoLockMinutes: Number(e.target.value) })}>
-                <option value={0}>关闭</option>
-                <option value={1}>1 分钟</option>
-                <option value={5}>5 分钟</option>
-                <option value={15}>15 分钟</option>
-                <option value={30}>30 分钟</option>
+                <option value={0}>{t('关闭')}</option>
+                <option value={1}>{t('{n} 分钟', { n: 1 })}</option>
+                <option value={5}>{t('{n} 分钟', { n: 5 })}</option>
+                <option value={15}>{t('{n} 分钟', { n: 15 })}</option>
+                <option value={30}>{t('{n} 分钟', { n: 30 })}</option>
               </select>
             </SettingsRow>
             <SettingsRow title="修改主密码" desc="需用原密码验证，所有密钥将重新加密">
               <button className="btn sm" onClick={() => {
                 const known = sessionPwd || getBiometricPassword() || ''
                 setOldPwd(known); setNewPwd(''); setConfirmPwd(''); setPwdOpen(true)
-              }} disabled={!s.vaultInitialized}>修改</button>
+              }} disabled={!s.vaultInitialized}>{t('修改')}</button>
             </SettingsRow>
             <SettingsRow title="重置保险箱" desc="清除所有密钥与密码，不可恢复">
               {confirmReset ? (
                 <span style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn sm danger" onClick={() => { onResetVault(); setConfirmReset(false) }}>确认重置</button>
-                  <button className="btn sm ghost" onClick={() => setConfirmReset(false)}>取消</button>
+                  <button className="btn sm danger" onClick={() => { onResetVault(); setConfirmReset(false) }}>{t('确认重置')}</button>
+                  <button className="btn sm ghost" onClick={() => setConfirmReset(false)}>{t('取消')}</button>
                 </span>
               ) : (
-                <button className="btn sm danger" onClick={() => setConfirmReset(true)} disabled={!s.vaultInitialized}>重置</button>
+                <button className="btn sm danger" onClick={() => setConfirmReset(true)} disabled={!s.vaultInitialized}>{t('重置')}</button>
               )}
             </SettingsRow>
           </SettingsSection>
-          <p className="set-note"><Lock size={13} /> 主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。</p>
+          <p className="set-note"><Lock size={13} /> {t('主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。')}</p>
         </>}
       </div>
 
       {pwdOpen && (
         <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) { setPwdOpen(false); setOldPwd(''); setNewPwd(''); setConfirmPwd('') } }}>
           <div className="modal" style={{ maxWidth: 400 }}>
-            <div className="modal-head"><h3>修改主密码</h3><button className="icon-btn" onClick={() => { setPwdOpen(false); setOldPwd(''); setNewPwd(''); setConfirmPwd('') }}><X size={18} /></button></div>
+            <div className="modal-head"><h3>{t('修改主密码')}</h3><button className="icon-btn" onClick={() => { setPwdOpen(false); setOldPwd(''); setNewPwd(''); setConfirmPwd('') }}><X size={18} /></button></div>
             <div className="modal-body">
               <div className="field">
-                <label>原主密码</label>
-                <input className="input" type="text" autoFocus placeholder="输入当前主密码" value={oldPwd} onChange={e => setOldPwd(e.target.value)} />
+                <label>{t('原主密码')}</label>
+                <input className="input" type="text" autoFocus placeholder={t('输入当前主密码')} value={oldPwd} onChange={e => setOldPwd(e.target.value)} />
               </div>
               <div className="field">
-                <label>新主密码（至少 6 位）</label>
-                <input className="input" type="password" placeholder="输入新主密码" value={newPwd} onChange={e => setNewPwd(e.target.value)} />
+                <label>{t('新主密码（至少 6 位）')}</label>
+                <input className="input" type="password" placeholder={t('输入新主密码')} value={newPwd} onChange={e => setNewPwd(e.target.value)} />
               </div>
               <div className="field">
-                <label>确认新密码</label>
-                <input className="input" type="password" placeholder="再次输入新主密码" value={confirmPwd} onChange={e => setConfirmPwd(e.target.value)} />
+                <label>{t('确认新密码')}</label>
+                <input className="input" type="password" placeholder={t('再次输入新主密码')} value={confirmPwd} onChange={e => setConfirmPwd(e.target.value)} />
               </div>
             </div>
             <div className="modal-foot" style={{ justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={() => { setPwdOpen(false); setOldPwd(''); setNewPwd(''); setConfirmPwd('') }}>取消</button>
+              <button className="btn" onClick={() => { setPwdOpen(false); setOldPwd(''); setNewPwd(''); setConfirmPwd('') }}>{t('取消')}</button>
               <button className="btn primary" disabled={pwdBusy || !oldPwd || !newPwd} onClick={async () => {
                 if (newPwd.length < 6) { notify('新密码至少 6 位'); return }
                 if (newPwd !== confirmPwd) { notify('两次新密码不一致'); return }
@@ -5394,7 +5411,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   notify('主密码已修改，密钥已重新加密')
                 } catch (e: any) { notify(e.message ?? '修改失败') }
                 finally { setPwdBusy(false) }
-              }}>确认修改</button>
+              }}>{t('确认修改')}</button>
             </div>
           </div>
         </div>
