@@ -2251,12 +2251,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               <th style={{ width: 130 }}>API Key</th>
               <th style={{ width: 118 }}>健康状态</th>
               <th>备注 (用途)</th>
-              <th style={{ width: 260 }}>操作</th>
+              <th style={{ width: 110 }}>分组</th>
+              <th style={{ width: 210 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {pageItems.length === 0 ? (
-              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
+              <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
                 {keyAccounts.length === 0 ? '暂无密钥。添加账户时选择「官方 API」模式即可保存。' : '当前筛选下没有密钥'}
               </td></tr>
             ) : pageItems.map(a => {
@@ -2337,6 +2338,9 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                       </button> ) })()}
                   </td>
                   <td><span className="key-note" title={a.note ?? ''}>{a.note ?? '—'}</span></td>
+                  <td>{a.group
+                    ? <span className="group-chip">{a.group}</span>
+                    : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>未分组</span>}</td>
                   <td>
                     <div className="key-actions">
                       <button className="key-action" title="编辑" onClick={() => setEditing(a.id)}><Pencil size={15} /></button>
