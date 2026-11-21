@@ -29,7 +29,7 @@ import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { buildDataDigest } from '../core/dataDigest'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
-import type { Account, PromptTemplate } from '../core/types'
+import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
@@ -493,7 +493,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }, [currentAccount, engines])
 
   /** 统一取回复：用户自己的账户走其 API，否则走平台免费模型 */
-  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false, optKey?: string, onDelta?: (d: string) => void): Promise<string> => {
+  const getReply = async (content: string, history: ChatMessage[], signal?: AbortSignal, images?: string[], voiceMode = false, optKey?: string, onDelta?: (d: string) => void, convId?: string): Promise<string> => {
     const opt = allOptions.find(o => o.key === (optKey ?? model))
     const isFirstReply = !history.some(m => m.role === 'assistant')
     const systemPrompt = voiceMode
@@ -548,7 +548,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     // 平台免费模型：流式输出（图片附件随多模态消息发送）
     // 指定了 optKey（换 Key 重试/多模型对比）时按该选项自己的模型 id 调用，否则用当前所选模型
-    return streamChat(opt?.free ? opt.key : (model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt)
+    return streamChat(opt?.free ? opt.key : (model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
   }
 
   // 报错自动换 Key：调用失败（鉴权/额度类）时，若同平台还有别的可用账户，给出「一键切换重试」
@@ -746,13 +746,33 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setCompareRuns(compareKeys.map(k => ({ key: k, label: allOptions.find(x => x.key === k)?.label ?? k, status: 'loading' as const, text: '', ms: 0 })))
     await Promise.all(compareKeys.map(async (k) => {
       const t0 = Date.now()
-      try {
-        const ans = await getReply(content, history, controller.signal, undefined, false, k, (d) => {
-          setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, text: r.text + d } : r) : prev)
-        })
-        setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'done' as const, text: ans || r.text, ms: Date.now() - t0 } : r) : prev)
-      } catch (e) {
-        setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'error' as const, text: (e as Error)?.message ?? '调用失败', ms: Date.now() - t0 } : r) : prev)
+      // 每列用独立 conversationId（共用主会话 id 并行发流会被网关互相顶掉）；失败自动重试一次
+      const convId = `cmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const errText = (e: unknown): string => {
+        if (e instanceof Error) return e.message || '调用失败'
+        if (typeof e === 'string') return e // Tauri invoke 拒绝值是字符串（Rust 侧的真实报错）
+        return '调用失败'
+      }
+      let lastErr: unknown = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          if (attempt > 0) {
+            setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, text: '' } : r) : prev)
+            await new Promise(r => setTimeout(r, 800))
+          }
+          const ans = await getReply(content, history, controller.signal, undefined, false, k, (d) => {
+            setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, text: r.text + d } : r) : prev)
+          }, convId)
+          setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'done' as const, text: ans || r.text, ms: Date.now() - t0 } : r) : prev)
+          lastErr = null
+          break
+        } catch (e) {
+          lastErr = e
+          if ((e as { name?: string })?.name === 'AbortError') break
+        }
+      }
+      if (lastErr !== null) {
+        setCompareRuns(prev => prev ? prev.map(r => r.key === k ? { ...r, status: 'error' as const, text: errText(lastErr), ms: Date.now() - t0 } : r) : prev)
       }
     }))
     setGenerating(false)
@@ -781,6 +801,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setProbing(false)
     notify(`引擎探测完成（共 ${targets.length} 个）`)
   }
+  // ---- 顶栏工具显隐（设置「AI 助手工具栏」逐个开关，缺省显示） ----
+  const tbShow = (k: keyof AiToolbarPrefs) => settings?.aiToolbar?.[k] !== false
   // ---- 提示词库（完整页面） ----
   const [promptsOpen, setPromptsOpen] = useState(false)
   const [promptTitle, setPromptTitle] = useState('')
@@ -959,18 +981,34 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {/* 顶部栏：朗读开关 / 电话 / 刷新，靠右间距适中 */}
         <div className="ai-topbar">
           <div className="ai-top-actions">
-            <button className={`ai-icon-btn auto-speak-btn ${autoSpeak ? 'active' : ''}`} onClick={toggleAutoSpeak}
-              title={autoSpeak ? '自动朗读已开启：AI 回复后自动朗读纯文字，点击关闭' : '开启自动朗读：AI 回复后自动朗读纯文字'}>
-              <Volume2 size={17} />
-            </button>
-            <button className="ai-icon-btn call" onClick={() => setCallOpen(true)} disabled={!callEnabled}
-              title={callEnabled ? 'AI 语音通话' : '当前分类模型不支持语音通话'}><Phone size={17} /></button>
-            <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} title="搜索对话内容"><Search size={17} /></button>
-            <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} title="导出对话记录（Markdown）"><Download size={17} /></button>
-            <button className={`ai-icon-btn ${useMyData ? 'active' : ''}`} onClick={toggleUseMyData} title={useMyData ? '引用我的数据：已开启（问额度/消费/签到会按你的真实数据回答），点击关闭' : '引用我的数据：已关闭，点击开启后助手能查你的额度/消费/签到'}><Database size={17} /></button>
-            <button className={`ai-icon-btn ${compareMode ? 'active' : ''}`} onClick={() => setCompareMode(v => !v)} title="多模型对比：同一个问题同时发给 2–3 个模型并排对比"><Columns2 size={17} /></button>
-            <button className={`ai-icon-btn ${sessionsOpen ? 'active' : ''}`} onClick={() => setSessionsOpen(v => !v)} title="会话列表：新建/切换/重命名/删除多个对话"><MessagesSquare size={17} /></button>
-            <button className="ai-icon-btn" onClick={clear} title="清空当前对话"><RotateCcw size={17} /></button>
+            {tbShow('autoSpeak') && (
+              <button className={`ai-icon-btn auto-speak-btn ${autoSpeak ? 'active' : ''}`} onClick={toggleAutoSpeak}
+                data-tip={autoSpeak ? '自动朗读：开' : '自动朗读：关'}>
+                <Volume2 size={17} />
+              </button>
+            )}
+            {tbShow('voiceCall') && (
+              <button className="ai-icon-btn call" onClick={() => setCallOpen(true)} disabled={!callEnabled}
+                data-tip={callEnabled ? '语音通话' : '语音通话（当前模型不支持）'}><Phone size={17} /></button>
+            )}
+            {tbShow('chatSearch') && (
+              <button className={`ai-icon-btn ${searchOpen ? 'active' : ''}`} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') }} data-tip="搜索对话"><Search size={17} /></button>
+            )}
+            {tbShow('chatExport') && (
+              <button className="ai-icon-btn" onClick={() => setExportOpen(true)} disabled={messages.length === 0} data-tip="导出对话"><Download size={17} /></button>
+            )}
+            {tbShow('myData') && (
+              <button className={`ai-icon-btn ${useMyData ? 'active' : ''}`} onClick={toggleUseMyData} data-tip={useMyData ? '引用我的数据：开' : '引用我的数据：关'}><Database size={17} /></button>
+            )}
+            {tbShow('compare') && (
+              <button className={`ai-icon-btn ${compareMode ? 'active' : ''}`} onClick={() => setCompareMode(v => !v)} data-tip="多模型对比"><Columns2 size={17} /></button>
+            )}
+            {tbShow('sessions') && (
+              <button className={`ai-icon-btn ${sessionsOpen ? 'active' : ''}`} onClick={() => setSessionsOpen(v => !v)} data-tip="会话列表"><MessagesSquare size={17} /></button>
+            )}
+            {tbShow('clearChat') && (
+              <button className="ai-icon-btn" onClick={clear} data-tip="清空对话"><RotateCcw size={17} /></button>
+            )}
           </div>
         </div>
 

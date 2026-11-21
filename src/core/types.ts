@@ -239,6 +239,20 @@ export interface AppSettings {
   gatewayAutoStart?: boolean
   /** 保险箱闲置自动上锁分钟数（0/缺省 = 关闭；解锁后无操作达到该时长自动清空会话密码） */
   autoLockMinutes?: number
+  /** AI 助手顶栏工具显隐（缺省/true = 显示；在设置「AI 助手工具栏」逐个开关） */
+  aiToolbar?: AiToolbarPrefs
+}
+
+/** AI 助手顶栏 8 个工具的显隐偏好 */
+export interface AiToolbarPrefs {
+  autoSpeak?: boolean
+  voiceCall?: boolean
+  chatSearch?: boolean
+  chatExport?: boolean
+  myData?: boolean
+  compare?: boolean
+  sessions?: boolean
+  clearChat?: boolean
 }
 
 /** 本地模型服务类型 */

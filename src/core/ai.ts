@@ -138,6 +138,7 @@ export async function streamChat(
   images?: string[],
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high',
   systemPrompt?: string,
+  conversationIdOverride?: string,
 ): Promise<string> {
   // 仅把最近的对话作为上下文（系统消息始终在最前）：
   // 取最近 20 条，控制单次请求体积；conversationId 保持关联。
@@ -158,7 +159,8 @@ export async function streamChat(
     { role: 'user' as const, content: userContent },
   ]
 
-  const conversationId = getConversationId()
+  // 多模型对比等并行场景传独立 conversationId：同一 conversation 同时只能有一个生成流，共用会互相冲突被网关拒绝
+  const conversationId = conversationIdOverride ?? getConversationId()
   const body: Record<string, unknown> = {
     model, messages, stream: true,
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),

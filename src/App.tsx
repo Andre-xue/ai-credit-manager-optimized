@@ -6,7 +6,7 @@ import {
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
-  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste,
+  Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -4443,6 +4443,23 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="AI 思考模式" desc="开启后 AI 对话默认深度推理（答案更严谨，但更慢、消耗更高）；仍可在聊天框单独调整等级。文档问答等模块同步生效。">
               <Toggle checked={!!s.thinkingMode} onChange={v => onChange({ thinkingMode: v })} />
             </SettingsRow>
+          </SettingsSection>
+
+          <SettingsSection title="AI 助手工具栏" desc="AI 助手右上角工具按钮逐个开关（悬停按钮可看名称）；关掉的按钮不在页面上显示" icon={Wrench} tone="indigo">
+            {([
+              ['autoSpeak', '自动朗读'],
+              ['voiceCall', '语音通话'],
+              ['chatSearch', '搜索对话'],
+              ['chatExport', '导出对话'],
+              ['myData', '引用我的数据'],
+              ['compare', '多模型对比'],
+              ['sessions', '会话列表'],
+              ['clearChat', '清空对话'],
+            ] as const).map(([key, label]) => (
+              <SettingsRow key={key} title={label}>
+                <Toggle checked={s.aiToolbar?.[key] !== false} onChange={v => onChange({ aiToolbar: { ...(s.aiToolbar ?? {}), [key]: v } })} />
+              </SettingsRow>
+            ))}
           </SettingsSection>
 
           {!phoneShell && (<SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">

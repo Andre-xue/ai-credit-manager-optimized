@@ -680,6 +680,22 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-compare-body { padding: 10px 12px; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow-y: auto; }
 .ai-compare-body.error { color: var(--red); }
 /* 提示词库面板 */
+/* AI 助手顶栏工具悬停名称（v0.1.230：data-tip 自定义 tooltip，不在页面上常驻文字） */
+.ai-icon-btn[data-tip] { position: relative; }
+.ai-icon-btn[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; top: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%) translateY(-3px);
+  background: var(--text); color: var(--bg);
+  font-size: 12px; line-height: 1; padding: 6px 9px; border-radius: 7px;
+  white-space: nowrap; pointer-events: none; z-index: 60;
+  opacity: 0; visibility: hidden;
+  transition: opacity .15s ease .25s, transform .15s ease .25s, visibility 0s .25s;
+}
+.ai-icon-btn[data-tip]:hover::after, .ai-icon-btn[data-tip]:focus-visible::after {
+  opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+}
+
 /* 提示词库整页（v0.1.229：由底部小弹层改为完整页面） */
 .prompts-page { display: block; overflow-y: auto; }
 .prompts-page-inner { max-width: 880px; margin: 0 auto; padding: 22px 20px 48px; display: grid; gap: 16px; align-content: start; }
