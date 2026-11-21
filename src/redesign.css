@@ -65,6 +65,14 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 .nav-group-label.collapsible:hover { color: var(--text-2); }
 .nav-group-chevron { transition: transform .2s ease; transform: rotate(-90deg); flex: none; }
 .nav-group-chevron.open { transform: rotate(0deg); }
+/* 折叠后空白优化（v0.1.261）：.nav 原为 space-evenly（全展开时均匀铺满），任一分组折叠后
+   改为顶部紧凑排列，分组挨在一起，空白只留在底部，不再被撑成大块间隔 */
+.app-shell.nav-any-closed .sidebar .nav { justify-content: flex-start; }
+.app-shell.nav-any-closed .nav-group { margin-bottom: 10px; }
+.nav-group-count { font-size: 10px; font-weight: 600; color: var(--text-3); background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; line-height: 16px; letter-spacing: 0; }
+/* 展开分组时入口轻淡入，减少跳变感 */
+.nav-group .nav-item { animation: nav-item-in .16s ease both; }
+@keyframes nav-item-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
 .claude-ui .nav-item, .nav-item {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; margin: 0 0 2px;
   border: 1px solid transparent !important; border-radius: 10px; background: transparent !important;

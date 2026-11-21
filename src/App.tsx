@@ -1069,6 +1069,7 @@ function App() {
     motionOn ? 'motion-ui' : 'no-motion',
     sidebarVisible ? '' : 'sidebar-collapsed',
     state.settings.showBottomNav ? 'has-bottom-nav' : '',
+    sidebarVisible && closedNavGroups.length > 0 ? 'nav-any-closed' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -1094,6 +1095,7 @@ function App() {
               <div className="nav-group" key={group.label}>
                 <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? '展开分组' : '收起分组'}>
                   <span>{group.label}</span>
+                  {groupClosed && <span className="nav-group-count">{visibleIds.length}</span>}
                   <ChevronDown size={12} className={`nav-group-chevron ${groupClosed ? '' : 'open'}`} />
                 </div>
                 {!groupClosed && visibleIds.map((id) => {
