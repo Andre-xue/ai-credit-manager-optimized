@@ -22,6 +22,15 @@ export function getKeyPageUrl(provider: ProviderDefinition): string {
   return overrides[provider.id] || provider.apiKeyUrl || provider.usageUrl || provider.officialUrl
 }
 
+/** 语音配置账户按所选语音服务商映射到其 Key 管理页所在平台（无 Key 的本地/系统服务返回 null） */
+export const VOICE_KEY_PROVIDER: Record<string, string> = {
+  aliyun: 'voice-config',
+  volcengine: 'doubao',
+  tencent: 'tencent',
+  minimax: 'minimax',
+  elevenlabs: 'elevenlabs',
+}
+
 /** 拉取最新 Key 页地址表（App 启动时调用一次；成功后广播事件让已渲染的按钮刷新） */
 export async function refreshKeyUrls(): Promise<void> {
   try {

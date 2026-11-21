@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
-import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT } from './core/keyUrls'
+import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
@@ -2347,7 +2347,9 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                     </div>
                   </td>
                   <td>
-                    <KeyPageButton provider={provider} notify={notify} />
+                    <KeyPageButton provider={provider.id === 'voice-config' && a.voiceProvider && VOICE_KEY_PROVIDER[a.voiceProvider]
+                      ? (PROVIDER_MAP[VOICE_KEY_PROVIDER[a.voiceProvider]] ?? provider)
+                      : provider} notify={notify} />
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
@@ -3518,7 +3520,11 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
 
   const apiUrl = provider.apiBaseUrl ?? ''
   // 语音配置：API 链接用所选服务商官方文档；其余用平台默认
-  const keyUrl = isVoiceCfg ? (chosenVoice?.docs ?? provider.officialUrl) : getKeyPageUrl(provider)
+  const keyUrl = isVoiceCfg
+    ? (voiceProvider && VOICE_KEY_PROVIDER[voiceProvider] && PROVIDER_MAP[VOICE_KEY_PROVIDER[voiceProvider]]
+      ? getKeyPageUrl(PROVIDER_MAP[VOICE_KEY_PROVIDER[voiceProvider]])
+      : (chosenVoice?.docs ?? provider.officialUrl))
+    : getKeyPageUrl(provider)
 
   const fetchBalance = async () => {
     setErr('')
