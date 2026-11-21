@@ -1379,6 +1379,13 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 29：余额自动刷新间隔（v0.1.299） ----
+Object.assign(D, {
+  '余额自动刷新间隔': { 'zh-TW': '餘額自動刷新間隔', en: 'Balance auto-refresh interval', ja: '残高の自動更新間隔', ko: '잔액 자동 새로고침 간격' },
+  '保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter）；其余平台无官方接口，不受影响。此设置只保存在本设备': { 'zh-TW': '保險箱解鎖後，按此間隔靜默刷新能自動查餘額的平台（DeepSeek、Kimi、矽基流動、OpenRouter）；其餘平台無官方介面，不受影響。此設定只保存在本裝置', en: 'After the vault is unlocked, balances are silently refreshed at this interval for platforms with a balance API (DeepSeek, Kimi, SiliconFlow, OpenRouter). Other platforms have no official API and are unaffected. This setting stays on this device.', ja: '保管庫のロック解除後、この間隔で残高APIのあるプラットフォーム（DeepSeek、Kimi、SiliconFlow、OpenRouter）の残高を静かに更新します。他のプラットフォームには公式APIがなく影響しません。この設定はこのデバイスにのみ保存されます。', ko: '금고 잠금 해제 후 이 간격으로 잔액 API가 있는 플랫폼(DeepSeek, Kimi, SiliconFlow, OpenRouter)의 잔액을 조용히 새로고침합니다. 다른 플랫폼은 공식 API가 없어 영향이 없습니다. 이 설정은 이 기기에만 저장됩니다.' },
+  '{h} 小时': { 'zh-TW': '{h} 小時', en: '{h} h', ja: '{h} 時間', ko: '{h}시간' },
+})
+
 // ---- 补齐批次 28：静默启动 + 数据存储（v0.1.298） ----
 Object.assign(D, {
   '静默启动': { 'zh-TW': '靜默啟動', en: 'Silent launch', ja: 'サイレント起動', ko: '조용한 시작' },

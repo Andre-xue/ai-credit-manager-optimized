@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs, type ApiKeyStoreFormat } from './core/storagePrefs'
+import { loadPatrolHours, savePatrolHours, patrolDue, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
 import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
@@ -936,29 +937,37 @@ function App() {
   }, [sessionPwd, state.settings.autoLockMinutes, notify])
 
   // ---- 余额自动巡检：保险箱解锁后（sessionPwd 就绪）静默刷新可查余额平台的官方余额 ----
-  // 6 小时节流（localStorage 时间戳）；失败静默，不打扰；无总额度上限的结果（仅 label）不落快照。
-  const balancePatrolRef = useRef(false)
+  // 间隔由设置 → 通用 →「余额自动刷新间隔」决定（本机偏好，默认 6 小时，可关）；
+  // 解锁时先按节流检查一次，之后每分钟看一眼是否到期，到期就再巡检一轮——
+  // App 长开着也能周期刷新。失败静默，不打扰；无总额度的结果不落快照。
+  const balancePatrolRunningRef = useRef(false)
   useEffect(() => {
-    if (!sessionPwd || balancePatrolRef.current) return
-    const KEY = 'acm_balance_patrol_at'
-    const last = Number(localStorage.getItem(KEY) ?? 0)
-    if (Date.now() - last < 6 * 3600 * 1000) return
-    balancePatrolRef.current = true
-    localStorage.setItem(KEY, String(Date.now()))
-    void (async () => {
-      for (const a of stateRef.current.accounts) {
-        if (!a.encryptedKey) continue
-        const adapter = getAdapterWithPlugins(a.providerId)
-        if (!adapter.supported) continue
-        try {
-          const plain = await decryptSecret(a.encryptedKey, sessionPwd)
-          const r = await adapter.fetchUsage!(plain)
-          const total = r.total
-          if (total === undefined) continue
-          setState(s => upsertQuota(s, { accountId: a.id, used: r.used, total, unit: r.unit, source: 'api' }))
-        } catch { /* 巡检失败静默：单账户问题不打扰用户，手动刷新仍会给出明确报错 */ }
-      }
-    })()
+    if (!sessionPwd) return
+    const runPatrol = async () => {
+      if (balancePatrolRunningRef.current) return
+      const hours = loadPatrolHours()
+      const last = Number(localStorage.getItem(PATROL_AT_KEY) ?? 0)
+      if (!patrolDue(Date.now(), hours, last)) return
+      balancePatrolRunningRef.current = true
+      localStorage.setItem(PATROL_AT_KEY, String(Date.now()))
+      try {
+        for (const a of stateRef.current.accounts) {
+          if (!a.encryptedKey) continue
+          const adapter = getAdapterWithPlugins(a.providerId)
+          if (!adapter.supported) continue
+          try {
+            const plain = await decryptSecret(a.encryptedKey, sessionPwd)
+            const r = await adapter.fetchUsage!(plain)
+            const total = r.total
+            if (total === undefined) continue
+            setState(s => upsertQuota(s, { accountId: a.id, used: r.used, total, unit: r.unit, source: 'api' }))
+          } catch { /* 巡检失败静默：单账户问题不打扰用户，手动刷新仍会给出明确报错 */ }
+        }
+      } finally { balancePatrolRunningRef.current = false }
+    }
+    void runPatrol()
+    const t = window.setInterval(() => { void runPatrol() }, 60 * 1000)
+    return () => window.clearInterval(t)
   }, [sessionPwd])
 
   // ---- 系统通知提醒引擎：启动时 + 每 15 分钟评估一次，去重后发送 ----
@@ -4840,6 +4849,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     if (!r.ok) { notify(r.error); return }
     setPendingImport(r)
   }
+  // ---- 余额自动刷新间隔（本机偏好） ----
+  const [patrolHours, setPatrolHours] = useState<number>(() => loadPatrolHours())
   // ---- 数据存储（仅桌面端、本机偏好）：三类文件的自定义存放文件夹 ----
   const [storagePrefs, setStoragePrefs] = useState<StoragePrefs>(() => loadStoragePrefs())
   const patchStorage = (next: StoragePrefs, syncKeys = false) => {
@@ -5259,6 +5270,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <input className="input" type="number" min="0" step="10" value={s.monthlyBudget}
                      onChange={e => onChange({ monthlyBudget: Math.max(0, Number(e.target.value)) })}
                      style={{ width: 100 }} />
+            </SettingsRow>
+            <SettingsRow title="余额自动刷新间隔" desc="保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter）；其余平台无官方接口，不受影响。此设置只保存在本设备">
+              <select className="select" style={{ width: 110 }} value={patrolHours} onChange={e => { const v = Number(e.target.value); setPatrolHours(v); savePatrolHours(v) }}>
+                {PATROL_HOUR_OPTIONS.map(h => <option key={h} value={h}>{h === 0 ? t('关闭') : t('{h} 小时', { h })}</option>)}
+              </select>
             </SettingsRow>
           </SettingsSection>
 
