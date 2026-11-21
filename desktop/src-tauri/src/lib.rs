@@ -179,6 +179,223 @@ mod req {
     }
 }
 
+// ---------------- 插件系统（v0.1.264）：网络代理 + 桌面进程插件 ----------------
+
+/// 插件网络代理：URL 先过 SSRF 校验（validate_proxy_url）；具体域名白名单在 TS 宿主侧
+/// 按插件清单校验。与 call_provider_api 不同：不强制 Bearer 头、不要求成功状态码，
+/// 状态码与响应体原样回传给插件自行判断。
+#[tauri::command]
+async fn plugin_http(url: String, method: String, headers_json: Option<String>, body: Option<String>) -> Result<String, String> {
+    let url = validate_proxy_url(&url)?.to_string();
+    let m = method.to_uppercase();
+    let parsed_method = reqwest::Method::from_bytes(m.as_bytes())
+        .map_err(|_| format!("不支持的请求方法：{}", m))?;
+    let client = shared_provider_client(); // 已禁用重定向，避免 302 跳内网绕过 SSRF 校验
+    let mut req = client.request(parsed_method, &url);
+    if let Some(hj) = headers_json.as_deref() {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(hj) {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() { req = req.header(k, s); }
+            }
+        }
+    }
+    if let Some(b) = body { req = req.body(b); }
+    let resp = req.send().await.map_err(|e| format!("请求失败：{}", e))?;
+    let status = resp.status().as_u16();
+    let mut headers_map = serde_json::Map::new();
+    for (k, v) in resp.headers().iter() {
+        if let Ok(s) = v.to_str() { headers_map.insert(k.as_str().to_string(), serde_json::Value::String(s.to_string())); }
+    }
+    let text = resp.text().await.map_err(|e| format!("读取响应失败：{}", e))?;
+    Ok(serde_json::json!({ "status": status, "body": text, "headers": headers_map }).to_string())
+}
+
+/// 桌面进程插件：用户在插件清单里声明的本地命令，由用户手动启动/停止；输出留最近 300 行。
+struct PluginProc {
+    child: std::process::Child,
+    output: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn plugin_procs() -> &'static std::sync::Mutex<std::collections::HashMap<String, PluginProc>> {
+    static PROCS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, PluginProc>>> = OnceLock::new();
+    PROCS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[tauri::command]
+fn plugin_process_start(id: String, command: String, args: Vec<String>) -> Result<u32, String> {
+    use std::process::{Command, Stdio};
+    let mut map = plugin_procs().lock().map_err(|_| "进程表锁定失败".to_string())?;
+    let running = map.get_mut(&id)
+        .map(|e| matches!(e.child.try_wait(), Ok(None)))
+        .unwrap_or(false);
+    if running { return Err("该插件进程已在运行".into()); }
+    map.remove(&id);
+    let mut child = Command::new(&command)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动失败：{}", e))?;
+    let pid = child.id();
+    let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    fn drain<R: std::io::Read + Send + 'static>(stream: R, buf: std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader};
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                match line {
+                    Ok(l) => {
+                        if let Ok(mut v) = buf.lock() {
+                            v.push(l);
+                            if v.len() > 300 { let excess = v.len() - 300; v.drain(0..excess); }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(out) = child.stdout.take() { drain(out, output.clone()); }
+    if let Some(err) = child.stderr.take() { drain(err, output.clone()); }
+    map.insert(id, PluginProc { child, output });
+    Ok(pid)
+}
+
+#[tauri::command]
+fn plugin_process_stop(id: String) -> Result<(), String> {
+    let mut map = plugin_procs().lock().map_err(|_| "进程表锁定失败".to_string())?;
+    if let Some(mut entry) = map.remove(&id) {
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn plugin_process_running(id: String) -> bool {
+    let mut map = match plugin_procs().lock() { Ok(m) => m, Err(_) => return false };
+    match map.get_mut(&id) {
+        Some(entry) => matches!(entry.child.try_wait(), Ok(None)),
+        None => false,
+    }
+}
+
+#[tauri::command]
+fn plugin_process_output(id: String) -> String {
+    let map = match plugin_procs().lock() { Ok(m) => m, Err(_) => return String::new() };
+    match map.get(&id) {
+        Some(entry) => entry.output.lock().map(|v| v.join("\n")).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+// ---------------- MCP 服务器 stdio 桥（v0.1.264） ----------------
+// 本地 MCP 服务器就是普通子进程：JSON-RPC 按行走 stdin/stdout。
+// 前端用 mcp_write 写入一行请求、用 mcp_read 轮询取走新到的 stdout 行（无需 Tauri 事件）。
+
+struct McpProc {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn mcp_procs() -> &'static std::sync::Mutex<std::collections::HashMap<String, McpProc>> {
+    static PROCS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, McpProc>>> = OnceLock::new();
+    PROCS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn mcp_drain<R: std::io::Read + Send + 'static>(stream: R, buf: std::sync::Arc<std::sync::Mutex<Vec<String>>>, cap: usize) {
+    use std::io::{BufRead, BufReader};
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines() {
+            match line {
+                Ok(l) => {
+                    if let Ok(mut v) = buf.lock() {
+                        v.push(l);
+                        if v.len() > cap { let excess = v.len() - cap; v.drain(0..excess); }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn mcp_start(id: String, command: String, args: Vec<String>) -> Result<u32, String> {
+    use std::process::{Command, Stdio};
+    let mut map = mcp_procs().lock().map_err(|_| "MCP 进程表锁定失败".to_string())?;
+    let running = map.get_mut(&id)
+        .map(|e| matches!(e.child.try_wait(), Ok(None)))
+        .unwrap_or(false);
+    if running { return Err("该 MCP 服务器已在运行".into()); }
+    map.remove(&id);
+    let mut child = Command::new(&command)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 MCP 服务器失败：{}", e))?;
+    let pid = child.id();
+    let stdin = child.stdin.take().ok_or_else(|| "无法打开 MCP 服务器 stdin".to_string())?;
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    if let Some(out) = child.stdout.take() { mcp_drain(out, lines.clone(), 2000); }
+    if let Some(err) = child.stderr.take() { mcp_drain(err, logs.clone(), 300); }
+    map.insert(id, McpProc { child, stdin, lines, logs });
+    Ok(pid)
+}
+
+#[tauri::command]
+fn mcp_write(id: String, line: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut map = mcp_procs().lock().map_err(|_| "MCP 进程表锁定失败".to_string())?;
+    let entry = map.get_mut(&id).ok_or_else(|| "MCP 服务器未运行".to_string())?;
+    entry.stdin.write_all(line.as_bytes()).map_err(|e| format!("写入 MCP 服务器失败：{}", e))?;
+    entry.stdin.write_all(b"\n").map_err(|e| format!("写入 MCP 服务器失败：{}", e))?;
+    entry.stdin.flush().map_err(|e| format!("写入 MCP 服务器失败：{}", e))?;
+    Ok(())
+}
+
+/// 取走自上次读取以来新到的 stdout 行（JSON-RPC 消息，一行一条）
+#[tauri::command]
+fn mcp_read(id: String) -> Vec<String> {
+    let map = match mcp_procs().lock() { Ok(m) => m, Err(_) => return Vec::new() };
+    match map.get(&id) {
+        Some(entry) => entry.lines.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+#[tauri::command]
+fn mcp_stop(id: String) -> Result<(), String> {
+    let mut map = mcp_procs().lock().map_err(|_| "MCP 进程表锁定失败".to_string())?;
+    if let Some(mut entry) = map.remove(&id) {
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mcp_running(id: String) -> bool {
+    let mut map = match mcp_procs().lock() { Ok(m) => m, Err(_) => return false };
+    match map.get_mut(&id) {
+        Some(entry) => matches!(entry.child.try_wait(), Ok(None)),
+        None => false,
+    }
+}
+
+#[tauri::command]
+fn mcp_logs(id: String) -> String {
+    let map = match mcp_procs().lock() { Ok(m) => m, Err(_) => return String::new() };
+    match map.get(&id) {
+        Some(entry) => entry.logs.lock().map(|v| v.join("\n")).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
 /// 官方只读用量代理：仅允许白名单官方端点，绕过桌面端 CORS 限制。
 /// 不接收任意 URL，防止被用作开放代理（SSRF）；不存储任何凭证。
 /// 定位 Touch ID helper 二进制（开发态与打包态）
@@ -1910,7 +2127,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, autostart_is_enabled, autostart_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

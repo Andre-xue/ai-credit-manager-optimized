@@ -1,0 +1,269 @@
+// ============================================================
+// 第三方插件系统（v0.1.264）：设备本地安装，不云同步、不进备份（与界面语言同等待遇）。
+// 插件包 = 清单 manifest + JS 代码（+ 可选面板 HTML）。代码在沙箱 iframe 中运行，
+// 只能通过宿主 RPC 调用能力（网络走宿主代理且受清单 hosts 白名单约束）；
+// 插件永远拿不到保险箱明文 Key——余额适配器由宿主在解锁后把单个账户的 Key 作为
+// 调用参数传入，且其网络请求只能发往清单声明的域名。
+// 桌面端额外支持进程插件：清单声明本地命令，由用户在本机启动/停止。
+// ============================================================
+
+export type PluginPermission = 'network' | 'data' | 'notify' | 'storage'
+export const PLUGIN_PERMISSIONS: PluginPermission[] = ['network', 'data', 'notify', 'storage']
+
+export interface PluginManifest {
+  id: string
+  name: string
+  version: string
+  description?: string
+  author?: string
+  /** 声明的能力面：panel=有面板页；adapter=注册余额适配器；process=桌面进程插件 */
+  provides: Array<'panel' | 'adapter' | 'process'>
+  permissions: PluginPermission[]
+  /** 网络白名单（域名；匹配该域名及其子域名）。permissions 含 network 时必填 */
+  hosts?: string[]
+  /** adapter 目标平台 id 列表（声明用；实际注册以代码调用 registerBalanceAdapter 为准） */
+  providers?: string[]
+  /** 进程插件（仅桌面端）：要启动的本地命令 */
+  process?: { command: string; args?: string[] }
+}
+
+export interface InstalledPlugin {
+  manifest: PluginManifest
+  code: string
+  html?: string
+  enabled: boolean
+  installedAt: number
+  source: 'builtin' | 'file' | 'editor'
+}
+
+export interface PluginPackage {
+  manifest: PluginManifest
+  code: string
+  html?: string
+}
+
+const PLUGINS_KEY = 'acm.plugins.v1'
+export const PLUGINS_EVENT = 'acm-plugins-changed'
+
+function emitPluginsChanged(): void {
+  try { window.dispatchEvent(new Event(PLUGINS_EVENT)) } catch { /* node 测试环境无 window 时忽略 */ }
+}
+
+export function loadPlugins(): InstalledPlugin[] {
+  try {
+    const raw = localStorage.getItem(PLUGINS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter(p => p && typeof p === 'object' && p.manifest && typeof p.code === 'string')
+  } catch { return [] }
+}
+
+function savePlugins(list: InstalledPlugin[]): void {
+  try { localStorage.setItem(PLUGINS_KEY, JSON.stringify(list)) } catch { /* 存不下则忽略 */ }
+  emitPluginsChanged()
+}
+
+export function installPlugin(pkg: PluginPackage, source: InstalledPlugin['source']): InstalledPlugin {
+  const list = loadPlugins()
+  const existing = list.find(p => p.manifest.id === pkg.manifest.id)
+  const rec: InstalledPlugin = {
+    manifest: pkg.manifest,
+    code: pkg.code,
+    html: pkg.html,
+    enabled: existing ? existing.enabled : true,
+    installedAt: existing ? existing.installedAt : Date.now(),
+    source,
+  }
+  const next = existing ? list.map(p => (p.manifest.id === pkg.manifest.id ? rec : p)) : [...list, rec]
+  savePlugins(next)
+  return rec
+}
+
+export function uninstallPlugin(id: string): void {
+  savePlugins(loadPlugins().filter(p => p.manifest.id !== id))
+  // 一并清掉该插件的私有存储
+  try {
+    const prefix = `acm.plugin.data.${id}.`
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(prefix)) keys.push(k) }
+    keys.forEach(k => localStorage.removeItem(k))
+  } catch { /* 忽略 */ }
+}
+
+export function setPluginEnabled(id: string, enabled: boolean): void {
+  savePlugins(loadPlugins().map(p => (p.manifest.id === id ? { ...p, enabled } : p)))
+}
+
+/** 校验一个插件包（文件导入 / 编辑器保存共用）。返回错误文案或 null（通过）。 */
+export function validatePluginPackage(pkg: unknown): string | null {
+  if (!pkg || typeof pkg !== 'object') return '插件包不是有效的对象'
+  const p = pkg as Partial<PluginPackage>
+  const m = p.manifest as Partial<PluginManifest> | undefined
+  if (!m || typeof m !== 'object') return '缺少 manifest 清单'
+  if (typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{1,48}$/.test(m.id)) return '插件 id 只能用小写字母、数字与连字符（2–49 位）'
+  if (typeof m.name !== 'string' || !m.name.trim()) return '插件名称不能为空'
+  if (typeof m.version !== 'string' || !m.version.trim()) return '插件版本号不能为空'
+  if (!Array.isArray(m.provides) || m.provides.length === 0) return 'manifest.provides 至少声明一项能力（panel / adapter / process）'
+  for (const v of m.provides) if (v !== 'panel' && v !== 'adapter' && v !== 'process') return `未知的 provides 值：${String(v)}`
+  if (!Array.isArray(m.permissions)) return 'manifest.permissions 必须是数组'
+  for (const v of m.permissions) if (!PLUGIN_PERMISSIONS.includes(v as PluginPermission)) return `未知的权限：${String(v)}`
+  if (m.permissions.includes('network')) {
+    if (!Array.isArray(m.hosts) || m.hosts.length === 0) return '声明了 network 权限就必须在 hosts 里列出允许访问的域名'
+    for (const h of m.hosts) if (typeof h !== 'string' || !/^[a-z0-9.-]+$/i.test(h) || h.includes('..')) return `hosts 域名不合法：${String(h)}`
+  }
+  if (m.provides.includes('process')) {
+    if (!m.process || typeof m.process.command !== 'string' || !m.process.command.trim()) return '进程插件必须在 manifest.process.command 里写明要启动的命令'
+  }
+  if (typeof p.code !== 'string' || !p.code.trim()) return '插件代码不能为空'
+  if (p.code.length > 512 * 1024) return '插件代码过大（上限 512KB）'
+  if (p.html !== undefined && typeof p.html !== 'string') return 'html 必须是字符串'
+  return null
+}
+
+/** 网络白名单匹配：请求域名等于清单域名，或是其子域名 */
+export function isHostAllowed(url: string, hosts: string[] | undefined): boolean {
+  if (!hosts || hosts.length === 0) return false
+  let host: string
+  try { host = new URL(url).hostname.toLowerCase() } catch { return false }
+  return hosts.some(h => {
+    const d = h.toLowerCase()
+    return host === d || host.endsWith('.' + d)
+  })
+}
+
+/** 插件私有存储（localStorage 命名空间隔离） */
+export function pluginStorageGet(pluginId: string, key: string): unknown {
+  try {
+    const raw = localStorage.getItem(`acm.plugin.data.${pluginId}.${key}`)
+    return raw == null ? null : JSON.parse(raw)
+  } catch { return null }
+}
+export function pluginStorageSet(pluginId: string, key: string, value: unknown): void {
+  try { localStorage.setItem(`acm.plugin.data.${pluginId}.${key}`, JSON.stringify(value ?? null)) } catch { /* 忽略 */ }
+}
+
+// ---------------- 桌面进程插件（Tauri 命令封装；非桌面端调用直接报错） ----------------
+
+function tauriInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a: Record<string, unknown>) => Promise<T> } }
+  if (!w.__TAURI_INTERNALS__?.invoke) return Promise.reject(new Error('仅桌面端可用'))
+  return w.__TAURI_INTERNALS__.invoke(cmd, args)
+}
+
+export function isDesktopShell(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+
+export async function pluginProcessStart(p: InstalledPlugin): Promise<number> {
+  const proc = p.manifest.process
+  if (!proc) throw new Error('该插件没有声明进程命令')
+  return tauriInvoke<number>('plugin_process_start', { id: p.manifest.id, command: proc.command, args: proc.args ?? [] })
+}
+export async function pluginProcessStop(id: string): Promise<void> {
+  await tauriInvoke('plugin_process_stop', { id })
+}
+export async function pluginProcessRunning(id: string): Promise<boolean> {
+  try { return await tauriInvoke<boolean>('plugin_process_running', { id }) } catch { return false }
+}
+export async function pluginProcessOutput(id: string): Promise<string> {
+  try { return await tauriInvoke<string>('plugin_process_output', { id }) } catch { return '' }
+}
+
+/** 桌面端插件网络代理（绕 CORS + Rust 侧 SSRF 校验）；非桌面端由 runtime 用 fetch/CapacitorHttp 兜底 */
+export async function pluginHttpDesktop(url: string, method: string, headers: Record<string, string>, body?: string): Promise<{ status: number; text: string; headers: Record<string, string> }> {
+  const raw = await tauriInvoke<string>('plugin_http', {
+    url, method,
+    headersJson: JSON.stringify(headers ?? {}),
+    body: body ?? null,
+  })
+  const parsed = JSON.parse(raw) as { status: number; body: string; headers?: Record<string, string> }
+  return { status: parsed.status, text: parsed.body, headers: parsed.headers ?? {} }
+}
+
+// ---------------- 内置示例插件（可一键装入，帮用户理解插件能做什么） ----------------
+
+export const EXAMPLE_PLUGINS: PluginPackage[] = [
+  {
+    manifest: {
+      id: 'acm-example-fx',
+      name: '汇率助手（示例）',
+      version: '1.0.0',
+      description: '面板插件示例：经宿主网络代理拉取公开汇率接口，展示美元/欧元/英镑/日元对人民币汇率，结果缓存在插件私有存储里。',
+      author: 'AI 积分管家',
+      provides: ['panel'],
+      permissions: ['network', 'storage', 'notify'],
+      hosts: ['open.er-api.com'],
+    },
+    html: '<div style="font-family:inherit;padding:6px 2px"><div style="display:flex;gap:8px;align-items:center"><button id="fx-go" style="padding:6px 14px;border-radius:8px;border:0;background:#6d28d9;color:#fff;cursor:pointer">获取最新汇率</button><span id="fx-at" style="font-size:12px;opacity:.65"></span></div><div id="fx-out" style="margin-top:10px;font-size:14px;line-height:1.9"></div></div>',
+    code: `
+const out = document.getElementById('fx-out')
+const at = document.getElementById('fx-at')
+function render(d) {
+  if (!d || !d.rates) { out.textContent = '暂无数据，点上方按钮获取'; return }
+  const r = d.rates // 基准 USD：r.CNY = 1 美元的人民币价；1 单位 X 的人民币价 = r.CNY / r[X]
+  const row = (c) => '<div>1 ' + c + ' ≈ <b>' + (r.CNY / r[c]).toFixed(4) + '</b> CNY</div>'
+  out.innerHTML = ['USD', 'EUR', 'GBP', 'JPY'].map(row).join('')
+  at.textContent = d.at ? ('更新于 ' + new Date(d.at).toLocaleString()) : ''
+}
+;(async () => { render(await acm.storage.get('last')) })()
+document.getElementById('fx-go').addEventListener('click', async () => {
+  out.textContent = '加载中…'
+  try {
+    const res = await acm.http('https://open.er-api.com/v6/latest/USD')
+    const j = JSON.parse(res.text)
+    if (!j || !j.rates) throw new Error('接口返回异常')
+    const d = { rates: j.rates, at: Date.now() }
+    await acm.storage.set('last', d)
+    render(d)
+    acm.notify('汇率已更新')
+  } catch (e) { out.textContent = '获取失败：' + (e && e.message ? e.message : e) }
+})
+`,
+  },
+  {
+    manifest: {
+      id: 'acm-example-digest',
+      name: '数据速览（示例）',
+      version: '1.0.0',
+      description: '面板插件示例：读取与 AI 助手「引用我的数据」相同的脱敏摘要（不含任何密钥），展示在面板里。',
+      author: 'AI 积分管家',
+      provides: ['panel'],
+      permissions: ['data', 'notify'],
+    },
+    html: '<div style="font-family:inherit;padding:6px 2px"><button id="dg-go" style="padding:6px 14px;border-radius:8px;border:0;background:#6d28d9;color:#fff;cursor:pointer">读取我的数据摘要</button><pre id="dg-out" style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;margin-top:10px"></pre></div>',
+    code: `
+document.getElementById('dg-go').addEventListener('click', async () => {
+  const el = document.getElementById('dg-out')
+  try { el.textContent = await acm.digest() }
+  catch (e) { el.textContent = '读取失败：' + (e && e.message ? e.message : e) }
+})
+`,
+  },
+  {
+    manifest: {
+      id: 'acm-template-adapter',
+      name: '余额适配器模板（示例）',
+      version: '1.0.0',
+      description: '适配器插件模板：把 providers 改成目标平台 id、hosts 改成其官方 API 域名、接口地址与解析字段改成真实值后启用，即可给原本不支持的平台加上自动查余额。默认停用，避免误触发。',
+      author: 'AI 积分管家',
+      provides: ['adapter'],
+      permissions: ['network'],
+      hosts: ['api.example.com'],
+      providers: ['example-provider'],
+    },
+    code: `
+// 余额适配器：宿主在用户点「查询/刷新余额」且保险箱已解锁时调用，
+// ctx.apiKey 是该账户的明文 Key（仅本次调用传入），ctx.http 只能访问清单 hosts 里的域名。
+acm.registerBalanceAdapter('example-provider', async (ctx) => {
+  const res = await ctx.http('https://api.example.com/v1/balance', {
+    headers: { Authorization: 'Bearer ' + ctx.apiKey },
+  })
+  if (res.status !== 200) throw new Error('接口返回 ' + res.status)
+  const j = JSON.parse(res.text)
+  // 按目标平台的真实返回结构取字段，返回 { total, used } 或 { remaining } 等（单位默认 currency）
+  return { remaining: Number(j.balance), total: Number(j.balance), unit: 'currency', symbol: '¥' }
+})
+`,
+  },
+]

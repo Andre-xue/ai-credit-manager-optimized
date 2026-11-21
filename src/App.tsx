@@ -10,7 +10,7 @@ import {
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
-  Archive, ArchiveRestore,
+  Archive, ArchiveRestore, Puzzle,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -60,7 +60,9 @@ import {
   isVaultInitialized, initVault, verifyVault, encryptSecret, decryptSecret, fingerprint, resetVault,
   changeMasterPassword, saveBiometricPassword, getBiometricPassword, clearBiometricPassword,
 } from './core/crypto'
-import { getAdapter, formatUsageBalance, errorText } from './core/adapters'
+import { formatUsageBalance, errorText } from './core/adapters'
+import { PLUGINS_EVENT } from './core/plugins'
+import { getAdapterWithPlugins, setPluginHostHandlers } from './core/pluginRuntime'
 import { parseUsageCsv, type UsageEventInput } from './core/csv'
 import {
   type ExportFormat, type ServiceEntry, exportByFormat, detectCsvKind, isJsonImport,
@@ -87,6 +89,7 @@ const AIView = lazy(() => import('./components/AIView').then(m => ({ default: m.
 const VoiceSettings = lazy(() => import('./components/VoiceSettings').then(m => ({ default: m.VoiceSettings })))
 const CalendarView = lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })))
 const ReportView = lazy(() => import('./components/ReportView').then(m => ({ default: m.ReportView })))
+const PluginsView = lazy(() => import('./components/PluginsView').then(m => ({ default: m.PluginsView })))
 import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
@@ -101,7 +104,7 @@ type CsvImportPreview =
   | { kind: 'quotas'; quotas: ReturnType<typeof parseQuotasCsv> }
   | { kind: 'usage'; events: UsageEventInput[] }
 
-type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings'
+type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings' | 'plugins'
 
 const UNIT_LABEL: Record<CreditUnit, string> = {
   credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天',
@@ -411,6 +414,16 @@ function App() {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
   }, [])
+
+  // 插件系统：给运行时注入宿主回调（通知 + 最新状态源）；插件增删/启停时刷新全树，
+  // 让 Key 管理里「查询/刷新余额」按钮随插件适配器的启用状态即时出现/消失
+  const [, setPluginTick] = useState(0)
+  useEffect(() => {
+    setPluginHostHandlers({ notify, getState: () => stateRef.current })
+    const on = () => setPluginTick(x => x + 1)
+    window.addEventListener(PLUGINS_EVENT, on)
+    return () => window.removeEventListener(PLUGINS_EVENT, on)
+  }, [notify])
 
   // 本地服务联动控制器：设置页 / AI翻译 / AI图像 / AI视频 共用的服务开关状态源。
   // 所有开关读写同一份 settings.localServices，任一处切换后各处同步显示。
@@ -900,7 +913,7 @@ function App() {
     void (async () => {
       for (const a of stateRef.current.accounts) {
         if (!a.encryptedKey) continue
-        const adapter = getAdapter(a.providerId)
+        const adapter = getAdapterWithPlugins(a.providerId)
         if (!adapter.supported) continue
         try {
           const plain = await decryptSecret(a.encryptedKey, sessionPwd)
@@ -1007,6 +1020,7 @@ function App() {
     { id: 'calendar', label: '额度日历', icon: CalendarDays },
     { id: 'voice', label: '语音配置', icon: Volume2 },
     { id: 'docs', label: '文档问答', icon: FileText },
+    { id: 'plugins', label: '插件', icon: Puzzle },
     { id: 'settings', label: '设置', icon: Settings },
   ]
 
@@ -1015,7 +1029,7 @@ function App() {
     { label: '概览', ids: ['ai', 'dashboard'] },
     { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs'] },
     { label: '资产管理', ids: ['keys', 'usage', 'calendar', 'checkin'] },
-    { label: '系统', ids: ['voice', 'settings'] },
+    { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
 
   // 移动端底部导航：只保留 5 个高频入口，AI 置于正中，其余从抽屉进入（原 10 个太挤）
@@ -1023,7 +1037,7 @@ function App() {
   const shortLabel: Record<Tab, string> = {
     ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
     'local-image': '本地图像', 'local-video': '本地视频',
-    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置',
+    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置', plugins: '插件',
   }
 
   // ---- 全局搜索（Cmd/Ctrl+K） ----
@@ -1065,7 +1079,7 @@ function App() {
   }, [])
 
   // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
-  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'calendar', 'checkin', 'voice', 'settings'] as Tab[])
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'calendar', 'checkin', 'voice', 'plugins', 'settings'] as Tab[])
     .filter(id => !(isPhone && id === 'docs'))
 
   // 界面风格：全平台统一极简留白风（已移除其他风格选项，强制 claude）
@@ -1342,6 +1356,8 @@ function App() {
           {tab === 'calendar' && <CalendarView state={state} />}
 
           {tab === 'report' && <ReportView state={state} notify={notify} />}
+
+          {tab === 'plugins' && <PluginsView notify={notify} />}
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
             priceAlerts={priceAlerts} priceCheckedAt={priceCheckedAt} checkingPrices={checkingPrices}
@@ -2393,7 +2409,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     const plain = revealed[a.id]
     const q = latestQuota(state.quotas, a.id)
     const balance = q ? `${(q.total - q.used).toLocaleString()} ${t(UNIT_LABEL[q.unit])}` : t('未录入')
-    const adapter = getAdapter(a.providerId)
+    const adapter = getAdapterWithPlugins(a.providerId)
     const h = health[a.id]
     const busyH = checking.has(a.id)
     return (
@@ -2600,7 +2616,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               const plain = revealed[a.id]
               const q = latestQuota(state.quotas, a.id)
               const balance = q ? `${(q.total - q.used).toLocaleString()} ${t(UNIT_LABEL[q.unit])}` : t('未录入')
-              const adapter = getAdapter(a.providerId)
+              const adapter = getAdapterWithPlugins(a.providerId)
               return (
                 <tr key={a.id}>
                   <td>
@@ -3831,7 +3847,7 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
   const [formPwd, setFormPwd] = useState('')
   const pwdRef = useRef<HTMLInputElement>(null)
   const needInlinePwd = !sessionPwd && !getBiometricPassword()
-  const adapter = getAdapter(provider.id)
+  const adapter = getAdapterWithPlugins(provider.id)
 
   const isVoiceCfg = provider.id === 'voice-config'
   // 语音配置(APP)可选服务商（需 API Key 的；system/local 无需 Key，排除）
