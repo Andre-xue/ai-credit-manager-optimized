@@ -93,7 +93,7 @@ jobs:
           if [[ "${{ runner.os }}" == "macOS" ]] && ! ls src-tauri/target/release/bundle/dmg/*.dmg >/dev/null 2>&1; then
             echo "Tauri dmg failed, creating dmg manually..."
             STAGE=/tmp/acm-dmg-stage && rm -rf "$STAGE" && mkdir -p "$STAGE"
-            cp -R "src-tauri/target/release/bundle/macos/AI 魔方.app" "$STAGE/"
+            cp -R "src-tauri/target/release/bundle/macos/AI Cube.app" "$STAGE/"
             ln -s /Applications "$STAGE/Applications"
             hdiutil create -volname "AI 魔方" -srcfolder "$STAGE" -ov -format UDZO \
               "src-tauri/target/release/bundle/dmg/AI 魔方_${{ github.ref_name }}_${{ matrix.name }}.dmg"
