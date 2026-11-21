@@ -811,7 +811,8 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .side-history-new { display: flex; align-items: center; gap: 6px; padding: 6px 9px; font-size: 12.5px; color: var(--primary); background: none; border: 1px dashed var(--border); border-radius: 9px; cursor: pointer; }
 .side-history-new:hover { border-color: var(--primary); }
 .side-history-item { display: flex; align-items: center; gap: 1px; border-radius: 9px; padding-right: 2px; }
-.side-history-item.active { background: rgba(109, 40, 217, .10); }
+/* 注意：active 背景必须不透明——半透明会透出底层左滑删除按钮，与悬停操作图标重叠（v0.1.254 修复） */
+.side-history-item.active { background: linear-gradient(rgba(109, 40, 217, .10), rgba(109, 40, 217, .10)), var(--panel); }
 .side-history-main { flex: 1; min-width: 0; text-align: left; background: none; border: none; cursor: pointer; padding: 6px 8px; display: grid; gap: 1px; color: var(--text); }
 .side-history-main b { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-history-main span { font-size: 11px; color: var(--text-3); }
