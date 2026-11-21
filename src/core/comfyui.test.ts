@@ -136,3 +136,16 @@ describe('historyErrorDetail（v0.1.288）', () => {
     expect(historyErrorDetail({})).toBe('')
   })
 })
+
+describe('KSampler 必须接底模输出（v0.1.289 回归）', () => {
+  it('文生图工作流 KSampler 的 model 接 CheckpointLoader 输出', () => {
+    const wf = buildTxt2ImgWorkflow('AnythingV5V3_v5PrtRE.safetensors', 'a cat', { seed: 1 }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>
+    expect(wf['5'].class_type).toBe('KSampler')
+    expect(wf['5'].inputs.model).toEqual(['1', 0])
+  })
+  it('图生图工作流 KSampler 的 model 同样接上', () => {
+    const wf = buildImg2ImgWorkflow('AnythingV5V3_v5PrtRE.safetensors', 'a cat', 'src.png', { seed: 1 }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>
+    expect(wf['6'].class_type).toBe('KSampler')
+    expect(wf['6'].inputs.model).toEqual(['1', 0])
+  })
+})

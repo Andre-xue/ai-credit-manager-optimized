@@ -50,6 +50,7 @@ export function buildTxt2ImgWorkflow(model: string, prompt: string, opts?: Image
     '5': {
       class_type: 'KSampler',
       inputs: {
+        model: ['1', 0],
         seed, steps, cfg, sampler_name: samplerName, scheduler,
         positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0], denoise: 1,
       },
@@ -71,11 +72,11 @@ export function buildImg2ImgWorkflow(model: string, prompt: string, imageName: s
   const samplerName = comfySamplerName(sampler)
   return {
     '1': wf['1'], '2': wf['2'], '3': wf['3'],
-    '4': { class_type: 'LoadImage', inputs: { image: imageName, upload: 'image' } },
+    '4': { class_type: 'LoadImage', inputs: { image: imageName } },
     '5': { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] } },
     '6': {
       class_type: 'KSampler',
-      inputs: { seed, steps, cfg, sampler_name: samplerName, scheduler, positive: ['2', 0], negative: ['3', 0], latent_image: ['5', 0], denoise: opts?.strength ?? 0.7 },
+      inputs: { model: ['1', 0], seed, steps, cfg, sampler_name: samplerName, scheduler, positive: ['2', 0], negative: ['3', 0], latent_image: ['5', 0], denoise: opts?.strength ?? 0.7 },
     },
     '7': { class_type: 'VAEDecode', inputs: { samples: ['6', 0], vae: ['1', 2] } },
     '8': { class_type: 'SaveImage', inputs: { images: ['7', 0], filename_prefix: 'acm_local_i2i' } },
