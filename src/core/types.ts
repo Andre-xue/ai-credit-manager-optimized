@@ -243,6 +243,8 @@ export interface AppSettings {
   aiToolbar?: AiToolbarPrefs
   /** AI 记忆：开启后对话会带上全部历史会话的近期上下文（缺省关闭） */
   aiMemory?: boolean
+  /** 手机端底部菜单栏：开启才固定显示（缺省关闭，用左上角按钮开侧边栏切换页面） */
+  showBottomNav?: boolean
 }
 
 /** AI 助手顶栏 8 个工具的显隐偏好 */

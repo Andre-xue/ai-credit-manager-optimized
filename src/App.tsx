@@ -155,6 +155,12 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
   useEffect(() => { if (open) setList(loadSessionList()) }, [open ])
   // 只剩一个空会话时视为「暂无历史」：删掉最后一个空会话后存储会自动补一个空会话占位，列表里不再假装它还在
   const visibleSessions = list.sessions.filter(s => !(list.sessions.length === 1 && s.count === 0))
+  // 历史会话分页：每页 5 条，避免长列表全量堆在小滚动框里
+  const HIST_PAGE_SIZE = 5
+  const [histPage, setHistPage] = useState(1)
+  const histPages = Math.max(1, Math.ceil(visibleSessions.length / HIST_PAGE_SIZE))
+  const histCur = Math.min(histPage, histPages)
+  const pageSessions = visibleSessions.slice((histCur - 1) * HIST_PAGE_SIZE, histCur * HIST_PAGE_SIZE)
   const fmtTime = (ts: number) => {
     const d = new Date(ts)
     const p = (n: number) => String(n).padStart(2, '0')
@@ -174,7 +180,7 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
             <Plus size={13} /> 新建会话
           </button>
           {visibleSessions.length === 0 && <div className="side-history-empty">暂无历史会话</div>}
-          {visibleSessions.map(s => (
+          {pageSessions.map(s => (
             <div key={s.id} className="side-history-swipe">
               <button className="side-history-del" tabIndex={swipe === s.id ? 0 : -1} onClick={() => { setSwipe(null); deleteStoredSession(s.id) }}>删除</button>
               <div className={`side-history-item ${s.id === list.activeId ? 'active' : ''} ${drag?.id === s.id ? 'dragging' : ''}`}
@@ -199,6 +205,13 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
               </div>
             </div>
           ))}
+          {histPages > 1 && (
+            <div className="side-history-pager">
+              <button disabled={histCur <= 1} onClick={() => setHistPage(histCur - 1)}>上一页</button>
+              <span>第 {histCur}/{histPages} 页 · 共 {visibleSessions.length} 条</span>
+              <button disabled={histCur >= histPages} onClick={() => setHistPage(histCur + 1)}>下一页</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1022,6 +1035,7 @@ function App() {
     'claude-ui',
     motionOn ? 'motion-ui' : 'no-motion',
     sidebarVisible ? '' : 'sidebar-collapsed',
+    state.settings.showBottomNav ? 'has-bottom-nav' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -1405,8 +1419,8 @@ function App() {
         )
       })()}
 
-      {/* 移动端底部导航：手机原生端同样显示（用户反馈侧栏抽屉不易发现、导航像消失了）；完整菜单与历史会话仍在左上角抽屉里 */}
-      <nav className="bottom-nav">
+      {/* 移动端底部导航：仅当设置「底部菜单栏（手机端）」开启时显示（缺省关闭，页面切换用左上角抽屉） */}
+      {state.settings.showBottomNav && <nav className="bottom-nav">
         {bottomTabs.map(id => {
           const t = tabs.find(x => x.id === id)!
           const Icon = t.icon
@@ -1417,7 +1431,7 @@ function App() {
             </button>
           )
         })}
-      </nav>
+      </nav>}
 
       {addOpen && <PlatformPickerModal
         onClose={() => setAddOpen(false)}
@@ -4650,6 +4664,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
             <SettingsRow title="动态效果" desc="抽屉滑入、卡片渐入、光斑浮动等动效">
               <Toggle checked={s.uiMotion !== false} onChange={v => onChange({ uiMotion: v })} />
+            </SettingsRow>
+            <SettingsRow title="底部菜单栏（手机端）" desc="开启后手机端底部固定显示菜单栏；关闭则用左上角按钮打开侧边栏切换页面，聊天等页面全屏无遮挡">
+              <Toggle checked={!!s.showBottomNav} onChange={v => onChange({ showBottomNav: v })} />
             </SettingsRow>
           </SettingsSection>
 

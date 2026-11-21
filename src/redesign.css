@@ -671,6 +671,28 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 手机 AI 页三修 + 底部栏联动（v0.1.247）：
+   ① 顶部固定胶囊原为三键设计、现只剩宫格一键 → 收窄为只包住按钮，消除空白标题栏；
+   ② AI 页高度锁定：主区不滚、空对话页面不再滑动、消息不被胶囊遮挡；
+   ③ AI 页底部留白仅在开启底部菜单栏时保留 */
+.phone-shell .ai-page.ai-layout-welcome .ai-topbar,
+.phone-shell .ai-page.ai-layout-focus .ai-topbar,
+.phone-shell .ai-page.ai-layout-chat .ai-topbar { left: auto; width: 44px; justify-content: center; }
+.phone-shell .ai-page .ai-top-actions { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
+.phone-shell .main:has(> .content-ai) { overflow: hidden; }
+.phone-shell .content-ai { height: 100%; display: flex; flex-direction: column; }
+.phone-shell .ai-page { flex: 1; min-height: 0; }
+.phone-shell .ai-shell { flex: 1; min-height: 0; height: auto !important; }
+.phone-shell .content-ai { padding-bottom: 8px !important; }
+.phone-shell.has-bottom-nav .content-ai { padding-bottom: 82px !important; }
+.phone-shell .ai-model-wrap { min-width: 0; flex: 1 1 120px; }
+.phone-shell .ai-model-wrap .ai-model-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 历史会话分页 */
+.side-history-pager { display: flex; align-items: center; justify-content: space-between; padding: 6px 2px 2px; }
+.side-history-pager button { border: 1px solid var(--border); background: var(--panel); color: var(--text-2); font-size: 11.5px; padding: 4px 10px; border-radius: 7px; cursor: pointer; }
+.side-history-pager button:disabled { opacity: .4; cursor: default; }
+.side-history-pager span { font-size: 11.5px; color: var(--text-3); }
+
 /* 历史会话左滑删除（v0.1.246）：行可横向拖动，露出右侧红色删除键；纵向滚动列表不受影响 */
 .side-history-swipe { position: relative; border-radius: 9px; overflow: hidden; }
 .side-history-del { position: absolute; top: 0; right: 0; bottom: 0; width: 64px; border: none; background: var(--red); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
