@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
-import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
+import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { getKeyPageUrl, refreshKeyUrls, KEYURLS_EVENT, VOICE_KEY_PROVIDER } from './core/keyUrls'
 import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
@@ -9,6 +9,7 @@ import {
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
+  Archive, ArchiveRestore,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider } from './core/types'
@@ -146,13 +147,15 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
     setSwipe(cur < -32 ? id : null)
     if (t.moved) suppressClickRef.current = id
   }
+  const [archivedList, setArchivedList] = useState(loadArchivedList)
+  const [archOpen, setArchOpen] = useState(false)
   useEffect(() => {
-    const refresh = () => setList(loadSessionList())
+    const refresh = () => { setList(loadSessionList()); setArchivedList(loadArchivedList()) }
     window.addEventListener(SESSIONS_EVENT, refresh)
     window.addEventListener('storage', refresh)
     return () => { window.removeEventListener(SESSIONS_EVENT, refresh); window.removeEventListener('storage', refresh) }
   }, [])
-  useEffect(() => { if (open) setList(loadSessionList()) }, [open ])
+  useEffect(() => { if (open) { setList(loadSessionList()); setArchivedList(loadArchivedList()) } }, [open ])
   // 只剩一个空会话时视为「暂无历史」：删掉最后一个空会话后存储会自动补一个空会话占位，列表里不再假装它还在
   const visibleSessions = list.sessions.filter(s => !(list.sessions.length === 1 && s.count === 0))
   // 历史会话分页：每页 5 条，避免长列表全量堆在小滚动框里
@@ -201,6 +204,7 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
                   </button>
                 )}
                 <button className="icon-btn side-history-act" title="重命名" onClick={() => { setRenaming(s.id); setRenameText(s.title) }}><Pencil size={12} /></button>
+                <button className="icon-btn side-history-act" title="归档" onClick={() => setSessionArchived(s.id, true)}><Archive size={12} /></button>
                 <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
               </div>
             </div>
@@ -211,6 +215,26 @@ function SidebarHistory({ open, onToggle, onNavigate }: { open: boolean; onToggl
               <span>第 {histCur}/{histPages} 页 · 共 {visibleSessions.length} 条</span>
               <button disabled={histCur >= histPages} onClick={() => setHistPage(histCur + 1)}>下一页</button>
             </div>
+          )}
+          {archivedList.length > 0 && (
+            <>
+              <button className="side-history-arch-head" onClick={() => setArchOpen(o => !o)} title="已归档的会话">
+                <Archive size={12} />
+                <span>已归档</span>
+                <span className="side-history-arch-count">{archivedList.length}</span>
+                {archOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+              {archOpen && archivedList.map(s => (
+                <div key={s.id} className="side-history-item archived">
+                  <button className="side-history-main" title={`${s.title}（点击恢复并打开）`} onClick={() => { setSessionArchived(s.id, false); onNavigate(); requestOpenSession(s.id) }}>
+                    <b>{s.title}</b>
+                    <span>{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                  </button>
+                  <button className="icon-btn side-history-act" title="恢复" onClick={() => setSessionArchived(s.id, false)}><ArchiveRestore size={12} /></button>
+                  <button className="icon-btn side-history-act" title="删除会话" onClick={() => deleteStoredSession(s.id)}><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </>
           )}
         </div>
       )}
@@ -1343,6 +1367,22 @@ function App() {
       {settingsOpen && (() => {
         const node = <SettingsView
           isPhone={isPhone}
+          onClearData={(cats) => {
+            const hasHistory = cats.includes('history')
+            const hasArchived = cats.includes('archived')
+            if (hasHistory && hasArchived) clearSessionsData('all')
+            else if (hasHistory) clearSessionsData('history')
+            else if (hasArchived) clearSessionsData('archived')
+            setState(s => ({
+              ...s,
+              accounts: cats.includes('api') ? [] : s.accounts,
+              quotas: cats.includes('api') ? [] : s.quotas,
+              usage: cats.includes('usage') ? [] : s.usage,
+              checkins: cats.includes('calendar') ? [] : s.checkins,
+              benefitMarks: cats.includes('calendar') ? [] : s.benefitMarks,
+            }))
+            notify('所选数据已清空')
+          }}
           state={state}
           onChange={(patch) => setState(s => updateSettings(s, patch))}
           notify={notify}
@@ -4503,7 +4543,17 @@ function SettingsRow({ title, desc, children }: { title: string; desc?: string; 
 }
 
 /** 设置中心 */
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone }: {
+type ClearCat = 'history' | 'archived' | 'api' | 'usage' | 'calendar'
+const CLEAR_CATS: { key: ClearCat; label: string; hint: string }[] = [
+  { key: 'history', label: 'AI 聊天历史', hint: '未归档的会话' },
+  { key: 'archived', label: '已归档聊天', hint: '已归档的会话' },
+  { key: 'api', label: 'API 账户与密钥', hint: '含额度快照' },
+  { key: 'usage', label: '用量费用记录', hint: '用量与费用明细' },
+  { key: 'calendar', label: '签到与日历数据', hint: '签到记录与福利标记' },
+]
+
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone, onClearData }: {
+  onClearData?: (cats: ClearCat[]) => void
   isPhone?: boolean
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
@@ -4530,6 +4580,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
 }) {
   const s = state.settings
   const [confirmClear, setConfirmClear] = useState(false)
+  // 数据清理多选（v0.1.255）：勾选类别 → 确认弹窗 → 执行
+  const [clearSel, setClearSel] = useState<ClearCat[]>([])
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
+  const toggleClearCat = (key: ClearCat) => setClearSel(sel => sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key])
+  const allClearSel = clearSel.length === CLEAR_CATS.length
   const [confirmReset, setConfirmReset] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [oldPwd, setOldPwd] = useState('')
@@ -5100,7 +5155,42 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </span>
               ) : <button className="btn sm danger" onClick={() => setConfirmClear(true)}><Trash2 size={13} /> 清空</button>}
             </SettingsRow>
+            <SettingsRow title="清空历史与数据" desc="按类别勾选要清空的数据（可多选），执行前会再次确认">
+              <button className="btn sm danger" disabled={clearSel.length === 0} onClick={() => setClearConfirmOpen(true)}>
+                <Trash2 size={13} /> 清空所选{clearSel.length > 0 ? `（${clearSel.length}）` : ''}
+              </button>
+            </SettingsRow>
+            <div className="clear-cat-list">
+              <label className="clear-cat">
+                <input type="checkbox" checked={allClearSel} onChange={e => setClearSel(e.target.checked ? CLEAR_CATS.map(c => c.key) : [])} />
+                <b>清空全部</b><span>以下所有类别</span>
+              </label>
+              {CLEAR_CATS.map(c => (
+                <label key={c.key} className="clear-cat">
+                  <input type="checkbox" checked={clearSel.includes(c.key)} onChange={() => toggleClearCat(c.key)} />
+                  {c.label}<span>{c.hint}</span>
+                </label>
+              ))}
+            </div>
           </SettingsSection>
+          {clearConfirmOpen && (
+            <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setClearConfirmOpen(false) }}>
+              <div className="modal" style={{ maxWidth: 420 }}>
+                <div className="modal-head"><h3>确认清空</h3><button className="icon-btn" onClick={() => setClearConfirmOpen(false)}><X size={18} /></button></div>
+                <div className="modal-body">
+                  <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10 }}>以下数据将被永久删除，无法恢复：</div>
+                  <ul style={{ margin: '0 0 6px', paddingLeft: 18, fontSize: 13, lineHeight: 1.9 }}>
+                    {CLEAR_CATS.filter(c => clearSel.includes(c.key)).map(c => <li key={c.key}>{c.label}</li>)}
+                  </ul>
+                  {clearSel.includes('api') && <div style={{ fontSize: 12, color: 'var(--red)' }}>含 API 密钥：如需保留，请先用下方「数据备份」导出完整备份。</div>}
+                </div>
+                <div className="modal-foot">
+                  <button className="btn" onClick={() => setClearConfirmOpen(false)}>取消</button>
+                  <button className="btn danger" onClick={() => { onClearData?.(clearSel); setClearSel([]); setClearConfirmOpen(false) }}>确认清空</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <SettingsSection title="数据备份" desc="导出/导入完整数据文件，不依赖云同步" icon={Database} tone="green">
             <SettingsRow title="导出完整备份" desc="账户、额度、签到、用量与设置导出为一个 JSON 文件；密钥只含加密密文，文件请妥善保管">

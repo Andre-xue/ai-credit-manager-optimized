@@ -86,6 +86,8 @@ export interface ChatSession {
   title: string
   messages: ChatMessage[]
   updatedAt: number
+  /** 已归档（边栏归档操作写入，AIView 只透传保存） */
+  archived?: boolean
 }
 
 const SESSIONS_KEY = 'acm_ai_sessions_v1'

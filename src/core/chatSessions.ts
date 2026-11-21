@@ -22,6 +22,8 @@ interface StoredSession {
   title: string
   messages: unknown[]
   updatedAt: number
+  /** 已归档：不出现在历史列表，收进「已归档」分组，可恢复 */
+  archived?: boolean
 }
 
 interface RawStore {
@@ -44,14 +46,71 @@ function writeRawStore(store: RawStore): void {
   window.dispatchEvent(new Event(SESSIONS_EVENT))
 }
 
-/** 边栏用：只读会话元信息（标题/时间/条数），按最近更新倒序 */
+/** 边栏用：只读会话元信息（标题/时间/条数），按最近更新倒序；已归档的不在此列 */
 export function loadSessionList(): { sessions: SessionMeta[]; activeId: string } {
   const store = readRawStore()
   if (!store) return { sessions: [], activeId: '' }
   const sessions = store.sessions
+    .filter(s => !s.archived)
     .map(s => ({ id: s.id, title: s.title || '新对话', updatedAt: s.updatedAt || 0, count: Array.isArray(s.messages) ? s.messages.length : 0 }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
   return { sessions, activeId: store.activeId }
+}
+
+/** 已归档会话元信息（边栏「已归档」分组用） */
+export function loadArchivedList(): SessionMeta[] {
+  const store = readRawStore()
+  if (!store) return []
+  return store.sessions
+    .filter(s => s.archived)
+    .map(s => ({ id: s.id, title: s.title || '新对话', updatedAt: s.updatedAt || 0, count: Array.isArray(s.messages) ? s.messages.length : 0 }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+function freshEmptySession(): StoredSession {
+  return { id: `sess-${Date.now()}`, title: '新对话', messages: [], updatedAt: Date.now() }
+}
+
+/** 归档/恢复会话：归档当前会话时把当前会话切到剩余第一个未归档会话；没有未归档的了就补一个空会话 */
+export function setSessionArchived(id: string, archived: boolean): void {
+  const store = readRawStore()
+  if (!store) return
+  const sessions = store.sessions.map(s => s.id === id ? { ...s, archived } : s)
+  let activeId = store.activeId
+  if (archived && store.activeId === id) {
+    const rest = sessions.filter(s => !s.archived)
+    if (rest.length) activeId = rest[0].id
+    else {
+      const fresh = freshEmptySession()
+      sessions.push(fresh)
+      activeId = fresh.id
+    }
+  }
+  writeRawStore({ sessions, activeId })
+}
+
+/** 按范围清空聊天数据（设置页「清空历史与数据」用）：history=未归档会话，archived=已归档会话，all=全部 */
+export function clearSessionsData(scope: 'history' | 'archived' | 'all'): void {
+  const store = readRawStore()
+  if (scope === 'all' || !store) {
+    const fresh = freshEmptySession()
+    writeRawStore({ sessions: [fresh], activeId: fresh.id })
+    return
+  }
+  if (scope === 'archived') {
+    const kept = store.sessions.filter(s => !s.archived)
+    if (!kept.length) {
+      const fresh = freshEmptySession()
+      writeRawStore({ sessions: [fresh], activeId: fresh.id })
+      return
+    }
+    writeRawStore({ sessions: kept, activeId: kept.some(s => s.id === store.activeId) ? store.activeId : kept[0].id })
+    return
+  }
+  // history：只留已归档，当前会话换成新的空会话
+  const kept = store.sessions.filter(s => s.archived)
+  const fresh = freshEmptySession()
+  writeRawStore({ sessions: [...kept, fresh], activeId: fresh.id })
 }
 
 export function updateSessionTitle(id: string, title: string): void {

@@ -671,6 +671,20 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 助手顶栏开关激活态（自动朗读 / 对话搜索 / 引用我的数据） */
 .ai-icon-btn.active { color: var(--primary); background: rgba(109, 40, 217, .12); }
 
+/* 会话归档（v0.1.255）：边栏「已归档」分组头与归档项样式 */
+.side-history-arch-head { display: flex; align-items: center; gap: 5px; width: 100%; margin-top: 8px; padding: 5px 8px; background: none; border: none; border-top: 1px solid var(--border); padding-top: 9px; font-size: 11.5px; color: var(--text-3); cursor: pointer; }
+.side-history-arch-head:hover { color: var(--text-2); }
+.side-history-arch-count { background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; font-size: 10.5px; }
+.side-history-item.archived { opacity: .72; }
+.side-history-item.archived:hover { opacity: 1; }
+
+/* 设置·数据清理多选（v0.1.255） */
+.clear-cat-list { display: grid; gap: 2px; padding: 4px 0 6px; }
+.clear-cat { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; font-size: 13px; color: var(--text); cursor: pointer; }
+.clear-cat:hover { background: var(--panel-2); }
+.clear-cat input { width: 16px; height: 16px; accent-color: var(--primary); flex: none; cursor: pointer; }
+.clear-cat span { font-size: 11.5px; color: var(--text-3); margin-left: auto; text-align: right; }
+
 /* 弹窗头尾固定（v0.1.251）：此前整个弹窗一起滚，标题/关闭/取消会随滚动消失；
    改为弹窗纵向 flex、中间 body 独立滚动，头尾常驻。选平台弹窗再进一步：搜索与分类固定，只滚平台网格 */
 .modal:has(> .modal-body) { display: flex; flex-direction: column; overflow: hidden; }
