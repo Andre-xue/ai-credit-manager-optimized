@@ -975,3 +975,23 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .gen-mi-source { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 10px; color: var(--text-3); }
 .gen-mi-best + .gen-mi-source { border-top: 1px dashed var(--border); }
 .gen-mi-link { display: inline-flex; align-items: center; gap: 3px; border: none; background: none; color: var(--primary); font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap; }
+
+/* v0.1.305：云端生成页清空按钮 + 本地页极速模式行/清空按钮 */
+.gen-label-row { display: flex; align-items: center; justify-content: space-between; margin-top: 15px; }
+.gen-clear-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; flex: none; }
+.gen-clear-btn:hover:not(:disabled) { color: var(--text); }
+.gen-clear-btn:disabled { opacity: .38; cursor: default; }
+.sd-block-title { display: flex; align-items: center; gap: 6px; }
+.sd-title-actions { margin-left: auto; display: inline-flex; }
+.sd-clear-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; }
+.sd-clear-btn:hover:not(:disabled) { color: var(--text); }
+.sd-clear-btn:disabled { opacity: .38; cursor: default; }
+.sd-fast-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-bottom: 12px; }
+.sd-fast-icon { color: #f59e0b; flex: none; }
+.sd-fast-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.sd-fast-text b { font-size: 12.5px; }
+.sd-fast-text span { font-size: 11.5px; color: var(--text-2); line-height: 1.45; }
+.sd-fast-switch { width: 40px; height: 23px; border-radius: 999px; background: #c9ccd4; position: relative; border: none; cursor: pointer; transition: background .25s; flex: none; padding: 0; }
+.sd-fast-switch.on { background: #34c759; }
+.sd-fast-dot { position: absolute; top: 2.5px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .25s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.sd-fast-switch.on .sd-fast-dot { left: 19px; }

@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
-  Film, Sparkles, Loader2, Download, Trash2, Info, KeyRound,
+  Film, Sparkles, Loader2, Download, Trash2, Info, Eraser, KeyRound,
   ExternalLink, History, X, Upload, HardDrive, RefreshCw,
 } from 'lucide-react'
 import { callVideo, extractModelId, queryVideoTask, fetchProviderModels, filterMediaModels } from '../core/providerCall'
@@ -207,7 +207,10 @@ export function VideoView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                 </div>
                 {modelInfoOpen && <ModelInfoCard modelId={cloudModel || model} kind="video" />}
 
-            <label className="gen-label" style={{ marginTop: 15 }}>{t('画面描述（Prompt）')}</label>
+            <div className="gen-label-row">
+              <label className="gen-label">{t('画面描述（Prompt）')}</label>
+              <button className="gen-clear-btn" title={t('清空输入')} disabled={!prompt || busy} onClick={() => setPrompt('')}><Eraser size={14} /></button>
+            </div>
             <textarea className="input gen-prompt" rows={4} placeholder={t('例如：一只金毛犬在秋天的落叶中奔跑，阳光透过树叶洒下，电影质感，慢镜头')}
               value={prompt} onChange={e => setPrompt(e.target.value)} disabled={busy} />
 

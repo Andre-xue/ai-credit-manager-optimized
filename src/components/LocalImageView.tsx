@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, RefreshCw,
-  Dices, Upload, X, Maximize2, ChevronDown, SlidersHorizontal, History, Settings2, Radar,
+  Dices, Upload, X, Maximize2, Eraser, Zap, ChevronDown, SlidersHorizontal, History, Settings2, Radar,
 } from 'lucide-react'
 import { callLocalImage, fetchLocalMediaModels } from '../core/providerCall'
 import { isComfyUIBase, comfyGenerate, fetchComfyCheckpoints, stripComfyCategoryPrefix } from '../core/comfyui'
@@ -50,6 +50,9 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
   const [width, setWidth] = useState(1024)
   const [height, setHeight] = useState(1024)
   const [batch, setBatch] = useState(1)
+  // 极速模式（本机偏好，两本地页共用）：生成时压分辨率/步数，M1 上更快、发热更低
+  const [fastMode, setFastMode] = useState(() => { try { return localStorage.getItem('acm.local.fastMode') === '1' } catch { return false } })
+  const toggleFastMode = (v: boolean) => { setFastMode(v); try { localStorage.setItem('acm.local.fastMode', v ? '1' : '0') } catch { /* 忽略 */ } }
   const [strength, setStrength] = useState(0.7)
   const [sourceImage, setSourceImage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -159,10 +162,14 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
     setBusy(true); setResults([])
     const startedAt = Date.now()
     const finalSeed = seed < 0 ? Math.floor(Math.random() * 4294967295) : seed
+    const effScale = fastMode ? Math.min(1, 640 / Math.max(width, height)) : 1
+    const effW = Math.max(256, Math.round(width * effScale / 8) * 8)
+    const effH = Math.max(256, Math.round(height * effScale / 8) * 8)
+    const effSteps = fastMode ? Math.min(steps, 20) : steps
     startProgress(t('正在连接本地模型…'))
     try {
       const opts = {
-        n: batch, size: `${width}x${height}`, width, height, sampler, steps, cfgScale: cfg,
+        n: fastMode ? 1 : batch, size: `${effW}x${effH}`, width: effW, height: effH, sampler, steps: effSteps, cfgScale: cfg,
         seed: finalSeed, negativePrompt: negative.trim() || undefined,
         sourceImage: mode === 'img2img' ? sourceImage : undefined,
         strength: mode === 'img2img' ? strength : undefined,
@@ -188,7 +195,7 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
       setResults(imgs.map((u, i) => thumbs[i] || u))
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
       doneProgress(t('生成完成 · 耗时 {secs}s', { secs }))
-      const params = t('{mode} · {model} · {w}x{h} · {sampler} · {steps}步 · CFG {cfg} · seed {seed}', { mode, model, w: width, h: height, sampler, steps, cfg, seed: finalSeed })
+      const params = t('{mode} · {model} · {w}x{h} · {sampler} · {steps}步 · CFG {cfg} · seed {seed}', { mode, model, w: effW, h: effH, sampler, steps: effSteps, cfg, seed: finalSeed })
         + (mode === 'img2img' ? t(' · 重绘 {strength}', { strength }) : '')
       setLastParams(params)
       setHistory(addHistory('image', {
@@ -242,8 +249,14 @@ export function LocalImageView({ notify, serviceController }: { notify: (m: stri
             <LocalModelInfoCard filename={model} />
           </div>
 
+          <div className="sd-fast-row">
+            <Zap size={14} className="sd-fast-icon" />
+            <div className="sd-fast-text"><b>{t('极速模式')}</b><span>{t('生成时自动把最长边压到 640、步数上限 20、单张生成；M1 上明显更快、发热更低')}</span></div>
+            <button className={`sd-fast-switch ${fastMode ? 'on' : ''}`} role="switch" aria-checked={fastMode} title={t('极速模式')} onClick={() => toggleFastMode(!fastMode)}><span className="sd-fast-dot" /></button>
+          </div>
+
           <div className="sd-block">
-            <div className="sd-block-title"><span className="sd-num">1</span> {t('提示词 Prompt')}</div>
+            <div className="sd-block-title"><span className="sd-num">1</span> {t('提示词 Prompt')}<span className="sd-title-actions"><button className="sd-clear-btn" title={t('清空输入')} disabled={!prompt && !negative && !sourceImage} onClick={() => { setPrompt(''); setNegative(''); setSourceImage('') }}><Eraser size={13} /></button></span></div>
             <textarea className="sd-prompt" rows={5} value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={t('描述你想生成的画面：主体、动作、环境、镜头、光线、风格……')} />
             <div className="sd-prompt-hint">{t('支持英文标签权重，如 (masterpiece:1.2), best quality')}</div>
           </div>

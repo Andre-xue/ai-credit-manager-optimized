@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
-  Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, KeyRound,
+  Image as ImageIcon, Sparkles, Loader2, Download, Trash2, Info, Eraser, KeyRound,
   ExternalLink, History, HardDrive, RefreshCw, ChevronDown,
 } from 'lucide-react'
 import { callImage, extractModelId, fetchProviderModels, filterMediaModels } from '../core/providerCall'
@@ -160,7 +160,10 @@ export function ImageView({ accounts, sessionPwd, onUnlock, notify, onOpenLocal 
                 </div>
                 {modelInfoOpen && <ModelInfoCard modelId={cloudModel || model} kind="image" />}
 
-            <label className="gen-label" style={{ marginTop: 15 }}>{t('画面描述（Prompt）')}</label>
+            <div className="gen-label-row">
+              <label className="gen-label">{t('画面描述（Prompt）')}</label>
+              <button className="gen-clear-btn" title={t('清空输入')} disabled={!prompt || busy} onClick={() => setPrompt('')}><Eraser size={14} /></button>
+            </div>
             <textarea className="input gen-prompt" rows={4} placeholder={t('例如：赛博朋克风格的城市夜景，霓虹灯倒映在雨后的街道，电影质感')}
               value={prompt} onChange={e => setPrompt(e.target.value)} disabled={busy} />
 

@@ -1379,6 +1379,14 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 35：清空输入 + 本地极速模式（v0.1.305） ----
+Object.assign(D, {
+  '清空输入': { 'zh-TW': '清空輸入', en: 'Clear inputs', ja: '入力をクリア', ko: '입력 지우기' },
+  '极速模式': { 'zh-TW': '極速模式', en: 'Fast mode', ja: '高速モード', ko: '고속 모드' },
+  '生成时自动把最长边压到 640、步数上限 20、单张生成；M1 上明显更快、发热更低': { 'zh-TW': '生成時自動把最長邊壓到 640、步數上限 20、單張生成；M1 上明顯更快、發熱更低', en: 'Caps the longest side at 640, steps at 20 and batch at 1 when generating; much faster and cooler on M1', ja: '生成時に長辺を640・ステップ上限20・1枚に制限。M1で大幅に高速化し発熱も低減', ko: '생성 시 긴 변을 640으로, 스텝上限 20, 1장으로 제한. M1에서 훨씬 빠르고 발열이 적습니다' },
+  '生成时自动把最长边压到 512、步数上限 20；速度明显更快、发热更低': { 'zh-TW': '生成時自動把最長邊壓到 512、步數上限 20；速度明顯更快、發熱更低', en: 'Caps the longest side at 512 and steps at 20 when generating; much faster and cooler', ja: '生成時に長辺を512・ステップ上限20に制限。大幅に高速化し発熱も低減', ko: '생성 시 긴 변을 512로, 스텝上限 20으로 제한. 훨씬 빠르고 발열이 적습니다' },
+})
+
 // ---- 补齐批次 34：模型说明卡默认隐藏（v0.1.304） ----
 Object.assign(D, {
   '说明': { 'zh-TW': '說明', en: 'Info', ja: '説明', ko: '설명' },
