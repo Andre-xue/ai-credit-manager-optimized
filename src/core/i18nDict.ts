@@ -1261,3 +1261,16 @@ Object.assign(D, {
   'manifest.settings 必须是数组': { 'zh-TW': 'manifest.settings 必須是陣列', en: 'manifest.settings must be an array', ja: 'manifest.settingsは配列である必要があります', ko: 'manifest.settings는 배열이어야 합니다' },
   '设置项 key 只能用字母开头、字母数字与下划线': { 'zh-TW': '設定項 key 只能用字母開頭、字母數字與底線', en: 'Setting keys must start with a letter and contain only letters, digits and underscores', ja: '設定項目のキーは英字で始まり、英数字とアンダースコアのみ使用できます', ko: '설정 항목 키는 문자로 시작하고 문자, 숫자, 밑줄만 사용할 수 있습니다' },
 })
+
+// ---- 补齐批次 12：免费模型通道 + 自定义端点（v0.1.266） ----
+Object.assign(D, {
+  '免费模型通道': { 'zh-TW': '免費模型通道', en: 'Free model channels', ja: '無料モデルチャネル', ko: '무료 모델 채널' },
+  '直连 OpenCode Zen 与 Kilo 公共网关的免费模型（免 Key，清单跟随上游更新），出现在 AI 助手的「免费模型」分类里。可用性与额度取决于上游和你的网络。': { 'zh-TW': '直連 OpenCode Zen 與 Kilo 公共網關的免費模型（免 Key，清單跟隨上游更新），出現在 AI 助手的「免費模型」分類裡。可用性與額度取決於上游和你的網路。', en: 'Free models served directly by the OpenCode Zen and Kilo public gateways (no key needed; the list follows the upstreams). They appear under the "Free models" category in the AI assistant. Availability and quotas depend on the upstreams and your network.', ja: 'OpenCode ZenとKiloの公開ゲートウェイが提供する無料モデルに直接接続します（キー不要、一覧は上流に追随）。AIアシスタントの「無料モデル」カテゴリに表示されます。可用性と上限は上流とネットワークに依存します。', ko: 'OpenCode Zen과 Kilo 공개 게이트웨이의 무료 모델에 직접 연결합니다(키 불필요, 목록은 업스트림을 따름). AI 어시스턴트의 "무료 모델" 분류에 표시됩니다. 가용성과 한도는 업스트림과 네트워크에 따라 달라집니다.' },
+  '打开服务地址：{url}': { 'zh-TW': '打開服務地址：{url}', en: 'Open service address: {url}', ja: 'サービスアドレスを開く：{url}', ko: '서비스 주소 열기: {url}' },
+  '服务地址（Base URL）': { 'zh-TW': '服務地址（Base URL）', en: 'Service address (Base URL)', ja: 'サービスアドレス（Base URL）', ko: '서비스 주소(Base URL)' },
+  '填 OpenAI 兼容网关地址，如 dsh 独立网关、One API、LM Studio、本地转发端口；模型列表会从该地址自动拉取': { 'zh-TW': '填 OpenAI 相容網關地址，如 dsh 獨立網關、One API、LM Studio、本機轉發埠；模型清單會從該地址自動拉取', en: 'Enter an OpenAI-compatible gateway address, e.g. a standalone dsh gateway, One API, LM Studio or a local forwarding port; the model list is fetched from it automatically', ja: 'OpenAI互換ゲートウェイのアドレスを入力してください（例：dshスタンドアロンゲートウェイ、One API、LM Studio、ローカル転送ポート）。モデル一覧はそのアドレスから自動取得されます', ko: 'OpenAI 호환 게이트웨이 주소를 입력하세요. 예: dsh 독립 게이트웨이, One API, LM Studio, 로컬 전달 포트. 모델 목록은 해당 주소에서 자동으로 가져옵니다' },
+  '· 网关不要求 Key 时可留空': { 'zh-TW': '· 網關不要求 Key 時可留空', en: '· Leave empty if the gateway needs no key', ja: '· ゲートウェイがキーを要求しない場合は空欄可', ko: '· 게이트웨이가 키를 요구하지 않으면 비워 두세요' },
+  '没有 Key 可留空': { 'zh-TW': '沒有 Key 可留空', en: 'Leave empty if there is no key', ja: 'キーがなければ空欄で可', ko: '키가 없으면 비워 두세요' },
+  '请填写服务地址': { 'zh-TW': '請填寫服務地址', en: 'Please enter the service address', ja: 'サービスアドレスを入力してください', ko: '서비스 주소를 입력하세요' },
+  '服务地址需以 http:// 或 https:// 开头': { 'zh-TW': '服務地址需以 http:// 或 https:// 開頭', en: 'The service address must start with http:// or https://', ja: 'サービスアドレスは http:// または https:// で始めてください', ko: '서비스 주소는 http:// 또는 https://로 시작해야 합니다' },
+})

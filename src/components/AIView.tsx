@@ -32,6 +32,7 @@ import { t, locale } from '../core/i18n'
 import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
+import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
@@ -133,6 +134,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
   const [models, setModels] = useState<AiModel[]>([])
+  const [upstreamModels, setUpstreamModels] = useState<UpstreamModel[]>([])
   const [needLogin, setNeedLogin] = useState(false)
   const [model, setModel] = useState<string>('')
   const [modelOpen, setModelOpen] = useState(false)
@@ -268,7 +270,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       setNeedLogin(false)
       setModels(list)
       const saved = loadModel()
-      if (saved?.startsWith('own:')) return  // 恢复的是自己的账户，由 allOptions 匹配（下方 effect）
+      if (saved && (saved.startsWith('own:') || saved.startsWith('up:'))) return  // 恢复的是自有账户/免费通道模型，由 allOptions 匹配（下方 effect）
       const picked = saved && list.some(m => m.id === saved) ? saved : list[0]?.id
       if (picked) setModel(picked)
     }).catch(e => {
@@ -280,6 +282,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     })
     return () => { alive = false }
   }, [notify])
+
+  // 内置免费通道（Zen / Kilo）：清单跟随上游拉取，失败静默（不影响其他模型来源）
+  const upstreamFreeOn = settings?.upstreamFree !== false
+  useEffect(() => {
+    if (!upstreamFreeOn) { setUpstreamModels([]); return }
+    let alive = true
+    fetchUpstreamFreeModels().then(list => { if (alive) setUpstreamModels(list) }).catch(() => { /* 静默 */ })
+    return () => { alive = false }
+  }, [upstreamFreeOn])
 
   // 持久化历史 + 自动滚动到底部
   // 多会话：messages 变化时同步回当前会话并持久化全部会话
@@ -387,7 +398,17 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }, [ollamaEnabled])
 
   // 免费模型 + 用户自己的账户模型，按分类联动过滤
-  const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined })), [models])
+  const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined, upstream: undefined as UpstreamSource | undefined })), [models])
+  // 内置免费通道模型（Zen / Kilo）：与云端免费模型同列「免费模型」分类，标签带来源后缀区分
+  const upstreamOptions = useMemo(() => upstreamModels.map(m => ({
+    key: `up:${m.source}:${m.id}`,
+    label: `${m.name} · ${UPSTREAM_LABEL[m.source]}`,
+    account: null as Account | null,
+    category: '免费模型' as ModelCategory,
+    free: true,
+    localModel: undefined as string | undefined,
+    upstream: m.source as UpstreamSource | undefined,
+  })), [upstreamModels])
   const ownOptions = useMemo(() => dedupeSameKeyAccounts(accounts
     // 无密钥的影子账户（多由早期导入/合并产生）不能调用，与翻译/图片等模块一致不展示；
     // Key 管理页按密钥计数同样不含它们，所以会出现「管理页 1 个、助手里 2 个」的假重复
@@ -410,6 +431,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       category: categoryForModel(a.note) as ModelCategory,
       free: false,
       localModel: undefined as string | undefined,
+      upstream: undefined as UpstreamSource | undefined,
     })), [accounts, settings])
   // 本机 Ollama 模型作为「本地型」选项（无账户、无 Key，直接调本机服务）
   const localOptions = useMemo(() => localModels.map(m => ({
@@ -419,8 +441,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     category: '本地型' as ModelCategory,
     free: false,
     localModel: m,
+    upstream: undefined as UpstreamSource | undefined,
   })), [localModels])
-  const allOptions = useMemo(() => [...freeOptions, ...ownOptions, ...localOptions], [freeOptions, ownOptions, localOptions])
+  const allOptions = useMemo(() => [...freeOptions, ...upstreamOptions, ...ownOptions, ...localOptions], [freeOptions, upstreamOptions, ownOptions, localOptions])
   const visibleOptions = useMemo(() => allOptions.filter(o => o.category === category), [category, allOptions])
   const selectedOption = allOptions.find(o => o.key === model) ?? null
   const canChat = !selectedOption || selectedOption.free || CATEGORY_META[selectedOption.category].canChat
@@ -589,6 +612,14 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const r = await callLocalChat('http://127.0.0.1:11434', opt.localModel, msgs, images)
       if (!r.ok) throw new Error(r.error ?? t('本地模型调用失败'))
       return r.text
+    }
+    // 内置免费通道（Zen / Kilo 公共网关）：非流式，整段返回后一次性上屏；不带图片附件
+    if (opt?.upstream) {
+      const src = opt.upstream
+      const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
+      const text = await chatUpstream(src, opt.key.slice(`up:${src}:`.length), msgs, effectiveReasoning)
+      if (onDelta) onDelta(text); else setStreamingText(text)
+      return text
     }
     // 平台免费模型：流式输出（图片附件随多模态消息发送）
     // 指定了 optKey（换 Key 重试/多模型对比）时按该选项自己的模型 id 调用，否则用当前所选模型

@@ -1735,17 +1735,18 @@ function ProviderLogo({ provider, size = 38 }: { provider: ProviderDefinition; s
 }
 
 /** 链接地址列的图标按钮：点击直达该平台官方「创建 / 管理 Key」页面（地址自动保持最新，见 core/keyUrls） */
-function KeyPageButton({ provider, notify }: { provider: ProviderDefinition; notify: (m: string) => void }) {
+function KeyPageButton({ provider, notify, accountUrl }: { provider: ProviderDefinition; notify: (m: string) => void; accountUrl?: string }) {
   const [, setTick] = useState(0)
   useEffect(() => {
     const h = () => setTick(t => t + 1)
     window.addEventListener(KEYURLS_EVENT, h)
     return () => window.removeEventListener(KEYURLS_EVENT, h)
   }, [])
-  const url = getKeyPageUrl(provider)
-  const isLocal = provider.id.startsWith('local-')
+  const isCustom = provider.id === 'custom-endpoint'
+  const url = isCustom ? (accountUrl ?? '') : getKeyPageUrl(provider)
+  const isLocal = provider.id.startsWith('local-') || isCustom
   return (
-    <button className="icon-btn key-page-btn" title={isLocal ? t('打开官网：{url}', { url }) : t('前往官方创建 / 管理 Key：{url}', { url })}
+    <button className="icon-btn key-page-btn" title={isCustom ? t('打开服务地址：{url}', { url }) : isLocal ? t('打开官网：{url}', { url }) : t('前往官方创建 / 管理 Key：{url}', { url })}
       onClick={async () => {
         const ok = await openExternal(url)
         if (!ok) notify(t('打开失败，请手动访问：{url}', { url }))
@@ -2469,7 +2470,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <span className="key-card-label">{t('官方 Key 页')}</span>
           <KeyPageButton provider={provider.id === 'voice-config' && a.voiceProvider && VOICE_KEY_PROVIDER[a.voiceProvider]
             ? (PROVIDER_MAP[VOICE_KEY_PROVIDER[a.voiceProvider]] ?? provider)
-            : provider} notify={notify} />
+            : provider} notify={notify} accountUrl={a.apiUrl} />
         </div>
         {a.note && <div className="key-card-row"><span className="key-card-label">{t('备注')}</span><span className="key-note">{a.note}</span></div>}
         <div className="key-card-row">
@@ -2665,7 +2666,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   <td>
                     <KeyPageButton provider={provider.id === 'voice-config' && a.voiceProvider && VOICE_KEY_PROVIDER[a.voiceProvider]
                       ? (PROVIDER_MAP[VOICE_KEY_PROVIDER[a.voiceProvider]] ?? provider)
-                      : provider} notify={notify} />
+                      : provider} notify={notify} accountUrl={a.apiUrl} />
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
@@ -3849,13 +3850,15 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
   const needInlinePwd = !sessionPwd && !getBiometricPassword()
   const adapter = getAdapterWithPlugins(provider.id)
 
+  const isCustom = provider.id === 'custom-endpoint'
+  const [customUrl, setCustomUrl] = useState('')
   const isVoiceCfg = provider.id === 'voice-config'
   // 语音配置(APP)可选服务商（需 API Key 的；system/local 无需 Key，排除）
   const voiceProviderChoices = VOICE_PROVIDERS.filter(p => p.id !== 'system' && p.id !== 'local')
   const [voiceProvider, setVoiceProvider] = useState<string>(voiceProviderChoices[0]?.id ?? 'aliyun')
   const chosenVoice = voiceProviderChoices.find(p => p.id === voiceProvider)
 
-  const apiUrl = provider.apiBaseUrl ?? ''
+  const apiUrl = isCustom ? customUrl.trim() : (provider.apiBaseUrl ?? '')
   // 语音配置：API 链接用所选服务商官方文档；其余用平台默认
   const keyUrl = isVoiceCfg
     ? (voiceProvider && VOICE_KEY_PROVIDER[voiceProvider] && PROVIDER_MAP[VOICE_KEY_PROVIDER[voiceProvider]]
@@ -3885,7 +3888,11 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
 
   const submit = async () => {
     setErr('')
-    if (!secret.trim()) { setErr('请填写 API Key'); return }
+    if (isCustom && !customUrl.trim()) { setErr('请填写服务地址'); return }
+    if (isCustom && !/^https?:\/\//i.test(customUrl.trim())) { setErr('服务地址需以 http:// 或 https:// 开头'); return }
+    if (!isCustom && !secret.trim()) { setErr('请填写 API Key'); return }
+    // 自定义端点没有 Key 时用占位值加密保存（网关不校验 Bearer；调用链要求 Key 非空）
+    const secretVal = isCustom ? (secret.trim() || 'no-key-required') : secret.trim()
     if (!isVaultInitialized()) { setErr('请先在「设置 → 安全」创建保险箱'); return }
     // 密码来源：会话解锁 > 生物识别 > 表单内就地输入（不再强制跳转到 Key 管理页解锁）
     const pwd = sessionPwd || getBiometricPassword() || formPwd.trim()
@@ -3894,14 +3901,15 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
     try {
       const ok = await verifyVault(pwd)
       if (!ok) { setErr('主密码错误'); return }
-      const enc = await encryptSecret(secret.trim(), pwd)
-      const fp = fingerprint(secret.trim())
+      const enc = await encryptSecret(secretVal, pwd)
+      const fp = fingerprint(secretVal)
+      const customHost = isCustom ? (() => { try { return new URL(customUrl.trim()).host } catch { return customUrl.trim() } })() : ''
       const now = new Date().toISOString()
       // 已获取的余额生成初始额度快照（若成功获取）
       const quotaTotal = fetchedQuota?.total ?? 0
       const account: AppState['accounts'][number] = {
         id: uid('acc'), providerId: provider.id,
-        label: isVoiceCfg ? `${chosenVoice?.short ?? '语音'}（语音配置APP）` : provider.shortName,
+        label: isVoiceCfg ? `${chosenVoice?.short ?? '语音'}（语音配置APP）` : isCustom ? `自定义 · ${customHost}` : provider.shortName,
         mode: 'api',
         encryptedKey: enc, keyFingerprint: fp, apiUrl: apiUrl || undefined,
         note: isVoiceCfg ? `[语音配置(APP)] ${chosenVoice?.short ?? ''}${note.trim() ? ' · ' + note.trim() : ''}` : buildNote(noteCat, note),
@@ -3937,14 +3945,22 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
             <label className="form-label">{t('平台名称')}</label>
             <div className="form-static"><ProviderLogo provider={provider} size={22} /> <b>{provider.name}</b><span className="tag gray" style={{ marginLeft: 'auto' }}>{t('固定')}</span></div>
           </div>
-          {/* 行2：API 链接地址（只读可点击直达创建 key 页） */}
-          <div className="form-row">
-            <label className="form-label">API {t('链接地址')} <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 点击前往官方创建 Key')}</span></label>
-            <button className="form-link" onClick={() => { void openExternal(keyUrl); }} title={keyUrl}>
-              <span>{isVoiceCfg ? (chosenVoice?.name ?? keyUrl) : (provider.apiBaseUrl || '—')}</span><ExternalLink size={13} />
-            </button>
-            <div className="form-hint">{t('只读 · 点击上述地址可直达官方 API Key 管理页')}</div>
-          </div>
+          {/* 行2：API 链接地址（只读可点击直达创建 key 页）；自定义端点改为填服务地址 */}
+          {isCustom ? (
+            <div className="form-row">
+              <label className="form-label">{t('服务地址（Base URL）')} <span className="req">*</span></label>
+              <input className="input" placeholder="http://127.0.0.1:8000/v1 或 https://example.com/v1" value={customUrl} onChange={e => setCustomUrl(e.target.value)} />
+              <div className="form-hint">{t('填 OpenAI 兼容网关地址，如 dsh 独立网关、One API、LM Studio、本地转发端口；模型列表会从该地址自动拉取')}</div>
+            </div>
+          ) : (
+            <div className="form-row">
+              <label className="form-label">API {t('链接地址')} <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 点击前往官方创建 Key')}</span></label>
+              <button className="form-link" onClick={() => { void openExternal(keyUrl); }} title={keyUrl}>
+                <span>{isVoiceCfg ? (chosenVoice?.name ?? keyUrl) : (provider.apiBaseUrl || '—')}</span><ExternalLink size={13} />
+              </button>
+              <div className="form-hint">{t('只读 · 点击上述地址可直达官方 API Key 管理页')}</div>
+            </div>
+          )}
           {/* 行3：模型分类（语音配置固定，其余写死下拉）+ 可选说明 */}
           <div className="form-row">
             {isVoiceCfg ? (
@@ -3978,18 +3994,19 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
           </div>
           {/* 行4：API Key 输入（语音配置无需余额） */}
           <div className="form-row">
-            <label className="form-label">API Key <span className="req">*</span>
-              {provider.id !== 'voice-config' && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 输入后自动获取余额')}</span>}
+            <label className="form-label">API Key {!isCustom && <span className="req">*</span>}
+              {provider.id !== 'voice-config' && !isCustom && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 输入后自动获取余额')}</span>}
+              {isCustom && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{t('· 网关不要求 Key 时可留空')}</span>}
             </label>
             <div className="row" style={{ gap: 8 }}>
-              <input className="input" style={{ flex: 1 }} type="text" placeholder={t('粘贴你的 API Key（明文输入）')} value={secret} onChange={e => { setSecret(e.target.value); setBalance(null) }} />
-              {provider.id !== 'voice-config' && (
+              <input className="input" style={{ flex: 1 }} type="text" placeholder={isCustom ? t('没有 Key 可留空') : t('粘贴你的 API Key（明文输入）')} value={secret} onChange={e => { setSecret(e.target.value); setBalance(null) }} />
+              {provider.id !== 'voice-config' && !isCustom && (
                 <button className="btn sm" onClick={() => void fetchBalance()} disabled={fetching || !secret.trim()}>
                   <RefreshCw size={13} style={fetching ? { animation: 'acm-spin 1s linear infinite' } : undefined} /> {fetching ? t('获取中') : t('获取余额')}
                 </button>
               )}
             </div>
-            {provider.id !== 'voice-config' && (
+            {provider.id !== 'voice-config' && !isCustom && (
               <div className={`balance-box ${balance ? 'has' : ''}`}>
                 <Wallet size={13} /> {balance ?? t('余额未获取（可选，可稍后手动录入）')}
               </div>
@@ -4934,6 +4951,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
             <SettingsRow title="AI 记忆" desc="开启后，AI 在任何会话里都会带上全部历史会话的近期上下文，能记住你之前聊过的内容；关闭则每个会话互相独立。开启会多消耗一些 token。">
               <Toggle checked={!!s.aiMemory} onChange={v => onChange({ aiMemory: v })} />
+            </SettingsRow>
+            <SettingsRow title="免费模型通道" desc="直连 OpenCode Zen 与 Kilo 公共网关的免费模型（免 Key，清单跟随上游更新），出现在 AI 助手的「免费模型」分类里。可用性与额度取决于上游和你的网络。">
+              <Toggle checked={s.upstreamFree !== false} onChange={v => onChange({ upstreamFree: v })} />
             </SettingsRow>
           </SettingsSection>
 

@@ -243,9 +243,11 @@ export interface AppSettings {
   aiToolbar?: AiToolbarPrefs
   /** AI 记忆：开启后对话会带上全部历史会话的近期上下文（缺省关闭） */
   aiMemory?: boolean
+  /** 内置免费模型通道（Zen / Kilo 公共网关，免 Key）：缺省开启；关闭后 AI 助手不再加载这批免费模型 */
+  upstreamFree?: boolean
   /** 手机端底部菜单栏：开启才固定显示（缺省关闭，用左上角按钮开侧边栏切换页面） */
   showBottomNav?: boolean
-  /** 界面语言（v0.1.262）：缺省 zh-CN；随设置云同步 */
+  /** 界面语言（v0.1.262）：缺省 zh-CN；仅本机保存，不云同步、不进备份（v0.1.263） */
   language?: 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
 }
 

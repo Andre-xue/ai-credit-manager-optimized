@@ -456,6 +456,12 @@ export const PROVIDERS: ProviderDefinition[] = [
     color: '#1f9e7a', initials: 'CF', modes: ['api'],
     note: '本机 ComfyUI 服务，默认端口 8188；网关地址由本机实时探测，不可修改。',
   },
+  {
+    id: 'custom-endpoint', name: '自定义端点（OpenAI 兼容）', shortName: '自定义端点', category: 'llm',
+    officialUrl: '', usageUrl: '',
+    color: '#64748b', initials: '自', modes: ['api', 'manual'],
+    note: '任意 OpenAI 兼容网关：填服务地址即可接入（如 dsh 独立网关、One API、LM Studio、本地转发端口）；Key 可留空，模型列表自动从端点拉取。',
+  },
 
   // ==================== 语音配置(APP)专用 ====================
   // 只服务「语音配置」模块（声音克隆/朗读的官方 API Key）；不参与 AI 聊天调用与展示。
