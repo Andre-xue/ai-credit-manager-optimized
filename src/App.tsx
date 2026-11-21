@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarCheck2, CalendarDays, KeyRound, BarChart3, Plus, ShieldCheck,
   ExternalLink, Trash2, RefreshCw, AlertTriangle, Info, Check,
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
-  Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, Pencil, Fingerprint,
+  Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, EyeOff, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight,
@@ -2075,6 +2075,8 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [toolExportOpen, setToolExportOpen] = useState(false)
   const [toolExportFormat, setToolExportFormat] = useState<'env' | 'json'>('env')
   const [revealKeyTarget, setRevealKeyTarget] = useState<{ id: string; label: string; plain: string } | null>(null)
+  // 点眼睛查看值（余额/Key）时若未解锁：先记下待查看目标，走解锁流程，解锁成功后自动打开查看
+  const [pendingView, setPendingView] = useState<{ kind: 'key' | 'balance'; id: string } | null>(null)
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set())
   // Key 健康检查：结果存本地（healthCheck.ts），逐个/全部探测 /v1/models
   const [health, setHealth] = useState<Record<string, KeyHealthResult>>(() => loadKeyHealth())
@@ -2099,7 +2101,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   useEffect(() => { void biometricAvailable().then(setBioAvailable) }, [])
   // 全局自动上锁事件：同步锁上本页（清掉本页会话密码与已显示的明文）
   useEffect(() => {
-    const onAutoLock = () => { setVaultPwd(''); setRevealed({}); setUnlockOpen(false) }
+    const onAutoLock = () => { setVaultPwd(''); setRevealed({}); setUnlockOpen(false); setShowBalance({}); setPendingView(null); setRevealKeyTarget(null) }
     window.addEventListener('acm-autolock', onAutoLock)
     return () => window.removeEventListener('acm-autolock', onAutoLock)
   }, [])
@@ -2121,6 +2123,18 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
       setUnlockPwd('')
       setUnlockOpen(false)
       notify('已解锁，密钥已明文展示')
+      // 解锁前点过眼睛查看某个值：解锁成功后自动完成那次查看
+      if (pendingView) {
+        const pv = pendingView
+        setPendingView(null)
+        if (pv.kind === 'balance') {
+          setShowBalance(s => ({ ...s, [pv.id]: true }))
+        } else {
+          const acc = keyAccounts.find(a => a.id === pv.id)
+          if (acc && decrypted[pv.id]) { onAudit('查看Key', acc.label); setRevealKeyTarget({ id: acc.id, label: acc.label, plain: decrypted[pv.id] }) }
+          else if (acc) notify('该 Key 解密失败，无法查看')
+        }
+      }
     } finally { setBusy(false) }
   }
 
@@ -2179,7 +2193,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
             <button className="btn sm" onClick={onExport} title="导出备份（不含密钥）"><Download size={14} /> 导出</button>
             {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> 创建保险箱</button>}
             {vaultPwd ? (
-              <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); notify('已锁定') }}><Lock size={14} /> 锁定</button>
+              <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); setShowBalance({}); setPendingView(null); notify('已锁定') }}><Lock size={14} /> 锁定</button>
             ) : (
               <button className="btn sm primary" onClick={() => setUnlockOpen(true)}><Unlock size={14} /> 解锁</button>
             )}
@@ -2272,11 +2286,17 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
-                      <span className="mono" style={{ fontSize: 11.5, minWidth: 42 }}>
-                        {showBalance[a.id] ? balance : '••••••'}
-                      </span>
-                      <button className="icon-btn" title={showBalance[a.id] ? '隐藏余额' : '显示余额'}
-                        onClick={() => setShowBalance(s => ({ ...s, [a.id]: !s[a.id] }))}><Eye size={13} /></button>
+                      {showBalance[a.id] && (
+                        <span className="mono" style={{ fontSize: 11.5, minWidth: 42 }}>{balance}</span>
+                      )}
+                      <button className="icon-btn" title={showBalance[a.id] ? '隐藏余额' : '显示余额（需先解锁保险箱）'}
+                        onClick={() => {
+                          if (showBalance[a.id]) { setShowBalance(s => ({ ...s, [a.id]: false })); return }
+                          if (vaultPwd) { setShowBalance(s => ({ ...s, [a.id]: true })); return }
+                          // 未解锁：先走解锁流程，解锁成功后自动显示（见 unlockWith 的 pendingView 消费）
+                          setPendingView({ kind: 'balance', id: a.id })
+                          setUnlockOpen(true)
+                        }}>{showBalance[a.id] ? <EyeOff size={13} /> : <Eye size={13} />}</button>
                       {adapter.supported && <button className="icon-btn" title="刷新官方余额"
                         disabled={refreshing.has(a.id)}
                         onClick={async () => {
@@ -2298,15 +2318,12 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                   </td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
-                      <span className="mono" style={{ fontSize: 11.5, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                            title="点击眼睛查看完整 Key">
-                        {plain ? (plain.length > 16 ? plain.slice(0, 8) + '…' + plain.slice(-4) : plain) : (a.keyFingerprint ?? '••••')}
-                      </span>
-                      <button className="icon-btn" title="查看完整 Key（可复制）"
+                      <button className="icon-btn" title="查看完整 Key（需先解锁保险箱）"
                         onClick={() => {
-                          if (!plain) { notify('请先解锁保险箱'); return }
-                          onAudit('查看Key', a.label)
-                          setRevealKeyTarget({ id: a.id, label: a.label, plain })
+                          if (plain) { onAudit('查看Key', a.label); setRevealKeyTarget({ id: a.id, label: a.label, plain }); return }
+                          // 未解锁：先走解锁流程，解锁成功后自动打开查看弹窗
+                          setPendingView({ kind: 'key', id: a.id })
+                          setUnlockOpen(true)
                         }}><Eye size={13} /></button>
                     </div>
                   </td>
@@ -2451,7 +2468,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
 
       {unlockOpen && !vaultPwd && <UnlockModal
         method={state.settings.unlockMethod} bioAvailable={bioAvailable} bioLabel={bioLabel ?? '生物'}
-        onClose={() => { setUnlockOpen(false); setUnlockPwd('') }}
+        onClose={() => { setUnlockOpen(false); setUnlockPwd(''); setPendingView(null) }}
         onPassword={(pwd) => void unlockWith(pwd)}
         onBiometric={async () => {
           const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
