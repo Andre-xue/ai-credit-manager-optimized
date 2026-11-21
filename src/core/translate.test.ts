@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   categorizeFile, chunkForTranslate, alignPairs, renderPairHtml,
-  buildHtml, buildPlain, buildPrintHtml, layoutName, layoutSuffix, freeTranslateUrl, FREE_ENGINES, SOURCE_LANGUAGES, type TranslatePair,
+  buildHtml, buildPlain, buildPrintHtml, layoutName, layoutSuffix, freeTranslateUrl, FREE_ENGINES, SOURCE_LANGUAGES, translateText, type TranslatePair,
 } from './translate'
 
 const pairs: TranslatePair[] = [
@@ -241,5 +241,22 @@ describe('翻译专用本地模型不进回答列表', () => {
       expect(pc.isTranslationLocalModel(m)).toBe(false)
       expect(pc.isAssistantCapableLocalModel(m)).toBe(true)
     })
+  })
+})
+
+describe('translateText 失败语义', () => {
+  // node 测试环境无 localStorage：getBiometricPassword 会读它，装最小桩
+  ;(globalThis as any).localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+  ;(globalThis as any).window = { dispatchEvent: () => true, addEventListener() {}, removeEventListener() {} }
+  it('全部块失败时抛错，不把原文冒充译文返回', async () => {
+    await expect(translateText('你好世界', { engine: 'freeai', target: 'English' }))
+      .rejects.toThrow('请先选择一个免费 AI 模型')
+  })
+  it('账户引擎未配账户时同样抛错', async () => {
+    await expect(translateText('hello', { engine: 'account', target: '简体中文' }))
+      .rejects.toThrow('请先在 API Key 管理添加模型账户')
+  })
+  it('空文本直接返回空串', async () => {
+    await expect(translateText('   ', { engine: 'freeai', target: 'English' })).resolves.toBe('')
   })
 })

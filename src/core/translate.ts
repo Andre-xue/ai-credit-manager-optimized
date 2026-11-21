@@ -161,12 +161,16 @@ async function translateByFreeAi(opt: FreeAiOption, text: string, target: string
   return out.trim()
 }
 
-/** 翻译整段文本：切块后逐块翻译，失败块保留原文 */
+/** 翻译整段文本：切块后逐块翻译，部分失败的块保留原文；
+ *  但若全部块都失败则抛错——否则会把原文当作「译文」返回，出现译文与原文一模一样的假成功
+ *  （如 Zen 免费池限额、账户 Key 失效时）。调用方均有 try/catch + 提示。 */
 export async function translateText(text: string, opts: TranslateOptions): Promise<string> {
   const chunks = chunkForTranslate(text)
   if (!chunks.length) return ''
   const pwd = getBiometricPassword()
   const results: string[] = []
+  let okCount = 0
+  let lastError: unknown = null
   for (let i = 0; i < chunks.length; i++) {
     try {
       if (opts.engine === 'free') results.push(await translateFree(chunks[i], opts.target, opts.source ?? 'auto', opts.freeEngine ?? 'google'))
@@ -182,10 +186,15 @@ export async function translateText(text: string, opts: TranslateOptions): Promi
         if (!pwd) throw new Error('请先解锁主密码（生物识别或会话密码）')
         results.push(await translateByAccount(opts.account, pwd, chunks[i], opts.target, opts.engineId))
       }
-    } catch {
+      okCount++
+    } catch (e) {
+      lastError = e
       results.push(chunks[i]) // 失败块保留原文，不中断整体
     }
     opts.onProgress?.(i + 1, chunks.length)
+  }
+  if (okCount === 0) {
+    throw lastError instanceof Error ? lastError : new Error('翻译失败，请稍后重试')
   }
   return results.join('\n\n')
 }
