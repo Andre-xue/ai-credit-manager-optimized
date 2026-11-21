@@ -123,6 +123,9 @@ html:has(.app-shell.liquid-ui) body { background: #eef1ff; }
 }
 .app-shell.liquid-ui .seg-btn.active {
   background: rgba(255, 255, 255, .88);
+  /* 基础样式里 active 是紫底白字；液态下底色换成近白玻璃，字必须跟着换深色，
+     否则白字白底看不见（v0.1.294 实机截图坐实） */
+  color: var(--text);
   box-shadow: 0 3px 10px rgba(80, 70, 180, .14), inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 .app-shell.liquid-ui .nav-item.active {
@@ -206,7 +209,7 @@ html[data-theme="dark"]:has(.app-shell.liquid-ui) body { background: #14161f; }
   border-color: rgba(255, 255, 255, .12);
 }
 :root[data-theme="dark"] .app-shell.liquid-ui .seg-control { background: rgba(30, 32, 46, .42); border-color: rgba(255, 255, 255, .1); }
-:root[data-theme="dark"] .app-shell.liquid-ui .seg-btn.active { background: rgba(64, 68, 92, .85); box-shadow: 0 3px 10px rgba(0, 0, 0, .3); }
+:root[data-theme="dark"] .app-shell.liquid-ui .seg-btn.active { background: rgba(64, 68, 92, .85); color: #fff; box-shadow: 0 3px 10px rgba(0, 0, 0, .3); }
 :root[data-theme="dark"] .app-shell.liquid-ui .nav-item.active { background: rgba(255, 255, 255, .1); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1); }
 :root[data-theme="dark"] .app-shell.liquid-ui .nav-item:hover { background: rgba(255, 255, 255, .06); }
 :root[data-theme="dark"] .app-shell.liquid-ui .ai-quick-card { background: rgba(30, 32, 46, .45); border-color: rgba(255, 255, 255, .12); }
