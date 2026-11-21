@@ -289,6 +289,15 @@ function App() {
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const toggleSidebar = () => setSidebarVisible(v => !v)
+  // 侧边栏导航分组折叠（v0.1.260）：点分组标题收起该组入口，状态记忆；图标条模式下不生效（图标始终全显）
+  const [closedNavGroups, setClosedNavGroups] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('acm.nav.closedGroups') || '[]') } catch { return [] }
+  })
+  const toggleNavGroup = (label: string) => setClosedNavGroups(prev => {
+    const next = prev.includes(label) ? prev.filter(x => x !== label) : [...prev, label]
+    try { localStorage.setItem('acm.nav.closedGroups', JSON.stringify(next)) } catch { /* ignore */ }
+    return next
+  })
   // AI 助手历史会话区（侧边栏 AI 助手下方）：顶栏「会话列表」按钮经事件切换展开/收起
   const [historyOpen, setHistoryOpen] = useState(false)
   useEffect(() => {
@@ -1080,10 +1089,14 @@ function App() {
           {navGroups.map((group) => {
             const visibleIds = group.ids.filter((id) => (isPhone ? drawerTabs : tabs.map((t) => t.id)).includes(id))
             if (!visibleIds.length) return null
+            const groupClosed = sidebarVisible && closedNavGroups.includes(group.label)
             return (
               <div className="nav-group" key={group.label}>
-                <div className="nav-group-label">{group.label}</div>
-                {visibleIds.map((id) => {
+                <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? '展开分组' : '收起分组'}>
+                  <span>{group.label}</span>
+                  <ChevronDown size={12} className={`nav-group-chevron ${groupClosed ? '' : 'open'}`} />
+                </div>
+                {!groupClosed && visibleIds.map((id) => {
                   const t = tabs.find((x) => x.id === id)!
                   const Icon = t.icon
                   const badge = id === 'dashboard' && runningOut.length > 0 ? runningOut.length : id === 'checkin' && pendingCheckins.length > 0 ? pendingCheckins.length : null

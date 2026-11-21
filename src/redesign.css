@@ -60,6 +60,11 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 .nav { padding: 14px 12px 18px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; }
 .nav-group { margin-bottom: 18px; }
 .nav-group-label { padding: 4px 10px 7px; font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--text-3); text-transform: uppercase; }
+/* 侧边栏分组可折叠（v0.1.260） */
+.nav-group-label.collapsible { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; border-radius: 8px; }
+.nav-group-label.collapsible:hover { color: var(--text-2); }
+.nav-group-chevron { transition: transform .2s ease; transform: rotate(-90deg); flex: none; }
+.nav-group-chevron.open { transform: rotate(0deg); }
 .claude-ui .nav-item, .nav-item {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; margin: 0 0 2px;
   border: 1px solid transparent !important; border-radius: 10px; background: transparent !important;
