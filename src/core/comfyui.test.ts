@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow } from './comfyui'
+import { isComfyUIBase, buildTxt2ImgWorkflow, buildImg2ImgWorkflow, buildAnimateDiffWorkflow } from './comfyui'
 
 describe('ComfyUI 原生协议适配', () => {
   it('按地址识别 ComfyUI（8188 端口或域名含 comfyui）', () => {
@@ -40,5 +40,39 @@ describe('ComfyUI 原生协议适配', () => {
     expect(wf['6'].inputs.denoise).toBe(0.55)
     expect(wf['6'].inputs.seed).toBe(9)
     expect(wf['8'].class_type).toBe('SaveImage')
+  })
+})
+
+describe('AnimateDiff 工作流构造', () => {
+  const wf = buildAnimateDiffWorkflow('checkpoints/AnythingV5V3.safetensors', 'mm_sd_v15_v2.ckpt', 'a cat running', {
+    negativePrompt: 'blurry', width: 768, height: 432, steps: 20, cfgScale: 7, seed: 42, frames: 16, fps: 8,
+  }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>
+
+  it('底模与运动模块正确接线', () => {
+    expect(wf['1'].class_type).toBe('CheckpointLoaderSimple')
+    expect(wf['1'].inputs.ckpt_name).toBe('checkpoints/AnythingV5V3.safetensors')
+    expect(wf['8'].class_type).toBe('ADE_LoadAnimateDiffModel')
+    expect(wf['8'].inputs.model_name).toBe('mm_sd_v15_v2.ckpt')
+    expect(wf['9'].class_type).toBe('ADE_ApplyAnimateDiffModel')
+    expect(wf['9'].inputs.model).toEqual(['1', 0])
+    expect(wf['9'].inputs.motion_model).toEqual(['8', 0])
+    expect(wf['10'].class_type).toBe('ADE_UseEvolvedSampling')
+    expect(wf['10'].inputs.m_models).toEqual(['9', 0])
+  })
+
+  it('采样器吃进化采样后的模型，帧数走 batch_size', () => {
+    expect(wf['5'].class_type).toBe('KSampler')
+    expect(wf['5'].inputs.model).toEqual(['10', 0])
+    expect(wf['5'].inputs.sampler_name).toBe('euler_ancestral')
+    expect(wf['4'].inputs.batch_size).toBe(16)
+    expect(wf['4'].inputs.width).toBe(768)
+    expect(wf['4'].inputs.height).toBe(432)
+  })
+
+  it('VHS 合成 mp4 输出', () => {
+    expect(wf['7'].class_type).toBe('VHS_VideoCombine')
+    expect(wf['7'].inputs.images).toEqual(['6', 0])
+    expect(wf['7'].inputs.format).toBe('video/h264-mp4')
+    expect(wf['7'].inputs.frame_rate).toBe(8)
   })
 })

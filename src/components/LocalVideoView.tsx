@@ -11,7 +11,7 @@ import { callLocalVideo, queryLocalVideoTask, fetchLocalMediaModels } from '../c
 import { saveMedia, loadHistory, addHistory, removeHistory, clearHistory, newMediaId, errTextSafe, type MediaHistoryItem } from '../core/mediaGeneration'
 import { HoldToConfirm } from './HoldToConfirm'
 import { extractTaskId } from '../core/mediaAdapters'
-import { isComfyUIBase, fetchComfyCheckpoints } from '../core/comfyui'
+import { isComfyUIBase, fetchComfyCheckpoints, fetchComfyMotionModules, comfyGenerateAnimateDiff } from '../core/comfyui'
 import { fetchLocalModels, detectLocalServices } from '../core/localServices'
 import { isMotionModule } from '../core/modelCapability'
 import { ServiceSwitch } from './ServiceSwitch'
@@ -22,6 +22,19 @@ import { t, locale } from '../core/i18n'
 
 const RESOLUTIONS = ['480p', '576p', '720p', '768p', '1080p']
 const RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9', '21:9']
+
+/** 分辨率+比例 → AnimateDiff 像素尺寸：SD1.5 训练尺寸约 512²，长边封顶 768、总像素保守封顶，边长对齐 8 */
+function comfyVideoSize(resolution: string, ratio: string): { w: number; h: number } {
+  const res = parseInt(resolution) || 512
+  const [rw, rh] = ratio.split(':').map(Number)
+  const longEdge = Math.min(res, 768)
+  let w = rw >= rh ? longEdge : Math.round(longEdge * (rw / rh))
+  let h = rw >= rh ? Math.round(longEdge * (rh / rw)) : longEdge
+  const maxPx = 512 * 640
+  if (w * h > maxPx) { const k = Math.sqrt(maxPx / (w * h)); w = Math.round(w * k); h = Math.round(h * k) }
+  const align = (v: number) => Math.max(64, Math.round(v / 8) * 8)
+  return { w: align(w), h: align(h) }
+}
 const DEFAULT_BASE = 'http://127.0.0.1:8188'  // ComfyUI 默认端口（旧版误用 Ollama 的 11434）
 
 export function LocalVideoView({ notify, serviceController }: { notify: (m: string) => void; serviceController?: ServiceController }) {
@@ -35,6 +48,8 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   })
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
+  const [motionModels, setMotionModels] = useState<string[]>([])
+  const [motionModel, setMotionModel] = useState('')
   const [loadingModels, setLoadingModels] = useState(false)
   const [mode, setMode] = useState<'t2v' | 'i2v' | 'flf2v'>('t2v')
   const [prompt, setPrompt] = useState('')
@@ -65,7 +80,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
   useEffect(() => {
     const onChanged = (e: Event) => {
       const d = (e as CustomEvent<{ key: string; enabled: boolean }>).detail
-      if (d?.key === 'comfyui' && !d.enabled) { setModels([]); setModel('') }
+      if (d?.key === 'comfyui' && !d.enabled) { setModels([]); setModel(''); setMotionModels([]); setMotionModel('') }
     }
     window.addEventListener(LOCAL_SERVICE_CHANGED_EVENT, onChanged)
     return () => window.removeEventListener(LOCAL_SERVICE_CHANGED_EVENT, onChanged)
@@ -99,7 +114,7 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
     }
     // 服务总闸：ComfyUI 地址且开关关闭时禁止连接，避免关了服务还能拉到模型
     if (isComfyUIBase(base) && serviceController && !serviceController.enabled('comfyui')) {
-      setModels([]); setModel('')
+      setModels([]); setModel(''); setMotionModels([]); setMotionModel('')
       notify(t('ComfyUI 服务已关闭，请先开启服务后再连接。开关与设置页同步。'))
       return
     }
@@ -114,7 +129,11 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
           if (!r.ok) throw new Error(r.error ?? t('拉取失败'))
           ids = r.models
         }
-        if (ids.length) notify(t('已连上 ComfyUI，列出 {n} 个 checkpoint。注意：ComfyUI 生视频需 AnimateDiff 等工作流，此页可能仍无法生成', { n: ids.length }))
+        // 运动模块走 ADE 节点的 object_info（即 animatediff_models 目录清单）
+        const motions = await fetchComfyMotionModules(base)
+        setMotionModels(motions)
+        setMotionModel(prev => motions.includes(prev) ? prev : (motions[0] ?? ''))
+        if (ids.length) notify(t('已连上 ComfyUI，列出 {n} 个 checkpoint；选好底模与运动模块后可通过 AnimateDiff 生成视频', { n: ids.length }))
       } else {
         ids = await fetchLocalMediaModels(base)
       }
@@ -151,6 +170,30 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
     startProgress(t('正在提交本地任务…'))
     try {
       advanceProgress(25, t('本地服务响应中…'), 'queued')
+      // ComfyUI 走内置 AnimateDiff 工作流（底模 + 运动模块 → mp4），不走通用视频接口
+      if (isComfyUIBase(base)) {
+        if (mode !== 't2v') { failProgress(t('生成失败')); notify(t('ComfyUI AnimateDiff 目前仅支持文生视频')); return }
+        if (!motionModel) { failProgress(t('生成失败')); notify(t('未选择运动模块：请先点「连接」拉取；若列表为空，说明 ComfyUI 未安装 AnimateDiff 扩展，或 animatediff_models 目录里没有运动模块文件')); return }
+        const size = comfyVideoSize(resolution, ratio)
+        const rv = await comfyGenerateAnimateDiff(base, model, motionModel, prompt.trim(), {
+          negativePrompt: negative.trim() || undefined,
+          width: size.w, height: size.h, steps, cfgScale: cfg, seed: finalSeed, frames: 16, fps: 8,
+        }, (pct, label) => advanceProgress(pct, label, 'generating'), () => alive.current)
+        if (!alive.current) return
+        if (!rv.ok) { failProgress(t('生成失败')); notify(rv.error ?? t('生成失败')); return }
+        const vids = rv.images
+        setResults(vids)
+        const secsV = ((Date.now() - startedAt) / 1000).toFixed(1)
+        doneProgress(t('生成完成 · 耗时 {secs}s', { secs: secsV }))
+        const paramsV = t('AnimateDiff · {model} + {motion} · 16 帧 · 8fps · {w}×{h} · {steps}步 · CFG {cfg} · seed {seed}', { model, motion: motionModel, w: size.w, h: size.h, steps, cfg, seed: finalSeed })
+        setLastParams(paramsV)
+        setHistory(addHistory('video', {
+          id: newMediaId(), kind: 'video', prompt: prompt.trim(), accountLabel: t('本地 · {model}', { model }),
+          model, createdAt: Date.now(), results: vids, params: paramsV, note: '',
+        }))
+        notify(t('本地视频已生成'))
+        return
+      }
       const r = await callLocalVideo(base, model, prompt.trim(), {
         duration, ratio, resolution,
         image: (mode === 'i2v' || mode === 'flf2v') ? firstFrame : undefined,
@@ -226,6 +269,18 @@ export function LocalVideoView({ notify, serviceController }: { notify: (m: stri
               <input className="input" placeholder={t('点顶部「连接」拉取本地视频模型')} value={model} onChange={e => setModel(e.target.value)} />
             )}
           </div>
+
+          {isComfyUIBase(base) && (
+            <div className="sd-block">
+              <div className="sd-block-title"><Film size={15} /> {t('运动模块')}</div>
+              {motionModels.length > 0 ? (
+                <select className="input" value={motionModel} onChange={e => setMotionModel(e.target.value)}>{motionModels.map(m => <option key={m} value={m}>{m}</option>)}</select>
+              ) : (
+                <input className="input" disabled placeholder={t('未检测到运动模块（先点顶部「连接」）')} value="" readOnly />
+              )}
+              <div className="sd-tip" style={{ marginTop: 6 }}><Info size={13} /> {t('AnimateDiff 运动模块与底模搭配生成视频，需 ComfyUI 已安装 AnimateDiff-Evolved 与 VideoHelperSuite 扩展；固定 16 帧 · 8fps，约 2 秒')}</div>
+            </div>
+          )}
 
           <div className="sd-block">
             <div className="sd-block-title"><span className="sd-num">1</span> {t('提示词 Prompt')}</div>

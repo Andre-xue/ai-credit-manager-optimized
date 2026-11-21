@@ -125,6 +125,126 @@ export async function fetchComfyCheckpoints(base: string): Promise<string[]> {
   } catch { return [] }
 }
 
+/** 拉取单个节点的 object_info（节点不存在/未安装对应扩展时返回 null） */
+async function fetchComfyNodeInfo(base: string, className: string): Promise<Record<string, unknown> | null> {
+  try {
+    const text = await call(base, `object_info/${className}`, 'GET', undefined, false)
+    const json = JSON.parse(text)
+    return (json?.[className] as Record<string, unknown>) ?? null
+  } catch { return null }
+}
+
+/** 拉取 AnimateDiff 运动模块列表（ADE_LoadAnimateDiffModel 的 model_name 选项，即 models/animatediff_models 目录）；
+ *  ADE 扩展未安装时返回空数组 */
+export async function fetchComfyMotionModules(base: string): Promise<string[]> {
+  const info = await fetchComfyNodeInfo(base, 'ADE_LoadAnimateDiffModel')
+  const req = (info?.input as { required?: Record<string, unknown> } | undefined)?.required
+  const arr = (req?.model_name as unknown[] | undefined)?.[0]
+  return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === 'string') : []
+}
+
+export interface AnimateDiffOptions {
+  negativePrompt?: string
+  width: number
+  height: number
+  steps?: number
+  cfgScale?: number
+  seed?: number
+  /** 帧数：无上下文选项时按 AnimateDiff 原生上下文固定 16 */
+  frames?: number
+  /** 输出帧率（VHS 合成用） */
+  fps?: number
+}
+
+/** 构造 AnimateDiff 文生视频工作流（需 ComfyUI-AnimateDiff-Evolved + VideoHelperSuite 扩展）：
+ *  Checkpoint → ADE 加载/应用运动模块 → EvolvedSampling → KSampler(euler_ancestral) → VAE → VHS 合成 mp4 */
+export function buildAnimateDiffWorkflow(checkpoint: string, motionModel: string, prompt: string, opts: AnimateDiffOptions): Record<string, unknown> {
+  const steps = opts.steps ?? 20
+  const cfg = opts.cfgScale ?? 7
+  const seed = opts.seed ?? Math.floor(Math.random() * 4294967295)
+  const frames = opts.frames ?? 16
+  const fps = opts.fps ?? 8
+  return {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: checkpoint } },
+    '2': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['1', 1] } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: opts.negativePrompt ?? '', clip: ['1', 1] } },
+    '8': { class_type: 'ADE_LoadAnimateDiffModel', inputs: { model_name: motionModel } },
+    '9': { class_type: 'ADE_ApplyAnimateDiffModel', inputs: { model: ['1', 0], motion_model: ['8', 0], start_percent: 0, end_percent: 1 } },
+    '10': { class_type: 'ADE_UseEvolvedSampling', inputs: { model: ['1', 0], beta_schedule: 'sqrt_linear (AnimateDiff)', m_models: ['9', 0] } },
+    '4': { class_type: 'EmptyLatentImage', inputs: { width: opts.width, height: opts.height, batch_size: frames } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        seed, steps, cfg, sampler_name: 'euler_ancestral', scheduler: 'normal',
+        model: ['10', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0], denoise: 1,
+      },
+    },
+    '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    '7': {
+      class_type: 'VHS_VideoCombine',
+      inputs: {
+        images: ['6', 0], frame_rate: fps, loop_count: 0, filename_prefix: 'acm_anim',
+        format: 'video/h264-mp4', pix_fmt: 'yuv420p', crf: 19,
+        save_metadata: true, pingpong: false, save_output: true,
+      },
+    },
+  }
+}
+
+/** 查询 AnimateDiff 任务状态；完成时返回视频 data URL（VHS 输出在 history 的 gifs 字段） */
+export async function comfyPollVideo(base: string, promptId: string): Promise<{ done: boolean; videos: string[]; status: string }> {
+  const text = await call(base, `history/${encodeURIComponent(promptId)}`, 'GET', undefined, false)
+  const json = JSON.parse(text)
+  const entry = json[promptId]
+  if (!entry) return { done: false, videos: [], status: '排队中' }
+  const status = String(entry.status?.status_str ?? entry.status ?? '')
+  const outputs = entry.outputs ?? {}
+  const videos: string[] = []
+  for (const node of Object.values(outputs) as { gifs?: { filename: string; subfolder?: string; type?: string }[] }[]) {
+    for (const g of node.gifs ?? []) {
+      const q = `view?filename=${encodeURIComponent(g.filename)}&subfolder=${encodeURIComponent(g.subfolder ?? '')}&type=${encodeURIComponent(g.type ?? 'output')}`
+      const raw = await call(base, q, 'GET', undefined, true)
+      const b64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw
+      videos.push(`data:video/mp4;base64,${b64}`)
+    }
+  }
+  const done = /success|complete/i.test(status) || videos.length > 0
+  return { done, videos, status: status || (videos.length ? '完成' : '生成中') }
+}
+
+/** 一键 AnimateDiff 生视频：扩展预检 → 提交 → 轮询（最长约 5 分钟）→ 取 mp4 */
+export async function comfyGenerateAnimateDiff(
+  base: string, checkpoint: string, motionModel: string, prompt: string, opts: AnimateDiffOptions,
+  onProgress: (pct: number, label: string) => void,
+  alive: () => boolean,
+): Promise<ComfyResult> {
+  try {
+    if (!(await fetchComfyNodeInfo(base, 'ADE_LoadAnimateDiffModel'))) {
+      return { ok: false, images: [], error: '未检测到 AnimateDiff 扩展节点（ADE_LoadAnimateDiffModel）。请先在 ComfyUI 中安装 ComfyUI-AnimateDiff-Evolved 扩展，并确认运动模块在 models/animatediff_models 目录，重启 ComfyUI 后再试' }
+    }
+    if (!(await fetchComfyNodeInfo(base, 'VHS_VideoCombine'))) {
+      return { ok: false, images: [], error: '未检测到 VideoHelperSuite 扩展节点（VHS_VideoCombine）。请先在 ComfyUI 中安装 ComfyUI-VideoHelperSuite 扩展，重启 ComfyUI 后再试' }
+    }
+    const workflow = buildAnimateDiffWorkflow(checkpoint, motionModel, prompt, opts)
+    onProgress(25, 'AnimateDiff 工作流已构造，正在提交…')
+    const promptId = await comfySubmit(base, workflow)
+    onProgress(40, '任务已提交，ComfyUI 排队中…')
+    for (let i = 0; i < 150 && alive(); i++) {
+      await new Promise(r => setTimeout(r, 2000))
+      if (!alive()) return { ok: false, images: [], error: '已取消' }
+      const r = await comfyPollVideo(base, promptId)
+      if (r.videos.length) return { ok: true, images: r.videos, taskId: promptId }
+      onProgress(Math.min(92, 40 + (i + 1) * 0.35), r.status || '生成中…')
+      if (/error|fail|cancel/i.test(r.status)) return { ok: false, images: [], error: `ComfyUI 任务失败：${r.status}`, taskId: promptId }
+      if (r.done && !r.videos.length) return { ok: false, images: [], error: '任务完成但未找到输出视频（检查 VHS_VideoCombine 节点）', taskId: promptId }
+    }
+    return { ok: false, images: [], error: '等待超时（5 分钟），请到 ComfyUI 页面查看任务状态', taskId: promptId }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { ok: false, images: [], error: `ComfyUI 调用失败：${msg}` }
+  }
+}
+
 /** 提交工作流，返回 prompt_id */
 export async function comfySubmit(base: string, workflow: Record<string, unknown>): Promise<string> {
   const clientId = `acm-${Date.now()}`
