@@ -260,6 +260,7 @@ export interface AiToolbarPrefs {
   chatSearch?: boolean
   chatExport?: boolean
   myData?: boolean
+  webSearch?: boolean
   compare?: boolean
   sessions?: boolean
   prompts?: boolean
@@ -268,7 +269,7 @@ export interface AiToolbarPrefs {
 
 /** 工具键默认顺序（设置页可调序，结果存 AppSettings.aiToolbarOrder） */
 export const AI_TOOLBAR_DEFAULT_ORDER: (keyof AiToolbarPrefs)[] = [
-  'autoSpeak', 'voiceCall', 'chatSearch', 'chatExport', 'myData', 'compare', 'sessions', 'prompts', 'clearChat',
+  'autoSpeak', 'voiceCall', 'chatSearch', 'chatExport', 'myData', 'webSearch', 'compare', 'sessions', 'prompts', 'clearChat',
 ]
 
 /** 合并用户排序与默认顺序：用户排过的在前，后来新增的工具自动补到末尾 */

@@ -4871,7 +4871,7 @@ const CLEAR_CATS: { key: ClearCat; label: string; hint: string }[] = [
 /** AI 助手工具栏：工具键 → 设置页显示名（顺序由 mergeToolbarOrder 决定） */
 const AI_TOOLBAR_LABELS: Record<string, string> = {
   autoSpeak: '自动朗读', voiceCall: '语音通话', chatSearch: '搜索对话', chatExport: '导出对话',
-  myData: '引用我的数据', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
+  myData: '引用我的数据', webSearch: '联网搜索', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
 }
 
 function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone, onClearData }: {

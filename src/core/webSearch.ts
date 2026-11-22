@@ -1,0 +1,155 @@
+// 联网搜索（v0.1.318）：AI 聊天开启「联网搜索」后，回答前先真实搜索并抓取原文，
+// 把资料附进 system 提示，要求模型依据资料作答、标注来源、不许猜。
+// 搜索走公开搜索页（必应优先，DuckDuckGo 兜底，免 Key）；抓取按端分流：
+// 桌面经 Rust 代理（绕 CORS）、手机走原生网络层、网页直连 fetch。
+import { isDesktopShell, pluginHttpDesktop} from './plugins'
+import { isNativeApp} from './openExternal'
+
+const PREF_KEY = 'acm_ai_web_search'
+
+export function loadWebSearchEnabled(): boolean {
+try { return localStorage.getItem(PREF_KEY) === '1'} catch { return false}
+}
+export function saveWebSearchEnabled(v: boolean): void {
+try { localStorage.setItem(PREF_KEY, v? '1': '0')} catch { /* 忽略 */}
+}
+
+export interface WebSearchResult { title: string; url: string; snippet: string}
+export interface SearchContext { block: string; sources: { title: string; url: string}[]}
+
+function decodeEntities(s: string): string {
+return s
+.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+.replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+}
+
+/** HTML → 纯文本（去脚本/样式/标签，合并空白） */
+export function stripHtmlToText(html: string): string {
+return decodeEntities(
+html
+.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+.replace(/<!--[\s\S]*?-->/g, ' ')
+.replace(/<[^>]+>/g, ' '),
+).replace(/\s+/g, ' ').trim()
+}
+
+/** 必应结果链接是自家跳转地址（/ck/a?…&u=a1<base64>），解出真实目标地址 */
+export function decodeBingRedirect(url: string): string {
+  if (!/bing\.com\/ck\//.test(url)) return url
+  const m = url.match(/[?&]u=a1([^&]+)/)
+  if (!m) return url
+  try {
+    const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/')
+    const decoded = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))
+    return /^https?:\/\//.test(decoded) ? decoded : url
+  } catch { return url }
+}
+
+/** 解析必应搜索结果页（li.b_algo 结构） */
+export function parseBingResults(html: string): WebSearchResult[] {
+const out: WebSearchResult[] = []
+for (const block of html.split(/<li class="b_algo"/).slice(1)) {
+const m = block.match(/<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
+if (!m) continue
+const url = decodeBingRedirect(decodeEntities(m[1]))
+if (!/^https?:\/\//.test(url)) continue
+const snippetM = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
+out.push({ title: stripHtmlToText(m[2]), url, snippet: snippetM? stripHtmlToText(snippetM[1]).slice(0, 220): ''})
+if (out.length >= 6) break
+}
+return out
+}
+
+/** 解析 DuckDuckGo HTML 版结果页（result__a / result__snippet 结构，链接需解 uddg 跳转） */
+export function parseDdgResults(html: string): WebSearchResult[] {
+const out: WebSearchResult[] = []
+const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
+let m: RegExpExecArray | null
+while ((m = re.exec(html))!== null) {
+let url = decodeEntities(m[1])
+const uddg = url.match(/[?&]uddg=([^&]+)/)
+if (uddg) { try { url = decodeURIComponent(uddg[1])} catch { /* 保持原链接 */}}
+if (!/^https?:\/\//.test(url)) continue
+out.push({ title: stripHtmlToText(m[2]), url, snippet: stripHtmlToText(m[3]).slice(0, 220)})
+if (out.length >= 6) break
+}
+return out
+}
+
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+
+async function httpGetTextOnce(url: string): Promise<string> {
+const headers: Record<string, string> = { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml'}
+if (isDesktopShell()) {
+const r = await pluginHttpDesktop(url, 'GET', headers)
+if (r.status >= 400) throw new Error(`HTTP ${r.status}`)
+return r.text
+}
+if (isNativeApp()) {
+const { CapacitorHttp} = await import('@capacitor/core')
+const res = await CapacitorHttp.request({ url, method: 'GET', headers, responseType: 'text', readTimeout: 12000, connectTimeout: 8000})
+if (res.status >= 400) throw new Error(`HTTP ${res.status}`)
+return typeof res.data === 'string'? res.data: JSON.stringify(res.data?? '')
+}
+const res = await fetch(url, { headers})
+if (!res.ok) throw new Error(`HTTP ${res.status}`)
+return res.text()
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+return Promise.race([p, new Promise<T>((_, rej) => { setTimeout(() => rej(new Error('响应超时')), ms)})])
+}
+
+async function httpGetText(url: string): Promise<string> {
+return withTimeout(httpGetTextOnce(url), 12000)
+}
+
+/** 搜索：必应优先（国内可直达），无结果/失败时 DuckDuckGo 兜底 */
+export async function searchWeb(query: string, limit = 5): Promise<WebSearchResult[]> {
+const q = encodeURIComponent(query)
+try {
+const results = parseBingResults(await httpGetText(`https://www.bing.com/search?q=${q}&setlang=zh-CN`))
+if (results.length) return results.slice(0, limit)
+} catch { /* 落到兜底 */}
+const results = parseDdgResults(await httpGetText(`https://html.duckduckgo.com/html/?q=${q}`))
+return results.slice(0, limit)
+}
+
+/** 抓取一个网页的正文纯文本（截断防上下文爆炸） */
+export async function fetchPageText(url: string, maxChars = 3200): Promise<string> {
+return stripHtmlToText(await httpGetText(url)).slice(0, maxChars)
+}
+
+/**
+* 为一次提问构建搜索资料块：搜索 → 抓前 3 条原文（失败用摘要代替）→ 编号成块。
+* 搜不到任何结果返回 null（调用方据此提示并按普通对话继续）。
+*/
+export async function buildSearchContext(question: string): Promise<SearchContext | null> {
+const query = question.trim().replace(/\s+/g, ' ').slice(0, 120)
+if (!query) return null
+const results = await searchWeb(query)
+if (!results.length) return null
+const pages = await Promise.all(results.slice(0, 3).map(async r => {
+try { return await fetchPageText(r.url)} catch { return ''}
+}))
+const parts = results.map((r, i) => {
+const body = (i < pages.length && pages[i])? pages[i]: r.snippet
+return `[${i + 1}] ${r.title}\n${r.url}\n${body}`
+})
+return {
+block: `\n${parts.join('\n\n')}`,
+sources: results.map(r => ({ title: r.title, url: r.url})),
+}
+}
+
+// 同一问题 60 秒内复用（多模型对比/失败换 Key 重试会重复调用 getReply，避免重复搜索）
+let ctxCache: { q: string; at: number; ctx: SearchContext | null} | null = null
+export async function buildSearchContextCached(question: string): Promise<SearchContext | null> {
+const q = question.trim().replace(/\s+/g, ' ').slice(0, 120)
+if (ctxCache && ctxCache.q === q && Date.now() - ctxCache.at < 60000) return ctxCache.ctx
+const ctx = await buildSearchContext(question)
+ctxCache = { q, at: Date.now(), ctx}
+return ctx
+}

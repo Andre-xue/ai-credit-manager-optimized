@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -37,6 +37,7 @@ import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDel
 import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
 import { testFreeAiOption, type FreeAiOption } from '../core/freeAi'
 import { collectMcpTools, loadToolCallingEnabled, runToolChatLoop } from '../core/toolChat'
+import { buildSearchContextCached, loadWebSearchEnabled, saveWebSearchEnabled } from '../core/webSearch'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -599,6 +600,20 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         }
       } catch { /* 记忆拼装失败不阻断对话 */ }
     }
+    // 联网搜索（v0.1.318）：开启时先真实搜索并抓取原文，资料附进 system 提示并强约束
+    // 「依据资料作答、标注来源、没有就说没有、不许猜」；来源存 ref 供 send() 附在回答末尾。
+    // 搜索失败/无结果不阻断对话：提示一句后按普通对话继续（语音通话不附，保持低延迟）
+    searchSourcesRef.current = []
+    if (webSearchOn && !voiceMode) {
+      if (!onDelta) setStreamingText(t('🔍 正在联网搜索…'))
+      try {
+        const ctx = await buildSearchContextCached(content)
+        if (ctx) {
+          effectiveSystemPrompt += `\n\n${ctx.block}\n\n回答要求：涉及事实的问题必须优先依据上面【联网搜索资料】作答，并在对应内容后标注来源编号（如 [1]）；资料里没有提到的不要编造、不要猜测，明确说明「搜索资料中没有提到」。`
+          searchSourcesRef.current = ctx.sources
+        } else if (!onDelta) notify(t('联网搜索没拿到结果，已按普通对话回答'))
+      } catch { if (!onDelta) notify(t('联网搜索失败，已按普通对话回答')) }
+    }
     // 语音模式：关闭推理、只带最近 2 条上下文，最大限度缩短首字延迟
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
     const voiceHistory = voiceMode ? history.slice(-2) : history
@@ -751,7 +766,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         notify(t('已自动切换到备用账户「{label}」', { label: switched }))
       }
       setPendingRetry(null)
-      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: (answer || t('（无回复内容）')) + failoverNote, at: Date.now() }])
+      setMessages(prev => [...prev, { id: `${Date.now()}-a`, role: 'assistant', content: (answer || t('（无回复内容）')) + failoverNote + (searchSourcesRef.current.length ? `\n\n${t('📎 信息来源：')}\n${searchSourcesRef.current.map((x, i) => `[${i + 1}] ${x.title}\n${x.url}`).join('\n')}` : ''), at: Date.now() }])
       // 自动朗读：AI 回复完成且未被中止时，朗读清洗后的纯文字
       if (autoSpeak && answer && !controller.signal.aborted) {
         const spoken = cleanForAutoSpeech(answer)
@@ -858,6 +873,17 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       return next
     })
   }
+  // 「联网搜索」：开启后回答前先真实搜索并抓原文，模型依据资料作答并标注来源；默认关，记住选择
+  const [webSearchOn, setWebSearchOn] = useState(() => loadWebSearchEnabled())
+  const searchSourcesRef = useRef<{ title: string; url: string }[]>([])
+  const toggleWebSearch = () => {
+    setWebSearchOn(v => {
+      const next = !v
+      saveWebSearchEnabled(next)
+      notify(next ? t('已开启「联网搜索」：问事实类问题时，助手会先联网搜索、依据真实资料回答并标注来源') : t('已关闭「联网搜索」'))
+      return next
+    })
+  }
   // ---- 多模型同问对比 ----
   const [compareMode, setCompareMode] = useState(false)
   const [compareKeys, setCompareKeys] = useState<string[]>([])
@@ -951,7 +977,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     document.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
   }, [toolsOpen])
-  const anyToolOn = autoSpeak || useMyData || compareMode || searchOpen
+  const anyToolOn = autoSpeak || useMyData || webSearchOn || compareMode || searchOpen
   // ---- 提示词库（完整页面） ----
   const [promptsOpen, setPromptsOpen] = useState(false)
   const [promptTitle, setPromptTitle] = useState('')
@@ -1203,6 +1229,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 {tbShow('myData') && (
                   <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} style={{ order: toolOrder('myData') }} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
                     <Database size={16} /><span>{t('引用我的数据')}</span>{useMyData && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                )}
+                {tbShow('webSearch') && (
+                  <button className={`ai-tools-item ${webSearchOn ? 'active' : ''}`} style={{ order: toolOrder('webSearch') }} onClick={() => { toggleWebSearch(); setToolsOpen(false) }}>
+                    <Globe size={16} /><span>{t('联网搜索')}</span>{webSearchOn && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
                 {tbShow('compare') && (

@@ -1379,6 +1379,17 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 43：联网搜索（v0.1.318） ----
+Object.assign(D, {
+  '联网搜索': { 'zh-TW': '聯網搜尋', en: 'Web search', ja: 'Web検索', ko: '웹 검색' },
+  '已开启「联网搜索」：问事实类问题时，助手会先联网搜索、依据真实资料回答并标注来源': { 'zh-TW': '已開啟「聯網搜尋」：問事實類問題時，助手會先聯網搜尋、依據真實資料回答並標註來源', en: 'Web search on: for factual questions the assistant searches first and answers from real sources with citations', ja: 'Web検索オン：事実に関する質問では先に検索し、実資料に基づいて出典付きで回答します', ko: '웹 검색 켜짐: 사실 질문에는 먼저 검색하고 실제 자료에 근거해 출처와 함께 답변합니다' },
+  '已关闭「联网搜索」': { 'zh-TW': '已關閉「聯網搜尋」', en: 'Web search off', ja: 'Web検索オフ', ko: '웹 검색 꺼짐' },
+  '🔍 正在联网搜索…': { 'zh-TW': '🔍 正在聯網搜尋…', en: '🔍 Searching the web…', ja: '🔍 Web検索中…', ko: '🔍 웹 검색 중…' },
+  '联网搜索没拿到结果，已按普通对话回答': { 'zh-TW': '聯網搜尋沒拿到結果，已按普通對話回答', en: 'Web search returned nothing; answered as a normal chat', ja: 'Web検索で結果が得られなかったため、通常のチャットで回答しました', ko: '웹 검색 결과가 없어 일반 대화로 답변했습니다' },
+  '联网搜索失败，已按普通对话回答': { 'zh-TW': '聯網搜尋失敗，已按普通對話回答', en: 'Web search failed; answered as a normal chat', ja: 'Web検索に失敗したため、通常のチャットで回答しました', ko: '웹 검색 실패로 일반 대화로 답변했습니다' },
+  '📎 信息来源：': { 'zh-TW': '📎 資訊來源：', en: '📎 Sources:', ja: '📎 情報源：', ko: '📎 정보 출처:' },
+})
+
 // ---- 补齐批次 42：免费模型用途分组/测活 + 对话自动调用工具（v0.1.317） ----
 Object.assign(D, {
   '通用对话': { 'zh-TW': '通用對話', en: 'General chat', ja: '汎用チャット', ko: '일반 대화' },
