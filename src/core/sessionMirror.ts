@@ -109,6 +109,24 @@ export async function mirrorCloudSession(): Promise<void> {
   } catch { /* 镜像失败不影响正常使用 */ }
 }
 
+/**
+ * 强制还原（v0.1.316）：不看 localStorage 现状，把耐久镜像整份写回。
+ * 用于启动时 getSession() 已失败之后——本地会话键还在但句柄已失效（被轮换/回滚）
+ * 时，常规还原（仅在会话键缺失时触发）救不回来，而镜像里存的是最近一次成功
+ * 登录/续期后的状态，写回后再重试 getSession 往往能续上。显式退出已清镜像，
+ * 故这里读不到东西时返回 false、不会把退出过的账号带回来。
+ */
+export async function restoreCloudSessionMirrorForce(): Promise<boolean> {
+  try {
+    const text = await durableLoad()
+    if (!text) return false
+    const entries = JSON.parse(text) as Entries
+    if (!entries || !Object.keys(entries).some(k => k.startsWith(SDK_SESSION_PREFIX))) return false
+    applySdkEntries(localStorage, entries)
+    return true
+  } catch { return false }
+}
+
 /** 清除镜像（显式退出登录时调用，防止下次启动被镜像「复活」） */
 export async function clearCloudSessionMirror(): Promise<void> {
   try { await durableClear() } catch { /* ignore */ }

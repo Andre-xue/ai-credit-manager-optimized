@@ -500,3 +500,17 @@
   max-width: 100% !important;
   width: auto !important;
 }
+
+/* ---------- 深色主题适配（v0.1.316）：AI 对话区 ----------
+   本层把气泡文字写死 #2a2b2e、输入框写死白底，只适配了浅色；深色下页面底色
+   已切到 var(--bg)，于是助手文字「深压深」、输入文字「浅压白」都看不见。
+   这里用主题变量补齐深色配色，经典与液态玻璃两种风格共用本层、同时生效。 */
+:root[data-theme="dark"] .claude-ui .ai-bubble { color: var(--text); }
+:root[data-theme="dark"] .claude-ui .ai-msg.user .ai-bubble { background: var(--panel-2) !important; color: var(--text); }
+:root[data-theme="dark"] .claude-ui .ai-compose-box { background: var(--panel); border-color: var(--border-strong); }
+:root[data-theme="dark"] .claude-ui .ai-textarea { color: var(--text); }
+:root[data-theme="dark"] .claude-ui .ai-hint { color: var(--text-3); }
+:root[data-theme="dark"] .claude-ui .ai-send:disabled { background: var(--panel-2); color: var(--text-3); }
+:root[data-theme="dark"] .claude-ui .reasoning-btn { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+:root[data-theme="dark"] .claude-ui .ai-quick-title { color: var(--text); }
+:root[data-theme="dark"] .claude-ui .ai-quick-card:hover { background: var(--panel-2); }

@@ -75,7 +75,7 @@ import {
 } from './core/io'
 import { openExternal, openTool, isDesktopApp, isNativeApp, isAppInstalled, biometricAvailable, biometricAuth, biometricLabel } from './core/openExternal'
 import { cloud, type CloudUser } from './core/cloud'
-import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror } from './core/sessionMirror'
+import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror, restoreCloudSessionMirrorForce } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
@@ -566,7 +566,15 @@ function App() {
         }
         // localStorage 里会话键丢失时（手机 WebView 存储被清理等），先从耐久镜像还原再取会话
         await restoreCloudSessionMirror()
-        const { data: session } = await cloud.auth.getSession()
+        let { data: session } = await cloud.auth.getSession()
+        if (!session) {
+          // 会话键还在但句柄已失效（续期轮换后写回失败/存储被回滚）时上面救不回来：
+          // 把耐久镜像整份写回再重试一次，镜像存的是最近一次成功续期后的状态
+          if (await restoreCloudSessionMirrorForce()) {
+            const retry = await cloud.auth.getSession()
+            session = retry.data
+          }
+        }
         if (session) { void mirrorCloudSession(); await bootstrapCloud(session.user, false) }
       } catch { /* 未登录或网络异常时保持本地模式 */ }
     })()
@@ -577,10 +585,22 @@ function App() {
   useEffect(() => {
     try {
       const unsub = cloud.auth.onAuthStateChange((event, session) => {
-        if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) void mirrorCloudSession()
+        if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) {
+          void mirrorCloudSession()
+          window.setTimeout(() => { void mirrorCloudSession() }, 1200)
+        }
       })
       return () => { try { unsub() } catch { /* ignore */ } }
     } catch { /* SDK 不支持订阅时忽略 */ }
+  }, [])
+
+  // 切后台/关页前再镜像一次会话：手机进程随时可能被系统回收，先把最新句柄存进耐久存储
+  useEffect(() => {
+    const save = () => { void mirrorCloudSession() }
+    const onVis = () => { if (document.visibilityState === 'hidden') save() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', save)
+    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('pagehide', save) }
   }, [])
 
   // 数据变更时防抖推送（仅初始化完成后，且没有其他同步在进行）
