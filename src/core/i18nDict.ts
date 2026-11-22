@@ -1379,6 +1379,28 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 42：免费模型用途分组/测活 + 对话自动调用工具（v0.1.317） ----
+Object.assign(D, {
+  '通用对话': { 'zh-TW': '通用對話', en: 'General chat', ja: '汎用チャット', ko: '일반 대화' },
+  '深度推理': { 'zh-TW': '深度推理', en: 'Deep reasoning', ja: '深い推論', ko: '심층 추론' },
+  '看图理解': { 'zh-TW': '看圖理解', en: 'Vision', ja: '画像理解', ko: '이미지 이해' },
+  '代码倾向': { 'zh-TW': '程式傾向', en: 'Code-leaning', ja: 'コード寄り', ko: '코드 특화' },
+  '快速轻量': { 'zh-TW': '快速輕量', en: 'Fast & light', ja: '高速・軽量', ko: '빠른 경량' },
+  '对话': { 'zh-TW': '對話', en: 'Chat', ja: 'チャット', ko: '대화' },
+  '看图': { 'zh-TW': '看圖', en: 'Vision', ja: '画像', ko: '이미지' },
+  '推理': { 'zh-TW': '推理', en: 'Reasoning', ja: '推論', ko: '추론' },
+  '代码': { 'zh-TW': '程式碼', en: 'Code', ja: 'コード', ko: '코드' },
+  '快速': { 'zh-TW': '快速', en: 'Fast', ja: '高速', ko: '빠름' },
+  '云端': { 'zh-TW': '雲端', en: 'Cloud', ja: 'クラウド', ko: '클라우드' },
+  '测活中…': { 'zh-TW': '測活中…', en: 'Testing…', ja: 'テスト中…', ko: '테스트 중…' },
+  '已跑通': { 'zh-TW': '已跑通', en: 'Reachable', ja: '接続OK', ko: '연결됨' },
+  '免费模型已跑通：{name}（{ms} 毫秒）': { 'zh-TW': '免費模型已跑通：{name}（{ms} 毫秒）', en: 'Free model works: {name} ({ms} ms)', ja: '無料モデル接続OK：{name}（{ms} ms）', ko: '무료 모델 연결 성공: {name} ({ms}ms)' },
+  '免费模型测不通：{name} —— {err}': { 'zh-TW': '免費模型測不通：{name} —— {err}', en: 'Free model unreachable: {name} — {err}', ja: '無料モデルに接続できません：{name} — {err}', ko: '무료 모델 연결 실패: {name} — {err}' },
+  '🔧 正在调用工具：{name}': { 'zh-TW': '🔧 正在調用工具：{name}', en: '🔧 Calling tool: {name}', ja: '🔧 ツールを呼び出し中：{name}', ko: '🔧 도구 호출 중: {name}' },
+  '🔧 本次调用了 {n} 次工具：{list}': { 'zh-TW': '🔧 本次調用了 {n} 次工具：{list}', en: '🔧 Used {n} tool call(s): {list}', ja: '🔧 今回 {n} 回ツールを使用：{list}', ko: '🔧 이번에 도구 {n}회 사용: {list}' },
+  '（当前模型不支持工具调用，已按普通对话回答）': { 'zh-TW': '（當前模型不支援工具調用，已按普通對話回答）', en: '(This model does not support tool calling; answered as a normal chat)', ja: '（このモデルはツール呼び出し非対応のため、通常のチャットで回答しました）', ko: '(현재 모델이 도구 호출을 지원하지 않아 일반 대화로 답변했습니다)' },
+})
+
 // ---- 补齐批次 41：品牌更名 AI 魔方（v0.1.314） ----
 Object.assign(D, {
   'AI 魔方': { 'zh-TW': 'AI 魔方', en: 'AI Cube', ja: 'AIキューブ', ko: 'AI 큐브' },

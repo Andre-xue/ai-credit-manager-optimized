@@ -71,3 +71,35 @@ export async function freeAiChat(opt: FreeAiOption, system: string, text: string
     { role: 'user', content: text },
   ])
 }
+
+export interface FreeAiTestResult { ok: boolean; ms: number; error?: string }
+
+/** 把测活失败的原始错误归成一句人话原因 */
+export function classifyFreeTestError(e: unknown): string {
+  const msg = ((e as Error)?.message ?? String(e ?? '')).slice(0, 200)
+  const low = msg.toLowerCase()
+  if (/freeusagelimit|quota|额度|insufficient|429|rate.?limit|限流/.test(low)) return '免费额度已耗尽或被限流'
+  if (/timeout|timed out|超时/.test(low)) return '响应超时'
+  if (/401|403|unauthor|login|登录/.test(low)) return '需要先登录云账号'
+  if (/network|fetch|网络|econn|dns|connect/.test(low)) return '网络不通'
+  return msg.slice(0, 80) || '未知错误'
+}
+
+/**
+ * 免费模型测活（v0.1.317）：发一句最小请求验证真能跑通——免费清单「在列」不等于
+ * 「能用」（如 Zen 免费池耗尽时列表照常返回、调用全失败）。选中模型时先测这个，
+ * 结果直接告诉用户，免得发了正式消息才发现是死的。
+ */
+export async function testFreeAiOption(opt: FreeAiOption, timeoutMs = 15000): Promise<FreeAiTestResult> {
+  const t0 = Date.now()
+  try {
+    const text = await Promise.race([
+      freeAiChat(opt, '你是一个连通性测试程序，只需按要求回复。', '请只回复两个字：可用'),
+      new Promise<never>((_, rej) => { setTimeout(() => rej(new Error('响应超时')), timeoutMs) }),
+    ])
+    if (!text.trim()) return { ok: false, ms: Date.now() - t0, error: '接口返回为空' }
+    return { ok: true, ms: Date.now() - t0 }
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, error: classifyFreeTestError(e) }
+  }
+}

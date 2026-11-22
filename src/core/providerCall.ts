@@ -248,6 +248,79 @@ export async function callChat(
   }
 }
 
+export interface ToolCallRequest { id: string; name: string; arguments: string }
+export interface ToolChatMessage {
+  role: string
+  content: string | null
+  tool_calls?: unknown
+  tool_call_id?: string
+}
+export interface ToolChatResult {
+  ok: boolean
+  text: string
+  toolCalls?: ToolCallRequest[]
+  /** 平台拒绝 tools 参数、已自动降级为无工具普通对话 */
+  toolsUnsupported?: boolean
+  error?: string
+}
+
+/**
+ * 带工具定义的对话（v0.1.317，单轮）：在 callChat 的请求构造之上加 OpenAI 风格
+ * tools 参数，返回模型请求调用的工具清单（不执行，执行与多轮循环在 core/toolChat）。
+ * 平台明确拒绝 tools/函数调用时，自动剥离 tools 以普通对话重试一次并标注降级。
+ */
+export async function callChatWithTools(
+  account: Account, apiKey: string,
+  messages: ToolChatMessage[],
+  tools: Record<string, unknown>[],
+  engineId?: string, reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high',
+): Promise<ToolChatResult> {
+  try {
+    const url = chatUrl(account)
+    const model = engineId || account.label
+    const build = (withTools: boolean): Record<string, unknown> => {
+      const body: Record<string, unknown> = { model, messages, stream: false }
+      const pid = (account.providerId || '').toLowerCase()
+      const isDeepSeek = pid.includes('deepseek') || /deepseek/i.test(model) || /deepseek/i.test(account.apiUrl || '')
+      if (isDeepSeek) {
+        body.thinking = { type: 'enabled' }
+        const effort = normalizeReasoningEffort(account, model, reasoningEffort)
+        if (effort) body.reasoning_effort = effort
+      } else {
+        if (!usesFixedSampling(account, model)) body.temperature = 0.7
+        const effort = normalizeReasoningEffort(account, model, reasoningEffort)
+        if (effort) body.reasoning_effort = effort
+      }
+      if (withTools && tools.length) { body.tools = tools; body.tool_choice = 'auto' }
+      return body
+    }
+    const request = (payload: Record<string, unknown>) =>
+      isDesktopApp() ? invokeApi(url, apiKey, payload) : directFetch(url, apiKey, payload)
+    let raw: string
+    let unsupported = false
+    try {
+      raw = await request(build(true))
+    } catch (e) {
+      const msg = ((e as Error)?.message ?? String(e)).toLowerCase()
+      if (/tool|function/.test(msg) && /400|invalid|not support|unsupported|不支持|无效/.test(msg)) {
+        raw = await request(build(false))
+        unsupported = true
+      } else throw e
+    }
+    const json = JSON.parse(raw)
+    const msgObj = (json.choices?.[0]?.message ?? {}) as { content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }> }
+    const toolCalls = Array.isArray(msgObj.tool_calls)
+      ? msgObj.tool_calls
+          .map(tc => ({ id: tc.id ?? '', name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '{}' }))
+          .filter(tc => tc.name)
+      : []
+    return { ok: true, text: msgObj.content ?? '', toolCalls: toolCalls.length ? toolCalls : undefined, toolsUnsupported: unsupported }
+  } catch (e) {
+    const err = toError(e)
+    return { ok: false, text: '', error: err.error }
+  }
+}
+
 /**
  * 从账户备注/名称中提取真实模型 ID。
  * 生图/生视频接口要求 model 是平台模型 ID（如 Kwai-Kolors/Kolors、black-forest-labs/FLUX.1-schnell），

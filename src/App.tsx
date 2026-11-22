@@ -3,6 +3,7 @@ import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
 import { loadPatrolHours, savePatrolHours, patrolDue, refreshAllBalances, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
+import { loadToolCallingEnabled, saveToolCallingEnabled } from './core/toolChat'
 import { loadViewerPrefs, saveViewerPrefs, listMediaApps, type ViewerPrefs, type MediaAppInfo } from './core/viewerPrefs'
 import { writeApiKeyStorageFile } from './core/apiKeyStorage'
 import { t, useLang, setLang, getLang, locale, type Lang } from './core/i18n'
@@ -4935,6 +4936,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   }
   // ---- 余额自动刷新间隔（本机偏好） ----
   const [patrolHours, setPatrolHours] = useState<number>(() => loadPatrolHours())
+  const [toolCalling, setToolCalling] = useState<boolean>(() => loadToolCallingEnabled())
   // ---- 阅览方式（仅桌面端、本机偏好）：AI 生成的视频/图片用哪个本机软件打开 ----
   const [viewerPrefs, setViewerPrefs] = useState<ViewerPrefs>(() => loadViewerPrefs())
   const [mediaApps, setMediaApps] = useState<MediaAppInfo[]>([])
@@ -5254,6 +5256,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
             <SettingsRow title="免费模型通道" desc="直连 OpenCode Zen 与 Kilo 公共网关的免费模型（免 Key，清单跟随上游更新），出现在 AI 助手的「免费模型」分类里。可用性与额度取决于上游和你的网络。">
               <Toggle checked={s.upstreamFree !== false} onChange={v => onChange({ upstreamFree: v })} />
+            </SettingsRow>
+            <SettingsRow title="对话自动调用工具" desc="开启后，用自有 API 账户聊天时，AI 可自主调用已连接的 MCP 工具（抓网页、读文件、查资料等，工具在「插件」页连接）。仅本机生效、默认关闭；所选模型不支持工具调用时会自动按普通对话回答。">
+              <Toggle checked={toolCalling} onChange={v => { setToolCalling(v); saveToolCallingEnabled(v) }} />
             </SettingsRow>
           </SettingsSection>
 

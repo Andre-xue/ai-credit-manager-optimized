@@ -34,6 +34,9 @@ import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDelayMs, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
+import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
+import { testFreeAiOption, type FreeAiOption } from '../core/freeAi'
+import { collectMcpTools, loadToolCallingEnabled, runToolChatLoop } from '../core/toolChat'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
 import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
@@ -625,6 +628,24 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const mainOpt = allOptions.find(o => o.key === model)
       const sameAsMain = !optKey || mainOpt?.account?.id === acct.id
       const engForCall = sameAsMain ? (engineId || undefined) : (enginesFor(acct.providerId)[0]?.id || undefined)
+      // 对话自动调用工具（v0.1.317）：开关开 + 有已连接的 MCP 工具 + 可对话分类时走工具循环，
+      // 模型可自主调用 MCP 工具（抓网页/读文件等）；否则维持原路径
+      if (CATEGORY_META[opt.category].canChat && loadToolCallingEnabled()) {
+        const collected = collectMcpTools()
+        if (collected.defs.length > 0) {
+          const outcome = await runToolChatLoop({
+            account: acct, apiKey, engineId: engForCall, reasoningEffort: effectiveReasoning, messages: msgs, collected,
+            onToolStart: info => { if (!onDelta) setStreamingText(t('🔧 正在调用工具：{name}', { name: `${info.serverName} · ${info.toolName}` })) },
+          })
+          let text = outcome.text
+          if (outcome.events.length) {
+            text += `\n\n${t('🔧 本次调用了 {n} 次工具：{list}', { n: String(outcome.events.length), list: outcome.events.map(e => `${e.serverName}·${e.toolName}${e.ok ? ' ✓' : ' ✗'}`).join('、') })}`
+          }
+          if (outcome.toolsUnsupported) text += `\n\n${t('（当前模型不支持工具调用，已按普通对话回答）')}`
+          if (onDelta) onDelta(text); else setStreamingText(text)
+          return text
+        }
+      }
       const r = await callByCategory(acct, apiKey, opt.category, msgs, engForCall, effectiveReasoning)
       if (!r.ok) throw Object.assign(new Error(r.error ?? t('调用失败')), { cors: r.cors })
       if (r.images?.length) {
@@ -1025,6 +1046,38 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       ))}
     </div>}
   </div>
+  // 免费模型：按用途分组（v0.1.317）+ 选中即测活，结果记状态供菜单打标并通知用户
+  type FreeTestState = { state: 'testing' } | { state: 'done'; ok: boolean; ms: number; error?: string }
+  const [freeTest, setFreeTest] = useState<Record<string, FreeTestState>>({})
+  const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource }) => (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key)
+  const groupedFreeOptions = useMemo(() => {
+    if (category !== '免费模型') return null
+    const byPurpose = new Map<string, typeof visibleOptions>()
+    for (const o of visibleOptions) {
+      const purpose = classifyModelPurpose(freeModelIdOf(o)).purpose
+      const arr = byPurpose.get(purpose) ?? []
+      arr.push(o)
+      byPurpose.set(purpose, arr)
+    }
+    return PURPOSE_ORDER.filter(p => byPurpose.has(p)).map(p => ({ purpose: p, options: byPurpose.get(p)! }))
+  }, [category, visibleOptions])
+
+  const selectFreeModel = (o: (typeof visibleOptions)[number]) => {
+    setModel(o.key); saveModel(o.key); setModelOpen(false)
+    const id = freeModelIdOf(o)
+    setFreeTest(prev => ({ ...prev, [o.key]: { state: 'testing' } }))
+    const opt: FreeAiOption = {
+      key: o.key, label: o.label,
+      group: o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费',
+      source: o.upstream ?? 'cloud', modelId: id,
+    }
+    void testFreeAiOption(opt).then(r => {
+      setFreeTest(prev => ({ ...prev, [o.key]: { state: 'done', ok: r.ok, ms: r.ms, error: r.error } }))
+      if (r.ok) notify(t('免费模型已跑通：{name}（{ms} 毫秒）', { name: id, ms: String(r.ms) }))
+      else notify(t('免费模型测不通：{name} —— {err}', { name: id, err: r.error ?? '' }))
+    })
+  }
+
   const modelDropdown = <div className="ai-model-wrap">
     <button className="ai-model-btn" onClick={() => { setModelOpen(v => !v); setCategoryOpen(false) }} title={t('切换模型')}>
       {currentModel} <ChevronDown size={13} />
@@ -1032,7 +1085,24 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
-      {visibleOptions.map(o => (
+      {category === '免费模型' && groupedFreeOptions?.map(g => (
+        <div key={g.purpose}>
+          <div className="ai-model-group-label">{PURPOSE_ICON[g.purpose]} {t(g.purpose)}</div>
+          {g.options.map(o => {
+            const info = classifyModelPurpose(freeModelIdOf(o))
+            const test = freeTest[o.key]
+            const displayLabel = o.upstream ? o.label.replace(` · ${UPSTREAM_LABEL[o.upstream]}`, '') : o.label
+            return (
+              <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
+                onClick={() => selectFreeModel(o)}>
+                <span>⚡ {displayLabel}</span>
+                <small>{o.upstream ? UPSTREAM_LABEL[o.upstream] : t('云端')} · {info.tags.map(x => t(x)).join(' / ')}{test?.state === 'testing' ? ` · ${t('测活中…')}` : test?.state === 'done' ? (test.ok ? ` · ✅ ${t('已跑通')} ${test.ms}ms` : ` · ❌ ${test.error ?? ''}`) : ''}</small>
+              </button>
+            )
+          })}
+        </div>
+      ))}
+      {category !== '免费模型' && visibleOptions.map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
           onClick={() => { setModel(o.key); saveModel(o.key); setModelOpen(false) }}>
           <span>{o.free ? '⚡ ' : o.localModel ? '🖥️ ' : '🔑 '}{o.label}</span>
