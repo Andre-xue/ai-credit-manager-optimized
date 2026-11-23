@@ -54,19 +54,20 @@ const DOUBAO_PARAMS: Record<string, string> = {
   aid: '497858', real_aid: '497858', pkg_type: 'release_version', pc_version: '2.32.6',
   doubao_pc_version: '5.72.66', samantha_web: '1', web_platform: 'desktop', 'use-olympus-account': '1', web_tab_id: '0',
 }
-const DOUBAO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36'
+const DOUBAO_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 SamanthaDoubao/2.32.6'
 const DOUBAO_GROUP = 'pc_incentive_task_mvp_v3'
 
 function doubaoUrl(base: string, secret: string): string {
   const h = String(hashStr(secret)).padStart(16, '7')
-  const params = new URLSearchParams({ ...DOUBAO_PARAMS, web_id: `76${h.slice(0, 10)}`, tea_uuid: h.slice(0, 16), device_id: '', region: '', sys_region: '' })
+  const h2 = String(hashStr(secret + ':web')).padStart(16, '3')
+  const params = new URLSearchParams({ ...DOUBAO_PARAMS, web_id: `76${h}${h2}`.slice(0, 19), tea_uuid: h.slice(0, 16), device_id: '', region: '', sys_region: '' })
   return `${base}?${params.toString()}`
 }
 
 async function doubaoPost(secret: string, base: string, body: Json): Promise<Json> {
   const { json } = await callJson('POST', doubaoUrl(base, secret), {
     Cookie: normalizeCookie(secret), 'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*',
-    Referer: 'https://www.doubao.com/pc/agent-explore', Origin: 'https://www.doubao.com', 'User-Agent': DOUBAO_UA,
+    Referer: 'chrome://doubao-chat/', 'User-Agent': DOUBAO_UA, 'Agw-Js-Conv': 'str',
   }, JSON.stringify(body))
   if (!json) throw new Error('豆包接口返回无法解析')
   return json
@@ -83,7 +84,7 @@ async function doubaoState(secret: string): Promise<DoubaoState> {
   const tasks = Array.isArray(data.tasks) ? (data.tasks as Json[]) : []
   const task = tasks.find(t => t?.task_kind === 'daily_signin')
   if (!task) throw new Error('这个豆包账号没有「每日签到」任务（工作版/飞书企业账号没有这个玩法，换个人账号）')
-  const c = (task.daily_checkin ?? {}) as Json
+  const c = (task.daily_checkin ?? task.daily_signin ?? {}) as Json
   const reward = (c.reward ?? {}) as Json
   const progress = (data.progress ?? {}) as Json
   return {
@@ -99,52 +100,16 @@ async function doubaoState(secret: string): Promise<DoubaoState> {
 }
 
 /** 从面板原始返回里挖本轮活动可能用的 group code / 任务 id（活动换轮次时写死的 code 会失效） */
-function doubaoCandidates(st: DoubaoState): { groups: string[]; taskId: string } {
-  const groups = new Set<string>()
-  const text = JSON.stringify(st.data)
-  for (const m of text.matchAll(/"campaign_group_code"\s*:\s*"([^"]+)"/g)) groups.add(m[1])
-  for (const m of text.matchAll(/"([a-z0-9_]*incentive[a-z0-9_]*)"/gi)) groups.add(m[1])
-  groups.delete(DOUBAO_GROUP)
-  const idRaw = st.task.task_id ?? st.task.entity_id ?? st.task.id
-  return { groups: [...groups].slice(0, 2), taskId: idRaw == null ? '' : String(idRaw) }
-}
-
-async function doubaoStatus(secret: string): Promise<CheckinStatus> {
-  const st = await doubaoState(secret)
-  if (st.checked) return { state: 'claimed', message: `今日已签到（连签 ${st.streak} 天）`, points: st.reward, streakDays: st.streak, balance: st.total || undefined }
-  return { state: 'claimable', message: `可签到 +${st.reward || 200} 额度`, points: st.reward || 200, streakDays: st.streak, balance: st.total || undefined }
-}
-
-async function doubaoClaim(secret: string): Promise<ClaimResult> {
-  const st = await doubaoState(secret)
-  if (st.checked) return { message: '今日已签到', points: 0 }
-  const { groups, taskId } = doubaoCandidates(st)
-  const attempts: Json[] = [{ scene: DOUBAO_GROUP }]
-  // 本轮活动可能按任务自带的 campaign_code（活动实例码）领取，而非分组码
-  if (st.campaignCode && st.campaignCode !== DOUBAO_GROUP) {
-    attempts.push({ scene: st.campaignCode })
-    attempts.push({ scene: DOUBAO_GROUP, campaign_code: st.campaignCode })
-    attempts.push({ campaign_code: st.campaignCode })
-  }
-  if (taskId) attempts.push({ scene: DOUBAO_GROUP, task_id: taskId })
-  for (const g of groups) attempts.push({ scene: g })
-  let lastCode = 0
-  for (const payload of attempts) {
-    const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', payload)
-    const code = num(body.code)
-    lastCode = code
-    if (code === 710012001) throw new Error('豆包登录已过期（Cookie 失效），重新复制一次 Cookie')
-    if (code === 0) {
-      const d = (body.data ?? {}) as Json
-      if (d.idempotent === true) return { message: '今日已签到', points: 0 }
-      const credit = num(d.reward_amount) || st.reward
-      return { message: `签到成功 +${credit} 额度`, points: credit }
-    }
-    if (code !== 710010702) throw new Error(`豆包签到失败：${str(body.msg ?? body.message)}（code ${code}）`)
-    // 710010702（无可领活动）：换一种参数再试
-  }
-  // 全部被拒：带上关键字段的真实值，方便对着真实返回修协议
-  throw new Error(`豆包领取被拒（${lastCode}）。诊断 活动码[${st.campaignCode || '无'}] 任务状态[${st.taskStatus || '无'}] 奖励模式[${st.rewardMode || '无'}] 标题[${str(st.task.title)}] 已签[${st.checked}]——把这段截图发我`)
+async function doubaoClaim(secret: string, st: DoubaoState): Promise<TokenStatus> {
+  const before = st.total
+  const res = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', { scene: DOUBAO_GROUP })
+  const code = num(res.code)
+  if (code === 710012001) throw new Error('豆包登录已失效：重新从浏览器复制最新 Cookie 覆盖这个账号')
+  if (code === 710010702) throw new Error('豆包说这个账号没有可领的签到活动（企业 / 飞书登录的账号没有这个活动；个人账号请在豆包电脑版「免费用豆包」里确认活动还在）')
+  if (code !== 0) throw new Error(`豆包领取失败（${code}）：${str(res.msg) || str(res.message) || '未知原因'}`)
+  const after = await doubaoState(secret).catch(() => null)
+  const gained = num((res.data as Json)?.reward_amount) || (after ? Math.max(0, after.total - before) : st.reward)
+  return { ok: true, signedToday: true, claimable: false, points: gained, balance: after?.total ?? before + gained, streak: after?.streak ?? st.streak, note: `已领取 +${gained} 额度` }
 }
 
 // ---------------- WPS 灵犀 ----------------
