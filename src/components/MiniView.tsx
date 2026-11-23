@@ -47,6 +47,8 @@ export function MiniView() {
   const [state, setState] = useState<AppState>(() => loadState())
   const [lastRun, setLastRun] = useState<CheckinRun | null>(() => readLastCheckinRun())
   const [autoOn, setAutoOn] = useState(() => getAutoCheckinEnabled())
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+  useEffect(() => { setOpenGroups({}) }, [lastRun?.at])
   const [checking, setChecking] = useState(false)
   const [checkMsg, setCheckMsg] = useState('')
   const [pwdInput, setPwdInput] = useState('')
@@ -169,17 +171,61 @@ export function MiniView() {
             {summarizeCheckinRun(lastRun)} <span style={{ color: c.faint }}>· 看明细</span>
           </div>
         )}
-        {lastRun && lastRun.items.length > 0 && detailOpen && (
-          <div style={{ marginTop: 7, display: 'grid', gap: 3, maxHeight: 118, overflowY: 'auto' }}>
-            {lastRun.items.map((it, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6, fontSize: 12, alignItems: 'baseline' }}>
-                <span style={{ flexShrink: 0 }}>{it.outcome === 'claimed' ? '✅' : it.outcome === 'already' ? '✓' : '⚠️'}</span>
-                <span style={{ color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</span>
-                <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', color: it.outcome === 'error' ? '#dc2626' : c.text }}>{it.message}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        {lastRun && lastRun.items.length > 0 && detailOpen && (() => {
+          // 按平台分组：失败组置顶展开，全签组折叠沉底；组头与组尾都给出本平台今日总积分
+          const groups: { platform: string; items: CheckinRun['items']; sum: number; errors: number; done: number }[] = []
+          for (const it of lastRun.items) {
+            const platform = it.label.split(' · ')[0] || it.label
+            let g = groups.find(x => x.platform === platform)
+            if (!g) { g = { platform, items: [], sum: 0, errors: 0, done: 0 }; groups.push(g) }
+            g.items.push(it)
+            if (typeof it.points === 'number') g.sum += it.points
+            if (it.outcome === 'error') g.errors++
+            if (it.outcome !== 'error') g.done++
+          }
+          const tier = (g: typeof groups[number]) => g.errors > 0 ? 0 : g.items.some(i => i.outcome === 'claimed') ? 1 : 2
+          const ordered = groups.map((g, i) => ({ g, i })).sort((a, b) => tier(a.g) - tier(b.g) || a.i - b.i).map(x => x.g)
+          return (
+            <div style={{ marginTop: 7, display: 'grid', gap: 2, maxHeight: 196, overflowY: 'auto' }}>
+              {ordered.map(g => {
+                const open = openGroups[g.platform] ?? g.errors > 0
+                return (
+                  <div key={g.platform}>
+                    <div onClick={() => setOpenGroups(prev => ({ ...prev, [g.platform]: !open }))}
+                      style={{ display: 'flex', gap: 6, fontSize: 12, alignItems: 'baseline', cursor: 'pointer', padding: '2.5px 0' }}>
+                      <span style={{ flexShrink: 0, color: c.faint, fontSize: 10 }}>{open ? '▾' : '▸'}</span>
+                      <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{g.platform}</span>
+                      {g.items.length > 1 && <span style={{ color: c.faint, fontSize: 11 }}>×{g.items.length}</span>}
+                      <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', display: 'flex', gap: 7, alignItems: 'baseline' }}>
+                        {g.sum > 0 && <b style={{ color: '#7c3aed' }}>今日 +{g.sum}</b>}
+                        {g.errors > 0
+                          ? <span style={{ color: '#dc2626' }}>失败 {g.errors}</span>
+                          : <span style={{ color: c.faint }}>{g.done === g.items.length ? '全部已签 ✓' : `已签 ${g.done}/${g.items.length}`}</span>}
+                      </span>
+                    </div>
+                    {open && (
+                      <div style={{ display: 'grid', gap: 3, padding: '1px 0 4px 14px' }}>
+                        {g.items.map((it, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 6, fontSize: 12, alignItems: 'baseline' }}>
+                            <span style={{ flexShrink: 0 }}>{it.outcome === 'claimed' ? '✅' : it.outcome === 'already' ? '✓' : '⚠️'}</span>
+                            <span style={{ color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label.includes(' · ') ? it.label.split(' · ').slice(1).join(' · ') : '账号'}</span>
+                            <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', color: it.outcome === 'error' ? '#dc2626' : c.text }}>{it.message}</span>
+                          </div>
+                        ))}
+                        {g.sum > 0 && g.items.length > 1 && (
+                          <div style={{ display: 'flex', fontSize: 11.5, color: c.sub, borderTop: `1px dashed ${c.border}`, paddingTop: 3 }}>
+                            <span>本平台今日合计</span>
+                            <b style={{ marginLeft: 'auto', color: '#7c3aed' }}>+{g.sum}</b>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
         {!lastRun && hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>点下面「一键签到」，WorkBuddy 池和 MiniMax 一起签，不用打开主窗口。</div>}
         {!hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>还没连接签到账号（在主窗口工坊「每日签到 / 账号池」里添加）。</div>}
         {checkMsg && <div style={{ marginTop: 6, fontSize: 12, color: c.text }}>{checkMsg}</div>}

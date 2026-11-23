@@ -252,6 +252,9 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [mmStatuses, setMmStatuses] = useState<MmAccountStatus[]>([])
   const [mmAuth, setMmAuth] = useState<{ authUrl: string; userCode: string } | null>(null)
   const [lastRun, setLastRun] = useState<CheckinRun | null>(() => readLastCheckinRun())
+  const [runOpen, setRunOpen] = useState(false)
+  const [runGroups, setRunGroups] = useState<Record<string, boolean>>({})
+  useEffect(() => { setRunGroups({}) }, [lastRun?.at])
   const [wbEnabled, setWbEnabled] = useState(() => getPlatformEnabled('workbuddy'))
   const [mmEnabled, setMmEnabled] = useState(() => getPlatformEnabled('minimax'))
   const [busy, setBusy] = useState('')
@@ -429,8 +432,68 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       </div>
 
       {lastRun && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 12, padding: '0 4px' }}>
-          最近一次签到：{new Date(lastRun.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {summarizeCheckinRun(lastRun)}（菜单栏一键签到、自动签到都会记在这里）
+        <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 12, padding: '10px 14px', background: 'var(--panel)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text-3)' }}>
+            <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              最近一次签到：{new Date(lastRun.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {summarizeCheckinRun(lastRun)}
+            </span>
+            <button className="btn sm ghost" style={{ flexShrink: 0 }} onClick={() => setRunOpen(!runOpen)}>{runOpen ? '收起' : '看明细'}</button>
+          </div>
+          {runOpen && (() => {
+            // 与菜单栏迷你窗同一套分组：失败组置顶展开，组头/组尾带本平台今日总积分
+            const groups: { platform: string; items: CheckinRun['items']; sum: number; errors: number; done: number }[] = []
+            for (const it of lastRun.items) {
+              const platform = it.label.split(' · ')[0] || it.label
+              let g = groups.find(x => x.platform === platform)
+              if (!g) { g = { platform, items: [], sum: 0, errors: 0, done: 0 }; groups.push(g) }
+              g.items.push(it)
+              if (typeof it.points === 'number') g.sum += it.points
+              if (it.outcome === 'error') g.errors++
+              if (it.outcome !== 'error') g.done++
+            }
+            const tier = (g: typeof groups[number]) => g.errors > 0 ? 0 : g.items.some(i => i.outcome === 'claimed') ? 1 : 2
+            const ordered = groups.map((g, i) => ({ g, i })).sort((a, b) => tier(a.g) - tier(b.g) || a.i - b.i).map(x => x.g)
+            return (
+              <div style={{ marginTop: 8, display: 'grid', gap: 2 }}>
+                {ordered.map(g => {
+                  const open = runGroups[g.platform] ?? g.errors > 0
+                  return (
+                    <div key={g.platform}>
+                      <div onClick={() => setRunGroups(prev => ({ ...prev, [g.platform]: !open }))}
+                        style={{ display: 'flex', gap: 7, fontSize: 13, alignItems: 'baseline', cursor: 'pointer', padding: '3px 0' }}>
+                        <ChevronDown size={14} style={{ flexShrink: 0, alignSelf: 'center', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s', color: 'var(--text-3)' }} />
+                        <span style={{ fontWeight: 600 }}>{g.platform}</span>
+                        {g.items.length > 1 && <span style={{ color: 'var(--text-3)', fontSize: 12 }}>×{g.items.length} 个账号</span>}
+                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 9, alignItems: 'baseline', whiteSpace: 'nowrap' }}>
+                          {g.sum > 0 && <b style={{ color: 'var(--accent, #6c5ce7)' }}>今日 +{g.sum}</b>}
+                          {g.errors > 0
+                            ? <span style={{ color: 'var(--danger, #d33)', fontSize: 12.5 }}>失败 {g.errors}</span>
+                            : <span style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{g.done === g.items.length ? '全部已签 ✓' : `已签 ${g.done}/${g.items.length}`}</span>}
+                        </span>
+                      </div>
+                      {open && (
+                        <div style={{ display: 'grid', gap: 4, padding: '2px 0 6px 21px' }}>
+                          {g.items.map((it, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 7, fontSize: 12.5, alignItems: 'baseline' }}>
+                              <span style={{ flexShrink: 0 }}>{it.outcome === 'claimed' ? '✅' : it.outcome === 'already' ? '✓' : '⚠️'}</span>
+                              <span style={{ color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label.includes(' · ') ? it.label.split(' · ').slice(1).join(' · ') : '账号'}</span>
+                              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', color: it.outcome === 'error' ? 'var(--danger, #d33)' : 'var(--text-2, inherit)' }}>{it.message}</span>
+                            </div>
+                          ))}
+                          {g.sum > 0 && g.items.length > 1 && (
+                            <div style={{ display: 'flex', fontSize: 12, color: 'var(--text-3)', borderTop: '1px dashed var(--border)', paddingTop: 4 }}>
+                              <span>本平台今日合计</span>
+                              <b style={{ marginLeft: 'auto', color: 'var(--accent, #6c5ce7)' }}>+{g.sum}</b>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
       )}
 
