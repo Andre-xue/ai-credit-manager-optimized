@@ -92,6 +92,9 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [videoUrls, setVideoUrls] = useState<Map<string, string>>(new Map())
   const videoUrlBusy = useState(() => new Set<string>())[0]
   const [hoverImg, setHoverImg] = useState<{ src: string; x: number; y: number } | null>(null)
+  // 悬浮播放（v0.1.338）：悬停可播视频 200ms 后出浮动播放器自动播放，移开即停
+  const [hoverVideo, setHoverVideo] = useState<{ path: string; x: number; y: number } | null>(null)
+  const hoverTimer = useRef<number | null>(null)
   const [previewImg, setPreviewImg] = useState('')
   const [page, setPage] = useState(1)
   const { data: routeData, route, routeKey, setRouteKey } = useRouteData(accounts)
@@ -477,8 +480,21 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                           return (
                             <button key={e.name} className={`fm-file ${selected === p ? 'sel' : ''} ${e.name.startsWith('.') ? 'fm-dot' : ''}`}
                               onClick={() => openEntry(e)} onDoubleClick={() => openEntry(e)}
-                              onMouseEnter={ev => { if (thumb) { const r = ev.currentTarget.getBoundingClientRect(); setHoverImg({ src: thumb, x: r.right + 10, y: Math.max(8, r.top - 10) }) } }}
-                              onMouseLeave={() => setHoverImg(null)}>
+                              onMouseEnter={ev => {
+                                const r = ev.currentTarget.getBoundingClientRect()
+                                if (thumb) setHoverImg({ src: thumb, x: r.right + 10, y: Math.max(8, r.top - 10) })
+                                if (PLAY_VIDEO_EXTS.has(extOf(e.name))) {
+                                  void ensureVideoUrl(p)
+                                  const x = Math.min(r.right + 10, window.innerWidth - 372)
+                                  const y = Math.max(8, r.top - 10)
+                                  hoverTimer.current = window.setTimeout(() => setHoverVideo({ path: p, x, y }), 200)
+                                }
+                              }}
+                              onMouseLeave={() => {
+                                setHoverImg(null)
+                                if (hoverTimer.current) { window.clearTimeout(hoverTimer.current); hoverTimer.current = null }
+                                setHoverVideo(null)
+                              }}>
                               {e.isDir ? <Folder size={38} className="fm-folder-ico" />
                                 : !e.isDir && PLAY_VIDEO_EXTS.has(extOf(e.name)) && videoUrls.get(p)
                                   ? <video className="fm-thumb" src={videoUrls.get(p)} preload="metadata" muted playsInline />
@@ -533,6 +549,10 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
         </>
       )}
       {hoverImg && <img className="fm-hover-img" src={hoverImg.src} alt="" style={{ left: hoverImg.x, top: hoverImg.y }} />}
+      {hoverVideo && videoUrls.get(hoverVideo.path) && (
+        <video className="fm-hover-video" src={videoUrls.get(hoverVideo.path)} autoPlay muted loop playsInline
+          style={{ left: hoverVideo.x, top: hoverVideo.y }} />
+      )}
     </div>
   )
 }
