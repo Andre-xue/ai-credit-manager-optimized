@@ -23,6 +23,7 @@ import {
   getVolcConfig, saveVolcConfig, clearVolcConfig, type VolcConfig,
 } from '../core/volcConfig'
 import { ttsTestDirect, voicestudioTest, voicestudioList } from '../core/ttsDirect'
+import { EDGE_VOICES, getEdgeVoiceId, setEdgeVoiceId, getSpeakPref, setSpeakPref } from '../core/edgeTts'
 import { t } from '../core/i18n'
 import { verifyVault, getBiometricPassword } from '../core/crypto'
 import { voiceNeedsUnlock, setVoiceSessionPwd, hasVoiceCredential } from '../core/voiceKey'
@@ -61,6 +62,9 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [previewing, setPreviewing] = useState(false)
   const [sample, setSample] = useState<VoiceSample | null>(null)
   const [clonedId, setClonedId] = useState<string | null>(() => getClonedVoiceId())
+  const [edgeVoice, setEdgeVoiceState] = useState<string>(() => getEdgeVoiceId())
+  const [edgeActive, setEdgeActive] = useState<boolean>(() => getSpeakPref() === 'edge')
+  const [edgePreviewing, setEdgePreviewing] = useState(false)
   const [clonedVoices, setClonedVoices] = useState<ClonedVoice[]>(() => listClonedVoices())
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
@@ -245,10 +249,34 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   }
 
   const pickCloned = (v: ClonedVoice) => {
+    setSpeakPref('')
+    setEdgeActive(false)
     setActiveClonedVoice(v.voiceId)
     setClonedId(v.voiceId)
     syncClonedVoices()
     notify(t('已切换克隆音色：{name}', { name: v.name }))
+  }
+
+  const pickEdge = (id: string, name: string) => {
+    setEdgeVoiceId(id)
+    setSpeakPref('edge')
+    setEdgeVoiceState(id)
+    setEdgeActive(true)
+    notify(t('已切换到 Edge 免费音色：{name}', { name }))
+  }
+
+  const previewEdge = (id: string, name: string) => {
+    if (edgePreviewing) { stopSpeak(); setEdgePreviewing(false); return }
+    setEdgeVoiceId(id)
+    setSpeakPref('edge')
+    setEdgeVoiceState(id)
+    setEdgeActive(true)
+    setEdgePreviewing(true)
+    void speakAsync(`你好，我是${name}，很高兴认识你。`, null, (st) => {
+      if (st === 'end' || st === 'error') setEdgePreviewing(false)
+    }, (reason) => { notify(reason); setEdgePreviewing(false) }).then(ok => {
+      if (!ok) setEdgePreviewing(false)
+    })
   }
 
   const dropCloned = (v: ClonedVoice) => {
@@ -269,9 +297,11 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     <div className="voice-settings">
       {/* 当前朗读源标识 */}
       <div className={`voice-source-badge ${getSpeakSource() === 'clone' ? 'clone' : 'system'}`}>
-        {getSpeakSource() === 'clone'
-          ? <>{t('🎙 当前 AI 回复使用「克隆音色」——下方试听、聊天与通话朗读均走此音色')}</>
-          : <>{t('🔊 当前未设置克隆音色，AI 回复使用系统默认音色兜底。导入声音样本并克隆后即可用你自己的声音。')}</>}
+        {getSpeakSource() === 'edge'
+          ? <>{t('🎧 当前 AI 回复使用「Edge 免费音色」（微软云端音色，免费）——下方试听、聊天与通话朗读均走此音色')}</>
+          : getSpeakSource() === 'clone'
+            ? <>{t('🎙 当前 AI 回复使用「克隆音色」——下方试听、聊天与通话朗读均走此音色')}</>
+            : <>{t('🔊 当前未设置克隆音色，AI 回复使用系统默认音色兜底。导入声音样本并克隆后即可用你自己的声音。')}</>}
       </div>
 
       <div className="voice-row">
@@ -281,6 +311,20 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       <button className="voice-preview" onClick={tryPreview}>
         {previewing ? <Square size={14} /> : <Play size={14} />} {previewing ? t('停止试听') : t('试听克隆音色')}
       </button>
+
+      {/* Edge 免费音色 */}
+      <div className="voice-section-label dialect"><Volume2 size={14} /> {t('Edge 免费音色（微软云端 · 免费）')}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('不需要 Key、不花钱；点任意音色即切换，行尾可试听')}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+        {EDGE_VOICES.map(v => (
+          <div key={v.id} className="voice-row" style={{ justifyContent: 'space-between', gap: 8 }}>
+            <button className="btn sm" style={{ flex: 1, justifyContent: 'flex-start' }} onClick={() => pickEdge(v.id, v.name)}>
+              {v.name} · {v.desc}{edgeActive && edgeVoice === v.id ? ` · ${t('使用中')}` : ''}
+            </button>
+            <button className="btn sm" onClick={() => previewEdge(v.id, v.name)}>{edgePreviewing && edgeVoice === v.id ? t('停止试听') : t('试听')}</button>
+          </div>
+        ))}
+      </div>
 
       {/* 声音克隆 */}
       <div className="voice-section-label dialect"><Volume2 size={14} /> {t('声音克隆（录音 / 音频文件 → AI 发音）')}</div>

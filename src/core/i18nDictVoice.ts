@@ -7,6 +7,11 @@ import type { Lang } from './i18n'
 
 export const PART_VOICE: Record<string, Partial<Record<Lang, string>>> = {
   // ---- VoiceSettings：逻辑与 toast ----
+  '🎧 当前 AI 回复使用「Edge 免费音色」（微软云端音色，免费）——下方试听、聊天与通话朗读均走此音色': { 'zh-TW': '🎧 目前 AI 回覆使用「Edge 免費音色」（微軟雲端音色，免費）——下方試聽、聊天與通話朗讀均走此音色', en: '🎧 AI replies currently use the free Edge voice (Microsoft cloud) — previews, chat and call readouts all use it', ja: '🎧 現在の AI 返信は「Edge 無料音声」（Microsoft クラウド、無料）を使用しています', ko: '🎧 현재 AI 답변은 「Edge 무료 음성」(Microsoft 클라우드, 무료)을 사용합니다' },
+  'Edge 免费音色（微软云端 · 免费）': { 'zh-TW': 'Edge 免費音色（微軟雲端 · 免費）', en: 'Edge free voices (Microsoft cloud · free)', ja: 'Edge 無料音声（Microsoft クラウド・無料）', ko: 'Edge 무료 음성 (Microsoft 클라우드 · 무료)' },
+  '不需要 Key、不花钱；点任意音色即切换，行尾可试听': { 'zh-TW': '不需要 Key、不花錢；點任意音色即切換，行尾可試聽', en: 'No key, no cost. Tap a voice to switch; preview at the end of each row', ja: 'キー不要・無料。音声をタップで切替、行末で試聴できます', ko: '키 불필요, 무료입니다. 음성을 누르면 전환되고, 줄 끝에서 미리 들을 수 있습니다' },
+  '已切换到 Edge 免费音色：{name}': { 'zh-TW': '已切換到 Edge 免費音色：{name}', en: 'Switched to the Edge free voice: {name}', ja: 'Edge 無料音声に切り替えました：{name}', ko: 'Edge 무료 음성으로 전환했습니다: {name}' },
+  '试听': { 'zh-TW': '試聽', en: 'Preview', ja: '試聴', ko: '미리듣기' },
   '请输入主密码': { 'zh-TW': '請輸入主密碼', en: 'Please enter the master password', ja: 'マスターパスワードを入力してください', ko: '마스터 비밀번호를 입력하세요' },
   '主密码错误': { 'zh-TW': '主密碼錯誤', en: 'Incorrect master password', ja: 'マスターパスワードが違います', ko: '마스터 비밀번호가 올바르지 않습니다' },
   '已解锁，本次会话语音功能可读取加密 Key': { 'zh-TW': '已解鎖，本次工作階段語音功能可讀取加密 Key', en: 'Unlocked. Voice features can read encrypted keys for this session', ja: 'ロックを解除しました。このセッションでは音声機能が暗号化されたキーを読み取れます', ko: '잠금이 해제되었습니다. 이번 세션에서는 음성 기능이 암호화된 키를 읽을 수 있습니다' },

@@ -215,6 +215,7 @@ export function unlockTts(): void {
 import { getTtsConfig } from './voice-download'
 import { getClonedVoiceId, listClonedVoices } from './voiceClone'
 import { isDirectMode, ttsSynthesizeDirect, voicestudioSynthesize } from './ttsDirect'
+import { getSpeakPref, getEdgeVoiceId, synthesizeEdgeMp3 } from './edgeTts'
 
 /** 是否使用本机 VoiceStudio 作为语音服务 */
 function isVoiceStudio(cfg: ReturnType<typeof getTtsConfig>): boolean {
@@ -224,7 +225,8 @@ function isVoiceStudio(cfg: ReturnType<typeof getTtsConfig>): boolean {
 let activeCallback: ((state: 'start' | 'end' | 'error') => void) | null = null
 
 /** 当前 AI 朗读会走哪种音色：clone=克隆音色，system=系统音色。界面标识与 speakAsync 行为共用此判断。 */
-export function getSpeakSource(): 'clone' | 'system' {
+export function getSpeakSource(): 'clone' | 'system' | 'edge' {
+  if (getSpeakPref() === 'edge') return 'edge'
   const cfg = getTtsConfig()
   return getClonedVoiceId() && (isDirectMode(cfg) || isVoiceStudio(cfg) || !!cfg.endpoint) ? 'clone' : 'system'
 }
@@ -261,6 +263,27 @@ export function speak(text: string, voiceURI: string | null, onState?: (s: 'star
   return true
 }
 
+async function playMp3Buffer(arrayBuf: ArrayBuffer, onState?: (s: 'start' | 'end' | 'error') => void): Promise<void> {
+  const ctx = getAudioCtx()
+  if (!ctx) throw new Error('当前环境不支持音频解码')
+  const decoded = await ctx.decodeAudioData(arrayBuf)
+  try { (window as any).__acmCloneSrc?.stop() } catch { /* ignore */ }
+  const src = ctx.createBufferSource()
+  src.buffer = decoded
+  src.connect(ctx.destination)
+  ;(window as any).__acmCloneSrc = src
+  activeCallback = onState ?? null
+  let ended = false
+  src.onended = () => {
+    if (ended) return
+    ended = true
+    activeCallback?.('end'); activeCallback = null
+    if ((window as any).__acmCloneSrc === src) (window as any).__acmCloneSrc = null
+  }
+  src.start()
+  activeCallback?.('start')
+}
+
 /** 供测试与 UI 复用：根据指定的 voiceURI 与克隆音色列表，解析本次朗读要用的克隆音色 ID。 */
 export function resolveCloneVoiceId(
   voiceURI: string | null,
@@ -284,6 +307,21 @@ export async function speakAsync(
   onState?: (s: 'start' | 'end' | 'error') => void,
   onFallback?: (reason: string) => void,
 ): Promise<boolean> {
+  // Edge 免费音色优先：用户在语音配置里选了 Edge 音色时，全局朗读走微软云端合成
+  if (getSpeakPref() === 'edge') {
+    try {
+      stopSpeak()
+      const speakText = cleanForSpeech(text)
+      if (!speakText) throw new Error('朗读内容为空')
+      const buf = await synthesizeEdgeMp3(speakText, getEdgeVoiceId())
+      await playMp3Buffer(buf, onState)
+      return true
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e)
+      onFallback?.(`Edge 免费音色播放失败（${msg.slice(0, 60)}），已临时改用系统音色`)
+    }
+    return speak(text, voiceURI, onState)
+  }
   // 判断本次朗读要用哪个克隆音色：
   // 1) 若 voiceURI 命中用户保存的某个克隆音色 → 用它（AI 助手"说话音色"可独立指定）
   // 2) 否则若全局音源是 clone → 用全局激活的克隆音色
