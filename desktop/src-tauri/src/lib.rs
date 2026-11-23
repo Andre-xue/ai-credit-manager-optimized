@@ -687,6 +687,25 @@ fn safe_filename(filename: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
+/// iCloud Drive 文件夹路径（v0.1.336）：macOS 为 ~/Library/Mobile Documents/com~apple~CloudDocs，
+/// Windows 为 iCloud for Windows 的 %USERPROFILE%\\iCloudDrive；目录不存在（未开启 iCloud Drive）返回 None
+#[tauri::command]
+fn icloud_drive_dir() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let mac = format!("{home}/Library/Mobile Documents/com~apple~CloudDocs");
+        if std::path::Path::new(&mac).is_dir() {
+            return Some(mac);
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let win = format!("{profile}\\iCloudDrive");
+        if std::path::Path::new(&win).is_dir() {
+            return Some(win);
+        }
+    }
+    None
+}
+
 /// 将文本文件写入指定目录
 #[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
@@ -2920,7 +2939,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

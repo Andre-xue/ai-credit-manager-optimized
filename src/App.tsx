@@ -82,7 +82,7 @@ import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
-import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
+import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -5027,6 +5027,13 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     notify(r.ok ? '快照已删除' : `删除失败：${r.error ?? ''}`)
     if (r.ok) void refreshCbList()
   }
+  const [icloudBusy, setIcloudBusy] = useState(false)
+  const doIcloudSave = async () => {
+    setIcloudBusy(true)
+    const r = await saveBackupToIcloudDrive(state)
+    setIcloudBusy(false)
+    notify(r.ok ? `已保存到 iCloud Drive：${(r.path ?? '').split('/').pop()}` : (r.error ?? '保存失败'))
+  }
   const doCbRestore = async (id: string) => {
     if (!onRestoreSnapshot) return
     setCbBusy(true)
@@ -5649,6 +5656,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="立即备份" desc={cloudUser ? (cloudBackupLastAt() ? `上次备份：${new Date(cloudBackupLastAt()).toLocaleString(locale())}` : '还没有备份过') : '登录云账号后可用'}>
               <button className="btn sm primary" disabled={!cloudUser || cbBusy} onClick={() => void doCbNow()}>{cbBusy ? '处理中…' : '立即备份一次'}</button>
             </SettingsRow>
+            {isDesktopApp() && (
+              <SettingsRow title="保存到 iCloud Drive" desc="把一份完整备份文件写进这台电脑的 iCloud Drive 文件夹，自动同步到你的 iCloud（内容与云端快照一致，密钥为密文）">
+                <button className="btn sm" disabled={icloudBusy} onClick={() => void doIcloudSave()}>{icloudBusy ? '保存中…' : '保存一份到 iCloud'}</button>
+              </SettingsRow>
+            )}
             {cloudUser && (cbList.length === 0
               ? <div className="voice-empty">暂无云端快照</div>
               : cbList.map(m => (

@@ -58,6 +58,37 @@ export function snapshotStateOf(appState: AppState): AppState {
   }
 }
 
+// ---------- iCloud Drive（v0.1.336，仅桌面端）：把一份完整备份文件写进系统 iCloud Drive 文件夹 ----------
+// iCloud Drive 在 macOS 上就是 ~/Library/Mobile Documents/com~apple~CloudDocs 同步文件夹，写文件即上 iCloud；
+// 真正的 CloudKit 容器需要苹果开发者签名+上架，本 App 的分发方式拿不到，故走文件夹路线。
+type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+function tauriInvoke(): TauriInvoke | null {
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: TauriInvoke } }
+  return w.__TAURI_INTERNALS__?.invoke ?? null
+}
+
+/** 保存一份完整备份到 iCloud Drive 文件夹；内容与云端快照同构（state 已剥令牌/语言，vault 为密文） */
+export async function saveBackupToIcloudDrive(appState: AppState): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const invoke = tauriInvoke()
+  if (!invoke) return { ok: false, error: '仅桌面端可用' }
+  let dir: string | null = null
+  try { dir = (await invoke('icloud_drive_dir')) as string | null } catch { dir = null }
+  if (!dir) return { ok: false, error: '未检测到 iCloud Drive 文件夹：请先在这台电脑登录 iCloud 并开启「iCloud 云盘」' }
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const filename = `AI魔方备份-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`
+  const data = {
+    app: 'AI Cube', kind: 'ai-cube-backup', version: 1, createdAt: now.toISOString(),
+    state: snapshotStateOf(appState), vault: getVaultSyncMaterial(),
+  }
+  try {
+    const path = (await invoke('write_file_to_dir', { dir, filename, content: JSON.stringify(data, null, 2) })) as string
+    return { ok: true, path }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : '写入 iCloud Drive 失败' }
+  }
+}
+
 /** 只保留最近 keep 份（列表按时间旧→新） */
 export function trimSnapshots<T>(list: T[], keep: number): T[] {
   return list.slice(-Math.max(1, keep))
