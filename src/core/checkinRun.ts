@@ -130,8 +130,26 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
     }
   }
   const run: CheckinRun = { at: Date.now(), items }
-  try { localStorage.setItem(RUN_KEY, JSON.stringify(run)) } catch { /* 忽略 */ }
+  saveCheckinRun(run)
   return run
+}
+
+function saveCheckinRun(run: CheckinRun): void {
+  try { localStorage.setItem(RUN_KEY, JSON.stringify(run)) } catch { /* 忽略 */ }
+  // 跨窗靠 localStorage 的 storage 事件；同窗（主窗口内自动签到完成时签到页正开着）靠这个自定义事件
+  try { window.dispatchEvent(new CustomEvent('acm-checkin-done')) } catch { /* 忽略 */ }
+}
+
+/**
+ * 把一次手动领取的结果并入今日留痕：主页面里逐个签、全部签也走这里，
+ * 这样菜单栏迷你窗和签到页看到的是同一份记录，双向同步。
+ */
+export function recordCheckinOutcome(item: CheckinRunItem): void {
+  const prev = readLastCheckinRun()
+  const base: CheckinRun = checkinRunIsToday(prev) && prev ? prev : { at: Date.now(), items: [] }
+  const items = base.items.filter(i => i.label !== item.label)
+  items.push(item)
+  saveCheckinRun({ at: Date.now(), items })
 }
 
 /** 一行摘要，给通知/迷你窗标题用 */

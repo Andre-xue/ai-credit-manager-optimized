@@ -4,6 +4,7 @@ import { ToolShell } from './WorkshopView'
 import { openExternal, biometricAvailable } from '../core/openExternal'
 import { resolveBiometricVaultPassword } from '../core/biometric'
 import { workbuddyBegin, workbuddyPoll, type WorkbuddyFlow } from '../core/checkin'
+import { recordCheckinOutcome } from '../core/checkinRun'
 import {
   listPoolMeta, addPoolAccount, removePoolAccount, poolCredBox, migrateLegacyWorkbuddyCred,
   getPoolState, patchPoolState, poolModels, poolChat, poolAccountStatuses, poolClaimOne,
@@ -89,6 +90,25 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
+  // 与迷你窗/签到页同步：窗口重新聚焦或签到留痕变化时重查状态
+  useEffect(() => {
+    if (!sessionPwd) return
+    const onWake = () => {
+      reloadLocal()
+      void loadExpires(sessionPwd, listPoolMeta())
+      void refreshStatuses()
+    }
+    const onStorage = (e: StorageEvent) => { if (e.key === 'acm.checkin.lastRun.v1') onWake() }
+    window.addEventListener('focus', onWake)
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('acm-checkin-done', onWake)
+    return () => {
+      window.removeEventListener('focus', onWake)
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('acm-checkin-done', onWake)
+    }
+  }, [sessionPwd, reloadLocal, loadExpires, refreshStatuses])
+
   const startAuth = async () => {
     setBusy('auth')
     try {
@@ -124,6 +144,7 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
     setBusy(`claim:${id}`)
     try {
       const r = await poolClaimOne(sessionPwd, id)
+      recordCheckinOutcome({ label: `WorkBuddy · ${label}`, outcome: 'claimed', message: r.message, points: r.points })
       notify(`${label}：${r.message}`)
       void refreshStatuses()
     } catch (e) { notify(e instanceof Error ? e.message : '签到失败') } finally { setBusy('') }

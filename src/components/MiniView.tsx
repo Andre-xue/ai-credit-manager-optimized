@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { latestQuota, loadState } from '../core/store'
 import { predictExhaustion } from '../core/forecast'
 import { PROVIDER_MAP } from '../data/providers'
@@ -31,12 +31,17 @@ export function MiniView() {
   const [checkMsg, setCheckMsg] = useState('')
   const [pwdInput, setPwdInput] = useState('')
   const [needPwd, setNeedPwd] = useState(false)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const collapseRef = useRef<number | null>(null)
   const [updatedAt, setUpdatedAt] = useState(() => new Date())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
 
   const refresh = useCallback(() => {
     setState(loadState())
-    setLastRun(readLastCheckinRun())
+    const run = readLastCheckinRun()
+    setLastRun(run)
+    // 留痕超过 2 分钟就只显示一行摘要，明细不长期占着迷你窗
+    if (run && Date.now() - run.at > 120_000 && !run.items.some(i => i.outcome === 'error')) setDetailOpen(false)
     setAutoOn(getAutoCheckinEnabled())
     setUpdatedAt(new Date())
   }, [])
@@ -47,11 +52,17 @@ export function MiniView() {
     const pwd = getBiometricPassword() || pwdInput
     if (!pwd) { setNeedPwd(true); setCheckMsg('保险箱没解锁：输入主密码，或在主窗口开启指纹解锁后这里可免密签到'); return }
     setChecking(true); setCheckMsg('')
+    if (collapseRef.current) window.clearTimeout(collapseRef.current)
     try {
       const run = await runAllCheckins(pwd)
       setLastRun(run)
       setNeedPwd(false); setPwdInput('')
       setCheckMsg(summarizeCheckinRun(run))
+      // 签完先展开明细给用户看一眼，无失败时 6 秒后自动收起成一行摘要
+      setDetailOpen(true)
+      if (!run.items.some(i => i.outcome === 'error')) {
+        collapseRef.current = window.setTimeout(() => { setDetailOpen(false); setCheckMsg('') }, 6000)
+      }
     } catch (e) {
       setCheckMsg(e instanceof Error ? e.message : '签到失败')
     } finally { setChecking(false) }
@@ -132,7 +143,12 @@ export function MiniView() {
             {lastRun ? `${checkinRunIsToday(lastRun) ? '今天' : new Date(lastRun.at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${new Date(lastRun.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '还没签过'}
           </span>
         </div>
-        {lastRun && lastRun.items.length > 0 && (
+        {lastRun && lastRun.items.length > 0 && !detailOpen && (
+          <div onClick={() => setDetailOpen(true)} style={{ marginTop: 6, fontSize: 12, color: c.sub, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {summarizeCheckinRun(lastRun)} <span style={{ color: c.faint }}>· 看明细</span>
+          </div>
+        )}
+        {lastRun && lastRun.items.length > 0 && detailOpen && (
           <div style={{ marginTop: 7, display: 'grid', gap: 3, maxHeight: 118, overflowY: 'auto' }}>
             {lastRun.items.map((it, i) => (
               <div key={i} style={{ display: 'flex', gap: 6, fontSize: 12, alignItems: 'baseline' }}>

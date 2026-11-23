@@ -15,7 +15,7 @@ import {
   migrateLegacyMinimaxCred, listMmMeta, addMmAccount, removeMmAccount,
   mmAccountStatuses, mmClaimOne, type MmAccountStatus,
 } from '../core/mmPool'
-import { getAutoCheckinEnabled, setAutoCheckinEnabled } from '../core/checkinRun'
+import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, type CheckinRun } from '../core/checkinRun'
 
 /**
  * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号）：
@@ -34,6 +34,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [poolStatuses, setPoolStatuses] = useState<PoolAccountStatus[]>([])
   const [mmStatuses, setMmStatuses] = useState<MmAccountStatus[]>([])
   const [mmAuth, setMmAuth] = useState<{ authUrl: string; userCode: string } | null>(null)
+  const [lastRun, setLastRun] = useState<CheckinRun | null>(() => readLastCheckinRun())
   const [busy, setBusy] = useState('')
   const [wbOpen, setWbOpen] = useState<boolean | null>(null)
   const [mmOpen, setMmOpen] = useState<boolean | null>(null)
@@ -71,6 +72,25 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
+  // 与迷你窗/自动签到同步：窗口重新聚焦、或签到留痕被更新时，自动重查各账号状态
+  useEffect(() => {
+    if (!sessionPwd) return
+    const onWake = () => {
+      setLastRun(readLastCheckinRun())
+      if (listPoolMeta().length) void refreshPool()
+      if (listMmMeta().length) void refreshMm()
+    }
+    const onStorage = (e: StorageEvent) => { if (e.key === 'acm.checkin.lastRun.v1') onWake() }
+    window.addEventListener('focus', onWake)
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('acm-checkin-done', onWake)
+    return () => {
+      window.removeEventListener('focus', onWake)
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('acm-checkin-done', onWake)
+    }
+  }, [sessionPwd, refreshPool, refreshMm])
+
   // ---------- MiniMax 添加账号（设备码授权） ----------
   const startMmAuth = async () => {
     setBusy('mm-auth')
@@ -103,6 +123,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     setBusy(`wb-claim:${id}`)
     try {
       const r = await poolClaimOne(sessionPwd, id)
+      recordCheckinOutcome({ label: `WorkBuddy · ${label}`, outcome: 'claimed', message: r.message, points: r.points })
       notify(`${label}：${r.message}`)
       void refreshPool()
     } catch (e) { notify(e instanceof Error ? e.message : '签到失败') } finally { setBusy('') }
@@ -113,7 +134,11 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     let done = 0
     for (const s of poolStatuses) {
       if (s.status?.state !== 'claimable') continue
-      try { await poolClaimOne(sessionPwd, s.meta.id); done++ } catch { /* 单个失败不阻塞其余 */ }
+      try {
+        const r = await poolClaimOne(sessionPwd, s.meta.id)
+        recordCheckinOutcome({ label: `WorkBuddy · ${s.meta.label}`, outcome: 'claimed', message: r.message, points: r.points })
+        done++
+      } catch { /* 单个失败不阻塞其余 */ }
     }
     notify(done ? `已给 ${done} 个 WorkBuddy 账号签到` : '没有可签到的 WorkBuddy 账号')
     void refreshPool()
@@ -124,6 +149,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     setBusy(`mm-claim:${id}`)
     try {
       const r = await mmClaimOne(sessionPwd, id)
+      recordCheckinOutcome({ label: `MiniMax · ${label}`, outcome: 'claimed', message: r.message, points: r.points })
       notify(`${label}：${r.message}`)
       void refreshMm()
     } catch (e) { notify(e instanceof Error ? e.message : '签到失败') } finally { setBusy('') }
@@ -134,7 +160,11 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     let done = 0
     for (const s of mmStatuses) {
       if (s.status?.state !== 'claimable') continue
-      try { await mmClaimOne(sessionPwd, s.meta.id); done++ } catch { /* 单个失败不阻塞其余 */ }
+      try {
+        const r = await mmClaimOne(sessionPwd, s.meta.id)
+        recordCheckinOutcome({ label: `MiniMax · ${s.meta.label}`, outcome: 'claimed', message: r.message, points: r.points })
+        done++
+      } catch { /* 单个失败不阻塞其余 */ }
     }
     notify(done ? `已给 ${done} 个 MiniMax 账号签到` : '没有可签到的 MiniMax 账号')
     void refreshMm()
@@ -174,6 +204,12 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           {autoOn ? '已开启' : '已关闭'}
         </button>
       </div>
+
+      {lastRun && (
+        <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 12, padding: '0 4px' }}>
+          最近一次签到：{new Date(lastRun.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {summarizeCheckinRun(lastRun)}（菜单栏一键签到、自动签到都会记在这里）
+        </div>
+      )}
 
       {/* WorkBuddy：账号池 */}
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
