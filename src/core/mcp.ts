@@ -41,7 +41,20 @@ function emitMcpChanged(): void {
 export function loadMcpServers(): McpServerConfig[] {
   try {
     const arr = JSON.parse(localStorage.getItem(SERVERS_KEY) ?? '[]')
-    return Array.isArray(arr) ? arr.filter(s => s && typeof s.id === 'string' && typeof s.name === 'string') : []
+    if (!Array.isArray(arr)) return []
+    return arr.filter(s => s && typeof s.id === 'string' && typeof s.name === 'string').map(s => {
+      // v0.1.327 一次性迁移：Filesystem 还是出厂默认（目录只有 /tmp）时，换成默认开放名单，
+      // 用户手动改过的目录名单不动。@HOME@ 在启动时由桌面端展开为主目录
+      const args: string[] = Array.isArray(s.args) ? s.args : []
+      const pkgIdx = args.findIndex(a => typeof a === 'string' && a.includes('@modelcontextprotocol/server-filesystem'))
+      if (pkgIdx >= 0) {
+        const dirs = args.slice(pkgIdx + 1)
+        if (dirs.length === 1 && dirs[0] === '/tmp') {
+          return { ...s, args: [...args.slice(0, pkgIdx + 1), '@HOME@', '/Applications'] }
+        }
+      }
+      return s
+    })
   } catch { return [] }
 }
 
@@ -78,8 +91,8 @@ export const MCP_PRESETS: Array<McpServerConfig & { note: string }> = [
   },
   {
     id: 'preset-filesystem', name: 'Filesystem 文件系统', transport: 'stdio',
-    command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
-    note: '官方文件系统服务器；最后一个参数是允许访问的目录，请改成你自己的目录',
+    command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '@HOME@', '/Applications'],
+    note: '官方文件系统服务器；默认开放你的用户主目录（文稿/下载/桌面都在内）与 /Applications，不存在的目录自动跳过；可在编辑里增减目录',
   },
   {
     id: 'preset-deepwiki', name: 'DeepWiki（远程）', transport: 'http',

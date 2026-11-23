@@ -16,6 +16,15 @@ beforeEach(() => {
   ;(globalThis as Record<string, unknown>).window = { dispatchEvent: () => true, addEventListener() {}, removeEventListener() {} }
 })
 
+describe('Filesystem 默认目录迁移（v0.1.327）', () => {
+  it('出厂默认 /tmp 被迁移为 @HOME@ + /Applications，用户改过的名单不动', () => {
+    upsertMcpServer({ id: 'fs1', name: 'Filesystem 文件系统', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] })
+    expect(loadMcpServers().find(s => s.id === 'fs1')?.args).toEqual(['-y', '@modelcontextprotocol/server-filesystem', '@HOME@', '/Applications'])
+    upsertMcpServer({ id: 'fs2', name: '自定义', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/Users/x/Downloads'] })
+    expect(loadMcpServers().find(s => s.id === 'fs2')?.args).toEqual(['-y', '@modelcontextprotocol/server-filesystem', '/Users/x/Downloads'])
+  })
+})
+
 describe('MCP 服务器配置存储', () => {
   it('增删改查往返一致', () => {
     expect(loadMcpServers()).toHaveLength(0)

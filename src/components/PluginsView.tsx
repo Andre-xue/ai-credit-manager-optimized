@@ -611,7 +611,7 @@ function McpServerCard({ server, notify, expanded, onToggle, onEdit }: {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="plugin-name">{server.name}</div>
           <div className="plugin-sub">
-            {server.transport === 'stdio' ? `${server.command ?? ''} ${(server.args ?? []).join(' ')}` : server.url}
+            {server.transport === 'stdio' ? `${server.command ?? ''} ${(server.args ?? []).join(' ').replaceAll('@HOME@', '主目录')}` : server.url}
             {conn.serverInfo ? ` · ${conn.serverInfo}` : ''}
           </div>
         </div>

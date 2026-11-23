@@ -508,6 +508,16 @@ fn mcp_start(id: String, command: String, args: Vec<String>) -> Result<u32, Stri
         .unwrap_or(false);
     if running { return Err("该 MCP 服务器已在运行".into()); }
     map.remove(&id);
+    // v0.1.327 一劳永逸：@HOME@ 展开为用户主目录（Filesystem 预设默认目录，不用手填路径）；
+    // Filesystem 服务器的目录参数中不存在的（如非 Mac 上的 /Applications）直接跳过，避免服务器启动即退出
+    let is_filesystem = args.iter().any(|a| a.contains("@modelcontextprotocol/server-filesystem"));
+    let home = std::env::var("HOME").unwrap_or_default();
+    let args: Vec<String> = args.iter().map(|a| {
+        if a == "@HOME@" && !home.is_empty() { home.clone() }
+        else if a.starts_with("~/") && !home.is_empty() { format!("{}/{}", home, &a[2..]) }
+        else { a.clone() }
+    }).filter(|a| !(is_filesystem && a.starts_with('/') && !std::path::Path::new(a.as_str()).exists()))
+    .collect();
     let (cmd_path, child_path) = resolve_command(&command);
     let mut child = Command::new(&cmd_path)
         .args(&args)
