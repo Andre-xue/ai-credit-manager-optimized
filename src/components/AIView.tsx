@@ -629,7 +629,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       try {
         const ctx = await buildSearchContextCached(content)
         if (ctx) {
-          effectiveSystemPrompt += `\n\n${ctx.block}\n\n回答要求：涉及事实的问题必须优先依据上面【联网搜索资料】作答，并在对应内容后标注来源编号（如 [1]）；资料里没有提到的不要编造、不要猜测，明确说明「搜索资料中没有提到」。`
+          // 工具调用同开时让位（v0.1.324）：搜索资料只作垫底参考，工具拿到更直接的结果以工具为准，
+          // 且不许用「资料里没有」开场白绑架回答（Ethan 实测 DeepWiki 问题被搜索资料抢戏）
+          const toolsYield = loadToolCallingEnabled()
+            ? '若你通过工具调用获得了更直接的资料，以工具结果为准，不必受搜索资料有无的限制，也不要以「搜索资料中没有提到」作为开场。'
+            : '资料里没有提到的不要编造、不要猜测，明确说明「搜索资料中没有提到」。'
+          effectiveSystemPrompt += `\n\n${ctx.block}\n\n回答要求：涉及事实的问题必须优先依据上面【联网搜索资料】作答，并在对应内容后标注来源编号（如 [1]）；${toolsYield}`
           searchSourcesRef.current = ctx.sources
         } else if (!onDelta) notify(t('联网搜索没拿到结果，已按普通对话回答'))
       } catch { if (!onDelta) notify(t('联网搜索失败，已按普通对话回答')) }

@@ -3007,6 +3007,9 @@ function DeleteBackupModal({ state, accountIds, unlockedPwd, title, confirmLabel
           : await backupToNotes(b, fileFormat)
       if (!r.ok) { notify(r.error ?? '备份失败'); return }
       setBackup(b)
+      // 备忘录方式：确认码就显示在弹窗里，手输纯属摩擦（Ethan 要求）——生成成功即自动填入输入框；
+      // 真正的把关保留在「我已保存」勾选上
+      if (mode === 'notes') setCodeInput(b.confirmationCode)
       setLocation(r.location ?? '')
       notify(mode === 'cloud' ? '密文备份已存入云端' : mode === 'local' ? '备份文件已保存' : '备份内容已就绪，请在备忘录中保存')
     } catch (e) {
