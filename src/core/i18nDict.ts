@@ -1566,3 +1566,9 @@ Object.assign(D, {
   '在此粘贴备份文本…': { 'zh-TW': '在此貼上備份文字…', en: 'Paste backup text here…', ja: 'ここにバックアップテキストを貼り付け…', ko: '여기에 백업 텍스트 붙여넣기…' },
   '从剪贴板粘贴': { 'zh-TW': '從剪貼簿貼上', en: 'Paste from clipboard', ja: 'クリップボードから貼り付け', ko: '클립보드에서 붙여넣기' },
 })
+
+// ---- 补齐批次 47：分区全部折叠（v0.1.332） ----
+Object.assign(D, {
+  '全部折叠': { 'zh-TW': '全部摺疊', en: 'Collapse all', ja: 'すべて折りたたむ', ko: '모두 접기' },
+  '全部展开': { 'zh-TW': '全部展開', en: 'Expand all', ja: 'すべて展開', ko: '모두 펼치기' },
+})

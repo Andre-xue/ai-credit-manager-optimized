@@ -98,6 +98,20 @@ async function fetchTextAny(url: string): Promise<string> {
   return res.text()
 }
 
+const LIST_PAGE_SIZE = 6
+function ListPager({ page, pageCount, total, onPage }: { page: number; pageCount: number; total: number; onPage: (n: number) => void }) {
+  if (pageCount <= 1) return null
+  return (
+    <div className="fm-pager">
+      <button className="btn sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+      <span>第 {page} / {pageCount} 页 · 共 {total} 个</span>
+      <button className="btn sm" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>下一页</button>
+    </div>
+  )
+}
+function loadFoldAll(key: string): boolean { try { return localStorage.getItem(key) === '1' } catch { return false } }
+function saveFoldAll(key: string, v: boolean) { try { localStorage.setItem(key, v ? '1' : '0') } catch { /* 忽略 */ } }
+
 export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   const [plugins, setPlugins] = useState<InstalledPlugin[]>(() => loadPlugins())
   const [openPanelId, setOpenPanelId] = useState<string | null>(null)
@@ -110,6 +124,12 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const panelBoxRef = useRef<HTMLDivElement>(null)
   const desktop = isDesktopShell()
+  // 分区分页与「全部折叠」（v0.1.332 Ethan 要求：不要每卡一个折叠图标，一个按钮管全区；两区都分页）
+  const [pluginsFolded, setPluginsFolded] = useState(() => loadFoldAll('acm.plugins.foldAll'))
+  const [pluginPage, setPluginPage] = useState(1)
+  const pluginPageCount = Math.max(1, Math.ceil(plugins.length / LIST_PAGE_SIZE))
+  const safePluginPage = Math.min(pluginPage, pluginPageCount)
+  const pagedPlugins = plugins.slice((safePluginPage - 1) * LIST_PAGE_SIZE, safePluginPage * LIST_PAGE_SIZE)
 
   useEffect(() => {
     const on = () => setPlugins(loadPlugins())
@@ -224,15 +244,23 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
 
       {plugins.length === 0 && <div className="plugin-empty">{t('还没有安装任何插件。可以从文件、URL 安装，或先装入示例插件体验。')}</div>}
 
+      {plugins.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+          <button className="btn sm ghost" onClick={() => { const v = !pluginsFolded; setPluginsFolded(v); saveFoldAll('acm.plugins.foldAll', v) }}>
+            {pluginsFolded ? t('全部展开') : t('全部折叠')} <ChevronDown size={13} style={{ transform: pluginsFolded ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+          </button>
+        </div>
+      )}
       <div className="plugin-list">
-        {plugins.map(p => (
-          <PluginCard key={p.manifest.id} plugin={p} notify={notify} desktop={desktop}
+        {pagedPlugins.map(p => (
+          <PluginCard key={p.manifest.id} plugin={p} notify={notify} desktop={desktop} folded={pluginsFolded}
             panelOpen={openPanelId === p.manifest.id}
             onTogglePanel={() => setOpenPanelId(openPanelId === p.manifest.id ? null : p.manifest.id)}
             onOpenSettings={() => setSettingsTarget(p)}
             onEdit={() => { setDraftErr(''); setDraft(draftFromPlugin(p)) }} />
         ))}
       </div>
+      <ListPager page={safePluginPage} pageCount={pluginPageCount} total={plugins.length} onPage={setPluginPage} />
 
       {openPlugin && openPlugin.manifest.provides.includes('panel') && (
         <div className="plugin-panel-wrap">
@@ -347,7 +375,7 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   )
 }
 
-function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenSettings, onEdit }: {
+function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenSettings, onEdit, folded }: {
   plugin: InstalledPlugin
   notify: (msg: string) => void
   desktop: boolean
@@ -355,6 +383,8 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
   onTogglePanel: () => void
   onOpenSettings: () => void
   onEdit: () => void
+  /** 分区「全部折叠」时为真：卡片只剩标题一行 */
+  folded?: boolean
 }) {
   const m = plugin.manifest
   const [running, setRunning] = useState(false)
@@ -367,22 +397,6 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
   }, [isProcess, desktop, m.id])
 
   const refreshOutput = async () => setOutput(await pluginProcessOutput(m.id))
-  // 卡片折叠（v0.1.326 Ethan 要求）：折叠状态按插件 id 存本机，折起后只剩标题行，列表更清爽
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return (JSON.parse(localStorage.getItem('acm.plugins.collapsed') ?? '[]') as string[]).includes(m.id) } catch { return false }
-  })
-  const toggleCollapsed = () => {
-    setCollapsed(v => {
-      const next = !v
-      try {
-        const arr = JSON.parse(localStorage.getItem('acm.plugins.collapsed') ?? '[]') as string[]
-        const set = new Set(arr)
-        if (next) set.add(m.id); else set.delete(m.id)
-        localStorage.setItem('acm.plugins.collapsed', JSON.stringify([...set]))
-      } catch { /* 忽略 */ }
-      return next
-    })
-  }
 
   return (
     <div className={`plugin-card ${plugin.enabled ? '' : 'disabled'}`}>
@@ -393,11 +407,8 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
           <div className="plugin-sub">{m.author ?? ''}{m.author ? ' · ' : ''}{plugin.source === 'builtin' ? t('示例') : plugin.source === 'file' ? t('文件/URL 安装') : t('自建')}</div>
         </div>
         <JellyToggle checked={plugin.enabled} onChange={v => setPluginEnabled(m.id, v)} />
-        <button className="icon-btn" title={collapsed ? t('展开') : t('收起')} onClick={toggleCollapsed}>
-          <ChevronDown size={16} style={{ transform: collapsed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
-        </button>
       </div>
-      {!collapsed && (<>
+      {!folded && (<>
       {m.description && <p className="plugin-desc">{m.description}</p>}
       <div className="plugin-chips">
         {m.provides.map(v => <span key={v} className="plugin-chip">{t(PROVIDE_LABEL[v])}</span>)}
@@ -508,6 +519,11 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
   const [, setTick] = useState(0)
   const [form, setForm] = useState<{ editId?: string; name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string } | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [mcpFolded, setMcpFolded] = useState(() => loadFoldAll('acm.mcp.foldAll'))
+  const [mcpPage, setMcpPage] = useState(1)
+  const mcpPageCount = Math.max(1, Math.ceil(servers.length / LIST_PAGE_SIZE))
+  const safeMcpPage = Math.min(mcpPage, mcpPageCount)
+  const pagedServers = servers.slice((safeMcpPage - 1) * LIST_PAGE_SIZE, safeMcpPage * LIST_PAGE_SIZE)
 
   useEffect(() => {
     const on = () => { setServers(loadMcpServers()); setTick(x => x + 1) }
@@ -582,23 +598,33 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
 
       {servers.length === 0 && !form && <div className="plugin-empty">{t('还没有 MCP 服务器。点「添加服务器」或用上方预设接入第三方工具。')}</div>}
 
+      {servers.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+          <button className="btn sm ghost" onClick={() => { const v = !mcpFolded; setMcpFolded(v); saveFoldAll('acm.mcp.foldAll', v) }}>
+            {mcpFolded ? t('全部展开') : t('全部折叠')} <ChevronDown size={13} style={{ transform: mcpFolded ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+          </button>
+        </div>
+      )}
       <div className="plugin-list">
-        {servers.map(s => (
-          <McpServerCard key={s.id} server={s} notify={notify}
+        {pagedServers.map(s => (
+          <McpServerCard key={s.id} server={s} notify={notify} folded={mcpFolded}
             expanded={expanded === s.id} onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
             onEdit={() => setForm({ editId: s.id, name: s.name, transport: s.transport, command: s.command ?? '', args: (s.args ?? []).join(' '), url: s.url ?? '' })} />
         ))}
       </div>
+      <ListPager page={safeMcpPage} pageCount={mcpPageCount} total={servers.length} onPage={setMcpPage} />
     </div>
   )
 }
 
-function McpServerCard({ server, notify, expanded, onToggle, onEdit }: {
+function McpServerCard({ server, notify, expanded, onToggle, onEdit, folded }: {
   server: McpServerConfig
   notify: (msg: string) => void
   expanded: boolean
   onToggle: () => void
   onEdit: () => void
+  /** 分区「全部折叠」时为真：卡片只剩标题一行 */
+  folded?: boolean
 }) {
   const conn = getMcpConnection(server.id)
   const [busy, setBusy] = useState(false)
@@ -619,7 +645,8 @@ function McpServerCard({ server, notify, expanded, onToggle, onEdit }: {
           {conn.status === 'ready' ? t('已连接') : conn.status === 'connecting' ? t('连接中…') : conn.status === 'error' ? t('连接失败') : t('未连接')}
         </span>
       </div>
-      {conn.status === 'error' && conn.error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>{conn.error}</div>}
+      {!folded && conn.status === 'error' && conn.error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>{conn.error}</div>}
+      {!folded && (<>
       <div className="plugin-card-actions">
         {conn.status !== 'ready'
           ? <button className="btn sm" disabled={busy || conn.status === 'connecting'} onClick={async () => {
@@ -650,6 +677,7 @@ function McpServerCard({ server, notify, expanded, onToggle, onEdit }: {
           {conn.tools.map(tool => <McpToolRow key={tool.name} serverId={server.id} tool={tool} notify={notify} />)}
         </div>
       )}
+      </>)}
     </div>
   )
 }
