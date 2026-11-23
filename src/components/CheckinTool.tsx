@@ -26,11 +26,13 @@ interface AuthState {
   note: string
 }
 
-export function CheckinTool({ sessionPwd, notify, onBack }: {
+export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   sessionPwd: string
+  onUnlock: (pwd: string) => void
   notify: (msg: string) => void
   onBack: () => void
 }) {
+  const [pwdInput, setPwdInput] = useState('')
   const [creds, setCreds] = useState<Partial<Record<CheckinPlatform, CheckinCred>>>({})
   const [statuses, setStatuses] = useState<Partial<Record<CheckinPlatform, CheckinStatus>>>({})
   const [errors, setErrors] = useState<Partial<Record<CheckinPlatform, string>>>({})
@@ -147,7 +149,15 @@ export function CheckinTool({ sessionPwd, notify, onBack }: {
   return (
     <ToolShell title="每日签到" desc="WorkBuddy / MiniMax Code 的每日积分签到：授权一次，每天来点一下领取。凭据加密只存本机。" onBack={onBack}>
       {!sessionPwd && (
-        <div className="ws-result">保险箱还没解锁：先解锁保险箱（主密码），才能保存和使用签到平台的登录凭据。</div>
+        <div className="ws-result">
+          保险箱还没解锁：签到凭据要用主密码加密保存，在这里直接解锁即可，不用去别的页面。
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input type="password" className="input" style={{ maxWidth: 240 }} placeholder="保险箱主密码"
+              value={pwdInput} onChange={e => setPwdInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && pwdInput) { onUnlock(pwdInput); setPwdInput('') } }} />
+            <button className="btn sm primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁</button>
+          </div>
+        </div>
       )}
       <div style={{ display: 'grid', gap: 12 }}>
         {PLATFORMS.map(p => {
