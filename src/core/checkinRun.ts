@@ -4,7 +4,9 @@ import {
 } from './checkin'
 import { listPoolMeta, poolCredBox, migrateLegacyWorkbuddyCred } from './wbPool'
 import { listMmMeta, mmCredBox, migrateLegacyMinimaxCred } from './mmPool'
-import { getPlatformEnabled } from './checkinPlatforms'
+import { getPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS } from './checkinPlatforms'
+import { listTokenMeta, loadTokenSecret, hasAnyTokenAccounts } from './tokenPool'
+import { getTokenStatus, claimToken } from './tokenCheckin'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
@@ -50,7 +52,7 @@ export function setAutoCheckinEnabled(v: boolean): void {
 /** 有没有任何已连接的签到来源 */
 export function hasCheckinSources(): boolean {
   return hasCheckinCred('minimax') || hasCheckinCred('workbuddy')
-    || listPoolMeta().length > 0 || listMmMeta().length > 0
+    || listPoolMeta().length > 0 || listMmMeta().length > 0 || hasAnyTokenAccounts()
 }
 
 /**
@@ -74,6 +76,13 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
   if (!probed) {
     for (const meta of listMmMeta()) {
       if (await mmCredBox(meta.id, pwd).load()) { probed = true; break }
+    }
+  }
+  if (!probed) {
+    outer: for (const pid of TOKEN_PLATFORM_IDS) {
+      for (const meta of listTokenMeta(pid)) {
+        if (await loadTokenSecret(pid, meta.id, pwd)) { probed = true; break outer }
+      }
     }
   }
   if (!probed && hasCheckinSources()) throw new Error('主密码不正确，凭据解不开')
@@ -128,6 +137,29 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
       }
     } catch (e) {
       items.push({ label, outcome: 'error', message: e instanceof Error ? e.message : '签到失败' })
+    }
+  }
+  // 令牌类平台（豆包 / 灵犀 / DuMate / 小浣熊 / 天翼 AI / Qoder 等）
+  for (const pid of TOKEN_PLATFORM_IDS) {
+    if (!getPlatformEnabled(pid)) continue
+    const meta0 = platformMeta(pid)
+    for (const meta of listTokenMeta(pid)) {
+      const label = `${meta0.name} · ${meta.label}`
+      try {
+        const secret = await loadTokenSecret(pid, meta.id, pwd)
+        if (!secret) { items.push({ label, outcome: 'error', message: '凭据解不开（主密码不对或凭据损坏）' }); continue }
+        const st = await getTokenStatus(pid, secret)
+        if (st.state === 'claimable') {
+          const r = await claimToken(pid, secret)
+          items.push({ label, outcome: 'claimed', message: r.message, points: r.points })
+        } else if (st.state === 'claimed') {
+          items.push({ label, outcome: 'already', message: st.message })
+        } else {
+          items.push({ label, outcome: 'error', message: st.message })
+        }
+      } catch (e) {
+        items.push({ label, outcome: 'error', message: e instanceof Error ? e.message : '签到失败' })
+      }
     }
   }
   const run: CheckinRun = { at: Date.now(), items }

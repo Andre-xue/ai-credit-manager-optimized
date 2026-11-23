@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CalendarCheck, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
+import { CalendarCheck, ChevronDown, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
 import { openExternal, biometricAvailable } from '../core/openExternal'
 import { resolveBiometricVaultPassword } from '../core/biometric'
@@ -16,7 +16,10 @@ import {
   mmAccountStatuses, mmClaimOne, type MmAccountStatus,
 } from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, type CheckinRun } from '../core/checkinRun'
-import { getPlatformEnabled, setPlatformEnabled, platformMeta, type CheckinPlatformId } from '../core/checkinPlatforms'
+import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
+import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, type TokenAccountMeta } from '../core/tokenPool'
+import { getTokenStatus, claimToken } from '../core/tokenCheckin'
+import type { CheckinStatus } from '../core/checkin'
 
 /**
  * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号）：
@@ -39,6 +42,187 @@ function JellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: bo
       className={`jelly-toggle ${checked ? 'is-on' : ''}`} aria-label={checked ? '关闭' : '开启'}>
       <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
     </button>
+  )
+}
+
+/** 平台使用说明：默认折叠，点开看凭据怎么拿、怎么用 */
+function GuideFold({ id }: { id: CheckinPlatformId }) {
+  const [open, setOpen] = useState(false)
+  const meta = platformMeta(id)
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px dashed var(--border)', paddingTop: 8 }}>
+      <button className="btn sm ghost" style={{ padding: '2px 6px', fontSize: 12.5 }} onClick={() => setOpen(!open)}>
+        <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }} /> 使用说明（怎么拿凭据）
+      </button>
+      {open && (
+        <div style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, marginTop: 6, padding: '0 6px' }}>
+          {meta.guide.map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface TokenRow { meta: TokenAccountMeta; status: CheckinStatus | null; error?: string }
+
+/** 令牌类平台的通用区块：粘贴凭据添加账号，状态/签到/移除都走同一套 */
+function TokenPlatformSection({ id, sessionPwd, notify }: { id: CheckinPlatformId; sessionPwd: string; notify: (m: string) => void }) {
+  const meta = platformMeta(id)
+  const [enabled, setEnabled] = useState(() => getPlatformEnabled(id))
+  const [rows, setRows] = useState<TokenRow[]>([])
+  const [busy, setBusy] = useState('')
+  const [open, setOpen] = useState<boolean | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [labelInput, setLabelInput] = useState('')
+  const [secretInput, setSecretInput] = useState('')
+
+  const refresh = useCallback(async () => {
+    const metas = listTokenMeta(id)
+    if (!sessionPwd) { setRows(metas.map(m => ({ meta: m, status: null }))); return }
+    setBusy('status')
+    const out: TokenRow[] = []
+    for (const m of metas) {
+      const secret = await loadTokenSecret(id, m.id, sessionPwd)
+      if (!secret) { out.push({ meta: m, status: null, error: '凭据解不开' }); continue }
+      const st = await getTokenStatus(id, secret)
+      out.push({ meta: m, status: st.state === 'unknown' ? null : st, error: st.state === 'unknown' ? st.message : undefined })
+    }
+    setRows(out)
+    setBusy('')
+  }, [id, sessionPwd])
+
+  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (!sessionPwd) return
+    const onWake = () => { void refresh() }
+    const onStorage = (e: StorageEvent) => { if (e.key === 'acm.checkin.lastRun.v1') onWake() }
+    window.addEventListener('focus', onWake)
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('acm-checkin-done', onWake)
+    return () => {
+      window.removeEventListener('focus', onWake)
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('acm-checkin-done', onWake)
+    }
+  }, [sessionPwd, refresh])
+
+  const done = rows.filter(r => r.status?.state === 'claimed').length
+  const claimable = rows.filter(r => r.status?.state === 'claimable').length
+  const showList = open !== null ? open : !(rows.length > 0 && done === rows.length && claimable === 0 && !rows.some(r => r.error))
+  const agg = !rows.length ? '' : claimable > 0 ? `${rows.length} 个账号 · ${claimable} 个待签到` : done === rows.length ? `${rows.length} 个账号 · 今日全部已签 ✓` : `${rows.length} 个账号 · 已签 ${done}`
+
+  const claimOne = async (row: TokenRow) => {
+    if (!sessionPwd) return
+    setBusy(`claim:${row.meta.id}`)
+    try {
+      const secret = await loadTokenSecret(id, row.meta.id, sessionPwd)
+      if (!secret) throw new Error('凭据解不开')
+      const r = await claimToken(id, secret)
+      recordCheckinOutcome({ label: `${meta.name} · ${row.meta.label}`, outcome: 'claimed', message: r.message, points: r.points })
+      notify(`${row.meta.label}：${r.message}`)
+      void refresh()
+    } catch (e) { notify(e instanceof Error ? e.message : '签到失败') }
+    setBusy('')
+  }
+
+  const claimAll = async () => {
+    setBusy('claim-all')
+    let n = 0
+    for (const row of rows) {
+      if (row.status?.state !== 'claimable') continue
+      try {
+        const secret = await loadTokenSecret(id, row.meta.id, sessionPwd)
+        if (!secret) continue
+        const r = await claimToken(id, secret)
+        recordCheckinOutcome({ label: `${meta.name} · ${row.meta.label}`, outcome: 'claimed', message: r.message, points: r.points })
+        n++
+      } catch { /* 单个失败不阻塞其余 */ }
+    }
+    notify(n ? `已给 ${n} 个${meta.name}账号签到` : `没有可签到的${meta.name}账号`)
+    setBusy('')
+    void refresh()
+  }
+
+  const submitAdd = async () => {
+    if (!sessionPwd || !secretInput.trim()) return
+    setBusy('add')
+    try {
+      const m = await addTokenAccount(id, labelInput.trim() || `${meta.name}账号`, secretInput, sessionPwd)
+      // 立刻验一次凭据能不能用，坏凭据当场说清
+      const st = await getTokenStatus(id, secretInput.trim())
+      setAdding(false); setLabelInput(''); setSecretInput('')
+      notify(st.state === 'unknown' ? `已添加「${m.label}」，但凭据验证没通过：${st.message}` : `已添加${meta.name}账号：${m.label}`)
+      void refresh()
+    } catch (e) { notify(e instanceof Error ? e.message : '添加失败') }
+    setBusy('')
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <PlatformGroupHead id={id} enabled={enabled} onToggle={v => { setEnabled(v); setPlatformEnabled(id, v); notify(v ? `${meta.name} 已加入自动签到` : `${meta.name} 已移出自动签到（批量签到会跳过）`) }} />
+      <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="ws-tico g2"><CalendarCheck size={20} /></span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{meta.name}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{agg || '还没有账号：点「添加账号」，按使用说明粘贴凭据'}</div>
+          </div>
+          {rows.length > 1 && <button className="btn sm ghost" onClick={() => setOpen(!showList)}>{showList ? '收起' : '展开'}</button>}
+          <button className="btn sm" disabled={!sessionPwd || adding} onClick={() => setAdding(true)}><UserPlus size={14} /> 添加账号</button>
+          {rows.length > 0 && (
+            <button className="btn sm" disabled={!sessionPwd || busy === 'status'} onClick={() => void refresh()}>
+              {busy === 'status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
+            </button>
+          )}
+          {claimable > 0 && (
+            <button className="btn sm primary" disabled={busy === 'claim-all'} onClick={() => void claimAll()}>
+              {busy === 'claim-all' ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 全部签到（{claimable}）
+            </button>
+          )}
+        </div>
+
+        {adding && (
+          <div className="ws-result" style={{ marginTop: 10 }}>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <input className="input" placeholder="账号备注名（如：我的豆包号）" value={labelInput} onChange={e => setLabelInput(e.target.value)} />
+              <textarea className="input" rows={3} placeholder="把凭据粘贴到这里（Cookie / Token / PAT，按下方使用说明获取）" value={secretInput} onChange={e => setSecretInput(e.target.value)} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn sm primary" disabled={!secretInput.trim() || busy === 'add'} onClick={() => void submitAdd()}>
+                  {busy === 'add' ? <Loader2 size={14} className="spin" /> : null} 保存并验证
+                </button>
+                <button className="btn sm ghost" onClick={() => { setAdding(false); setSecretInput('') }}>取消</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showList && rows.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            {rows.map(r => (
+              <div key={r.meta.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 2px', borderTop: '1px solid var(--border)' }}>
+                <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: r.error ? 'var(--danger, #d33)' : r.status?.state === 'claimable' ? 'var(--accent, #6c5ce7)' : 'var(--text-3)' }}>
+                  {r.error ? '异常' : r.status?.state === 'claimable' ? '待签到' : r.status?.state === 'claimed' ? '已签 ✓' : r.status?.state === 'unavailable' ? '不可签' : '…'}
+                </span>
+                <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%' }}>{r.meta.label}</b>
+                <span style={{ fontSize: 12, color: r.error ? 'var(--danger, #d33)' : 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {r.error ? r.error : r.status ? <><Sparkles size={11} style={{ verticalAlign: -1 }} /> {r.status.message}{typeof r.status.balance === 'number' ? ` · 余额 ${Math.round(r.status.balance)}` : ''}</> : '状态加载中…'}
+                </span>
+                {r.status?.state === 'claimable' && (
+                  <button className="btn sm primary" style={{ marginLeft: 'auto', flexShrink: 0 }} disabled={busy === `claim:${r.meta.id}`} onClick={() => void claimOne(r)}>
+                    {busy === `claim:${r.meta.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{r.status.points ? ` +${r.status.points}` : ''}
+                  </button>
+                )}
+                <button className="btn sm ghost" style={{ flexShrink: 0, marginLeft: r.status?.state === 'claimable' ? 0 : 'auto' }} onClick={() => { removeTokenAccount(id, r.meta.id); void refresh(); notify('已移除该账号（本机凭据已删除）') }}>
+                  <LogOut size={14} /> 移除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <GuideFold id={id} />
+      </div>
+    </div>
   )
 }
 
@@ -216,7 +400,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     !total ? '' : claimable > 0 ? `${total} 个账号 · ${claimable} 个待签到` : done === total ? `${total} 个账号 · 今日全部已签 ✓` : `${total} 个账号 · 已签 ${done}`
 
   return (
-    <ToolShell title="每日签到" desc="WorkBuddy（账号池）/ MiniMax Code 的每日积分签到，两个平台都支持多账号。凭据加密只存本机。" onBack={onBack}>
+    <ToolShell title="每日签到" desc="各 AI 平台的每日签到领积分，按国内/国外与功能分组；每个平台可单独关掉自动签到。凭据加密只存本机。" onBack={onBack}>
       {!sessionPwd && (
         <div className="ws-result">
           保险箱还没解锁：签到凭据要用主密码加密保存，在这里直接解锁即可，不用去别的页面。
@@ -269,6 +453,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
             </button>
           )}
         </div>
+        <GuideFold id="workbuddy" />
         {poolStatuses.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
             {sessionPwd ? '账号池还是空的：去工坊主页打开「WorkBuddy 账号池」，添加账号后回到这里就能逐个签到。' : '解锁后显示池里账号的签到状态。'}
@@ -336,6 +521,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           </div>
         )}
 
+        <GuideFold id="minimax" />
         {mmStatuses.length === 0 && !mmAuth && (
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
             {sessionPwd ? '还没有 MiniMax 账号：点右上「添加账号」，在浏览器登录确认即可；多个号就重复添加（每次换号登录）。' : '解锁后显示各账号的签到状态。'}
@@ -382,10 +568,15 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         )}
       </div>
 
+      {TOKEN_PLATFORM_IDS.map(pid => (
+        <TokenPlatformSection key={pid} id={pid} sessionPwd={sessionPwd} notify={notify} />
+      ))}
+
       <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, marginTop: 14 }}>
         说明：签到走各平台客户端同款接口（非公开接口，平台调整后可能失效，失效时这里会如实报错）；
         登录凭据用保险箱主密码加密、只存这台设备，不随云同步走。自动签到同样基于这套凭据，平台风控风险请自行评估。
-        做法参考了开源项目 CheckinBox-Tools 与 dsh-xdpool 的公开协议行为，代码为独立实现。
+        做法参考了开源项目 CheckinBox-Tools、dsh-xdpool 与 dsh-checkin-all 的公开协议行为，代码为独立实现。
+        另：Trae 国际版与 WorkBuddy 国际版经核实没有每日签到活动（只有国内版有），故未接入。
       </p>
     </ToolShell>
   )
