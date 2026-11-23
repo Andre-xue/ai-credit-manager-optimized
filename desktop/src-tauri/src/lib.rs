@@ -102,6 +102,26 @@ fn validate_proxy_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(u)
 }
 
+/// 媒体下载校验：官方接口在已鉴权响应里返回的临时文件地址专用（如 DashScope 合成
+/// 音频的 OSS 链接，带签名、会过期、下载不携带任何凭据）。这类地址常是 http，
+/// 不能套用通用代理的「http 仅限本机」规则；但仍拒绝内网/回环/保留字面地址防 SSRF。
+fn validate_media_url(raw: &str) -> Result<reqwest::Url, String> {
+    let u = reqwest::Url::parse(raw).map_err(|_| "URL 格式不合法".to_string())?;
+    let scheme = u.scheme();
+    if scheme != "https" && scheme != "http" {
+        return Err("仅允许 http(s) 协议".into());
+    }
+    let host = u.host_str().ok_or_else(|| "URL 缺少主机".to_string())?;
+    let is_local = host == "localhost"
+        || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+        || host == "0.0.0.0";
+    let ip_blocked = host.parse::<std::net::IpAddr>().map(|ip| !is_public_ip(&ip)).unwrap_or(false);
+    if is_local || ip_blocked {
+        return Err("不允许请求内网或本机地址".into());
+    }
+    Ok(u)
+}
+
 /// 判断 IP 是否为公网地址（用于 SSRF 防护）
 fn is_public_ip(ip: &std::net::IpAddr) -> bool {
     use std::net::IpAddr;
@@ -2312,8 +2332,10 @@ async fn tts_synthesize_direct(api_key: String, voice: String, text: String) -> 
     if !status.is_success() { return Err(format!("合成失败（HTTP {}）：{}", status.as_u16(), resp_text.chars().take(200).collect::<String>())) }
     let json: serde_json::Value = serde_json::from_str(&resp_text).map_err(|_| "合成响应格式异常".to_string())?;
     let audio_url = parse_synthesize_url(&json).ok_or_else(|| format!("合成未返回音频地址：{}", resp_text.chars().take(200).collect::<String>()))?;
-    // 音频地址来自官方接口响应，下载前仍过一遍 SSRF 校验（v0.1.285）
-    let audio_url = validate_proxy_url(&audio_url)?.to_string();
+    // 音频地址来自官方接口的已鉴权响应（带签名的临时 OSS 链接，常为 http）：
+    // 用媒体下载校验（v0.1.378）——通用代理校验的「http 仅限本机」会误杀它，
+    // 曾导致克隆音色合成成功却下载不了音频、被迫回退系统音色。
+    let audio_url = validate_media_url(&audio_url)?.to_string();
     let audio = client.get(&audio_url).send().await.map_err(|e| format!("下载音频失败：{}", e))?;
     if !audio.status().is_success() { return Err(format!("下载音频失败（HTTP {}）", audio.status().as_u16())) }
     let bytes = audio.bytes().await.map_err(|e| format!("读取音频失败：{}", e))?;
