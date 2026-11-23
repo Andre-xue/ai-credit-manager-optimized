@@ -25,7 +25,7 @@ export interface CheckinRunItem {
 export interface CheckinRun { at: number; items: CheckinRunItem[] }
 
 const RUN_KEY = 'acm.checkin.lastRun.v1'
-const AUTO_KEY = 'acm.checkin.auto.v1'
+export const AUTO_KEY = 'acm.checkin.auto.v1'
 
 export function readLastCheckinRun(): CheckinRun | null {
   try {

@@ -5,7 +5,7 @@ import { PROVIDER_MAP } from '../data/providers'
 import { getBiometricPassword } from '../core/crypto'
 import {
   readLastCheckinRun, runAllCheckins, summarizeCheckinRun, checkinRunIsToday,
-  getAutoCheckinEnabled, hasCheckinSources, type CheckinRun,
+  getAutoCheckinEnabled, setAutoCheckinEnabled, hasCheckinSources, type CheckinRun,
 } from '../core/checkinRun'
 import type { AppState } from '../core/types'
 import { t } from '../core/i18n'
@@ -21,6 +21,26 @@ type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown
 function tauriInvoke(): InvokeFn | undefined {
   const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: InvokeFn } }
   return w.__TAURI_INTERNALS__?.invoke
+}
+
+function MiniJellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  const [anim, setAnim] = useState<'on' | 'off' | null>(null)
+  const prev = useRef(checked)
+  useEffect(() => {
+    if (prev.current !== checked) {
+      setAnim(checked ? 'on' : 'off')
+      prev.current = checked
+      const t = window.setTimeout(() => setAnim(null), 360)
+      return () => window.clearTimeout(t)
+    }
+  }, [checked])
+  return (
+    <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
+      className={`jelly-toggle ${checked ? 'is-on' : ''}`} aria-label={checked ? '关闭自动签到' : '开启自动签到'}
+      style={{ transform: 'scale(0.82)', transformOrigin: 'right center' }}>
+      <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
+    </button>
+  )
 }
 
 export function MiniView() {
@@ -138,7 +158,8 @@ export function MiniView() {
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <b style={{ fontSize: 13.5 }}>每日签到</b>
-          {autoOn && <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 999, border: `1px solid ${c.border}`, color: c.sub }}>自动签到开</span>}
+          <span style={{ fontSize: 11, color: autoOn ? c.sub : c.faint }}>自动签到</span>
+          <MiniJellyToggle checked={autoOn} onChange={v => { setAutoOn(v); setAutoCheckinEnabled(v) }} />
           <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>
             {lastRun ? `${checkinRunIsToday(lastRun) ? '今天' : new Date(lastRun.at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${new Date(lastRun.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '还没签过'}
           </span>

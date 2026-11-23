@@ -15,7 +15,7 @@ import {
   migrateLegacyMinimaxCred, listMmMeta, addMmAccount, removeMmAccount,
   mmAccountStatuses, mmClaimOne, type MmAccountStatus,
 } from '../core/mmPool'
-import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, type CheckinRun } from '../core/checkinRun'
+import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
 import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
 import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, type TokenAccountMeta } from '../core/tokenPool'
 import { getTokenStatus, claimToken } from '../core/tokenCheckin'
@@ -299,7 +299,11 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       if (listPoolMeta().length) void refreshPool()
       if (listMmMeta().length) void refreshMm()
     }
-    const onStorage = (e: StorageEvent) => { if (e.key === 'acm.checkin.lastRun.v1') onWake() }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'acm.checkin.lastRun.v1') onWake()
+      // 菜单栏迷你窗里拨了自动签到开关 → 主页面实时跟上
+      if (e.key === AUTO_KEY) setAutoOn(getAutoCheckinEnabled())
+    }
     window.addEventListener('focus', onWake)
     window.addEventListener('storage', onStorage)
     window.addEventListener('acm-checkin-done', onWake)
