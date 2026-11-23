@@ -83,6 +83,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [hits, setHits] = useState<FileSearchHit[]>([])
+  const [nameHits, setNameHits] = useState<FileSearchHit[]>([])
   const [answer, setAnswer] = useState('')
   const [indexing, setIndexing] = useState('')
   const [indexNote, setIndexNote] = useState('')
@@ -210,29 +211,46 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     return parts.map((p, i) => ({ label: p, path: '/' + parts.slice(0, i + 1).join('/') }))
   }, [cwd])
 
-  const openEntry = (e: Entry) => {
+  /** 按完整路径预览一个文件（选中 + 右侧预览栏出图/视频/文本） */
+  const previewFile = (p: string) => {
     if (!server) return
-    const p = joinPath(cwd, e.name)
-    if (e.isDir) { void loadDir(server, p); return }
+    const name = p.split('/').pop() ?? p
     setSelected(p)
     setPreview('')
     setPreviewImg('')
-    if (IMAGE_EXTS.has(extOf(e.name))) {
+    if (IMAGE_EXTS.has(extOf(name))) {
       const cached = thumbs.get(p)
       if (cached) setPreviewImg(cached)
       else void ensureThumb(p).then(() => setThumbs(prev => { const u = prev.get(p); if (u) setPreviewImg(u); return prev }))
     }
-    if (PLAY_VIDEO_EXTS.has(extOf(e.name))) void ensureVideoUrl(p)
-    else if (VIDEO_EXTS.has(extOf(e.name))) {
+    if (PLAY_VIDEO_EXTS.has(extOf(name))) void ensureVideoUrl(p)
+    else if (VIDEO_EXTS.has(extOf(name))) {
       const cached = thumbs.get(p)
       if (cached) setPreviewImg(cached)
       else void ensureVideoThumb(p).then(() => setThumbs(prev => { const u = prev.get(p); if (u) setPreviewImg(u); return prev }))
     }
-    if (TEXT_EXTS.has(extOf(e.name))) {
+    if (TEXT_EXTS.has(extOf(name))) {
       void callMcpTool(server.id, 'read_text_file', { path: p }).then(r => {
         if (!r.isError) setPreview(r.text.slice(0, 6000))
       }).catch(() => {})
     }
+  }
+
+  const openEntry = (e: Entry) => {
+    if (!server) return
+    const p = joinPath(cwd, e.name)
+    if (e.isDir) { void loadDir(server, p); return }
+    previewFile(p)
+  }
+
+  /** 搜索结果定位：跳到文件所在文件夹并选中预览；无扩展名的按文件夹处理 */
+  const locateFile = async (path: string) => {
+    if (!server) return
+    const name = path.split('/').pop() ?? path
+    if (!name.includes('.')) { await loadDir(server, path); return }
+    const parent = path.slice(0, path.lastIndexOf('/')) || '/'
+    await loadDir(server, parent)
+    previewFile(path)
   }
 
   /**
@@ -335,22 +353,47 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     const q = question.trim()
     if (!q) { notify('先输入问题'); return }
     if (!server || !ready) { notify('先连接 Filesystem 服务'); return }
-    setAsking(true); setHits([]); setAnswer('')
+    setAsking(true); setHits([]); setNameHits([]); setAnswer('')
     try {
-      // 1) 文件名搜索（Filesystem 实时搜）
-      const found: FileSearchHit[] = []
-      const token = q.replace(/[？?。！!，,\s]+/g, ' ').split(' ').filter(Boolean).sort((a, b) => b.length - a.length)[0] ?? q
-      for (const root of roots) {
-        try {
-          const r = await callMcpTool(server.id, 'search_files', { path: root, pattern: `*${token}*` })
-          if (!r.isError) {
-            for (const line of r.text.split('\n').map(l => l.trim()).filter(l => l.startsWith('/'))) {
-              found.push({ path: line, name: line.split('/').pop() ?? line, score: 0.9, snippet: '文件名命中（实时搜索）', via: '文件名' })
+      // 意图判断：带扩展名的文件名、或「找/在哪/打开」类措辞 = 找文件；其余 = 内容提问
+      const fileToken = q.match(/[\w\-.\u4e00-\u9fa5]+\.[a-zA-Z0-9]{2,5}/)?.[0]
+      const findIntent = !!fileToken || /找|在哪|定位|打开|有没有|存在|搜索/.test(q)
+      const filler = /帮我|帮忙|找下|找一下|找|这个|那个|文件|请|一下|在哪|哪里|里面|的|了|吗|呢/g
+      const keywords = q.replace(/[？?。！!，,、\s]+/g, ' ').replace(filler, ' ').split(' ').map(t => t.trim()).filter(t => t.length >= 2 && !/[*?]/.test(t))
+      const patterns = [...new Set(fileToken ? [fileToken] : keywords.sort((a, b) => b.length - a.length).slice(0, 3))]
+      // 文件名搜索（Filesystem 实时搜全部放行目录）
+      const foundMap = new Map<string, FileSearchHit>()
+      for (const pattern of patterns) {
+        for (const root of roots) {
+          try {
+            const r = await callMcpTool(server.id, 'search_files', { path: root, pattern: `*${pattern}*` })
+            if (!r.isError) {
+              for (const line of r.text.split('\n').map(l => l.trim()).filter(l => l.startsWith('/')).slice(0, 200)) {
+                if (foundMap.has(line)) continue
+                const name = line.split('/').pop() ?? line
+                const score = fileToken && name === fileToken ? 1 : name.toLowerCase().includes(pattern.toLowerCase()) ? 0.95 : 0.9
+                foundMap.set(line, { path: line, name, score, snippet: '文件名命中（实时搜索）', via: '文件名' })
+              }
             }
-          }
-        } catch { /* 单根失败忽略 */ }
+          } catch { /* 单根失败忽略 */ }
+        }
       }
-      // 2) 内容索引搜索（语义/关键词）
+      const found = [...foundMap.values()].sort((a, b) => b.score - a.score)
+      if (findIntent) {
+        // 找文件：只给文件结果，不跑内容问答；唯一命中直接定位预览，多个列出来筛选
+        setNameHits(found.slice(0, 30))
+        if (found.length === 1) {
+          setAnswer(`找到了，已在下方文件窗定位并预览：${found[0].path}`)
+          await locateFile(found[0].path)
+        } else if (found.length > 1) {
+          setAnswer(`按文件名找到 ${found.length} 个${found.length > 30 ? '（只列前 30 个）' : ''}，点任意一个的「定位预览」查看，或点「打开」直接打开。`)
+        } else {
+          setAnswer(`按文件名没找到「${fileToken ?? keywords[0] ?? q}」。它可能不在放行目录里，或名字记错了——换个关键词试试，或先在下方文件窗确认它大概在哪个文件夹。`)
+        }
+        return
+      }
+      // 内容提问：文件名命中照样列出，下面再走内容索引 + AI 问答
+      setNameHits(found.slice(0, 10))
       let queryVector: number[] | undefined
       const embed = await detectEmbedModel()
       if (embed) {
@@ -358,13 +401,8 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
       }
       const idxHits = await searchFileIndex({ query: q, queryVector, topK: 8 }).catch(() => [] as FileSearchHit[])
       const merged = new Map<string, FileSearchHit>()
-      for (const h of [...found, ...idxHits]) {
-        const cur = merged.get(h.path)
-        if (!cur || h.score > cur.score) merged.set(h.path, h)
-      }
-      const list = [...merged.values()].sort((a, b) => b.score - a.score).slice(0, 10)
-      setHits(list)
-      // 3) 有内容命中则让 AI 依据原文回答
+      for (const h of idxHits) merged.set(h.path, h)
+      setHits([...merged.values()].sort((a, b) => b.score - a.score).slice(0, 10))
       const qaChunks = await fileChunksForQa(q).catch(() => [])
       if (qaChunks.length && route) {
         const ctx = qaChunks.map((c, i) => `[${i + 1}] 文件：${c.path}\n${c.text}`).join('\n\n')
@@ -374,7 +412,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
           user: q,
         })
         setAnswer(out)
-      } else if (!list.length) {
+      } else if (!found.length && ![...merged.values()].length) {
         notify('没找到相关文件（可先点「建立索引」扩大内容搜索范围）')
       }
     } catch (e) { notify(e instanceof Error ? e.message : '搜索失败') } finally { setAsking(false) }
@@ -386,7 +424,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     <div className="ws-tool fm">
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>
-        <button className="btn sm ghost" title="刷新当前目录" onClick={() => { if (server && cwd) void loadDir(server, cwd) }}><RefreshCw size={14} /></button>
+        <button className="btn sm ghost" title="刷新：重载当前目录，并清掉搜索结果与回答" onClick={() => { setQuestion(''); setHits([]); setNameHits([]); setAnswer(''); if (server && cwd) void loadDir(server, cwd) }}><RefreshCw size={14} /></button>
       </div>
       <h3 className="ws-tool-title">文件管家</h3>
       <p className="ws-tool-desc">访达式浏览 + AI 问答 · 通过插件页的 Filesystem 服务访问你放行的目录，索引只存本机。</p>
@@ -409,7 +447,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
         <>
           <div className="fm-ask">
             <Sparkles size={17} className="fm-ask-icon" />
-            <input className="input" placeholder="问文件：迅雷装哪了？那份报价单里海运多少钱？" value={question}
+            <input className="input" placeholder="找文件直接说名字（如 报价单.xlsx），问内容如：那份报价单里海运多少钱？" value={question}
               onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void ask() }} />
             <RouteSelect data={routeData} routeKey={routeKey} setRouteKey={setRouteKey} />
             <button className="btn primary" disabled={asking} onClick={() => void ask()}>
@@ -417,9 +455,28 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
             </button>
           </div>
 
-          {(answer || hits.length > 0) && (
+          {(answer || hits.length > 0 || nameHits.length > 0) && (
             <div className="fm-answer">
               {answer && <div className="fm-answer-text">{answer}</div>}
+              {nameHits.length > 0 && (
+                <>
+                  <div className="fm-found-title">找到的文件（{nameHits.length}）</div>
+                  <div className="fm-hits">
+                    {nameHits.map(h => (
+                      <div key={h.path} className="fm-hit">
+                        <div className="fm-hit-name">{h.name}</div>
+                        <div className="fm-hit-path">{h.path}</div>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                          <button className="btn sm primary" onClick={() => void locateFile(h.path)}>定位预览</button>
+                          <button className="btn sm" onClick={() => void openExternalPath(h.path).then(ok => { if (!ok) notify('打开失败') }).catch(() => notify('打开失败'))}>打开</button>
+                          <button className="btn sm ghost" onClick={() => void navigator.clipboard?.writeText(h.path).catch(() => {})}><Copy size={12} /> 复制路径</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {hits.length > 0 && <div className="fm-found-title">相关内容片段</div>}
               <div className="fm-hits">
                 {hits.map(h => (
                   <div key={h.path} className="fm-hit">
