@@ -72,7 +72,7 @@ async function doubaoPost(secret: string, base: string, body: Json): Promise<Jso
   return json
 }
 
-interface DoubaoState { checked: boolean; streak: number; reward: number; total: number; task: Json; data: Json }
+interface DoubaoState { checked: boolean; streak: number; reward: number; total: number; task: Json; data: Json; campaignCode: string; taskStatus: string; rewardMode: string }
 
 async function doubaoState(secret: string): Promise<DoubaoState> {
   const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/v3/detail/', { campaign_group_code: DOUBAO_GROUP })
@@ -92,6 +92,9 @@ async function doubaoState(secret: string): Promise<DoubaoState> {
     reward: num(reward.reward_amount),
     total: num(progress.total_amount),
     task, data,
+    campaignCode: str(task.campaign_code),
+    taskStatus: str(task.task_status),
+    rewardMode: str(task.reward_mode),
   }
 }
 
@@ -117,6 +120,12 @@ async function doubaoClaim(secret: string): Promise<ClaimResult> {
   if (st.checked) return { message: '今日已签到', points: 0 }
   const { groups, taskId } = doubaoCandidates(st)
   const attempts: Json[] = [{ scene: DOUBAO_GROUP }]
+  // 本轮活动可能按任务自带的 campaign_code（活动实例码）领取，而非分组码
+  if (st.campaignCode && st.campaignCode !== DOUBAO_GROUP) {
+    attempts.push({ scene: st.campaignCode })
+    attempts.push({ scene: DOUBAO_GROUP, campaign_code: st.campaignCode })
+    attempts.push({ campaign_code: st.campaignCode })
+  }
   if (taskId) attempts.push({ scene: DOUBAO_GROUP, task_id: taskId })
   for (const g of groups) attempts.push({ scene: g })
   let lastCode = 0
@@ -134,10 +143,8 @@ async function doubaoClaim(secret: string): Promise<ClaimResult> {
     if (code !== 710010702) throw new Error(`豆包签到失败：${str(body.msg ?? body.message)}（code ${code}）`)
     // 710010702（无可领活动）：换一种参数再试
   }
-  // 全部被拒：带上诊断信息，方便对着真实返回修协议
-  const taskKeys = Object.keys(st.task).slice(0, 14).join('/')
-  const checkinKeys = st.task.daily_checkin && typeof st.task.daily_checkin === 'object' ? Object.keys(st.task.daily_checkin as Json).slice(0, 10).join('/') : '-'
-  throw new Error(`豆包领取被拒（${lastCode}）：面板有任务但领不了。诊断 任务字段[${taskKeys}] 签到字段[${checkinKeys}] 候选活动[${groups.join(',') || '无'}] 任务ID[${taskId || '无'}]——把这段截图发我`)
+  // 全部被拒：带上关键字段的真实值，方便对着真实返回修协议
+  throw new Error(`豆包领取被拒（${lastCode}）。诊断 活动码[${st.campaignCode || '无'}] 任务状态[${st.taskStatus || '无'}] 奖励模式[${st.rewardMode || '无'}] 标题[${str(st.task.title)}] 已签[${st.checked}]——把这段截图发我`)
 }
 
 // ---------------- WPS 灵犀 ----------------
