@@ -1148,9 +1148,8 @@ function App() {
 
   // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
-    // v0.1.333 Ethan 定案：首组取消组名、只留 AI 助手；额度看板移入资产管理
-    { label: '', ids: ['ai'] },
-    { label: 'AI 创作', ids: ['workshop'] },
+    // v0.1.334 Ethan 定案：原「概览」组删除；「AI 创作」置顶，内含 AI 助手与 AI 工坊；额度看板在资产管理
+    { label: 'AI 创作', ids: ['ai', 'workshop'] },
     { label: '资产管理', ids: ['dashboard', 'keys', 'usage', 'calendar'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
