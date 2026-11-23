@@ -366,6 +366,37 @@ fn plugin_procs() -> &'static std::sync::Mutex<std::collections::HashMap<String,
     PROCS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+
+/// GUI 启动的 App 继承不到终端 PATH：Homebrew（/opt/homebrew/bin）与 ~/.local/bin 都不在内，
+/// 裸命令名（uvx/npx）直接 spawn 会报 No such file or directory（v0.1.322，Ethan 实测 Fetch 连接失败）。
+/// 这里解析命令到绝对路径（PATH + 常见 bin 目录），并给子进程一份补全后的 PATH，
+/// 让 uvx/npx 再拉起的 python/node 子进程也找得到。
+fn resolve_command(command: &str) -> (std::path::PathBuf, std::ffi::OsString) {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    #[cfg(unix)]
+    {
+        let mut extra = vec![
+            std::path::PathBuf::from("/opt/homebrew/bin"),
+            std::path::PathBuf::from("/usr/local/bin"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            extra.push(std::path::PathBuf::from(&home).join(".local/bin"));
+            extra.push(std::path::PathBuf::from(&home).join(".cargo/bin"));
+        }
+        for d in extra.into_iter() {
+            if !dirs.contains(&d) { dirs.insert(0, d); }
+        }
+    }
+    let full_path = std::env::join_paths(&dirs).unwrap_or_default();
+    let cmd_path = if command.contains('/') || command.contains('\\') {
+        std::path::PathBuf::from(command)
+    } else {
+        dirs.iter().map(|d| d.join(command)).find(|cand| cand.is_file())
+            .unwrap_or_else(|| std::path::PathBuf::from(command))
+    };
+    (cmd_path, full_path)
+}
+
 #[tauri::command]
 fn plugin_process_start(id: String, command: String, args: Vec<String>) -> Result<u32, String> {
     use std::process::{Command, Stdio};
@@ -375,8 +406,10 @@ fn plugin_process_start(id: String, command: String, args: Vec<String>) -> Resul
         .unwrap_or(false);
     if running { return Err("该插件进程已在运行".into()); }
     map.remove(&id);
-    let mut child = Command::new(&command)
+    let (cmd_path, child_path) = resolve_command(&command);
+    let mut child = Command::new(&cmd_path)
         .args(&args)
+        .env("PATH", &child_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -475,13 +508,21 @@ fn mcp_start(id: String, command: String, args: Vec<String>) -> Result<u32, Stri
         .unwrap_or(false);
     if running { return Err("该 MCP 服务器已在运行".into()); }
     map.remove(&id);
-    let mut child = Command::new(&command)
+    let (cmd_path, child_path) = resolve_command(&command);
+    let mut child = Command::new(&cmd_path)
         .args(&args)
+        .env("PATH", &child_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动 MCP 服务器失败：{}", e))?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!("启动 MCP 服务器失败：命令 {} 未找到（已搜索 PATH、Homebrew 与 ~/.local/bin，请确认已安装）", command)
+            } else {
+                format!("启动 MCP 服务器失败：{}", e)
+            }
+        })?;
     let pid = child.id();
     let stdin = child.stdin.take().ok_or_else(|| "无法打开 MCP 服务器 stdin".to_string())?;
     let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));

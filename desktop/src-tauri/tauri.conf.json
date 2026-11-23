@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Cube",
-  "version": "0.1.321",
+  "version": "0.1.322",
   "identifier": "com.example.ai-credit-manager",
   "build": {
     "beforeDevCommand": "npm run dev --prefix ..",
