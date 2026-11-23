@@ -1557,3 +1557,12 @@ Object.assign(D, {
   'Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。': { 'zh-TW': 'Zen / Kilo 免費通道清單沒拉到（網路或上游問題），自動重試後仍失敗。', en: 'Could not load the Zen / Kilo free channel list (network or upstream issue); automatic retries also failed.', ja: 'Zen / Kilo無料チャンネルのリストを取得できませんでした（ネットワークまたは上流の問題）。自動リトライも失敗しました。', ko: 'Zen / Kilo 무료 채널 목록을 가져오지 못했습니다(네트워크 또는 업스트림 문제). 자동 재시도도 실패했습니다.' },
   '重试': { 'zh-TW': '重試', en: 'Retry', ja: 'リトライ', ko: '재시도' },
 })
+
+// ---- 补齐批次 46：粘贴导入（v0.1.331） ----
+Object.assign(D, {
+  '粘贴导入': { 'zh-TW': '貼上匯入', en: 'Paste import', ja: '貼り付けてインポート', ko: '붙여넣기 가져오기' },
+  '粘贴备份文本导入（备忘录里复制的备份也能粘）': { 'zh-TW': '貼上備份文字匯入（備忘錄裡複製的備份也能貼）', en: 'Import by pasting backup text (works with backups copied from Notes)', ja: 'バックアップテキストを貼り付けてインポート（メモからコピーしたバックアップも可）', ko: '백업 텍스트를 붙여넣어 가져오기 (메모에서 복사한 백업도 가능)' },
+  '把备份文本粘贴到下面即可导入：备忘录里那条「AI 魔方密钥备份」笔记全选复制、或备份文件的内容都可以，格式自动识别。': { 'zh-TW': '把備份文字貼到下面即可匯入：備忘錄裡那條「AI 魔方密鑰備份」筆記全選複製、或備份檔案的內容都可以，格式自動識別。', en: 'Paste backup text below to import: copy the whole "AI Cube key backup" note from Notes, or paste a backup file\'s contents. The format is detected automatically.', ja: 'バックアップテキストを下に貼り付けるとインポートできます：メモの「AI Cube キーバックアップ」を全選択コピー、またはバックアップファイルの内容でも可。形式は自動判別されます。', ko: '백업 텍스트를 아래에 붙여넣으면 가져옵니다: 메모의 "AI Cube 키 백업" 노트를 전체 복사하거나 백업 파일 내용을 붙여넣으세요. 형식은 자동 인식됩니다.' },
+  '在此粘贴备份文本…': { 'zh-TW': '在此貼上備份文字…', en: 'Paste backup text here…', ja: 'ここにバックアップテキストを貼り付け…', ko: '여기에 백업 텍스트 붙여넣기…' },
+  '从剪贴板粘贴': { 'zh-TW': '從剪貼簿貼上', en: 'Paste from clipboard', ja: 'クリップボードから貼り付け', ko: '클립보드에서 붙여넣기' },
+})

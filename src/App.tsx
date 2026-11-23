@@ -14,9 +14,10 @@ import {
   Wallet, Clock, TrendingUp, Lock, Unlock, Download, X, Copy, CircleHelp,
   Code2, Sparkles, Search, Image, Mic, PenTool, Settings, Eye, EyeOff, Pencil, Fingerprint,
   Film, Layers, Monitor, Network, PanelLeftClose, PanelLeftOpen,
-  Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, FileText, Languages, Globe, HeartPulse, Loader2,
+  Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight, ChevronUp,
   Archive, ArchiveRestore, Puzzle, Folder,
+  ArrowLeft,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider, mergeToolbarOrder } from './core/types'
@@ -87,11 +88,7 @@ import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
 import { CommandPalette, type PaletteItem } from './components/CommandPalette'
 // 性能优化：标签页级代码分割 —— 重型视图按需加载，减小首屏解析与内存占用（本地资源加载近乎瞬时）
-const DocQAView = lazy(() => import('./components/DocQAView').then(m => ({ default: m.DocQAView })))
-const TranslationView = lazy(() => import('./components/TranslationView').then(m => ({ default: m.TranslationView })))
 const ChatTranslateView = lazy(() => import('./components/ChatTranslateView').then(m => ({ default: m.ChatTranslateView })))
-const ImageView = lazy(() => import('./components/ImageView').then(m => ({ default: m.ImageView })))
-const VideoView = lazy(() => import('./components/VideoView').then(m => ({ default: m.VideoView })))
 const LocalImageView = lazy(() => import('./components/LocalImageView').then(m => ({ default: m.LocalImageView })))
 const LocalVideoView = lazy(() => import('./components/LocalVideoView').then(m => ({ default: m.LocalVideoView })))
 const WorkshopView = lazy(() => import('./components/WorkshopView').then(m => ({ default: m.WorkshopView })))
@@ -114,7 +111,7 @@ type CsvImportPreview =
   | { kind: 'quotas'; quotas: ReturnType<typeof parseQuotasCsv> }
   | { kind: 'usage'; events: UsageEventInput[] }
 
-type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings' | 'plugins' | 'workshop'
+type Tab = 'ai' | 'dashboard' | 'checkin' | 'chat-translate' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'settings' | 'plugins' | 'workshop'
 
 const UNIT_LABEL: Record<CreditUnit, string> = {
   credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天',
@@ -299,7 +296,7 @@ function App() {
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
-    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'docs', 'settings', 'workshop'].includes(t)
+    if (t && ['ai', 'dashboard', 'checkin', 'chat-translate', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'settings', 'workshop'].includes(t)
       && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
     return isPhone ? 'ai' : 'dashboard'
   })
@@ -329,12 +326,16 @@ function App() {
   // 统一导航：Claude 风格下"设置"走居中弹窗，其余模块正常切 tab
   const openTab = (id: Tab) => {
     // 手机客户端已移除文档问答与本地生成：任何残留入口跳到这些页时回落到 AI 页
-    if (isPhone && (id === 'docs' || id === 'local-image' || id === 'local-video')) id = 'ai'
+    if (isPhone && (id === 'local-image' || id === 'local-video')) id = 'ai'
     if (id === 'settings') { setSettingsOpen(true); if (isPhone) setSidebarVisible(false); return }
     setTab(id)
     if (isPhone) setSidebarVisible(false)
     window.scrollTo(0, 0)
   }
+  // v0.1.331：工坊工具直达信号（看板瓷砖等外部入口 → 打开工坊并直达工具页）
+  const [wsSignal, setWsSignal] = useState<{ tool: string; n: number } | null>(null)
+  const [checkinNonce, setCheckinNonce] = useState(0)
+  const openWorkshopTool = (tool: string) => { setWsSignal({ tool, n: Date.now() }); openTab('workshop') }
   useEffect(() => {
     try { localStorage.setItem('acm.sidebar.visible', sidebarVisible ? '1' : '0') } catch { /* 忽略 */ }
   }, [sidebarVisible])
@@ -723,11 +724,8 @@ function App() {
   }, [cloudUser])
 
   /** 读取文件：自动识别 JSON 备份 / 账户 CSV / 额度 CSV / 用量 CSV */
-  const handleImportFile = useCallback((file?: File) => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      const text = String(reader.result ?? '')
+  /** 导入文本（文件读入与粘贴导入共用）：按内容识别备份/清单/CSV（v0.1.331 抽出） */
+  const handleImportText = useCallback((text: string, fileName = 'pasted.txt') => {
       try {
         // API Key 备份文件（JSON / CSV / TXT，按内容识别）
         if (parseKeyBackup(text)) {
@@ -746,7 +744,7 @@ function App() {
           setServicePreview(parseServiceList(text))
           return
         }
-        if (isJsonImport(file.name, text)) {
+        if (isJsonImport(fileName, text)) {
           setImportData(importState(text))
           return
         }
@@ -761,9 +759,14 @@ function App() {
           setCsvPreview({ kind, events: parseUsageCsv(text, s.accounts) })
         }
       } catch (err: any) { notify(err.message ?? '文件解析失败') }
-    }
-    reader.readAsText(file)
   }, [notify, sessionPwd])
+
+  const handleImportFile = useCallback((file?: File) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => handleImportText(String(reader.result ?? ''), file.name)
+    reader.readAsText(file)
+  }, [handleImportText])
 
   /** 按选择格式导出文件；dir 非空则写入指定目录（桌面端） */
   const doExport = useCallback(async (format: ExportFormat, dir?: string) => {
@@ -1134,14 +1137,10 @@ function App() {
     { id: 'ai', label: 'AI 助手', icon: Sparkles },
     { id: 'dashboard', label: '额度看板', icon: LayoutDashboard },
     { id: 'checkin', label: 'AI 工具大全', icon: CalendarCheck2 },
-    { id: 'benefits', label: 'AI 翻译', icon: Languages },
-    { id: 'image', label: 'AI 图像', icon: Image },
-    { id: 'video', label: 'AI 视频', icon: Film },
     { id: 'keys', label: 'API Key 管理', icon: KeyRound },
     { id: 'usage', label: '用量与费用', icon: BarChart3 },
     { id: 'calendar', label: '额度日历', icon: CalendarDays },
     { id: 'voice', label: '语音配置', icon: Volume2 },
-    { id: 'docs', label: '文档问答', icon: FileText },
     { id: 'workshop', label: 'AI 工坊', icon: Wrench },
     { id: 'plugins', label: '插件', icon: Puzzle },
     { id: 'settings', label: '设置', icon: Settings },
@@ -1150,7 +1149,7 @@ function App() {
   // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
     { label: '概览', ids: ['ai', 'dashboard'] },
-    { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs', 'workshop'] },
+    { label: 'AI 创作', ids: ['workshop'] },
     { label: '资产管理', ids: ['keys', 'usage', 'calendar'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
@@ -1158,9 +1157,8 @@ function App() {
   // 移动端底部导航：只保留 5 个高频入口，AI 置于正中，其余从抽屉进入（原 10 个太挤）
   const bottomTabs: Tab[] = ['dashboard', 'workshop', 'ai', 'keys', 'settings']
   const shortLabel: Record<Tab, string> = {
-    ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
-    'local-image': '本地图像', 'local-video': '本地视频',
-    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置', plugins: '插件', workshop: '工坊',
+    ai: 'AI', dashboard: '看板', checkin: '工具', 'chat-translate': '对话翻译',     'local-image': '本地图像', 'local-video': '本地视频',
+    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', settings: '设置', plugins: '插件', workshop: '工坊',
   }
 
   // ---- 全局搜索（Cmd/Ctrl+K） ----
@@ -1202,8 +1200,7 @@ function App() {
   }, [])
 
   // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
-  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'workshop', 'keys', 'usage', 'calendar', 'voice', 'plugins', 'settings'] as Tab[])
-    .filter(id => !(isPhone && id === 'docs'))
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'workshop', 'keys', 'usage', 'calendar', 'voice', 'plugins', 'settings'] as Tab[])
 
   // 界面风格：经典（默认，极简留白）/ 液态玻璃（uiStyle==='liquid' 时挂 liquid-ui，
   // 材质覆盖在 liquid-global.css 最后一层；claude-ui 仍作基础设计系统保留）
@@ -1358,12 +1355,12 @@ function App() {
               <div className="bento-num">{runningOut.length}<small> {t('个')}</small></div>
               <div className="bento-sub">{runningOut.length ? t('{days} 天内优先处理 →', { days: state.settings.alertDays ?? 0 }) : t('{n} 个用量超 80%', { n: lowQuota.length })}</div>
             </button>
-            <button className="bento-tile bento-green" onClick={() => openTab('image')}>
+            <button className="bento-tile bento-green" onClick={() => openWorkshopTool('image')}>
               <div className="bento-label">{t('AI 图像')}</div>
               <div className="bento-action">{t('开始生成 →')}</div>
               <div className="bento-sub">{t('用你的模型账户生图')}</div>
             </button>
-            <button className="bento-tile bento-blue" onClick={() => openTab('video')}>
+            <button className="bento-tile bento-blue" onClick={() => openWorkshopTool('video')}>
               <div className="bento-label">{t('AI 视频')}</div>
               <div className="bento-action">{t('开始生成 →')}</div>
               <div className="bento-sub">{t('用你的模型账户生视频')}</div>
@@ -1429,29 +1426,29 @@ function App() {
           </>}
 
           {tab === 'checkin' && <AgentToolsView
+            key={checkinNonce}
+            onRefresh={() => setCheckinNonce(n => n + 1)}
+            onBack={() => openTab('workshop')}
             checkins={state.checkins} notify={notify}
             onToggle={(pid, aid) => setState(s => toggleCheckin(s, pid, aid))}
             catalogNews={catalogNews} onCatalogNewsAck={ackCatalogNews}
           />}
 
-          {tab === 'benefits' && <TranslationView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onOpenChat={() => openTab('chat-translate')} />}
 
-          {tab === 'chat-translate' && <ChatTranslateView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onBack={() => openTab('benefits')} />}
+          {tab === 'chat-translate' && <ChatTranslateView accounts={state.accounts} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onBack={() => openWorkshopTool('translate')} />}
 
-          {tab === 'image' && <ImageView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={isPhone ? undefined : () => openTab('local-image')} />}
 
-          {tab === 'video' && <VideoView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} settings={state.settings} onOpenLocal={isPhone ? undefined : () => openTab('local-video')} />}
 
-          {!isPhone && tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('image')}><X size={15} /> {t('返回 AI 图像')}</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-image' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openWorkshopTool('image')}><X size={15} /> {t('返回 AI 图像')}</button><LocalImageView notify={notify} serviceController={serviceController} /></div>}
 
-          {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openTab('video')}><X size={15} /> {t('返回 AI 视频')}</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
+          {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openWorkshopTool('video')}><X size={15} /> {t('返回 AI 视频')}</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
           {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> {t('智能粘贴')}</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> {t('添加账户')}</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify} isPhone={isPhone}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
             onAudit={audit}
-            onImportFile={handleImportFile}
+            onImportFile={handleImportFile} onImportText={handleImportText}
             onExport={() => setExportOpen(true)}
             onOpenVault={() => setVaultOpen(true)}
             onQuotaFetched={(accountId, used, total, unit) => {
@@ -1486,7 +1483,7 @@ function App() {
 
           {tab === 'plugins' && <PluginsView notify={notify} />}
 
-          {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} onOpenTab={(tb) => openTab(tb as Tab)} />}
+          {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={setSessionPwd} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
@@ -1521,13 +1518,6 @@ function App() {
             </SettingsSection>
           </div>}
 
-          {!isPhone && tab === 'docs' && <div className="set-content">
-            <SettingsSection title="本地文档问答" desc="导入文档，基于本机模型问答 · 文档与向量只存此设备" icon={FileText} tone="indigo">
-              <div style={{ padding: '4px 2px 2px' }}>
-                <DocQAView accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} notify={notify} thinkingMode={state.settings.thinkingMode} settings={state.settings} serviceController={serviceController} />
-              </div>
-            </SettingsSection>
-          </div>}
           </Suspense>
         </div>
       </main>
@@ -2186,10 +2176,13 @@ function DashboardView({ views, onAdd, onRemove, onRemoveMany, onEditQuota, noti
 }
 
 /** AI 工具目录：地区 → 签到 → 功能 → 平台 多级筛选 + 使用量排序 + 每页 3 项分页 */
-function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNewsAck }: {
+function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNewsAck, onBack, onRefresh }: {
   checkins: AppState['checkins']; notify: (m: string) => void;
   onToggle: (pid: string, aid?: string) => void
   catalogNews?: AgentTool[]; onCatalogNewsAck?: () => void
+  /** v0.1.331：大全已并入工坊，页面顶部提供返回工坊入口 */
+  onBack?: () => void
+  onRefresh?: () => void
 }) {
   const today = todayISO()
   const initial = useMemo(() => currentCatalog(), [])
@@ -2322,6 +2315,10 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
 
   return (
     <div className="agent-tools">
+      {(onBack || onRefresh) && <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {onBack && <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>}
+        {onRefresh && <button className="btn sm ghost" title="刷新本页" onClick={onRefresh}><RefreshCw size={14} /></button>}
+      </div>}
       {catalogNews && catalogNews.length > 0 && <div className="catalog-news-bar">
         <Sparkles size={15} />
         <span>{t('目录上新：{names}{more}，去看看有没有免费额度可领。', { names: catalogNews.slice(0, 3).map(x => x.name).join('、'), more: catalogNews.length > 3 ? t(' 等 {n} 款新工具', { n: catalogNews.length }) : '' })}</span>
@@ -2438,9 +2435,9 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing }: {
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onImportText, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing }: {
   state: AppState; notify: (m: string) => void; onOpenVault: () => void; isPhone?: boolean;
-  onImportFile: (file?: File) => void; onExport: () => void;
+  onImportFile: (file?: File) => void; onImportText?: (text: string) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
   onRequestBackup: (ids: string[], title: string, confirmLabel: string, after: () => void, backupOnly?: boolean) => void;
   onQuotaFetched: (accountId: string, used: number, total: number | undefined, unit: CreditUnit) => void;
@@ -2462,6 +2459,8 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [category, setCategory] = useState('__all__')
   const [groupFilter, setGroupFilter] = useState('__all__')
   const [page, setPage] = useState(1)
+  const [pasteImportOpen, setPasteImportOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [toolExportOpen, setToolExportOpen] = useState(false)
   const [toolExportFormat, setToolExportFormat] = useState<'env' | 'json'>('env')
@@ -2682,6 +2681,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                 onImportFile(e.target.files?.[0]); e.target.value = ''
               }} />
             </label>
+            {onImportText && <button className="btn sm" onClick={() => setPasteImportOpen(true)} title={t('粘贴备份文本导入（备忘录里复制的备份也能粘）')}><ClipboardPaste size={14} /> {t('粘贴导入')}</button>}
             <button className="btn sm" onClick={onExport} title={t('导出备份（不含密钥）')}><Download size={14} /> {t('导出')}</button>
             {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> {t('创建保险箱')}</button>}
             {vaultPwd ? (
@@ -2966,6 +2966,21 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
         )
       })()}
 
+      {pasteImportOpen && (
+        <div className="modal-backdrop" onClick={() => setPasteImportOpen(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <h3 style={{ margin: '0 0 6px' }}>{t('粘贴导入')}</h3>
+            <p style={{ margin: '0 0 10px', fontSize: 12.5, color: 'var(--text-2)' }}>{t('把备份文本粘贴到下面即可导入：备忘录里那条「AI 魔方密钥备份」笔记全选复制、或备份文件的内容都可以，格式自动识别。')}</p>
+            <textarea className="input" rows={9} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }} value={pasteText}
+              onChange={e => setPasteText(e.target.value)} placeholder={t('在此粘贴备份文本…')} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button className="btn sm" onClick={() => { void navigator.clipboard?.readText().then(tx => setPasteText(tx)).catch(() => notify('读取剪贴板失败，请手动粘贴')) }}>{t('从剪贴板粘贴')}</button>
+              <button className="btn sm ghost" onClick={() => setPasteImportOpen(false)}>{t('取消')}</button>
+              <button className="btn sm primary" disabled={!pasteText.trim()} onClick={() => { onImportText?.(pasteText); setPasteImportOpen(false); setPasteText('') }}>{t('导入')}</button>
+            </div>
+          </div>
+        </div>
+      )}
       {unlockOpen && !vaultPwd && <UnlockModal
         method={state.settings.unlockMethod} bioAvailable={bioAvailable} bioLabel={bioLabel ?? '生物'}
         onClose={() => { setUnlockOpen(false); setUnlockPwd(''); setPendingView(null) }}

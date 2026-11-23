@@ -267,6 +267,14 @@ class McpClient {
     return { text: text || '(无文本结果)', isError: !!r?.isError }
   }
 
+  /** 原始内容块调用（v0.1.331）：图片等非文本内容不压扁，供文件管家读图片缩略图 */
+  async callToolRaw(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError: boolean }> {
+    const r = await this.request<{ content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }>(
+      'tools/call', { name, arguments: args }, 60000,
+    )
+    return { content: r?.content ?? [], isError: !!r?.isError }
+  }
+
   async disconnect(): Promise<void> {
     if (this.pollTimer !== null) { window.clearInterval(this.pollTimer); this.pollTimer = null }
     this.pending.forEach(p => p.reject(new Error('连接已断开')))
@@ -302,6 +310,12 @@ export async function callMcpTool(serverId: string, toolName: string, args: Reco
   const client = clients.get(serverId)
   if (!client) throw new Error('服务器未连接')
   return client.callTool(toolName, args)
+}
+
+export async function callMcpToolRaw(serverId: string, toolName: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError: boolean }> {
+  const client = clients.get(serverId)
+  if (!client) throw new Error('服务器未连接')
+  return client.callToolRaw(toolName, args)
 }
 
 export async function mcpServerLogs(id: string): Promise<string> {

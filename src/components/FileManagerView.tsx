@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft, Folder, File as FileIcon, Loader2, Plug, RefreshCw, Search, Copy,
-  LayoutGrid, List as ListIcon, ChevronRight, Database, Sparkles,
+  LayoutGrid, List as ListIcon, ChevronRight, Database, Sparkles, Eye, EyeOff, ExternalLink,
 } from 'lucide-react'
 import type { Account } from '../core/types'
-import { loadMcpServers, getMcpConnection, connectMcpServer, callMcpTool, MCP_EVENT, type McpServerConfig } from '../core/mcp'
+import { loadMcpServers, getMcpConnection, connectMcpServer, callMcpTool, callMcpToolRaw, MCP_EVENT, type McpServerConfig } from '../core/mcp'
 import { isDesktopApp } from '../core/openExternal'
 import { fetchLocalModels } from '../core/localServices'
 import { filterEmbeddingModels, embedText } from '../core/docQA'
@@ -37,6 +37,20 @@ function parseListDir(text: string): Entry[] {
 
 const joinPath = (dir: string, name: string) => (dir.endsWith('/') ? dir + name : `${dir}/${name}`)
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'])
+const HIDDEN_KEY = 'acm.filemgr.showHidden'
+const loadShowHidden = () => { try { return localStorage.getItem(HIDDEN_KEY) === '1' } catch { return false } }
+
+/** 用系统默认应用打开本机文件（仅桌面端，Rust open_external_path） */
+async function openExternalPath(path: string): Promise<boolean> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
+  const invoke = w.__TAURI_INTERNALS__?.invoke
+  if (!invoke) return false
+  await invoke('open_external_path', { path })
+  return true
+}
+
 /** 探测本机 Ollama 的嵌入模型（与文档问答同口径）；没有则返回 null，走关键词模式 */
 async function detectEmbedModel(): Promise<{ base: string; model: string } | null> {
   try {
@@ -68,10 +82,53 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [hits, setHits] = useState<FileSearchHit[]>([])
   const [answer, setAnswer] = useState('')
   const [indexing, setIndexing] = useState('')
+  const [showHidden, setShowHidden] = useState<boolean>(loadShowHidden)
+  const [thumbs, setThumbs] = useState<Map<string, string>>(new Map())
+  const thumbBusy = useState(() => new Set<string>())[0]
+  const [hoverImg, setHoverImg] = useState<{ src: string; x: number; y: number } | null>(null)
+  const [previewImg, setPreviewImg] = useState('')
+  const [page, setPage] = useState(1)
   const { data: routeData, route, routeKey, setRouteKey } = useRouteData(accounts)
 
   const conn = server ? getMcpConnection(server.id) : null
   const ready = conn?.status === 'ready'
+
+  const visibleEntries = useMemo(
+    () => (showHidden ? entries : entries.filter(e => !e.name.startsWith('.'))),
+    [entries, showHidden],
+  )
+  // 分页（v0.1.331）：大目录按页浏览，每页 60 项
+  const PAGE_SIZE = 60
+  const pageCount = Math.max(1, Math.ceil(visibleEntries.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount)
+  const pagedEntries = useMemo(
+    () => visibleEntries.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [visibleEntries, safePage],
+  )
+
+  /** 读图片为 data URL（Filesystem 的 read_media_file 返回 base64 内容块）；失败静默回落图标 */
+  const ensureThumb = useCallback(async (path: string) => {
+    if (!server || thumbs.has(path) || thumbBusy.has(path)) return
+    thumbBusy.add(path)
+    try {
+      const r = await callMcpToolRaw(server.id, 'read_media_file', { path })
+      const img = r.content.find(c => c.type === 'image' && c.data)
+      if (img?.data) {
+        const url = `data:${img.mimeType ?? 'image/png'};base64,${img.data}`
+        setThumbs(prev => new Map(prev).set(path, url))
+      }
+    } catch { /* 旧版服务器无此工具时静默 */ } finally { thumbBusy.delete(path) }
+  }, [server, thumbs, thumbBusy])
+
+  // 当前目录的图片自动加载缩略图（上限 80 张，防大目录刷爆）
+  useEffect(() => {
+    if (!ready || !cwd) return
+    let n = 0
+    for (const e of pagedEntries) {
+      if (n >= 80) break
+      if (!e.isDir && IMAGE_EXTS.has(extOf(e.name))) { n++; void ensureThumb(joinPath(cwd, e.name)) }
+    }
+  }, [pagedEntries, cwd, ready, ensureThumb])
 
   useEffect(() => {
     const on = () => { setServer(findFilesystemServer()); setTick(x => x + 1) }
@@ -86,6 +143,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
       if (r.isError) throw new Error(r.text)
       setEntries(parseListDir(r.text))
       setCwd(path)
+      setPage(1)
       setSelected('')
       setPreview('')
     } catch (e) { notify(e instanceof Error ? e.message : '读取目录失败') } finally { setLoadingDir(false) }
@@ -119,6 +177,12 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     if (e.isDir) { void loadDir(server, p); return }
     setSelected(p)
     setPreview('')
+    setPreviewImg('')
+    if (IMAGE_EXTS.has(extOf(e.name))) {
+      const cached = thumbs.get(p)
+      if (cached) setPreviewImg(cached)
+      else void ensureThumb(p).then(() => setThumbs(prev => { const u = prev.get(p); if (u) setPreviewImg(u); return prev }))
+    }
     if (TEXT_EXTS.has(extOf(e.name))) {
       void callMcpTool(server.id, 'read_text_file', { path: p }).then(r => {
         if (!r.isError) setPreview(r.text.slice(0, 6000))
@@ -145,6 +209,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
         list = parseListDir(r.text)
       } catch { return }
       for (const e of list) {
+        if (!showHidden && e.name.startsWith('.')) continue // 隐藏文件/目录默认不进索引（多为应用配置与缓存）
         const p = joinPath(dir, e.name)
         if (e.isDir) { await walk(p, depth + 1); continue }
         seen++
@@ -227,7 +292,10 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
 
   return (
     <div className="ws-tool fm">
-      <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>
+        <button className="btn sm ghost" title="刷新当前目录" onClick={() => { if (server && cwd) void loadDir(server, cwd) }}><RefreshCw size={14} /></button>
+      </div>
       <h3 className="ws-tool-title">文件管家</h3>
       <p className="ws-tool-desc">访达式浏览 + AI 问答 · 通过插件页的 Filesystem 服务访问你放行的目录，索引只存本机。</p>
 
@@ -284,6 +352,10 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                   </span>
                 ))}
               </div>
+              <button className="btn sm ghost" title={showHidden ? '隐藏以 . 开头的文件' : '显示以 . 开头的隐藏文件'}
+                onClick={() => { const v = !showHidden; setShowHidden(v); try { localStorage.setItem(HIDDEN_KEY, v ? '1' : '0') } catch { /* 忽略 */ } }}>
+                {showHidden ? <Eye size={13} /> : <EyeOff size={13} />} 隐藏文件
+              </button>
               <div className="fm-seg">
                 <button className={viewMode === 'grid' ? 'on' : ''} onClick={() => setViewMode('grid')}><LayoutGrid size={13} /> 图标</button>
                 <button className={viewMode === 'list' ? 'on' : ''} onClick={() => setViewMode('list')}><ListIcon size={13} /> 列表</button>
@@ -307,20 +379,28 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
               </div>
               <div className="fm-main">
                 {loadingDir ? <div className="fm-empty"><Loader2 size={16} className="spin" /> 读取中…</div>
-                  : entries.length === 0 ? <div className="fm-empty">这个文件夹是空的</div>
+                  : visibleEntries.length === 0 ? <div className="fm-empty">这个文件夹是空的（或只有隐藏文件）</div>
                     : viewMode === 'grid' ? (
                       <div className="fm-grid">
-                        {entries.map(e => (
-                          <button key={e.name} className={`fm-file ${selected === joinPath(cwd, e.name) ? 'sel' : ''}`}
-                            onClick={() => openEntry(e)} onDoubleClick={() => openEntry(e)}>
-                            {e.isDir ? <Folder size={38} className="fm-folder-ico" /> : <FileIcon size={34} className="fm-file-ico" />}
-                            <span>{e.name}</span>
-                          </button>
-                        ))}
+                        {pagedEntries.map(e => {
+                          const p = joinPath(cwd, e.name)
+                          const thumb = !e.isDir && IMAGE_EXTS.has(extOf(e.name)) ? thumbs.get(p) : undefined
+                          return (
+                            <button key={e.name} className={`fm-file ${selected === p ? 'sel' : ''} ${e.name.startsWith('.') ? 'fm-dot' : ''}`}
+                              onClick={() => openEntry(e)} onDoubleClick={() => openEntry(e)}
+                              onMouseEnter={ev => { if (thumb) { const r = ev.currentTarget.getBoundingClientRect(); setHoverImg({ src: thumb, x: r.right + 10, y: Math.max(8, r.top - 10) }) } }}
+                              onMouseLeave={() => setHoverImg(null)}>
+                              {e.isDir ? <Folder size={38} className="fm-folder-ico" />
+                                : thumb ? <img className="fm-thumb" src={thumb} alt={e.name} />
+                                  : <FileIcon size={34} className="fm-file-ico" />}
+                              <span>{e.name}</span>
+                            </button>
+                          )
+                        })}
                       </div>
                     ) : (
                       <div className="fm-list">
-                        {entries.map(e => (
+                        {pagedEntries.map(e => (
                           <button key={e.name} className={`fm-row ${selected === joinPath(cwd, e.name) ? 'sel' : ''}`}
                             onClick={() => openEntry(e)} onDoubleClick={() => openEntry(e)}>
                             {e.isDir ? <Folder size={16} className="fm-folder-ico" /> : <FileIcon size={15} className="fm-file-ico" />}
@@ -329,21 +409,36 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                         ))}
                       </div>
                     )}
+                {pageCount > 1 && (
+                  <div className="fm-pager">
+                    <button className="btn sm" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>上一页</button>
+                    <span>第 {safePage} / {pageCount} 页 · 共 {visibleEntries.length} 项</span>
+                    <button className="btn sm" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}>下一页</button>
+                  </div>
+                )}
               </div>
               {selected && (
                 <div className="fm-preview">
                   <div className="fm-pv-name">{selected.split('/').pop()}</div>
                   <div className="fm-pv-path">{selected}</div>
-                  {preview
-                    ? <pre className="fm-pv-text">{preview}</pre>
-                    : <div className="fm-pv-meta">{TEXT_EXTS.has(extOf(selected)) ? '正在读取…' : '此类型暂不支持内容预览（文本文件可预览）'}</div>}
-                  <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(selected).catch(() => {})}><Copy size={12} /> 复制路径</button>
+                  {previewImg
+                    ? <img className="fm-pv-img" src={previewImg} alt={selected.split('/').pop()} />
+                    : preview
+                      ? <pre className="fm-pv-text">{preview}</pre>
+                      : <div className="fm-pv-meta">{TEXT_EXTS.has(extOf(selected)) || IMAGE_EXTS.has(extOf(selected))
+                        ? '正在读取…'
+                        : VIDEO_EXTS.has(extOf(selected)) ? '视频文件：点下方「打开」用系统播放器查看' : '此类型暂不支持内容预览（文本与图片可预览）'}</div>}
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(selected).catch(() => {})}><Copy size={12} /> 复制路径</button>
+                    {desktop && <button className="btn sm" onClick={() => void openExternalPath(selected).then(ok => { if (!ok) notify('打开失败') }).catch(() => notify('打开失败'))}><ExternalLink size={12} /> 打开</button>}
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </>
       )}
+      {hoverImg && <img className="fm-hover-img" src={hoverImg.src} alt="" style={{ left: hoverImg.x, top: hoverImg.y }} />}
     </div>
   )
 }
