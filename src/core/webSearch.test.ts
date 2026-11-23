@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeBingRedirect, parseBingResults, parseDdgResults, stripHtmlToText } from './webSearch'
+import { decodeBingRedirect, deriveSearchQueries, filterRelevantResults, parseBingResults, parseDdgResults, stripHtmlToText } from './webSearch'
 
 describe('stripHtmlToText', () => {
   it('去脚本/样式/标签并解实体', () => {
@@ -26,6 +26,43 @@ describe('parseBingResults', () => {
 
   it('无结果时返回空数组', () => {
     expect(parseBingResults('<html><body>没有</body></html>')).toEqual([])
+  })
+})
+
+describe('deriveSearchQueries（v0.1.319）', () => {
+  const today = new Date(2026, 10, 23)
+  it('一次粘贴两个问题 → 拆成两条搜索词，各自补日期', () => {
+    const qs = deriveSearchQueries('1. 昨天的国内外科技新闻？\n2. 今天美元兑人民币汇率是多少？', today)
+    expect(qs).toHaveLength(2)
+    expect(qs[0]).toContain('科技新闻')
+    expect(qs[0]).toContain('2026年11月23日')
+    expect(qs[1]).toContain('美元兑人民币汇率')
+  })
+
+  it('单个问题原样（无时效词不补日期）', () => {
+    expect(deriveSearchQueries('英伟达是做什么的', today)).toEqual(['英伟达是做什么的'])
+    expect(deriveSearchQueries('今天天气怎么样', today)[0]).toContain('2026年11月23日')
+  })
+
+  it('已带日期的不重复补', () => {
+    expect(deriveSearchQueries('2026年11月20日的新闻', today)).toEqual(['2026年11月20日的新闻'])
+  })
+})
+
+describe('filterRelevantResults（v0.1.319）', () => {
+  it('丢弃与问题零重合的 SEO 垃圾结果（复刻 X站 实测）', () => {
+    const spam = { title: 'X站', url: 'https://x-zhana.com.cn/', snippet: 'X站 X平台官方入口，点此进入' }
+    const good1 = { title: '新浪科技_新浪网', url: 'https://tech.sina.com.cn/', snippet: '24小时滚动报道科技行业新闻头条' }
+    const good2 = { title: 'IT之家', url: 'https://www.ithome.com/', snippet: '前沿科技新闻网站，快速播报科技行业新闻' }
+    const out = filterRelevantResults(['昨天的国内外科技新闻 2026年11月23日'], [spam, good1, good2])
+    expect(out.map(r => r.url).sort()).toEqual(['https://tech.sina.com.cn/', 'https://www.ithome.com/'].sort())
+    expect(out.some(r => r.url.includes('x-zhana'))).toBe(false)
+  })
+
+  it('全部零重合时兜底保留 2 条，不返回空', () => {
+    const a = { title: '甲', url: 'https://a.example/', snippet: '无关内容' }
+    const b = { title: '乙', url: 'https://b.example/', snippet: '也无关' }
+    expect(filterRelevantResults(['量子纠缠实验'], [a, b])).toHaveLength(2)
   })
 })
 

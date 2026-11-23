@@ -123,15 +123,69 @@ return stripHtmlToText(await httpGetText(url)).slice(0, maxChars)
 }
 
 /**
-* 为一次提问构建搜索资料块：搜索 → 抓前 3 条原文（失败用摘要代替）→ 编号成块。
-* 搜不到任何结果返回 null（调用方据此提示并按普通对话继续）。
+ * 从用户消息提炼搜索词（v0.1.319）：整段粘贴/一次问多个问题时，原文直搜会被污染
+ * （实测粘贴两问 → 搜出 SEO 垃圾站）。做法：去编号/项目符号 → 按问句切分取最多 2 条；
+ * 含「今天/昨天/最新/新闻」等时效词且没写日期时，补上今天日期（搜索引擎更给当天的结果）。
+ */
+export function deriveSearchQueries(text: string, today: Date = new Date()): string[] {
+const cleaned = text
+.replace(/^\s*(?:\d+[.、．]|[-*•])\s*/gm, '')
+.replace(/[*#>`]/g, '')
+.replace(/\s+/g, ' ')
+.trim()
+if (!cleaned) return []
+const parts = cleaned.split(/[？?！!。；;\n]/).map(x => x.trim()).filter(x => x.length >= 4)
+const queries = (parts.length >= 2 ? parts.slice(0, 2) : [cleaned.slice(0, 120)])
+const dateStr = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`
+return queries.map(q => (/今天|昨天|今日|最新|新闻|近期|现在|刚刚/.test(q) && !/\d{4}年|\d{1,2}月\d{1,2}日/.test(q) ? `${q} ${dateStr}` : q))
+}
+
+/** 查询词切分：空白/标点分词，中文长词再滑 2 字窗（给相关性打分用） */
+export function queryTerms(query: string): string[] {
+const terms = new Set<string>()
+for (const w of query.toLowerCase().split(/[\s\p{P}\p{S}]+/u)) {
+if (!w) continue
+if (w.length <= 4) { terms.add(w); continue }
+for (let i = 0; i + 2 <= w.length; i++) terms.add(w.slice(i, i + 2))
+}
+return [...terms].filter(t => t.length >= 2)
+}
+
+/**
+ * 相关性过滤+排序：标题/摘要与查询词零重合的结果多半是 SEO 垃圾（如实测的「X站」），直接丢弃；
+ * 剩下的按命中词数排序。过滤后不足 2 条时保留得分最高的 2 条兜底，避免误杀。
+ */
+export function filterRelevantResults(queries: string[], results: WebSearchResult[]): WebSearchResult[] {
+const terms = [...new Set(queries.flatMap(queryTerms))]
+if (!terms.length || !results.length) return results
+const scored = results.map((r, idx) => {
+const hay = `${r.title} ${r.snippet}`.toLowerCase()
+const score = terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0)
+return { r, idx, score }
+})
+const kept = scored.filter(x => x.score > 0)
+const pool = kept.length >= 2 ? kept : [...scored].sort((a, b) => b.score - a.score).slice(0, 2)
+return pool.sort((a, b) => b.score - a.score || a.idx - b.idx).map(x => x.r)
+}
+
+/**
+* 为一次提问构建搜索资料块：提炼搜索词 → 多路搜索合并去重 → 相关性过滤 →
+* 抓前 4 条原文（失败用摘要代替）→ 编号成块。搜不到任何结果返回 null。
 */
 export async function buildSearchContext(question: string): Promise<SearchContext | null> {
-const query = question.trim().replace(/\s+/g, ' ').slice(0, 120)
-if (!query) return null
-const results = await searchWeb(query)
+const queries = deriveSearchQueries(question)
+if (!queries.length) return null
+const perQuery = await Promise.all(queries.map(q => searchWeb(q, 5).catch(() => [] as WebSearchResult[])))
+const seen = new Set<string>()
+const merged: WebSearchResult[] = []
+for (const r of perQuery.flat()) {
+if (seen.has(r.url)) continue
+seen.add(r.url)
+merged.push(r)
+}
+const results = filterRelevantResults(queries, merged).slice(0, 5)
 if (!results.length) return null
-const pages = await Promise.all(results.slice(0, 3).map(async r => {
+const pages = await Promise.all(results.slice(0, 4).map(async r => {
 try { return await fetchPageText(r.url)} catch { return ''}
 }))
 const parts = results.map((r, i) => {
