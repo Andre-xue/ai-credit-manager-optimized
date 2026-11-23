@@ -1381,6 +1381,7 @@ Object.assign(D, {
 
 // ---- 补齐批次 44：聊天粘贴/拖放文件（v0.1.321） ----
 Object.assign(D, {
+  '附件': { 'zh-TW': '附件', en: 'Attachment', ja: '添付ファイル', ko: '첨부 파일' },
   '一次最多添加 6 个附件': { 'zh-TW': '一次最多添加 6 個附件', en: 'Up to 6 attachments at a time', ja: '添付は一度に6件までです', ko: '한 번에 최대 6개까지 첨부할 수 있습니다' },
   '「{name}」超过 10MB，已跳过': { 'zh-TW': '「{name}」超過 10MB，已跳過', en: '"{name}" exceeds 10MB and was skipped', ja: '「{name}」は10MBを超えるためスキップしました', ko: '"{name}"이(가) 10MB를 초과해 건너뛰었습니다' },
   '已添加 {n} 个附件': { 'zh-TW': '已添加 {n} 個附件', en: 'Added {n} attachment(s)', ja: '{n}件の添付を追加しました', ko: '첨부 {n}개를 추가했습니다' },
