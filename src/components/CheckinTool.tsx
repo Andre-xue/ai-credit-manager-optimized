@@ -18,7 +18,8 @@ import {
 } from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
 import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
-import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, type TokenAccountMeta } from '../core/tokenPool'
+import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, exportTokenCredentials, importTokenCredentials, type TokenAccountMeta } from '../core/tokenPool'
+import { saveExportFile } from '../core/saveFile'
 import { getTokenStatus, claimToken } from '../core/tokenCheckin'
 import type { CheckinStatus } from '../core/checkin'
 
@@ -497,6 +498,26 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           })()}
         </div>
       )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '0 4px', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>手机上也要签？凭据只存本机、不上云：在这台设备点「导出凭据」生成加密文件，传到手机后在手机签到页点「导入凭据」选它即可（需同一主密码）。</span>
+        <button className="btn sm" disabled={!sessionPwd} onClick={async () => {
+          try { const text = await exportTokenCredentials(sessionPwd); await saveExportFile('ai-cube-checkin-credentials.json', text); notify('凭据文件已导出（主密码加密）：传到手机后在签到页导入') }
+          catch (e) { notify(e instanceof Error ? e.message : '导出失败') }
+        }}>导出凭据</button>
+        <label className="btn sm" style={{ cursor: sessionPwd ? 'pointer' : 'not-allowed', opacity: sessionPwd ? 1 : 0.5 }}>
+          导入凭据
+          <input type="file" accept=".json,application/json" style={{ display: 'none' }} disabled={!sessionPwd} onChange={async e => {
+            const f = e.target.files?.[0]; e.target.value = ''
+            if (!f || !sessionPwd) return
+            try {
+              const r = await importTokenCredentials(await f.text(), sessionPwd)
+              window.dispatchEvent(new Event('acm-checkin-done'))
+              notify(`导入完成：新增 ${r.added} 个账号${r.skipped ? `，跳过 ${r.skipped} 个（已存在或格式不对）` : ''}`)
+            } catch (err) { notify(err instanceof Error ? err.message : '导入失败') }
+          }} />
+        </label>
+      </div>
 
       {/* WorkBuddy：账号池 */}
       <PlatformGroupHead id="workbuddy" enabled={wbEnabled} onToggle={v => { setWbEnabled(v); setPlatformEnabled('workbuddy', v); notify(v ? 'WorkBuddy 已加入自动签到' : 'WorkBuddy 已移出自动签到（批量签到会跳过）') }} />
