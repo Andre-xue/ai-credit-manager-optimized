@@ -264,16 +264,25 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     return url
   }, [thumbs])
 
-  const runIndex = async () => {
+  /** 索引：all=false 只跑一批 60 个；all=true 自动分批跑完剩余全部（v0.1.350）：
+   * 连续失败先退避等待 20 秒再继续（多半是免费模型限流），退避 3 轮仍不行才停 */
+  const runIndex = async (all: boolean) => {
     if (!tagRoute || !routeData) { notify('先选一个能看图的模型（带看图能力的免费模型或自有账户）'); return }
-    const pending = items.filter(i => !i.cloud && captions.get(i.path)?.mtime !== i.mtime).slice(0, 60)
+    const pendingAll = items.filter(i => !i.cloud && captions.get(i.path)?.mtime !== i.mtime)
+    const pending = all ? pendingAll : pendingAll.slice(0, 60)
     if (pending.length === 0) { notify('都索引过了，没有新增或变化的'); return }
     cancelRef.current = false
     setIndexing({ done: 0, total: pending.length })
     let ok = 0
     let fail = 0
     let consec = 0
+    let backoffs = 0
     let lastErr = ''
+    const sleepCancellable = async (ms: number) => {
+      for (let t = 0; t < ms && !cancelRef.current; t += 500) {
+        await new Promise(r => setTimeout(r, Math.min(500, ms - t)))
+      }
+    }
     for (const item of pending) {
       if (cancelRef.current) break
       try {
@@ -288,7 +297,14 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
         fail++
         consec++
         lastErr = (e as Error)?.message ?? String(e)
-        if (consec >= 5) break
+        if (consec >= 5) {
+          if (!all || backoffs >= 3) break
+          backoffs++
+          consec = 0
+          notify(`模型可能被限流，暂停 20 秒后继续（第 ${backoffs} 次退避）`)
+          await sleepCancellable(20000)
+          if (cancelRef.current) break
+        }
       }
       setIndexing({ done: ok + fail, total: pending.length })
     }
@@ -444,11 +460,16 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                   </>
                 )
                 : (
-                  <button className="btn primary gal-ai-pop-btn" onClick={() => void runIndex()} disabled={items.length === 0 || !tagRoute}>
+                  <button className="btn primary gal-ai-pop-btn" onClick={() => void runIndex(false)} disabled={items.length === 0 || !tagRoute}>
                     <ScanSearch size={13} /> {indexedCount === 0 ? '建立 AI 索引' : '更新 AI 索引'}
                   </button>
                 )}
-              <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。每次最多处理 60 个，云端项需先下载到本机。</div>
+              {!indexing && pendingCount > 60 && (
+                <button className="btn gal-ai-pop-btn" onClick={() => void runIndex(true)} disabled={items.length === 0 || !tagRoute}>
+                  索引全部（还剩 {pendingCount} 个，自动分批跑完）
+                </button>
+              )}
+              <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。普通更新每次 60 个；「索引全部」自动一批接一批，模型限流时自动等 20 秒再继续。云端项需先下载到本机。</div>
             </div>
           )}
           {photosDbFailed && (
