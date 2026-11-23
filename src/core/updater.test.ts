@@ -6,6 +6,7 @@ afterEach(() => vi.unstubAllGlobals())
 const jsonRes = (data: unknown, ok = true, status = 200) => ({
   ok, status,
   json: async () => data,
+  text: async () => JSON.stringify(data),
 })
 
 const release = (tag: string, names: string[], extra: Record<string, unknown> = {}) => ({

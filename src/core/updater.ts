@@ -27,19 +27,30 @@ export const UPDATE_MIRROR_PREFIXES = [
 ]
 const LATEST_JSON_CANDIDATES = [...UPDATE_MIRROR_PREFIXES.slice(0, 3).map(p => `${p}/${REPO}/releases/latest/download/latest.json`), LATEST_JSON_URL]
 
+/** 拉一个文本 URL：安卓原生端走 CapacitorHttp（原生网络栈、无 CORS 限制）；其余走 fetch */
+export async function fetchUrlText(url: string, timeoutMs = 8000): Promise<string> {
+  if (isNativeApp()) {
+    const { CapacitorHttp } = await import('@capacitor/core')
+    const res = await Promise.race([
+      CapacitorHttp.request({ url, method: 'GET', responseType: 'text', connectTimeout: timeoutMs, readTimeout: timeoutMs }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs + 1000)),
+    ]) as { status: number; data: unknown }
+    if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`)
+    return typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
+  }
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { signal: ctl.signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.text()
+  } finally { clearTimeout(timer) }
+}
+
 /** 多源竞速拉一个小文件：谁先完整返回用谁（单源 6 秒超时） */
 export async function fetchFastestText(urls: string[], timeoutMs = 6000): Promise<string | null> {
-  const fetchOne = async (url: string): Promise<string> => {
-    const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), timeoutMs)
-    try {
-      const res = await fetch(url, { signal: ctl.signal })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return await res.text()
-    } finally { clearTimeout(timer) }
-  }
   try {
-    return await Promise.any(urls.map(fetchOne))
+    return await Promise.any(urls.map(u => fetchUrlText(u, timeoutMs)))
   } catch { return null }
 }
 
@@ -160,25 +171,28 @@ export async function checkReleaseUpdate(requireDesktopInstaller = false): Promi
     if (viaJson) return viaJson
   } catch { /* 清单不可达 → 回退 API 流程 */ }
   try {
-    const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
-    if (!res.ok) return {
-      ...base,
-      error: res.status === 403
-        ? 'GitHub 接口触发访问频率限制，请稍后再试（网络正常也会出现）'
-        : `GitHub 接口返回 ${res.status}`,
+    let rel: GitHubRelease
+    try {
+      rel = JSON.parse(await fetchUrlText(RELEASES_API)) as GitHubRelease
+    } catch (e) {
+      const m = (e as Error)?.message ?? ''
+      return {
+        ...base,
+        error: /HTTP 403/.test(m)
+          ? 'GitHub 接口触发访问频率限制，请稍后再试（网络正常也会出现）'
+          : /HTTP (\d+)/.test(m) ? `GitHub 接口返回 ${m.match(/HTTP (\d+)/)?.[1]}` : `无法连接 GitHub：${m}`,
+      }
     }
-    const rel = await res.json() as GitHubRelease
     const latest = rel.tag_name?.replace(/^v/i, '') ?? ''
     if (!latest) return { ...base, error: 'GitHub 未返回版本号' }
 
     // 桌面端：最新版如果还没有桌面包，往前找最近一个完整版本
     if (requireDesktopInstaller && !hasDesktopInstallers(rel)) {
-      const listRes = await fetch(RELEASES_LIST_API, { headers: { Accept: 'application/vnd.github+json' } })
-      if (listRes.ok) {
-        const list = await listRes.json() as GitHubRelease[]
+      try {
+        const list = JSON.parse(await fetchUrlText(RELEASES_LIST_API)) as GitHubRelease[]
         const usable = list.find(r => !r.draft && !r.prerelease && hasDesktopInstallers(r))
         if (usable) return toInfo(usable, true)
-      }
+      } catch { /* 列表失败按构建中处理 */ }
       // 拉取列表失败或没有可用版本：回报构建中，由界面提示稍后重试
       return { ...toInfo(rel, false), installersReady: false }
     }
@@ -302,9 +316,7 @@ export async function latestApkUrl(): Promise<string | null> {
     }
   } catch { /* 回退 API */ }
   try {
-    const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
-    if (!res.ok) return null
-    const rel = await res.json() as GitHubRelease
+    const rel = JSON.parse(await fetchUrlText(RELEASES_API)) as GitHubRelease
     const apk = rel.assets?.find(a => /\.apk$/i.test(a.name))
     return apk?.browser_download_url ?? RELEASES_PAGE
   } catch { return null }
