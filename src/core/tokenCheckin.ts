@@ -72,7 +72,7 @@ async function doubaoPost(secret: string, base: string, body: Json): Promise<Jso
   return json
 }
 
-interface DoubaoState { checked: boolean; streak: number; reward: number; total: number }
+interface DoubaoState { checked: boolean; streak: number; reward: number; total: number; task: Json; data: Json }
 
 async function doubaoState(secret: string): Promise<DoubaoState> {
   const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/v3/detail/', { campaign_group_code: DOUBAO_GROUP })
@@ -91,7 +91,19 @@ async function doubaoState(secret: string): Promise<DoubaoState> {
     streak: num(c.continuous_days),
     reward: num(reward.reward_amount),
     total: num(progress.total_amount),
+    task, data,
   }
+}
+
+/** 从面板原始返回里挖本轮活动可能用的 group code / 任务 id（活动换轮次时写死的 code 会失效） */
+function doubaoCandidates(st: DoubaoState): { groups: string[]; taskId: string } {
+  const groups = new Set<string>()
+  const text = JSON.stringify(st.data)
+  for (const m of text.matchAll(/"campaign_group_code"\s*:\s*"([^"]+)"/g)) groups.add(m[1])
+  for (const m of text.matchAll(/"([a-z0-9_]*incentive[a-z0-9_]*)"/gi)) groups.add(m[1])
+  groups.delete(DOUBAO_GROUP)
+  const idRaw = st.task.task_id ?? st.task.entity_id ?? st.task.id
+  return { groups: [...groups].slice(0, 2), taskId: idRaw == null ? '' : String(idRaw) }
 }
 
 async function doubaoStatus(secret: string): Promise<CheckinStatus> {
@@ -103,15 +115,29 @@ async function doubaoStatus(secret: string): Promise<CheckinStatus> {
 async function doubaoClaim(secret: string): Promise<ClaimResult> {
   const st = await doubaoState(secret)
   if (st.checked) return { message: '今日已签到', points: 0 }
-  const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', { scene: DOUBAO_GROUP })
-  const code = num(body.code)
-  if (code === 710012001) throw new Error('豆包登录已过期（Cookie 失效），重新复制一次 Cookie')
-  if (code === 710010702) throw new Error('豆包说这个账号今天没有可领的签到活动')
-  if (code !== 0) throw new Error(`豆包签到失败：${str(body.msg ?? body.message)}（code ${code}）`)
-  const d = (body.data ?? {}) as Json
-  if (d.idempotent === true) return { message: '今日已签到', points: 0 }
-  const credit = num(d.reward_amount) || st.reward
-  return { message: `签到成功 +${credit} 额度`, points: credit }
+  const { groups, taskId } = doubaoCandidates(st)
+  const attempts: Json[] = [{ scene: DOUBAO_GROUP }]
+  if (taskId) attempts.push({ scene: DOUBAO_GROUP, task_id: taskId })
+  for (const g of groups) attempts.push({ scene: g })
+  let lastCode = 0
+  for (const payload of attempts) {
+    const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', payload)
+    const code = num(body.code)
+    lastCode = code
+    if (code === 710012001) throw new Error('豆包登录已过期（Cookie 失效），重新复制一次 Cookie')
+    if (code === 0) {
+      const d = (body.data ?? {}) as Json
+      if (d.idempotent === true) return { message: '今日已签到', points: 0 }
+      const credit = num(d.reward_amount) || st.reward
+      return { message: `签到成功 +${credit} 额度`, points: credit }
+    }
+    if (code !== 710010702) throw new Error(`豆包签到失败：${str(body.msg ?? body.message)}（code ${code}）`)
+    // 710010702（无可领活动）：换一种参数再试
+  }
+  // 全部被拒：带上诊断信息，方便对着真实返回修协议
+  const taskKeys = Object.keys(st.task).slice(0, 14).join('/')
+  const checkinKeys = st.task.daily_checkin && typeof st.task.daily_checkin === 'object' ? Object.keys(st.task.daily_checkin as Json).slice(0, 10).join('/') : '-'
+  throw new Error(`豆包领取被拒（${lastCode}）：面板有任务但领不了。诊断 任务字段[${taskKeys}] 签到字段[${checkinKeys}] 候选活动[${groups.join(',') || '无'}] 任务ID[${taskId || '无'}]——把这段截图发我`)
 }
 
 // ---------------- WPS 灵犀 ----------------
