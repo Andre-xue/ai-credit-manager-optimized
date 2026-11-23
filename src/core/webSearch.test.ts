@@ -44,6 +44,13 @@ describe('deriveSearchQueries（v0.1.319）', () => {
     expect(deriveSearchQueries('今天天气怎么样', today)[0]).toContain('2026年11月23日')
   })
 
+  it('粘贴带「」引号的句子 → 引号剥掉再搜（Ethan 实测）', () => {
+    const qs = deriveSearchQueries('「facebook/react 这个项目的状态管理是怎么做的」？', today)
+    expect(qs).toHaveLength(1)
+    expect(qs[0]).not.toContain('「')
+    expect(qs[0]).toContain('facebook/react')
+  })
+
   it('已带日期的不重复补', () => {
     expect(deriveSearchQueries('2026年11月20日的新闻', today)).toEqual(['2026年11月20日的新闻'])
   })

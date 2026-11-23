@@ -161,7 +161,7 @@ return stripHtmlToText(await httpGetText(url)).slice(0, maxChars)
 export function deriveSearchQueries(text: string, today: Date = new Date()): string[] {
 const cleaned = text
 .replace(/^\s*(?:\d+[.、．]|[-*•])\s*/gm, '')
-.replace(/[*#>`]/g, '')
+.replace(/[*#>`「」『』“”‘’\"]/g, '')
 .replace(/\s+/g, ' ')
 .trim()
 if (!cleaned) return []
