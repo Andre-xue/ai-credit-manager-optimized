@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   FolderCog, FileText, Languages, PenLine, Image as ImageIcon, SearchCheck, Table2, Mic,
-  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight,
+  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, LayoutGrid,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
@@ -282,6 +282,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab }: {
       cards: [
         { id: 'webcheck', name: '联网核查', desc: '给一句话或一条消息，AI 联网搜证核实真假并附来源。', tag: '免 Key 搜索', tagClass: 'free', grad: 'g2', icon: <SearchCheck size={21} />, action: () => setTool('webcheck') },
         { id: 'table', name: '表格问答', desc: '把 CSV 丢进来，用问话查数、汇总、找异常，不用写公式。', tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
+        { id: 'catalog', name: 'AI 工具大全', desc: '各平台 AI 工具目录与签到入口汇总，原侧边栏入口已并入工坊。', tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
       ],
     },
   ]

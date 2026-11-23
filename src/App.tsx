@@ -1123,12 +1123,12 @@ function App() {
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
     { label: '概览', ids: ['ai', 'dashboard'] },
     { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs', 'workshop'] },
-    { label: '资产管理', ids: ['keys', 'usage', 'calendar', 'checkin'] },
+    { label: '资产管理', ids: ['keys', 'usage', 'calendar'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
 
   // 移动端底部导航：只保留 5 个高频入口，AI 置于正中，其余从抽屉进入（原 10 个太挤）
-  const bottomTabs: Tab[] = ['dashboard', 'checkin', 'ai', 'keys', 'settings']
+  const bottomTabs: Tab[] = ['dashboard', 'workshop', 'ai', 'keys', 'settings']
   const shortLabel: Record<Tab, string> = {
     ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
     'local-image': '本地图像', 'local-video': '本地视频',
@@ -1174,7 +1174,7 @@ function App() {
   }, [])
 
   // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
-  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'keys', 'usage', 'calendar', 'checkin', 'voice', 'plugins', 'settings'] as Tab[])
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'image', 'video', 'benefits', 'docs', 'workshop', 'keys', 'usage', 'calendar', 'voice', 'plugins', 'settings'] as Tab[])
     .filter(id => !(isPhone && id === 'docs'))
 
   // 界面风格：经典（默认，极简留白）/ 液态玻璃（uiStyle==='liquid' 时挂 liquid-ui，
