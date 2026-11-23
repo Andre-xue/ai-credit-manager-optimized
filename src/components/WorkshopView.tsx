@@ -417,7 +417,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
   }, [openSignal])
 
   if (tool === 'files') return <FileManagerView accounts={accounts} sessionPwd={sessionPwd} notify={notify} onBack={back} />
-  if (tool === 'gallery') return <GalleryView notify={notify} onBack={back} />
+  if (tool === 'gallery') return <GalleryView accounts={accounts} sessionPwd={sessionPwd} notify={notify} onBack={back} />
   if (tool === 'summary') return <SummaryTool {...toolProps} />
   if (tool === 'polish') return <PolishTool {...toolProps} />
   if (tool === 'webcheck') return <WebCheckTool {...toolProps} />

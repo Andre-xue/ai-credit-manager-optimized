@@ -2120,3 +2120,29 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .gal-switch .gal-switch-dot { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-3); transition: all .2s; }
 .gal-switch.on { background: #34c759; box-shadow: none; }
 .gal-switch.on .gal-switch-dot { left: 14px; background: #fff; }
+
+/* ---- 图库侧边栏改首页样式 + AI 索引/搜索（v0.1.343） ---- */
+.gal-side-it { gap: 10px; padding: 6px 8px; border-radius: 10px; justify-content: flex-start; }
+.gal-side-ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--panel-2); color: var(--text-2); flex: none; }
+.gal-side-ico.sm { width: 26px; height: 26px; border-radius: 7px; }
+.gal-side-it.on { background: var(--primary-soft); color: var(--primary); }
+.gal-side-it.on .gal-side-ico { background: var(--bg); color: var(--primary); box-shadow: var(--shadow); }
+.gal-side-it.on .gal-side-n { color: var(--primary); }
+.gal-side-label { flex: 1; text-align: left; }
+.gal-side-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--text-3); text-transform: uppercase; margin: 16px 10px 6px; }
+.gal-src2 { display: flex; align-items: center; gap: 9px; padding: 5px 8px; font-size: 13px; color: var(--text-1); }
+.gal-src-main { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
+.gal-src-path2 { font-size: 10.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gal-idx { display: flex; flex-direction: column; gap: 8px; padding: 2px 8px 0; }
+.gal-idx-status { font-size: 12.5px; color: var(--text-2); }
+.gal-idx-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.55; }
+.gal-idx .ws-route { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.gal-idx .ws-route .select { width: 100%; }
+.gal-prog { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.gal-prog i { display: block; height: 100%; background: var(--primary); transition: width .2s; }
+.gal-search { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border-radius: 9px; padding: 5px 10px; flex: 0 1 320px; margin-left: auto; color: var(--text-3); }
+.gal-search input { border: none; background: none; outline: none; font-size: 13px; color: var(--text-1); width: 100%; }
+.gal-search-x { border: none; background: none; color: var(--text-3); cursor: pointer; display: inline-flex; padding: 1px; }
+.gal-search-hint { font-size: 12px; color: var(--text-3); background: var(--surface-2); border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
+.gal-lb-cap { color: #a5f3c0; font-size: 11.5px; }
+.gal-bar .gal-zoom { margin-left: 10px; }

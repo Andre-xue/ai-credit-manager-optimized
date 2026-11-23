@@ -38,7 +38,7 @@ function parseListDir(text: string): Entry[] {
 
 const joinPath = (dir: string, name: string) => (dir.endsWith('/') ? dir + name : `${dir}/${name}`)
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'])
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'heic', 'dng', 'tif', 'tiff', 'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf'])
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'ts', 'mpg', 'mpeg', 'flv', 'wmv'])
 /** WebView 能直接播放的视频格式（走 Tauri asset 协议流式播放，不整文件读进内存） */
 const PLAY_VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v'])

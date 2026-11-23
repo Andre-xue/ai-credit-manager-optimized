@@ -1,22 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Play, Heart, FolderPlus, X, ChevronLeft, ChevronRight, ExternalLink, Copy, Loader2, Image as ImageIcon, Film,
+  Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square,
 } from 'lucide-react'
 import { loadStoragePrefs, storageDir } from '../core/storagePrefs'
 import { isDesktopApp } from '../core/openExternal'
-import { ToolShell } from './WorkshopView'
+import type { Account } from '../core/types'
+import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
+import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, type CaptionRec } from '../core/galleryIndex'
+import { ToolShell, RouteSelect } from './WorkshopView'
 
 /**
- * AI 图库（v0.1.339，Ethan 拍板「两个都要」）：苹果照片式图库。
- * 默认看 AI 生成（数据存储·图像/视频文件夹，即生成自动保存的目录），可切换全部本地媒体
- * （来源文件夹可自行添加）。Rust gallery_scan 枚举文件，qlmanage 出缩略图，asset 协议播视频。
- * 仅桌面端（看的是本机文件）；文件夹与收藏只存本机。
+ * AI 图库（v0.1.339 起；v0.1.343 加 AI 索引/搜索 + 侧边栏改首页样式）：苹果照片式图库。
+ * 默认看 AI 生成（数据存储·图像/视频文件夹），可切换全部本地媒体；来源含生成目录、
+ * Mac 照片图库（.photoslibrary/originals）与自加文件夹。Rust gallery_scan 枚举，
+ * qlmanage 出封面，asset 协议播视频。AI 索引：看图模型给缩略图打中文描述+标签存本机
+ * IndexedDB，搜索按描述命中。仅桌面端；文件夹/收藏/路线只存本机。
  */
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic'])
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic', 'dng', 'tif', 'tiff', 'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf'])
 const PLAY_VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v'])
 const FOLDERS_KEY = 'acm.gallery.folders.v1'
 const FAVS_KEY = 'acm.gallery.favs.v1'
 const PHOTOS_ON_KEY = 'acm.gallery.photosLib'
+const TAG_ROUTE_KEY = 'acm.gallery.tagRoute'
 
 interface GItem { path: string; name: string; size: number; mtime: number; kind: 'image' | 'video'; source: string; ai: boolean }
 type GalView = 'ai' | 'all' | 'video' | 'fav'
@@ -42,7 +48,12 @@ function dayLabelOf(secs: number): string {
 const fmtSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(0)} KB` : `${n} B`)
 const fmtDur = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
-export function GalleryView({ notify, onBack }: { notify: (msg: string) => void; onBack: () => void }) {
+export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
+  accounts: Account[]
+  sessionPwd: string
+  notify: (msg: string) => void
+  onBack: () => void
+}) {
   const desktop = isDesktopApp()
   const mediaDir = useMemo(() => { try { return storageDir('media', loadStoragePrefs()) } catch { return null } }, [])
   const [folders, setFolders] = useState<string[]>(() => loadList(FOLDERS_KEY))
@@ -57,10 +68,18 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
   const [lightbox, setLightbox] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map())
   const thumbBusy = useRef(new Set<string>())
+  const thumbCache = useRef(new Map<string, string>())
   const [assetUrls, setAssetUrls] = useState<Map<string, string>>(new Map())
   const assetBusy = useRef(new Set<string>())
   const [hoverVideo, setHoverVideo] = useState<{ path: string; x: number; y: number } | null>(null)
   const hoverTimer = useRef<number | null>(null)
+  // AI 索引/搜索
+  const [captions, setCaptions] = useState<Map<string, CaptionRec>>(new Map())
+  const [routeData, setRouteData] = useState<WorkshopRouteData | null>(null)
+  const [tagRouteKey, setTagRouteKey] = useState(() => { try { return localStorage.getItem(TAG_ROUTE_KEY) ?? '' } catch { return '' } })
+  const [indexing, setIndexing] = useState<{ done: number; total: number } | null>(null)
+  const cancelRef = useRef(false)
+  const [query, setQuery] = useState('')
 
   const scan = useCallback(async () => {
     const invoke = getInvoke()
@@ -97,23 +116,51 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
     if (!invoke) return
     void invoke('photos_library_dir').then(v => setPhotosDir(typeof v === 'string' ? v : null)).catch(() => {})
   }, [desktop])
-  useEffect(() => { setLimit(300) }, [view])
+  useEffect(() => { setLimit(300) }, [view, query])
+  useEffect(() => { void loadCaptions().then(setCaptions) }, [])
+  useEffect(() => {
+    let dead = false
+    void loadWorkshopRoutes(accounts).then(d => { if (!dead) setRouteData(d) })
+    return () => { dead = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts.length])
 
-  const filtered = useMemo(() => items.filter(i =>
+  const visionRoutes = useMemo<WorkshopRoute[]>(() => {
+    if (!routeData) return []
+    return routeData.routes.filter(r => {
+      if (r.kind === 'free') {
+        const opt = routeData.freeOptions.find(o => `free:${o.key}` === r.key)
+        return !!opt && opt.source !== 'cloud' && isVisionModelId(opt.modelId)
+      }
+      const acct = accounts.find(a => a.id === r.accountId)
+      return !!acct && isVisionModelId(acct.label)
+    })
+  }, [routeData, accounts])
+  const tagRoute: WorkshopRoute | null = visionRoutes.find(r => r.key === tagRouteKey) ?? visionRoutes[0] ?? null
+  const visionData: WorkshopRouteData | null = routeData ? { routes: visionRoutes, freeOptions: routeData.freeOptions } : null
+
+  const viewFiltered = useMemo(() => items.filter(i =>
     view === 'all' ? true : view === 'ai' ? i.ai : view === 'video' ? i.kind === 'video' : favs.has(i.path),
   ), [items, view, favs])
-  const visible = filtered.slice(0, limit)
+  const searching = query.trim().length > 0
+  const displayItems = useMemo(() => searching
+    ? items.filter(i => captionMatches(i.name, captions.get(i.path)?.text, query))
+    : viewFiltered, [searching, items, captions, query, viewFiltered])
+  const visible = displayItems.slice(0, limit)
   const groups = useMemo(() => {
     const out: { key: string; label: string; entries: { item: GItem; idx: number }[] }[] = []
     visible.forEach(item => {
-      const idx = filtered.indexOf(item)
-      const key = dayKeyOf(item.mtime)
+      const idx = displayItems.indexOf(item)
+      const key = searching ? 'search' : dayKeyOf(item.mtime)
       const last = out[out.length - 1]
       if (last && last.key === key) last.entries.push({ item, idx })
-      else out.push({ key, label: dayLabelOf(item.mtime), entries: [{ item, idx }] })
+      else out.push({ key, label: searching ? `搜索「${query.trim()}」` : dayLabelOf(item.mtime), entries: [{ item, idx }] })
     })
     return out
-  }, [visible, filtered])
+  }, [visible, displayItems, searching, query])
+
+  const indexedCount = useMemo(() => items.filter(i => captions.get(i.path)?.mtime === i.mtime).length, [items, captions])
+  const pendingCount = items.length - indexedCount
 
   const ensureThumb = useCallback(async (path: string) => {
     if (thumbs.has(path) || thumbBusy.current.has(path)) return
@@ -122,7 +169,7 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
       const invoke = getInvoke()
       if (!invoke) return
       const url = (await invoke('media_thumb', { path })) as string
-      if (url) setThumbs(prev => new Map(prev).set(path, url))
+      if (url) { thumbCache.current.set(path, url); setThumbs(prev => new Map(prev).set(path, url)) }
     } catch { /* 生成失败回落占位 */ } finally { thumbBusy.current.delete(path) }
   }, [thumbs])
 
@@ -134,6 +181,51 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
       setAssetUrls(prev => new Map(prev).set(path, convertFileSrc(path)))
     } catch { /* 非桌面端忽略 */ } finally { assetBusy.current.delete(path) }
   }, [assetUrls])
+
+  const getThumbDataUrl = useCallback(async (path: string): Promise<string> => {
+    const hit = thumbCache.current.get(path) ?? thumbs.get(path)
+    if (hit) return hit
+    const invoke = getInvoke()
+    if (!invoke) throw new Error('仅桌面端可用')
+    const url = (await invoke('media_thumb', { path })) as string
+    if (!url) throw new Error('取不到这张图的缩略图')
+    thumbCache.current.set(path, url)
+    return url
+  }, [thumbs])
+
+  const runIndex = async () => {
+    if (!tagRoute || !routeData) { notify('先选一个能看图的模型（带看图能力的免费模型或自有账户）'); return }
+    const pending = items.filter(i => captions.get(i.path)?.mtime !== i.mtime).slice(0, 60)
+    if (pending.length === 0) { notify('都索引过了，没有新增或变化的'); return }
+    cancelRef.current = false
+    setIndexing({ done: 0, total: pending.length })
+    let ok = 0
+    let fail = 0
+    let consec = 0
+    let lastErr = ''
+    for (const item of pending) {
+      if (cancelRef.current) break
+      try {
+        const url = await getThumbDataUrl(item.path)
+        const text = await visionTagImage({ route: tagRoute, freeOptions: routeData.freeOptions, accounts, sessionPwd, imageDataUrl: url })
+        const rec: CaptionRec = { path: item.path, mtime: item.mtime, text, model: tagRoute.label, at: Date.now() }
+        await saveCaption(rec)
+        setCaptions(prev => new Map(prev).set(item.path, rec))
+        ok++
+        consec = 0
+      } catch (e) {
+        fail++
+        consec++
+        lastErr = (e as Error)?.message ?? String(e)
+        if (consec >= 5) break
+      }
+      setIndexing({ done: ok + fail, total: pending.length })
+    }
+    setIndexing(null)
+    if (cancelRef.current) notify(`已停止：这次索引了 ${ok} 个`)
+    else if (ok === 0 && fail > 0) notify(`索引失败：${lastErr.slice(0, 70)}`)
+    else notify(`AI 索引完成：新增 ${ok} 个${fail ? `，失败 ${fail} 个` : ''}`)
+  }
 
   const toggleFav = (path: string) => setFavs(prev => {
     const next = new Set(prev)
@@ -174,55 +266,100 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
     )
   }
 
-  const lbItem = lightbox !== null ? filtered[lightbox] : undefined
+  const lbItem = lightbox !== null ? displayItems[lightbox] : undefined
+  const viewTitle = searching ? '搜索结果' : view === 'ai' ? 'AI 生成' : view === 'all' ? '全部媒体' : view === 'video' ? '视频' : '收藏'
 
   return (
-    <ToolShell title="AI 图库" desc="苹果照片式图库：默认看 AI 生成的图和视频，也能把任意本地文件夹加进来一起看。" onBack={onBack}>
+    <ToolShell title="AI 图库" desc="苹果照片式图库：默认看 AI 生成的图和视频，也能把任意本地文件夹加进来一起看；建好 AI 索引后能按画面内容搜。" onBack={onBack}>
       <div className="gal-wrap">
         <aside className="gal-side">
           {([
-            { id: 'ai' as GalView, label: 'AI 生成', n: counts.ai },
-            { id: 'all' as GalView, label: '全部媒体', n: counts.all },
-            { id: 'video' as GalView, label: '视频', n: counts.video },
-            { id: 'fav' as GalView, label: '收藏', n: counts.fav },
+            { id: 'ai' as GalView, label: 'AI 生成', n: counts.ai, icon: <Sparkles size={16} /> },
+            { id: 'all' as GalView, label: '全部媒体', n: counts.all, icon: <Images size={16} /> },
+            { id: 'video' as GalView, label: '视频', n: counts.video, icon: <Clapperboard size={16} /> },
+            { id: 'fav' as GalView, label: '收藏', n: counts.fav, icon: <Heart size={16} /> },
           ]).map(v => (
-            <button key={v.id} className={`gal-side-it ${view === v.id ? 'on' : ''}`} onClick={() => setView(v.id)}>
-              <span>{v.label}</span><span className="gal-side-n">{v.n}</span>
+            <button key={v.id} className={`gal-side-it ${view === v.id && !searching ? 'on' : ''}`} onClick={() => { setView(v.id); setQuery('') }}>
+              <span className="gal-side-ico">{v.icon}</span>
+              <span className="gal-side-label">{v.label}</span>
+              <span className="gal-side-n">{v.n}</span>
             </button>
           ))}
+
           <div className="gal-side-title">来源文件夹</div>
           {mediaDir
-            ? <div className="gal-src"><span className="gal-dot ai" />生成保存目录<span className="gal-src-path">{mediaDir}</span></div>
+            ? (
+              <div className="gal-src2">
+                <span className="gal-side-ico sm"><FolderOpen size={14} /></span>
+                <span className="gal-src-main">生成保存目录<span className="gal-src-path2">{mediaDir}</span></span>
+              </div>
+            )
             : <div className="gal-src-none">未设置生成保存目录（设置 → 数据存储），AI 生成视图暂为空</div>}
           {photosDir ? (
-            <div className="gal-src">
-              <span className="gal-dot" style={{ background: '#ff9500' }} />Mac 照片图库
+            <div className="gal-src2">
+              <span className="gal-side-ico sm"><Images size={14} /></span>
+              <span className="gal-src-main">Mac 照片图库<span className="gal-src-path2">{photosDir}</span></span>
               <button className={`gal-switch ${photosOn ? 'on' : ''}`} title={photosOn ? '点击关闭这个来源' : '点击启用这个来源'}
                 onClick={() => { const next = !photosOn; setPhotosOn(next); try { localStorage.setItem(PHOTOS_ON_KEY, next ? '1' : '0') } catch { /* 忽略 */ } }}>
                 <span className="gal-switch-dot" />
               </button>
-              <span className="gal-src-path">{photosDir}</span>
             </div>
           ) : (
             <div className="gal-src-none">未找到 Mac 照片图库（图片文件夹下没有 .photoslibrary）</div>
           )}
-          {folders.filter(f => f !== mediaDir).map(f => (
-            <div key={f} className="gal-src">
-              <span className="gal-dot" />{baseName(f)}
+          {folders.filter(f => f !== mediaDir && f !== photosDir).map(f => (
+            <div key={f} className="gal-src2">
+              <span className="gal-side-ico sm"><Folder size={14} /></span>
+              <span className="gal-src-main">{baseName(f)}<span className="gal-src-path2">{f}</span></span>
               <button className="gal-src-x" title="移除这个来源" onClick={() => removeFolder(f)}><X size={12} /></button>
-              <span className="gal-src-path">{f}</span>
             </div>
           ))}
           <button className="btn sm ghost" style={{ alignSelf: 'flex-start', marginTop: 4 }} onClick={() => void addFolder()}>
             <FolderPlus size={13} /> 添加文件夹
           </button>
+
+          <div className="gal-side-title">AI 索引</div>
+          <div className="gal-idx">
+            <div className="gal-idx-status">
+              已索引 {indexedCount} / {items.length} 个
+              {pendingCount > 0 && indexing === null ? `，待索引 ${pendingCount} 个` : ''}
+            </div>
+            <RouteSelect data={visionData} routeKey={tagRoute?.key ?? ''} setRouteKey={k => {
+              setTagRouteKey(k)
+              try { localStorage.setItem(TAG_ROUTE_KEY, k) } catch { /* 忽略 */ }
+            }} />
+            {routeData && visionRoutes.length === 0 && (
+              <div className="gal-idx-hint">没有能看图的模型：免费模型里挑带「看图」的，或用支持多模态的自有账户。</div>
+            )}
+            {indexing
+              ? (
+                <>
+                  <div className="gal-prog"><i style={{ width: `${indexing.total ? (indexing.done / indexing.total) * 100 : 0}%` }} /></div>
+                  <button className="btn sm" onClick={() => { cancelRef.current = true }}>
+                    <Square size={12} /> 停止（{indexing.done}/{indexing.total}）
+                  </button>
+                </>
+              )
+              : (
+                <button className="btn sm primary" onClick={() => void runIndex()} disabled={items.length === 0 || !tagRoute}>
+                  <ScanSearch size={13} /> {indexedCount === 0 ? '建立 AI 索引' : '更新 AI 索引'}
+                </button>
+              )}
+            <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按内容找。每次最多处理 60 个。</div>
+          </div>
         </aside>
 
         <div className="gal-main">
           <div className="gal-bar">
             <span className="gal-bar-title">
-              {view === 'ai' ? 'AI 生成' : view === 'all' ? '全部媒体' : view === 'video' ? '视频' : '收藏'}
-              <small>{filtered.length} 项{scanning ? ' · 扫描中…' : ''}</small>
+              {viewTitle}
+              <small>{displayItems.length} 项{scanning ? ' · 扫描中…' : ''}</small>
+            </span>
+            <span className="gal-search">
+              <Search size={14} />
+              <input value={query} onChange={e => setQuery(e.target.value)}
+                placeholder="搜文件名，或 AI 描述（如：海边 日落）" />
+              {query && <button className="gal-search-x" onClick={() => setQuery('')}><X size={13} /></button>}
             </span>
             <span className="gal-zoom">
               {(['s', 'm', 'l'] as const).map(z => (
@@ -230,14 +367,19 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
               ))}
             </span>
           </div>
+          {searching && indexedCount === 0 && (
+            <div className="gal-search-hint">还没有 AI 索引，现在只能按文件名搜。点左侧「建立 AI 索引」后，就能按画面内容搜了。</div>
+          )}
 
           {scanning && items.length === 0 && <div className="ws-result"><Loader2 size={16} className="spin" /> 正在扫描文件夹…</div>}
-          {!scanning && filtered.length === 0 && (
+          {!scanning && displayItems.length === 0 && (
             <div className="ws-result">
-              {view === 'ai'
-                ? '还没有 AI 生成保存下来的文件。生图/生视频后会自动存到生成保存目录，这里就会出现。'
-                : view === 'fav' ? '还没有收藏。点开任意图片/视频，点爱心就能收进来。'
-                  : '这个视图暂时是空的。点左侧「添加文件夹」把有照片视频的文件夹加进来。'}
+              {searching
+                ? '没有找到匹配的照片或视频。换个词试试，或先把 AI 索引建全。'
+                : view === 'ai'
+                  ? '还没有 AI 生成保存下来的文件。生图/生视频后会自动存到生成保存目录，这里就会出现。'
+                  : view === 'fav' ? '还没有收藏。点开任意图片/视频，点爱心就能收进来。'
+                    : '这个视图暂时是空的。点左侧「添加文件夹」把有照片视频的文件夹加进来。'}
             </div>
           )}
 
@@ -262,9 +404,9 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
               </div>
             </div>
           ))}
-          {limit < filtered.length && (
+          {limit < displayItems.length && (
             <button className="btn" style={{ alignSelf: 'center', marginTop: 14 }} onClick={() => setLimit(limit + 300)}>
-              显示更多（已显示 {visible.length} / {filtered.length}）
+              显示更多（已显示 {visible.length} / {displayItems.length}）
             </button>
           )}
         </div>
@@ -276,11 +418,12 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
       )}
 
       {lbItem && (
-        <GalLightbox item={lbItem} index={lightbox!} total={filtered.length} fav={favs.has(lbItem.path)}
+        <GalLightbox item={lbItem} index={lightbox!} total={displayItems.length} fav={favs.has(lbItem.path)}
+          caption={captions.get(lbItem.path)?.mtime === lbItem.mtime ? captions.get(lbItem.path)?.text : undefined}
           assetUrl={assetUrls.get(lbItem.path)} thumb={thumbs.get(lbItem.path)}
           ensureAssetUrl={ensureAssetUrl} ensureThumb={ensureThumb}
           onClose={() => setLightbox(null)}
-          onNav={d => setLightbox(i => (i === null ? null : Math.min(filtered.length - 1, Math.max(0, i + d))))}
+          onNav={d => setLightbox(i => (i === null ? null : Math.min(displayItems.length - 1, Math.max(0, i + d))))}
           onToggleFav={() => toggleFav(lbItem.path)}
           notify={notify} />
       )}
@@ -334,11 +477,12 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
   )
 }
 
-function GalLightbox({ item, index, total, fav, assetUrl, thumb, ensureAssetUrl, ensureThumb, onClose, onNav, onToggleFav, notify }: {
+function GalLightbox({ item, index, total, fav, caption, assetUrl, thumb, ensureAssetUrl, ensureThumb, onClose, onNav, onToggleFav, notify }: {
   item: GItem
   index: number
   total: number
   fav: boolean
+  caption?: string
   assetUrl?: string
   thumb?: string
   ensureAssetUrl: (p: string) => void
@@ -394,6 +538,7 @@ function GalLightbox({ item, index, total, fav, assetUrl, thumb, ensureAssetUrl,
       <div className="gal-lb-bar" onClick={e => e.stopPropagation()}>
         <span className="gal-lb-info">
           {new Date(item.mtime * 1000).toLocaleString()} · {fmtSize(item.size)} · 来源：{item.source}
+          {caption && <span className="gal-lb-cap">AI 描述：{caption.replace(/\n/g, ' ')}</span>}
           <span className="gal-lb-path">{item.path}</span>
         </span>
         <span className="gal-lb-actions">
