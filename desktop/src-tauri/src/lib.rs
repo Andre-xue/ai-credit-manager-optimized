@@ -773,7 +773,7 @@ fn gallery_scan(dir: String) -> Result<Vec<GalleryItem>, String> {
     if !root.is_dir() {
         return Err("文件夹不存在".into());
     }
-    const EXTS: [&str; 21] = [
+    const EXTS: [&str; 19] = [
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "heic",
         "mp4", "mov", "webm", "m4v", "ts", "mkv", "avi", "flv", "wmv", "mpg", "mpeg",
     ];
