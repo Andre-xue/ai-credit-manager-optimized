@@ -1379,6 +1379,14 @@ Object.assign(D, {
   '{service} 的服务开关已关闭。关闭时不探测本机服务，打开开关后才能检测并添加。': { 'zh-TW': '{service} 的服務開關已關閉。關閉時不探測本機服務，打開開關後才能檢測並添加。', en: 'The {service} service switch is off. While off, local services are not detected; turn the switch on to detect and add.', ja: '{service}のサービススイッチがオフです。オフの間はローカルサービスを検出しません。スイッチをオンにしてから検出・追加してください。', ko: '{service} 서비스 스위치가 꺼져 있습니다. 꺼진 동안은 로컬 서비스를 탐지하지 않으며, 스위치를 켜야 탐지하고 추가할 수 있습니다.' },
 })
 
+// ---- 补齐批次 44：聊天粘贴/拖放文件（v0.1.321） ----
+Object.assign(D, {
+  '一次最多添加 6 个附件': { 'zh-TW': '一次最多添加 6 個附件', en: 'Up to 6 attachments at a time', ja: '添付は一度に6件までです', ko: '한 번에 최대 6개까지 첨부할 수 있습니다' },
+  '「{name}」超过 10MB，已跳过': { 'zh-TW': '「{name}」超過 10MB，已跳過', en: '"{name}" exceeds 10MB and was skipped', ja: '「{name}」は10MBを超えるためスキップしました', ko: '"{name}"이(가) 10MB를 초과해 건너뛰었습니다' },
+  '已添加 {n} 个附件': { 'zh-TW': '已添加 {n} 個附件', en: 'Added {n} attachment(s)', ja: '{n}件の添付を追加しました', ko: '첨부 {n}개를 추가했습니다' },
+  '（该文档解析失败，AI 只能看到文件名）': { 'zh-TW': '（此文件解析失敗，AI 只能看到檔名）', en: '(This document could not be parsed; the AI can only see the file name)', ja: '（このドキュメントは解析できず、AIにはファイル名のみ表示されます）', ko: '(이 문서를 파싱하지 못해 AI는 파일명만 볼 수 있습니다)' },
+})
+
 // ---- 补齐批次 43：联网搜索（v0.1.318） ----
 Object.assign(D, {
   '联网搜索': { 'zh-TW': '聯網搜尋', en: 'Web search', ja: 'Web検索', ko: '웹 검색' },

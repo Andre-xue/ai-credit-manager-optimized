@@ -44,8 +44,9 @@ import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCa
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
 import {
-  isTextAttachment, decodeAttachmentText, type PickedAttachment,
+  fileToAttachment, isTextAttachment, decodeAttachmentText, type PickedAttachment,
 } from '../core/attachments'
+import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { AttachmentPicker } from './AttachmentPicker'
 import { ServiceSwitch } from './ServiceSwitch'
 import {
@@ -162,6 +163,22 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [resolvingKey, setResolvingKey] = useState(false)
   const [attachPickerOpen, setAttachPickerOpen] = useState(false)
   const [attachments, setAttachments] = useState<PickedAttachment[]>([])
+  // 粘贴/拖放添加文件（v0.1.321）：复用附件管线——图片走看图、文本类解码、PDF/Word 发送时解析正文
+  const addFiles = async (files: File[]) => {
+    if (!files.length) return
+    const room = 6 - attachments.length
+    if (room <= 0) { notify(t('一次最多添加 6 个附件')); return }
+    const accepted: PickedAttachment[] = []
+    for (const f of files.slice(0, room)) {
+      if (f.size > 10 * 1024 * 1024) { notify(t('「{name}」超过 10MB，已跳过', { name: f.name || t('附件') })); continue }
+      try { accepted.push(await fileToAttachment(f)) } catch { /* 单个失败不影响其余 */ }
+    }
+    if (files.length > room) notify(t('一次最多添加 6 个附件'))
+    if (accepted.length) {
+      setAttachments(prev => [...prev, ...accepted])
+      notify(t('已添加 {n} 个附件', { n: accepted.length }))
+    }
+  }
   const [enginePanelOpen, setEnginePanelOpen] = useState(false)
   const [engineId, setEngineId] = useState<string>('')
   const [remoteEngines, setRemoteEngines] = useState<string[] | null>(null)
@@ -724,11 +741,24 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     const attachNote = attachments.length ? `\n${attachments.map(a => `[附件:${a.name}]`).join(' ')}` : ''
     // 文本/文档附件：把真实内容解码后随消息发给 AI。
     // 之前的版本只把文件名拼给用户气泡、AI 侧只收到有效文字，导致“AI 说看不到文件内容”。
-    const textBlocks = attachments.filter(isTextAttachment).map(a => {
-      const raw = decodeAttachmentText(a)
-      const text = raw.length > 12000 ? `${raw.slice(0, 12000)}\n…（内容过长，已截断）` : raw
-      return `----- 附件：${a.name} -----\n${text || '（该文件无可读文本内容）'}`
-    })
+    const textBlocks = (await Promise.all(attachments
+      .filter(a => isTextAttachment(a) || needsBinaryParse(a.name))
+      .map(async a => {
+        let raw = ''
+        if (needsBinaryParse(a.name)) {
+          // PDF/Word：本地解析正文（与文档问答同一套解析器），解析失败明确标注，不让 AI 装作看过
+          try {
+            const bin = atob(a.base64)
+            const bytes = new Uint8Array(bin.length)
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+            raw = (await parseBinaryDocument(a.name, bytes.buffer as ArrayBuffer)).text
+          } catch { return `----- 附件：${a.name} -----\n${t('（该文档解析失败，AI 只能看到文件名）')}` }
+        } else {
+          raw = decodeAttachmentText(a)
+        }
+        const text = raw.length > 12000 ? `${raw.slice(0, 12000)}\n…（内容过长，已截断）` : raw
+        return `----- 附件：${a.name} -----\n${text || '（该文件无可读文本内容）'}`
+      })))
     const aiText = textBlocks.length ? `${effectiveText}\n\n${textBlocks.join('\n\n')}` : effectiveText
     const userMsg: ChatMessage = { id: `${Date.now()}-u`, role: 'user', content: effectiveText + attachNote, at: Date.now() }
     setMessages(prev => [...prev, userMsg])
@@ -1449,9 +1479,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               </div>}
             </div>
           </div>
-          <div className="ai-compose-box" onClick={() => setComposeActive(true)}>
+          <div className="ai-compose-box" onClick={() => setComposeActive(true)}
+            onDragOver={e => { e.preventDefault() }}
+            onDrop={e => { e.preventDefault(); void addFiles([...e.dataTransfer.files]) }}>
             <textarea ref={textareaRef} className="ai-textarea" rows={1}
               placeholder={attachments.length ? t('对这些附件说点什么…（也可直接发送）') : t('输入你的问题…')} value={input}
+              onPaste={e => { if (e.clipboardData.files.length) { e.preventDefault(); void addFiles([...e.clipboardData.files]) } }}
               onChange={e => onInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
               disabled={generating} />
