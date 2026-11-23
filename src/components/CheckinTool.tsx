@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CalendarCheck, ChevronDown, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
+import { PlatformIcon } from './PlatformIcon'
 import { openExternal, biometricAvailable } from '../core/openExternal'
 import { resolveBiometricVaultPassword } from '../core/biometric'
 import {
@@ -162,7 +163,7 @@ function TokenPlatformSection({ id, sessionPwd, notify }: { id: CheckinPlatformI
       <PlatformGroupHead id={id} enabled={enabled} onToggle={v => { setEnabled(v); setPlatformEnabled(id, v); notify(v ? `${meta.name} 已加入自动签到` : `${meta.name} 已移出自动签到（批量签到会跳过）`) }} />
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="ws-tico g2"><CalendarCheck size={20} /></span>
+          <PlatformIcon id={id} />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>{meta.name}</div>
             <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{agg || '还没有账号：点「添加账号」，按使用说明粘贴凭据'}</div>
@@ -501,7 +502,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       <PlatformGroupHead id="workbuddy" enabled={wbEnabled} onToggle={v => { setWbEnabled(v); setPlatformEnabled('workbuddy', v); notify(v ? 'WorkBuddy 已加入自动签到' : 'WorkBuddy 已移出自动签到（批量签到会跳过）') }} />
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="ws-tico g2"><CalendarCheck size={20} /></span>
+          <PlatformIcon id="workbuddy" />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>WorkBuddy（账号池）</div>
             <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(poolStatuses.length, wbDone, wbClaimable) || '池里每个账号每天 100 积分，在工坊「WorkBuddy 账号池」里添加/管理账号'}</div>
@@ -554,7 +555,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       </div>
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="ws-tico g3"><CalendarCheck size={20} /></span>
+          <PlatformIcon id="minimax" />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>MiniMax Code（多账号）</div>
             <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(mmStatuses.length, mmDone, mmClaimable) || '每个账号每日签到基础 400 积分，第 4 / 7 天 1,000'}</div>
