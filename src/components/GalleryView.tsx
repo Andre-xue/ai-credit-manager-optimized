@@ -278,36 +278,50 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     let consec = 0
     let backoffs = 0
     let lastErr = ''
+    // 3 路并行（v0.1.353）：单张要等一次模型往返，串行太慢；3 个 worker 抢同一队列。
+    // 限流退避改为全局暂停点：任一 worker 触发，所有 worker 一起等，避免越限越狠。
+    let cursor = 0
+    let stopAll = false
+    let pauseUntil = 0
     const sleepCancellable = async (ms: number) => {
       for (let t = 0; t < ms && !cancelRef.current; t += 500) {
         await new Promise(r => setTimeout(r, Math.min(500, ms - t)))
       }
     }
-    for (const item of pending) {
-      if (cancelRef.current) break
-      try {
-        const url = await getThumbDataUrl(item.path)
-        const text = await visionTagImage({ route: tagRoute, freeOptions: routeData.freeOptions, accounts, sessionPwd, imageDataUrl: url })
-        const rec: CaptionRec = { path: item.path, mtime: item.mtime, text, model: tagRoute.label, at: Date.now() }
-        await saveCaption(rec)
-        setCaptions(prev => new Map(prev).set(item.path, rec))
-        ok++
-        consec = 0
-      } catch (e) {
-        fail++
-        consec++
-        lastErr = (e as Error)?.message ?? String(e)
-        if (consec >= 5) {
-          if (!all || backoffs >= 3) break
-          backoffs++
+    const worker = async () => {
+      for (;;) {
+        if (cancelRef.current || stopAll) return
+        const wait = pauseUntil - Date.now()
+        if (wait > 0) { await sleepCancellable(wait); continue }
+        const idx = cursor++
+        if (idx >= pending.length) return
+        const item = pending[idx]
+        try {
+          const url = await getThumbDataUrl(item.path)
+          const text = await visionTagImage({ route: tagRoute, freeOptions: routeData.freeOptions, accounts, sessionPwd, imageDataUrl: url })
+          const rec: CaptionRec = { path: item.path, mtime: item.mtime, text, model: tagRoute.label, at: Date.now() }
+          await saveCaption(rec)
+          setCaptions(prev => new Map(prev).set(item.path, rec))
+          ok++
           consec = 0
-          notify(`模型可能被限流，暂停 20 秒后继续（第 ${backoffs} 次退避）`)
-          await sleepCancellable(20000)
-          if (cancelRef.current) break
+        } catch (e) {
+          fail++
+          consec++
+          lastErr = (e as Error)?.message ?? String(e)
+          if (consec >= 5) {
+            if (!all || backoffs >= 3) stopAll = true
+            else {
+              backoffs++
+              consec = 0
+              pauseUntil = Date.now() + 20000
+              notify(`模型可能被限流，暂停 20 秒后继续（第 ${backoffs} 次退避）`)
+            }
+          }
         }
+        setIndexing({ done: ok + fail, total: pending.length })
       }
-      setIndexing({ done: ok + fail, total: pending.length })
     }
+    await Promise.all([worker(), worker(), worker()])
     setIndexing(null)
     if (cancelRef.current) notify(`已停止：这次索引了 ${ok} 个`)
     else if (ok === 0 && fail > 0) notify(`索引失败：${lastErr.slice(0, 70)}`)
@@ -469,7 +483,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                   索引全部（还剩 {pendingCount} 个，自动分批跑完）
                 </button>
               )}
-              <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。普通更新每次 60 个；「索引全部」自动一批接一批，模型限流时自动等 20 秒再继续。云端项需先下载到本机。</div>
+              <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。普通更新每次 60 个；「索引全部」自动一批接一批，3 个同时进行，模型限流时自动等 20 秒再继续。云端项需先下载到本机。</div>
             </div>
           )}
           {photosDbFailed && (
