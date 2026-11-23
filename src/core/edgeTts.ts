@@ -19,14 +19,18 @@ export interface EdgeVoice { id: string; name: string; desc: string }
 export const EDGE_VOICES: EdgeVoice[] = [
   { id: 'zh-CN-XiaoxiaoNeural', name: '晓晓', desc: '女声 · 温暖自然' },
   { id: 'zh-CN-XiaoyiNeural', name: '晓伊', desc: '女声 · 活泼明亮' },
-  { id: 'zh-CN-XiaohanNeural', name: '晓涵', desc: '女声 · 温柔舒缓' },
+  { id: 'zh-CN-liaoning-XiaobeiNeural', name: '晓北', desc: '女声 · 东北口音' },
   { id: 'zh-CN-YunjianNeural', name: '云健', desc: '男声 · 沉稳有力' },
   { id: 'zh-CN-YunyangNeural', name: '云扬', desc: '男声 · 新闻播报' },
   { id: 'zh-CN-YunxiaNeural', name: '云夏', desc: '男声 · 少年清朗' },
 ]
 
 export function getEdgeVoiceId(): string {
-  try { return localStorage.getItem(EDGE_VOICE_KEY) || EDGE_VOICES[0].id } catch { return EDGE_VOICES[0].id }
+  try {
+    const saved = localStorage.getItem(EDGE_VOICE_KEY)
+    // 已保存的音色若不在当前列表里（例如微软把该音色从免费朗读目录下架），回落到默认音色，避免合成必失败
+    return saved && EDGE_VOICES.some(v => v.id === saved) ? saved : EDGE_VOICES[0].id
+  } catch { return EDGE_VOICES[0].id }
 }
 export function setEdgeVoiceId(id: string): void {
   try { localStorage.setItem(EDGE_VOICE_KEY, id) } catch { /* ignore */ }
