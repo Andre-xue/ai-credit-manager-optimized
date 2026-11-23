@@ -158,12 +158,13 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     if (!ready || !cwd) return
     let n = 0
     let q = 0
+    let v = 0
     for (const e of pagedEntries) {
       if (e.isDir) continue
       const ext = extOf(e.name)
       const p = joinPath(cwd, e.name)
       if (IMAGE_EXTS.has(ext)) { if (n < 80) { n++; void ensureThumb(p) } }
-      else if (PLAY_VIDEO_EXTS.has(ext)) { void ensureVideoUrl(p) }
+      else if (PLAY_VIDEO_EXTS.has(ext)) { void ensureVideoUrl(p); if (v < 24) { v++; void ensureVideoThumb(p) } }
       else if (VIDEO_EXTS.has(ext)) { if (q < 12) { q++; void ensureVideoThumb(p) } }
     }
   }, [pagedEntries, cwd, ready, ensureThumb, ensureVideoUrl, ensureVideoThumb])
@@ -496,9 +497,9 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                                 setHoverVideo(null)
                               }}>
                               {e.isDir ? <Folder size={38} className="fm-folder-ico" />
-                                : !e.isDir && PLAY_VIDEO_EXTS.has(extOf(e.name)) && videoUrls.get(p)
-                                  ? <video className="fm-thumb" src={videoUrls.get(p)} preload="metadata" muted playsInline />
-                                  : thumb ? <img className="fm-thumb" src={thumb} alt={e.name} />
+                                : thumb ? <img className="fm-thumb" src={thumb} alt={e.name} />
+                                  : !e.isDir && PLAY_VIDEO_EXTS.has(extOf(e.name)) && videoUrls.get(p)
+                                    ? <video className="fm-thumb" src={videoUrls.get(p)} preload="metadata" muted playsInline />
                                     : <FileIcon size={34} className="fm-file-ico" />}
                               <span>{e.name}</span>
                             </button>

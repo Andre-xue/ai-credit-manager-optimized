@@ -302,9 +302,9 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
   const [dur, setDur] = useState(0)
   const playable = item.kind === 'video' && PLAY_VIDEO_EXTS.has(extOf(item.name))
   useEffect(() => {
-    if (item.kind === 'image' || !playable) ensureThumb(item.path)
+    ensureThumb(item.path)
     if (playable) ensureAssetUrl(item.path)
-  }, [item.path, item.kind, playable, ensureThumb, ensureAssetUrl])
+  }, [item.path, playable, ensureThumb, ensureAssetUrl])
 
   return (
     <button className="gal-tile" onClick={onOpen}
@@ -315,12 +315,16 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
         onHoverVideo(item.path, Math.min(r.right + 10, window.innerWidth - 372), Math.max(8, r.top - 10))
       }}
       onMouseLeave={() => { if (playable) onHoverEnd() }}>
-      {playable && assetUrl
-        ? <video className="gal-media" src={assetUrl} preload="metadata" muted playsInline
-            onLoadedMetadata={e => setDur(e.currentTarget.duration || 0)} />
-        : thumb
-          ? <img className="gal-media" src={thumb} alt={item.name} loading="lazy" />
+      {thumb
+        ? <img className="gal-media" src={thumb} alt={item.name} loading="lazy" />
+        : playable && assetUrl
+          ? <video className="gal-media" src={assetUrl} preload="metadata" muted playsInline
+              onLoadedMetadata={e => { setDur(e.currentTarget.duration || 0); try { e.currentTarget.currentTime = 0.1 } catch { /* 忽略 */ } }} />
           : <span className="gal-ph">{item.kind === 'video' ? <Film size={26} /> : <ImageIcon size={26} />}</span>}
+      {playable && assetUrl && thumb && (
+        <video src={assetUrl} preload="metadata" muted playsInline style={{ display: 'none' }}
+          onLoadedMetadata={e => setDur(e.currentTarget.duration || 0)} />
+      )}
       {item.kind === 'video' && (
         <span className="gal-bdg"><Play size={10} /> {dur > 0 ? fmtDur(dur) : '视频'}</span>
       )}
