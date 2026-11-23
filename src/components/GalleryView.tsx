@@ -110,6 +110,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const cancelRef = useRef(false)
   const [query, setQuery] = useState('')
   const [photosDbFailed, setPhotosDbFailed] = useState(false)
+  const [aiPanelOpen, setAiPanelOpen] = useState(false)
 
   const scan = useCallback(async () => {
     const invoke = getInvoke()
@@ -388,35 +389,11 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
             <FolderPlus size={13} /> 添加文件夹
           </button>
 
-          <div className="gal-side-title">AI 索引</div>
-          <div className="gal-idx">
-            <div className="gal-idx-status">
-              已索引 {indexedCount} / {items.length} 个
-              {pendingCount > 0 && indexing === null ? `，待索引 ${pendingCount} 个` : ''}
-            </div>
-            <RouteSelect data={visionData} routeKey={tagRoute?.key ?? ''} setRouteKey={k => {
-              setTagRouteKey(k)
-              try { localStorage.setItem(TAG_ROUTE_KEY, k) } catch { /* 忽略 */ }
-            }} />
-            {routeData && visionRoutes.length === 0 && (
-              <div className="gal-idx-hint">没有能看图的模型：免费模型里挑带「看图」的，或用支持多模态的自有账户。</div>
-            )}
-            {indexing
-              ? (
-                <>
-                  <div className="gal-prog"><i style={{ width: `${indexing.total ? (indexing.done / indexing.total) * 100 : 0}%` }} /></div>
-                  <button className="btn sm" onClick={() => { cancelRef.current = true }}>
-                    <Square size={12} /> 停止（{indexing.done}/{indexing.total}）
-                  </button>
-                </>
-              )
-              : (
-                <button className="btn sm primary" onClick={() => void runIndex()} disabled={items.length === 0 || !tagRoute}>
-                  <ScanSearch size={13} /> {indexedCount === 0 ? '建立 AI 索引' : '更新 AI 索引'}
-                </button>
-              )}
-            <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按内容找。每次最多处理 60 个。</div>
-          </div>
+          <button className="gal-ai-card" onClick={() => setAiPanelOpen(o => !o)}>
+            <span className="gal-ai-card-t"><Sparkles size={13} /> AI 索引 <ChevronRight size={13} className="gal-ai-card-chev" /></span>
+            <span className="gal-ai-card-s">{indexing ? `正在索引 ${indexing.done} / ${indexing.total}` : `已索引 ${indexedCount} / ${items.length}`}</span>
+            <span className="gal-prog"><i style={{ width: `${indexing && indexing.total ? (indexing.done / indexing.total) * 100 : items.length ? (indexedCount / items.length) * 100 : 0}%` }} /></span>
+          </button>
         </aside>
 
         <div className="gal-main" ref={galMainRef}>
@@ -436,9 +413,44 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                 <button key={z} className={zoom === z ? 'on' : ''} onClick={() => setZoom(z)}>{z === 's' ? '小' : z === 'm' ? '中' : '大'}</button>
               ))}
             </span>
+            <button className={`gal-ai-chip ${aiPanelOpen ? 'on' : ''}`} onClick={() => setAiPanelOpen(o => !o)}>
+              <Sparkles size={13} /> AI 索引{indexing ? ` · ${indexing.done}/${indexing.total}` : ''}
+            </button>
           </div>
-          <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
-            onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
+          {aiPanelOpen && (
+            <div className="gal-ai-pop">
+              <div className="gal-ai-pop-t">
+                <Sparkles size={14} /> AI 索引
+                <button className="gal-ai-pop-x" onClick={() => setAiPanelOpen(false)}><X size={14} /></button>
+              </div>
+              <RouteSelect data={visionData} routeKey={tagRoute?.key ?? ''} setRouteKey={k => {
+                setTagRouteKey(k)
+                try { localStorage.setItem(TAG_ROUTE_KEY, k) } catch { /* 忽略 */ }
+              }} />
+              {routeData && visionRoutes.length === 0 && (
+                <div className="gal-idx-hint">没有能看图的模型：免费模型里挑带「看图」的，或用支持多模态的自有账户。</div>
+              )}
+              <div className="gal-idx-status">
+                已索引 {indexedCount} / {items.length} 个
+                {pendingCount > 0 && indexing === null ? `，待索引 ${pendingCount} 个` : ''}
+              </div>
+              {indexing
+                ? (
+                  <>
+                    <div className="gal-prog"><i style={{ width: `${indexing.total ? (indexing.done / indexing.total) * 100 : 0}%` }} /></div>
+                    <button className="btn" onClick={() => { cancelRef.current = true }}>
+                      <Square size={12} /> 停止（{indexing.done}/{indexing.total}）
+                    </button>
+                  </>
+                )
+                : (
+                  <button className="btn primary gal-ai-pop-btn" onClick={() => void runIndex()} disabled={items.length === 0 || !tagRoute}>
+                    <ScanSearch size={13} /> {indexedCount === 0 ? '建立 AI 索引' : '更新 AI 索引'}
+                  </button>
+                )}
+              <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。每次最多处理 60 个，云端项需先下载到本机。</div>
+            </div>
+          )}
           {photosDbFailed && (
             <div className="gal-search-hint">
               没读到照片数据库（多半是还没给 AI 魔方照片权限），现在只显示本地已下载的文件。
@@ -446,7 +458,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
             </div>
           )}
           {searching && indexedCount === 0 && (
-            <div className="gal-search-hint">还没有 AI 索引，现在只能按文件名搜。点左侧「建立 AI 索引」后，就能按画面内容搜了。</div>
+            <div className="gal-search-hint">还没有 AI 索引，现在只能按文件名搜。点右上角「AI 索引」建好后，就能按画面内容搜了。</div>
           )}
 
           {scanning && items.length === 0 && <div className="ws-result"><Loader2 size={16} className="spin" /> 正在扫描文件夹…</div>}
@@ -482,8 +494,10 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               </div>
             </div>
           ))}
-          <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
-            onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
+          <div className="gal-pager-sticky">
+            <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
+              onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
+          </div>
         </div>
       </div>
 
