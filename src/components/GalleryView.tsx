@@ -9,6 +9,7 @@ import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
 import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, type CaptionRec } from '../core/galleryIndex'
 import { ToolShell, RouteSelect } from './WorkshopView'
+import { Pager } from './Pager'
 
 /**
  * AI 图库（v0.1.339 起；v0.1.343 加 AI 索引/搜索 + 侧边栏改首页样式）：苹果照片式图库。
@@ -64,7 +65,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const [scanning, setScanning] = useState(false)
   const [view, setView] = useState<GalView>(mediaDir ? 'ai' : 'all')
   const [zoom, setZoom] = useState<'s' | 'm' | 'l'>('m')
-  const [limit, setLimit] = useState(300)
+  const [galPage, setGalPage] = useState(1)
+  const galMainRef = useRef<HTMLDivElement>(null)
   const [lightbox, setLightbox] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map())
   const thumbBusy = useRef(new Set<string>())
@@ -116,7 +118,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     if (!invoke) return
     void invoke('photos_library_dir').then(v => setPhotosDir(typeof v === 'string' ? v : null)).catch(() => {})
   }, [desktop])
-  useEffect(() => { setLimit(300) }, [view, query])
+  useEffect(() => { setGalPage(1) }, [view, query, photosOn, folders])
   useEffect(() => { void loadCaptions().then(setCaptions) }, [])
   useEffect(() => {
     let dead = false
@@ -146,7 +148,10 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const displayItems = useMemo(() => searching
     ? items.filter(i => captionMatches(i.name, captions.get(i.path)?.text, query))
     : viewFiltered, [searching, items, captions, query, viewFiltered])
-  const visible = displayItems.slice(0, limit)
+  const GAL_PAGE_SIZE = 120
+  const galPageCount = Math.max(1, Math.ceil(displayItems.length / GAL_PAGE_SIZE))
+  const safeGalPage = Math.min(galPage, galPageCount)
+  const visible = displayItems.slice((safeGalPage - 1) * GAL_PAGE_SIZE, safeGalPage * GAL_PAGE_SIZE)
   const groups = useMemo(() => {
     const out: { key: string; label: string; entries: { item: GItem; idx: number }[] }[] = []
     visible.forEach(item => {
@@ -349,7 +354,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
           </div>
         </aside>
 
-        <div className="gal-main">
+        <div className="gal-main" ref={galMainRef}>
           <div className="gal-bar">
             <span className="gal-bar-title">
               {viewTitle}
@@ -404,11 +409,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               </div>
             </div>
           ))}
-          {limit < displayItems.length && (
-            <button className="btn" style={{ alignSelf: 'center', marginTop: 14 }} onClick={() => setLimit(limit + 300)}>
-              显示更多（已显示 {visible.length} / {displayItems.length}）
-            </button>
-          )}
+          <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
+            onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
         </div>
       </div>
 

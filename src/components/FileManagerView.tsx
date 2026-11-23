@@ -13,6 +13,7 @@ import {
   removeFileIndex, parseFileInfo, shouldReindex,
   type FileSearchHit,
 } from '../core/fileIndex'
+import { Pager } from './Pager'
 import { runWorkshopChat } from '../core/workshopChat'
 import { useRouteData, RouteSelect } from './WorkshopView'
 
@@ -84,6 +85,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [asking, setAsking] = useState(false)
   const [hits, setHits] = useState<FileSearchHit[]>([])
   const [nameHits, setNameHits] = useState<FileSearchHit[]>([])
+  const [foundPage, setFoundPage] = useState(1)
   const [answer, setAnswer] = useState('')
   const [indexing, setIndexing] = useState('')
   const [indexNote, setIndexNote] = useState('')
@@ -353,7 +355,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     const q = question.trim()
     if (!q) { notify('先输入问题'); return }
     if (!server || !ready) { notify('先连接 Filesystem 服务'); return }
-    setAsking(true); setHits([]); setNameHits([]); setAnswer('')
+    setAsking(true); setHits([]); setNameHits([]); setAnswer(''); setFoundPage(1)
     try {
       // 意图判断：带扩展名的文件名、或「找/在哪/打开」类措辞 = 找文件；其余 = 内容提问
       const fileToken = q.match(/[\w\-.\u4e00-\u9fa5]+\.[a-zA-Z0-9]{2,5}/)?.[0]
@@ -381,12 +383,12 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
       const found = [...foundMap.values()].sort((a, b) => b.score - a.score)
       if (findIntent) {
         // 找文件：只给文件结果，不跑内容问答；唯一命中直接定位预览，多个列出来筛选
-        setNameHits(found.slice(0, 30))
+        setNameHits(found.slice(0, 200))
         if (found.length === 1) {
           setAnswer(`找到了，已在下方文件窗定位并预览：${found[0].path}`)
           await locateFile(found[0].path)
         } else if (found.length > 1) {
-          setAnswer(`按文件名找到 ${found.length} 个${found.length > 30 ? '（只列前 30 个）' : ''}，点任意一个的「定位预览」查看，或点「打开」直接打开。`)
+          setAnswer(`按文件名找到 ${found.length} 个${found.length >= 200 ? '（结果较多，只列前 200 个）' : ''}，点任意一个的「定位预览」查看，或点「打开」直接打开。`)
         } else {
           setAnswer(`按文件名没找到「${fileToken ?? keywords[0] ?? q}」。它可能不在放行目录里，或名字记错了——换个关键词试试，或先在下方文件窗确认它大概在哪个文件夹。`)
         }
@@ -419,6 +421,10 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   }
 
   const indexedCount = useMemo(() => loadFileRecords().filter(r => r.indexed).length, [indexing, hits])
+  const FOUND_PAGE_SIZE = 10
+  const foundPageCount = Math.max(1, Math.ceil(nameHits.length / FOUND_PAGE_SIZE))
+  const safeFoundPage = Math.min(foundPage, foundPageCount)
+  const foundSlice = nameHits.slice((safeFoundPage - 1) * FOUND_PAGE_SIZE, safeFoundPage * FOUND_PAGE_SIZE)
 
   return (
     <div className="ws-tool fm">
@@ -462,7 +468,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                 <>
                   <div className="fm-found-title">找到的文件（{nameHits.length}）</div>
                   <div className="fm-hits">
-                    {nameHits.map(h => (
+                    {foundSlice.map(h => (
                       <div key={h.path} className="fm-hit">
                         <div className="fm-hit-name">{h.name}</div>
                         <div className="fm-hit-path">{h.path}</div>
@@ -475,6 +481,9 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                     ))}
                   </div>
                 </>
+              )}
+              {nameHits.length > 0 && (
+                <Pager page={safeFoundPage} pageCount={foundPageCount} total={nameHits.length} unit="个" onPage={setFoundPage} />
               )}
               {hits.length > 0 && <div className="fm-found-title">相关内容片段</div>}
               <div className="fm-hits">
@@ -574,13 +583,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                         ))}
                       </div>
                     )}
-                {pageCount > 1 && (
-                  <div className="fm-pager">
-                    <button className="btn sm" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>上一页</button>
-                    <span>第 {safePage} / {pageCount} 页 · 共 {visibleEntries.length} 项</span>
-                    <button className="btn sm" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}>下一页</button>
-                  </div>
-                )}
+                <Pager page={safePage} pageCount={pageCount} total={visibleEntries.length} onPage={setPage} />
               </div>
               {selected && (
                 <div className="fm-preview">
