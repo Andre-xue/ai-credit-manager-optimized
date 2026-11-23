@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, Folder, File as FileIcon, Loader2, Plug, RefreshCw, Search, Copy,
   LayoutGrid, List as ListIcon, ChevronRight, Database, Sparkles, Eye, EyeOff, ExternalLink,
@@ -10,6 +10,7 @@ import { fetchLocalModels } from '../core/localServices'
 import { filterEmbeddingModels, embedText } from '../core/docQA'
 import {
   TEXT_EXTS, extOf, loadFileRecords, upsertFileRecord, indexFileText, searchFileIndex, fileChunksForQa,
+  removeFileIndex, parseFileInfo, shouldReindex,
   type FileSearchHit,
 } from '../core/fileIndex'
 import { runWorkshopChat } from '../core/workshopChat'
@@ -82,6 +83,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [hits, setHits] = useState<FileSearchHit[]>([])
   const [answer, setAnswer] = useState('')
   const [indexing, setIndexing] = useState('')
+  const [indexNote, setIndexNote] = useState('')
   const [showHidden, setShowHidden] = useState<boolean>(loadShowHidden)
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map())
   const thumbBusy = useState(() => new Set<string>())[0]
@@ -190,54 +192,101 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     }
   }
 
-  /** 建立/更新索引：遍历放行目录登记文件，文本文件读内容建索引（有嵌入模型走语义，否则关键词） */
-  const buildIndex = async () => {
-    if (!server || !ready) { notify('先连接 Filesystem 服务'); return }
-    setIndexing('正在探测嵌入模型…')
-    const embed = await detectEmbedModel()
-    const embedBase = embed?.base ?? ''
-    const embedModel = embed?.model ?? ''
-    const maxText = embedModel ? 150 : 400
-    let seen = 0
-    let indexedCount = 0
-    const walk = async (dir: string, depth: number): Promise<void> => {
-      if (depth > 6 || seen > 3000) return
-      let list: Entry[] = []
-      try {
-        const r = await callMcpTool(server.id, 'list_directory', { path: dir })
-        if (r.isError) return
-        list = parseListDir(r.text)
-      } catch { return }
-      for (const e of list) {
-        if (!showHidden && e.name.startsWith('.')) continue // 隐藏文件/目录默认不进索引（多为应用配置与缓存）
-        const p = joinPath(dir, e.name)
-        if (e.isDir) { await walk(p, depth + 1); continue }
-        seen++
-        const ext = extOf(e.name)
-        const isText = TEXT_EXTS.has(ext)
-        if (!isText) {
-          upsertFileRecord({ path: p, name: e.name, ext, indexed: false, chunkCount: 0, indexedAt: 0 })
-          continue
-        }
-        if (indexedCount >= maxText) continue
-        try {
-          const r = await callMcpTool(server.id, 'read_text_file', { path: p })
-          if (r.isError || !r.text.trim()) continue
-          await indexFileText({ path: p, text: r.text.slice(0, 60000), embedBase: embedBase || undefined, embedModel: embedModel || undefined })
-          indexedCount++
-          setIndexing(`正在建索引… 已登记 ${seen} 个文件，已索引 ${indexedCount} 个文本文件${embedModel ? '（语义）' : '（关键词）'}`)
-        } catch { /* 单个文件失败跳过 */ }
-      }
-    }
+  /**
+   * 建立/更新索引（v0.1.335 增量版）：遍历放行目录登记文件；文本文件先取大小/修改时间与上次索引比对，
+   * 没变的直接跳过，只重读新增/改过的文件；已删除的文件自动清出索引。auto=true 为打开页面时静默更新。
+   */
+  const buildIndex = async (opts?: { auto?: boolean }) => {
+    if (!server || !ready) { if (!opts?.auto) notify('先连接 Filesystem 服务'); return }
+    const auto = !!opts?.auto
+    setIndexing(auto ? '正在自动更新索引…' : '正在探测嵌入模型…')
     try {
+      const embed = await detectEmbedModel()
+      const embedBase = embed?.base ?? ''
+      const embedModel = embed?.model ?? ''
+      const maxText = embedModel ? 150 : 400
+      const records = new Map(loadFileRecords().map(r => [r.path, r]))
+      const seenPaths = new Set<string>()
+      let seen = 0
+      let processed = 0
+      let skipped = 0
+      const walk = async (dir: string, depth: number): Promise<void> => {
+        if (depth > 6 || seen > 3000) return
+        let list: Entry[] = []
+        try {
+          const r = await callMcpTool(server.id, 'list_directory', { path: dir })
+          if (r.isError) return
+          list = parseListDir(r.text)
+        } catch { return }
+        for (const e of list) {
+          if (!showHidden && e.name.startsWith('.')) continue // 隐藏文件/目录默认不进索引（多为应用配置与缓存）
+          const p = joinPath(dir, e.name)
+          if (e.isDir) { await walk(p, depth + 1); continue }
+          seen++
+          seenPaths.add(p)
+          const ext = extOf(e.name)
+          if (!TEXT_EXTS.has(ext)) {
+            upsertFileRecord({ path: p, name: e.name, ext, indexed: false, chunkCount: 0, indexedAt: 0 })
+            continue
+          }
+          // 增量判定：先 stat 比对，没变跳过（不占本次读取上限）
+          let stat = null as ReturnType<typeof parseFileInfo>
+          try {
+            const sr = await callMcpTool(server.id, 'get_file_info', { path: p })
+            if (!sr.isError) stat = parseFileInfo(sr.text)
+          } catch { /* 旧版服务器无此工具时 stat 为空 */ }
+          if (!shouldReindex(records.get(p), stat, embedModel, !auto)) { skipped++; continue }
+          if (processed >= maxText) continue
+          try {
+            const r = await callMcpTool(server.id, 'read_text_file', { path: p })
+            if (r.isError || !r.text.trim()) continue
+            await indexFileText({
+              path: p, text: r.text.slice(0, 60000),
+              embedBase: embedBase || undefined, embedModel: embedModel || undefined,
+              size: stat?.size, mtime: stat?.mtime,
+            })
+            processed++
+            setIndexing(`${auto ? '正在自动更新索引' : '正在建索引'}… 已登记 ${seen} 个文件，本次更新 ${processed} 个${embedModel ? '（语义）' : '（关键词）'}`)
+          } catch { /* 单个文件失败跳过 */ }
+        }
+      }
       for (const root of roots) await walk(root, 0)
-      setIndexing('')
-      notify(`索引完成：登记 ${seen} 个文件，内容索引 ${indexedCount} 个${embedModel ? '（语义模式）' : '（关键词模式，未探测到嵌入模型）'}`)
+      // 清理已删除文件（遍历被 3000 上限截断时不清理，避免误删未扫到的记录）
+      let pruned = 0
+      if (seen <= 3000) {
+        for (const rec of loadFileRecords()) {
+          if (!roots.some(r => rec.path === r || rec.path.startsWith(r + '/'))) continue
+          if (!showHidden && rec.path.split('/').some(seg => seg.startsWith('.') && seg.length > 1)) continue
+          if (!seenPaths.has(rec.path)) { await removeFileIndex(rec.path); pruned++ }
+        }
+      }
+      try { localStorage.setItem('acm.filemgr.lastIndexAt', String(Date.now())) } catch { /* 忽略 */ }
+      const mode = embedModel ? '语义模式' : '关键词模式'
+      if (auto) {
+        setIndexNote(processed === 0 && pruned === 0
+          ? `索引已是最新（${mode}）`
+          : `已自动更新：新增/更新 ${processed} 个${pruned ? `，清理已删除 ${pruned} 个` : ''}（${mode}）`)
+      } else {
+        notify(`索引更新完成：新增/更新 ${processed} 个，跳过未变 ${skipped} 个${pruned ? `，清理已删除 ${pruned} 个` : ''}（${mode}）`)
+        setIndexNote('')
+      }
     } catch (e) {
-      setIndexing('')
-      notify(e instanceof Error ? e.message : '建索引失败')
-    }
+      if (!auto) notify(e instanceof Error ? e.message : '建索引失败')
+    } finally { setIndexing('') }
   }
+  const buildIndexRef = useRef(buildIndex)
+  buildIndexRef.current = buildIndex
+  const autoIndexRanRef = useRef(false)
+
+  // 打开文件管家自动增量更新（每 5 分钟最多一次；手动刚建过也不会重复跑）
+  useEffect(() => {
+    if (!ready || !server || roots.length === 0 || autoIndexRanRef.current) return
+    let last = 0
+    try { last = Number(localStorage.getItem('acm.filemgr.lastIndexAt') ?? 0) } catch { /* 忽略 */ }
+    autoIndexRanRef.current = true
+    if (Date.now() - last < 5 * 60_000) return
+    void buildIndexRef.current({ auto: true })
+  }, [ready, server, roots.length])
 
   const ask = async () => {
     const q = question.trim()
@@ -376,6 +425,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                   <Database size={13} /> {indexing ? '建索引中…' : '建立 / 更新索引'}
                 </button>
                 {indexing && <div className="fm-side-meta">{indexing}</div>}
+                {!indexing && indexNote && <div className="fm-side-meta">{indexNote}</div>}
               </div>
               <div className="fm-main">
                 {loadingDir ? <div className="fm-empty"><Loader2 size={16} className="spin" /> 读取中…</div>

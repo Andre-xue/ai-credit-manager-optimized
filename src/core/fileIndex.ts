@@ -14,6 +14,34 @@ export interface FileRecord {
   indexed: boolean      // 是否已建内容索引
   chunkCount: number
   indexedAt: number
+  // 增量索引（v0.1.335）：上次索引时的文件大小/修改时间与嵌入模型（'' 表示关键词模式）
+  size?: number
+  mtime?: string
+  embedModel?: string
+}
+
+export interface FileStat { size: number; mtime: string }
+
+/** 解析 Filesystem MCP get_file_info 的返回（JSON 文本）；解析不出返回 null */
+export function parseFileInfo(text: string): FileStat | null {
+  try {
+    const o = JSON.parse(text) as { size?: unknown; modified?: unknown }
+    if (typeof o.size !== 'number' || typeof o.modified !== 'string') return null
+    return { size: o.size, mtime: o.modified }
+  } catch { return null }
+}
+
+/**
+ * 增量判定：这个文件这次要不要重读重索引。
+ * - 没索引过 / 嵌入模式变了（关键词↔语义或换模型）→ 要
+ * - 有 stat：大小或修改时间与上次不同（含旧记录没存 stat）→ 要；一致 → 跳过
+ * - 无 stat（get_file_info 不可用）：自动模式跳过（无法验证变化，避免全量重跑），手动强制模式重读
+ */
+export function shouldReindex(rec: FileRecord | undefined, stat: FileStat | null, embedModel: string, force: boolean): boolean {
+  if (!rec || !rec.indexed) return true
+  if ((rec.embedModel ?? '') !== embedModel) return true
+  if (stat) return rec.size !== stat.size || rec.mtime !== stat.mtime
+  return force
 }
 
 export const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'json', 'csv', 'log', 'xml', 'html', 'htm', 'yaml', 'yml', 'toml', 'ini', 'ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'sh', 'sql', 'css'])
@@ -88,6 +116,8 @@ export async function indexFileText(params: {
   text: string
   embedBase?: string
   embedModel?: string
+  size?: number
+  mtime?: string
 }): Promise<number> {
   const chunks = chunkText(params.text)
   if (!chunks.length) throw new Error('文件内容为空')
@@ -107,7 +137,10 @@ export async function indexFileText(params: {
     })
   }
   const name = params.path.split('/').pop() ?? params.path
-  upsertFileRecord({ path: params.path, name, ext: extOf(name), indexed: true, chunkCount: chunks.length, indexedAt: Date.now() })
+  upsertFileRecord({
+    path: params.path, name, ext: extOf(name), indexed: true, chunkCount: chunks.length, indexedAt: Date.now(),
+    size: params.size, mtime: params.mtime, embedModel: params.embedModel ?? '',
+  })
   return chunks.length
 }
 
