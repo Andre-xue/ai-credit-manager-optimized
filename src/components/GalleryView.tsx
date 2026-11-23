@@ -237,6 +237,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
         const opt = routeData.freeOptions.find(o => `free:${o.key}` === r.key)
         return !!opt && opt.source !== 'cloud' && isVisionModelId(opt.modelId)
       }
+      if (r.kind !== 'account') return false
       const acct = accounts.find(a => a.id === r.accountId)
       return !!acct && isVisionModelId(acct.label)
     })

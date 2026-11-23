@@ -98,6 +98,7 @@ export async function visionTagImage(params: {
     if (!text.trim()) throw new Error('模型没有返回描述')
     return text.trim()
   }
+  if (route.kind === 'wbpool') throw new Error('账号池暂不支持看图打标，请选免费看图模型或自有账户')
   const acct = accounts.find(a => a.id === route.accountId)
   if (!acct) throw new Error('所选账户不存在')
   if (!sessionPwd) throw new Error('保险箱未解锁，无法使用自有账户（可改用免费模型）')

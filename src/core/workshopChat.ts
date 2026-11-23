@@ -11,6 +11,7 @@ import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeA
 export type WorkshopRoute =
   | { kind: 'free'; key: string; label: string }
   | { kind: 'account'; key: string; label: string; accountId: string; engine?: string; modelId?: string }
+  | { kind: 'wbpool'; key: string; label: string }
 
 export interface WorkshopRouteData {
   routes: WorkshopRoute[]
@@ -36,6 +37,10 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
     ...freeOptions.map(o => ({ kind: 'free' as const, key: `free:${o.key}`, label: `免费 · ${o.label}` })),
     ...workshopAccounts(accounts).map(a => ({ kind: 'account' as const, key: `acct:${a.id}`, label: a.label, accountId: a.id })),
   ]
+  try {
+    const { hasPoolAccounts } = await import('./wbPool')
+    if (hasPoolAccounts()) routes.push({ kind: 'wbpool', key: 'wbpool', label: 'WorkBuddy 账号池' })
+  } catch { /* 池不可用时不加路线 */ }
   return { routes, freeOptions }
 }
 
@@ -49,6 +54,15 @@ export async function runWorkshopChat(params: {
   user: string
 }): Promise<string> {
   const { route, freeOptions, accounts, sessionPwd, system, user } = params
+  if (route.kind === 'wbpool') {
+    if (!sessionPwd) throw new Error('保险箱未解锁，无法使用账号池')
+    const { poolChat } = await import('./wbPool')
+    const r = await poolChat(sessionPwd, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ])
+    return r.text
+  }
   if (route.kind === 'free') {
     const opt = freeOptions.find(o => `free:${o.key}` === route.key)
     if (!opt) throw new Error('所选免费模型已不可用，请换一个')

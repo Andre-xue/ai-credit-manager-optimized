@@ -76,7 +76,7 @@ export function clearCheckinCred(platform: CheckinPlatform): void {
 
 interface HttpResult { status: number; text: string }
 
-async function httpCall(method: string, url: string, headers: Record<string, string>, body?: string): Promise<HttpResult> {
+export async function httpCall(method: string, url: string, headers: Record<string, string>, body?: string): Promise<HttpResult> {
   const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<string> } }
   if (w.__TAURI_INTERNALS__?.invoke) {
     const raw = await w.__TAURI_INTERNALS__.invoke('plugin_http', {
@@ -94,7 +94,7 @@ async function httpCall(method: string, url: string, headers: Record<string, str
   return { status: res.status, text: await res.text() }
 }
 
-function parseJson(text: string): Record<string, unknown> | null {
+export function parseJson(text: string): Record<string, unknown> | null {
   try {
     const v = JSON.parse(text) as unknown
     return v && typeof v === 'object' ? (v as Record<string, unknown>) : null
@@ -361,7 +361,7 @@ function wbHeaders(cred: CheckinCred): Record<string, string> {
   return h
 }
 
-async function workbuddyRefresh(cred: CheckinCred): Promise<CheckinCred> {
+export async function workbuddyRefresh(cred: CheckinCred): Promise<CheckinCred> {
   if (!cred.refreshToken) throw new Error('凭据里没有 refresh token，请重新授权')
   const res = await httpCall('POST', `${wbBase(cred)}/v2/plugin/auth/token/refresh`, {
     Authorization: `Bearer ${cred.accessToken}`,
@@ -397,17 +397,30 @@ async function wbPost(cred: CheckinCred, path: string): Promise<{ status: number
 
 // ---------------- 统一入口（自动续期 + 401 重试一次） ----------------
 
+/** 凭据盒：抽象凭据的读写位置（签到页用单账号存储，账号池用池存储） */
+export interface CredBox {
+  load(): Promise<CheckinCred | null>
+  save(cred: CheckinCred): Promise<void>
+}
+
+export function singleCredBox(platform: CheckinPlatform, pwd: string): CredBox {
+  return {
+    load: () => loadCheckinCred(platform, pwd),
+    save: cred => saveCheckinCred(platform, cred, pwd),
+  }
+}
+
 async function withFreshCred<T>(
-  platform: CheckinPlatform, pwd: string,
+  platform: CheckinPlatform, box: CredBox,
   run: (cred: CheckinCred) => Promise<T>,
 ): Promise<T> {
-  let cred = await loadCheckinCred(platform, pwd)
+  let cred = await box.load()
   if (!cred) throw new Error('还没连接账号，先点「连接账号」授权')
   const refresh = platform === 'minimax' ? minimaxRefresh : workbuddyRefresh
   if (cred.refreshToken && cred.expiresAt > 0 && cred.expiresAt - Date.now() < 120_000) {
     try {
       cred = await refresh(cred)
-      await saveCheckinCred(platform, cred, pwd)
+      await box.save(cred)
     } catch { /* 续期失败先用旧 token 试一次，下面 401 逻辑会再处理 */ }
   }
   try {
@@ -416,19 +429,14 @@ async function withFreshCred<T>(
     if ((e as Error)?.message !== '__UNAUTHORIZED__') throw e
     if (!cred.refreshToken) throw new Error('登录已过期，请重新授权')
     const fresh = await refresh(cred)
-    await saveCheckinCred(platform, fresh, pwd)
+    await box.save(fresh)
     return await run(fresh)
   }
 }
 
-export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): Promise<CheckinStatus> {
-  return withFreshCred(platform, pwd, async cred => {
-    if (platform === 'minimax') {
-      const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/status', 'GET')
-      const status = parseMinimaxStatus(body)
-      status.balance = await minimaxBalance(cred)
-      return status
-    }
+/** WorkBuddy 签到状态（凭据盒版，供账号池逐个账号调用） */
+export async function getWorkbuddyStatus(box: CredBox): Promise<CheckinStatus> {
+  return withFreshCred('workbuddy', box, async cred => {
     let r = await wbPost(cred, '/v2/billing/meter/checkin-activity-status')
     if (r.status === 401 || r.status === 403) throw new Error('__UNAUTHORIZED__')
     if (r.status >= 400) r = await wbPost(cred, '/v2/billing/meter/checkin-status')
@@ -438,18 +446,9 @@ export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): 
   })
 }
 
-export async function claimCheckin(platform: CheckinPlatform, pwd: string): Promise<{ message: string; points: number }> {
-  return withFreshCred(platform, pwd, async cred => {
-    if (platform === 'minimax') {
-      const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/claim', 'POST')
-      mmCheckBase(body)
-      const data = obj(body.data)
-      const result = num(data.claim_result)
-      const points = num(data.points)
-      if (result === 1) return { message: `签到成功 +${points} 积分`, points }
-      if (result === 2) return { message: '今日已签到', points }
-      throw new Error(str(data.claim_id) ? '上游未确认领取结果，请稍后刷新状态' : '签到失败，请稍后重试')
-    }
+/** WorkBuddy 签到领取（凭据盒版） */
+export async function claimWorkbuddy(box: CredBox): Promise<{ message: string; points: number }> {
+  return withFreshCred('workbuddy', box, async cred => {
     const r = await wbPost(cred, '/v2/billing/meter/daily-checkin')
     if (r.status === 401 || r.status === 403) throw new Error('__UNAUTHORIZED__')
     if (r.status >= 400) {
@@ -461,5 +460,29 @@ export async function claimCheckin(platform: CheckinPlatform, pwd: string): Prom
     const credit = num(data.credit ?? data.reward)
     if (success) return { message: `签到成功 +${credit} 积分`, points: credit }
     return { message: str(data.message) || '今日已签到', points: credit }
+  })
+}
+
+export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): Promise<CheckinStatus> {
+  if (platform === 'workbuddy') return getWorkbuddyStatus(singleCredBox(platform, pwd))
+  return withFreshCred(platform, singleCredBox(platform, pwd), async cred => {
+    const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/status', 'GET')
+    const status = parseMinimaxStatus(body)
+    status.balance = await minimaxBalance(cred)
+    return status
+  })
+}
+
+export async function claimCheckin(platform: CheckinPlatform, pwd: string): Promise<{ message: string; points: number }> {
+  if (platform === 'workbuddy') return claimWorkbuddy(singleCredBox(platform, pwd))
+  return withFreshCred(platform, singleCredBox(platform, pwd), async cred => {
+    const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/claim', 'POST')
+    mmCheckBase(body)
+    const data = obj(body.data)
+    const result = num(data.claim_result)
+    const points = num(data.points)
+    if (result === 1) return { message: `签到成功 +${points} 积分`, points }
+    if (result === 2) return { message: '今日已签到', points }
+    throw new Error(str(data.claim_id) ? '上游未确认领取结果，请稍后刷新状态' : '签到失败，请稍后重试')
   })
 }

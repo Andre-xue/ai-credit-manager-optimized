@@ -10,15 +10,16 @@ import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { FileManagerView } from './FileManagerView'
 import { GalleryView } from './GalleryView'
 import { CheckinTool } from './CheckinTool'
+import { WbPoolTool } from './WbPoolTool'
 import { TranslationView } from './TranslationView'
 import { ImageView } from './ImageView'
 import { VideoView } from './VideoView'
 import { DocQAView } from './DocQAView'
 import type { AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
-import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck } from 'lucide-react'
+import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck, Users } from 'lucide-react'
 
-type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin'
+type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin' | 'wbpool'
 
 /** 工具页共用：加载可选对话路线（免费模型 + 自有账户） */
 export function useRouteData(accounts: Account[]) {
@@ -420,6 +421,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
   if (tool === 'files') return <FileManagerView accounts={accounts} sessionPwd={sessionPwd} notify={notify} onBack={back} />
   if (tool === 'gallery') return <GalleryView accounts={accounts} sessionPwd={sessionPwd} notify={notify} onBack={back} />
   if (tool === 'dailycheckin') return <CheckinTool sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
+  if (tool === 'wbpool') return <WbPoolTool sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
   if (tool === 'summary') return <SummaryTool {...toolProps} />
   if (tool === 'polish') return <PolishTool {...toolProps} />
   if (tool === 'webcheck') return <WebCheckTool {...toolProps} />
@@ -471,6 +473,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
         { id: 'webcheck', name: '联网核查', desc: '给一句话或一条消息，AI 联网搜证核实真假并附来源。', tag: '免 Key 搜索', tagClass: 'free', grad: 'g2', icon: <SearchCheck size={21} />, action: () => setTool('webcheck') },
         { id: 'table', name: '表格问答', desc: '把 CSV 丢进来，用问话查数、汇总、找异常，不用写公式。', tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
         { id: 'dailycheckin', name: '每日签到', desc: 'WorkBuddy、MiniMax Code 每日积分签到：授权一次，每天点一下领积分。', tag: '领积分', grad: 'g3', icon: <CalendarCheck size={21} />, action: () => setTool('dailycheckin'), isNew: true },
+        { id: 'wbpool', name: 'WorkBuddy 账号池', desc: '多个 WorkBuddy 账号授权入池成一个模型来源：对话自动轮换、限流自动切换，签到一并带上。', tag: '多账号池', grad: 'g2', icon: <Users size={21} />, action: () => setTool('wbpool'), isNew: true },
         { id: 'catalog', name: 'AI 工具大全', desc: '各平台 AI 工具目录与签到入口汇总，原侧边栏入口已并入工坊。', tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
       ],
     },
