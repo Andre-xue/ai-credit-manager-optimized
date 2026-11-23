@@ -583,7 +583,11 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                         ))}
                       </div>
                     )}
-                <Pager page={safePage} pageCount={pageCount} total={visibleEntries.length} onPage={setPage} />
+                {pageCount > 1 && (
+                  <div className="fm-pager-sticky">
+                    <Pager page={safePage} pageCount={pageCount} total={visibleEntries.length} onPage={setPage} />
+                  </div>
+                )}
               </div>
               {selected && (
                 <div className="fm-preview">
