@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CalendarCheck, Loader2, LogIn, LogOut, RefreshCw, Sparkles } from 'lucide-react'
+import { CalendarCheck, Fingerprint, Loader2, LogIn, LogOut, RefreshCw, Sparkles } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
-import { openExternal } from '../core/openExternal'
+import { openExternal, biometricAvailable } from '../core/openExternal'
+import { resolveBiometricVaultPassword } from '../core/biometric'
 import {
   hasCheckinCred, loadCheckinCred, saveCheckinCred, clearCheckinCred,
   minimaxBeginDevice, minimaxPollDevice, workbuddyBegin, workbuddyPoll,
@@ -33,6 +34,13 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   onBack: () => void
 }) {
   const [pwdInput, setPwdInput] = useState('')
+  const [bioOk, setBioOk] = useState(false)
+  useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
+  const bioUnlock = async () => {
+    const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
+    if (pwd) onUnlock(pwd)
+    else notify('未通过指纹验证，或还没开启指纹解锁（先输一次主密码，并在设置里开启指纹/生物解锁后再用）')
+  }
   const [creds, setCreds] = useState<Partial<Record<CheckinPlatform, CheckinCred>>>({})
   const [statuses, setStatuses] = useState<Partial<Record<CheckinPlatform, CheckinStatus>>>({})
   const [errors, setErrors] = useState<Partial<Record<CheckinPlatform, string>>>({})
@@ -156,6 +164,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
               value={pwdInput} onChange={e => setPwdInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && pwdInput) { onUnlock(pwdInput); setPwdInput('') } }} />
             <button className="btn sm primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁</button>
+            {bioOk && <button className="btn sm" onClick={() => void bioUnlock()}><Fingerprint size={14} /> 指纹解锁</button>}
           </div>
         </div>
       )}
