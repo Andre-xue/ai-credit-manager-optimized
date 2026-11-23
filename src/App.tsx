@@ -81,6 +81,7 @@ import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
+import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -518,6 +519,14 @@ function App() {
     setSyncError(null)
     localDirtyRef.current = false
   }, [])
+
+  // ---- 云端快照恢复（v0.1.330）：把快照内容作为新的当前状态，并推回云端成为同步基准 ----
+  const restoreCloudSnapshot = useCallback(async (snap: { state: AppState; vault: import('./core/crypto').VaultSyncMaterial }): Promise<boolean> => {
+    const payload = { appState: snap.state, vault: snap.vault, clientAt: new Date().toISOString(), clientId: getClientId() }
+    applyRemote(payload, null)
+    const r = await pushPayload(snap.state, undefined, { includeLocal: !!snap.state.settings.syncLocalProviders })
+    return r.ok
+  }, [applyRemote])
 
   // 统一的登录后初始化：拉取云端；云端为空则把本地作为初始快照上传；完成后才允许自动推送。
   const bootstrapCloud = useCallback(async (user: CloudUser, announce = true) => {
@@ -997,6 +1006,25 @@ function App() {
     const t = window.setInterval(() => { void runPatrol() }, 60 * 1000)
     return () => window.clearInterval(t)
   }, [sessionPwd])
+
+  // ---- 云端自动备份（v0.1.330）：登录云账号后按本机偏好（开关/间隔/保留份数）定时存整份状态快照 ----
+  // 每 10 分钟看一眼是否到期；到期静默备份，失败不打扰。偏好只存本机，避免多端抢着备。
+  const cloudBackupRunningRef = useRef(false)
+  useEffect(() => {
+    if (!cloudUser) return
+    const tick = async () => {
+      if (cloudBackupRunningRef.current) return
+      const prefs = loadCloudBackupPrefs()
+      if (!cloudBackupDue(prefs)) return
+      cloudBackupRunningRef.current = true
+      try { await createCloudSnapshot(stateRef.current, prefs.keep, '自动备份') }
+      catch { /* 静默 */ }
+      finally { cloudBackupRunningRef.current = false }
+    }
+    void tick()
+    const t = window.setInterval(() => { void tick() }, 10 * 60 * 1000)
+    return () => window.clearInterval(t)
+  }, [cloudUser])
 
   // ---- 全局刷新（v0.1.302）：Key 管理 / 额度看板 / 用量费用三页的「刷新」按钮共用 ----
   // 立即全量拉一遍可查余额平台的官方余额并落快照，同时重置自动巡检计时。
@@ -1535,6 +1563,7 @@ function App() {
           notify={notify}
           auditEntries={state.audit ?? []}
           onClearAudit={() => { setState(s => ({ ...s, audit: [] })); notify('审计日志已清空') }}
+          onRestoreSnapshot={restoreCloudSnapshot}
           onImportBackup={(imported) => {
             try { localStorage.setItem('acm.state.pre-import-backup', JSON.stringify(state)) } catch { /* 存不下就忽略，不阻断导入 */ }
             // 网关令牌是本机凭据、界面语言是本机偏好：导入备份不覆盖本机的这两项
@@ -4881,7 +4910,7 @@ const AI_TOOLBAR_LABELS: Record<string, string> = {
   myData: '引用我的数据', webSearch: '联网搜索', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
 }
 
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, isPhone, onClearData }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, onRestoreSnapshot, isPhone, onClearData }: {
   onClearData?: (cats: ClearCat[]) => void
   isPhone?: boolean
   state: AppState
@@ -4890,6 +4919,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   auditEntries: AppState['audit']
   onClearAudit: () => void
   onImportBackup: (state: AppState) => void
+  onRestoreSnapshot?: (snap: { state: AppState; vault: import('./core/crypto').VaultSyncMaterial }) => Promise<boolean>
   onOpenVault: () => void
   onClear: () => void
   onChangePassword: (oldPwd: string, newPwd: string) => Promise<void>
@@ -4954,6 +4984,46 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     try { setMediaApps(await listMediaApps(force)) } catch { /* 扫描失败保持空列表 */ } finally { setMediaAppsLoading(false) }
   }
   useEffect(() => { void scanMediaApps() }, [])
+  // ---- 云端自动备份（v0.1.330，本机偏好）：定时把整份状态快照存云端，可回滚 ----
+  const [cbPrefs, setCbPrefs] = useState<CloudBackupPrefs>(() => loadCloudBackupPrefs())
+  const [cbList, setCbList] = useState<SnapshotMeta[]>([])
+  const [cbBusy, setCbBusy] = useState(false)
+  const [cbConfirmId, setCbConfirmId] = useState<string | null>(null)
+  const patchCb = (next: CloudBackupPrefs) => { setCbPrefs(next); saveCloudBackupPrefs(next) }
+  const refreshCbList = useCallback(async () => {
+    if (!cloudUser) { setCbList([]); return }
+    const r = await listCloudSnapshots()
+    if (r.ok) setCbList(r.list)
+  }, [cloudUser])
+  useEffect(() => { void refreshCbList() }, [refreshCbList])
+  const doCbNow = async () => {
+    setCbBusy(true)
+    const r = await createCloudSnapshot(state, cbPrefs.keep, '手动备份')
+    setCbBusy(false)
+    notify(r.ok ? '云端快照已保存' : `备份失败：${r.error ?? ''}`)
+    if (r.ok) void refreshCbList()
+  }
+  const doCbDelete = async (id: string) => {
+    setCbBusy(true)
+    const r = await deleteCloudSnapshot(state, id)
+    setCbBusy(false)
+    notify(r.ok ? '快照已删除' : `删除失败：${r.error ?? ''}`)
+    if (r.ok) void refreshCbList()
+  }
+  const doCbRestore = async (id: string) => {
+    if (!onRestoreSnapshot) return
+    setCbBusy(true)
+    // 先取目标快照，再存「恢复前」安全快照（顺序反了安全快照可能把目标挤出保留份数）
+    const snap = await getCloudSnapshot(id)
+    if (!snap) { setCbBusy(false); notify('读取快照失败，请重试'); return }
+    await createCloudSnapshot(state, cbPrefs.keep, '恢复前自动备份')
+    const ok = await onRestoreSnapshot(snap)
+    setCbBusy(false)
+    setCbConfirmId(null)
+    notify(ok ? '已恢复到该快照的数据' : '已恢复到本地，但推回云端失败，请点「立即同步」')
+    void refreshCbList()
+  }
+
   // ---- 数据存储（仅桌面端、本机偏好）：三类文件的自定义存放文件夹 ----
   const [storagePrefs, setStoragePrefs] = useState<StoragePrefs>(() => loadStoragePrefs())
   const patchStorage = (next: StoragePrefs, syncKeys = false) => {
@@ -5539,6 +5609,44 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <Toggle checked={!!s.syncLocalProviders} onChange={v => onChange({ syncLocalProviders: v })} />
             </SettingsRow>
             <p className="set-note">{t('支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。')}</p>
+          </SettingsSection>
+
+          <SettingsSection title="云端自动备份" desc="定时快照存云端，出事可回滚（与云同步互补）" icon={Cloud} tone="indigo">
+            <SettingsRow title="自动备份" desc="开启后本机在 App 运行期间按间隔自动存快照；此偏好仅本机保存，各设备可各自设置">
+              <Toggle checked={cbPrefs.enabled} onChange={v => patchCb({ ...cbPrefs, enabled: v })} />
+            </SettingsRow>
+            <SettingsRow title="备份间隔" desc="自动备份的时间间隔">
+              <select className="select" value={cbPrefs.intervalHours} onChange={e => patchCb({ ...cbPrefs, intervalHours: Number(e.target.value) })}>
+                <option value={6}>每 6 小时</option>
+                <option value={24}>每天</option>
+                <option value={168}>每周</option>
+              </select>
+            </SettingsRow>
+            <SettingsRow title="保留份数" desc="云端最多保留的快照数，超出的最旧一份自动删除">
+              <select className="select" value={cbPrefs.keep} onChange={e => patchCb({ ...cbPrefs, keep: Number(e.target.value) })}>
+                <option value={3}>3 份</option>
+                <option value={5}>5 份</option>
+                <option value={10}>10 份</option>
+              </select>
+            </SettingsRow>
+            <SettingsRow title="立即备份" desc={cloudUser ? (cloudBackupLastAt() ? `上次备份：${new Date(cloudBackupLastAt()).toLocaleString(locale())}` : '还没有备份过') : '登录云账号后可用'}>
+              <button className="btn sm primary" disabled={!cloudUser || cbBusy} onClick={() => void doCbNow()}>{cbBusy ? '处理中…' : '立即备份一次'}</button>
+            </SettingsRow>
+            {cloudUser && (cbList.length === 0
+              ? <div className="voice-empty">暂无云端快照</div>
+              : cbList.map(m => (
+                <div key={m.id} className="set-stat" style={{ justifyContent: 'space-between' }}>
+                  <span>{new Date(m.createdAt).toLocaleString(locale())} · {(m.size / 1024).toFixed(0)} KB{m.note ? ` · ${m.note}` : ''}{m.mine ? '' : ' · 其他设备'}</span>
+                  <span style={{ display: 'flex', gap: 6 }}>
+                    {cbConfirmId === m.id
+                      ? <><button className="btn sm" style={{ color: 'var(--red, #d92d20)' }} disabled={cbBusy} onClick={() => void doCbRestore(m.id)}>确认恢复（覆盖当前数据）</button>
+                        <button className="btn sm ghost" onClick={() => setCbConfirmId(null)}>取消</button></>
+                      : <><button className="btn sm" disabled={cbBusy} onClick={() => setCbConfirmId(m.id)}>恢复</button>
+                        <button className="btn sm ghost" disabled={cbBusy} onClick={() => void doCbDelete(m.id)}>删除</button></>}
+                  </span>
+                </div>
+              )))}
+            <p className="set-note">快照是某个时间点的整份数据副本：误删、改坏后可一键回到当时。恢复前会自动把当前状态也存一份快照防手滑。快照内容与云同步口径一致（密钥为密文、本地模型账户默认不含）。</p>
           </SettingsSection>
 
           <SettingsSection title="账号管理" desc="已登录账号、登录方式与本机可见设备" icon={Fingerprint} tone="blue">

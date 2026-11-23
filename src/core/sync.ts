@@ -15,11 +15,24 @@ const LAST_SYNC_KEY = 'acm.sync.lastAt'
 const REMOTE_VERSION_KEY = 'acm.sync.remoteVersion'
 const MAX_CLOUD_BACKUPS = 20
 
+/** 云端快照备份（v0.1.330）：整份状态的时间点副本，与同步镜像互补——同步防丢、快照防改错可回滚 */
+export interface StateSnapshot {
+  id: string
+  createdAt: string
+  /** 产生快照的设备标识 */
+  clientId: string
+  note?: string
+  state: AppState
+  vault: VaultSyncMaterial
+}
+
 export interface SyncPayload {
   appState: AppState
   vault: VaultSyncMaterial
   /** 删除 API Key 前的密文备份（自包含，可恢复） */
   keyBackups?: KeyBackupFile[]
+  /** 云端快照备份列表（旧→新），普通同步只保留不改动，由 cloudSnapshots 专门维护 */
+  stateSnapshots?: StateSnapshot[]
   /** 客户端写入时间戳 */
   clientAt: string
   /** 写入端标识，用于识别是不是自己刚推的，避免回环拉取 */
@@ -114,7 +127,7 @@ export async function pullPayload(): Promise<PullResult> {
 }
 
 /** 把本地数据与保险箱材料推送到云端（每用户一行，存在则更新、不存在则插入） */
-export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile[], opts?: { includeLocal?: boolean }): Promise<PushResult> {
+export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile[], opts?: { includeLocal?: boolean; snapshots?: StateSnapshot[] }): Promise<PushResult> {
   try {
     // 先查是否已有行：既决定 insert/update，也保留云端已有的删除前备份
     const db = dbAny()
@@ -139,6 +152,8 @@ export async function pushPayload(appState: AppState, newBackups?: KeyBackupFile
       appState: syncState,
       vault: getVaultSyncMaterial(),
       keyBackups: backups,
+      // 快照列表：调用方显式给出则以其为准，否则原样保留云端已有的（普通同步不许把快照冲掉）
+      stateSnapshots: opts?.snapshots ?? remotePrev?.stateSnapshots ?? [],
       clientAt: new Date().toISOString(),
       clientId: getClientId(),
     }
