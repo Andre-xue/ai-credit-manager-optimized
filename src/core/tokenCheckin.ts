@@ -99,17 +99,25 @@ async function doubaoState(secret: string): Promise<DoubaoState> {
   }
 }
 
-/** 从面板原始返回里挖本轮活动可能用的 group code / 任务 id（活动换轮次时写死的 code 会失效） */
-async function doubaoClaim(secret: string, st: DoubaoState): Promise<TokenStatus> {
-  const before = st.total
-  const res = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', { scene: DOUBAO_GROUP })
-  const code = num(res.code)
-  if (code === 710012001) throw new Error('豆包登录已失效：重新从浏览器复制最新 Cookie 覆盖这个账号')
+/** 状态读取 */
+async function doubaoStatus(secret: string): Promise<CheckinStatus> {
+  const st = await doubaoState(secret)
+  if (st.checked) return { state: 'claimed', message: `今日已签到（连签 ${st.streak} 天）`, points: st.reward, streakDays: st.streak, balance: st.total || undefined }
+  return { state: 'claimable', message: `可签到 +${st.reward || 200} 额度`, points: st.reward || 200, streakDays: st.streak, balance: st.total || undefined }
+}
+
+async function doubaoClaim(secret: string): Promise<ClaimResult> {
+  const st = await doubaoState(secret)
+  if (st.checked) return { message: '今日已签到', points: 0 }
+  const body = await doubaoPost(secret, 'https://www.doubao.com/alice/ug/campaign/landing/checkin', { scene: DOUBAO_GROUP })
+  const code = num(body.code)
+  if (code === 710012001) throw new Error('豆包登录已过期（Cookie 失效），重新复制一次 Cookie')
   if (code === 710010702) throw new Error('豆包说这个账号没有可领的签到活动（企业 / 飞书登录的账号没有这个活动；个人账号请在豆包电脑版「免费用豆包」里确认活动还在）')
-  if (code !== 0) throw new Error(`豆包领取失败（${code}）：${str(res.msg) || str(res.message) || '未知原因'}`)
-  const after = await doubaoState(secret).catch(() => null)
-  const gained = num((res.data as Json)?.reward_amount) || (after ? Math.max(0, after.total - before) : st.reward)
-  return { ok: true, signedToday: true, claimable: false, points: gained, balance: after?.total ?? before + gained, streak: after?.streak ?? st.streak, note: `已领取 +${gained} 额度` }
+  if (code !== 0) throw new Error(`豆包签到失败：${str(body.msg ?? body.message)}（code ${code}）`)
+  const d = (body.data ?? {}) as Json
+  if (d.idempotent === true) return { message: '今日已签到', points: 0 }
+  const credit = num(d.reward_amount) || st.reward
+  return { message: `签到成功 +${credit} 额度`, points: credit }
 }
 
 // ---------------- WPS 灵犀 ----------------
