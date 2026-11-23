@@ -829,6 +829,37 @@ fn gallery_scan(dir: String) -> Result<Vec<GalleryItem>, String> {
     Ok(out)
 }
 
+/// Mac 照片图库原图目录（v0.1.340）：在 ~/Pictures 下找 *.photoslibrary 包，
+/// 返回其 originals（新版）或 Masters（旧版）目录路径；找不到返回空
+#[tauri::command]
+fn photos_library_dir() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let pics = std::path::Path::new(&home).join("Pictures");
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    let preferred = pics.join("Photos Library.photoslibrary");
+    if preferred.is_dir() {
+        candidates.push(preferred);
+    }
+    if let Ok(rd) = std::fs::read_dir(&pics) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let is_pkg = p.extension().map(|x| x == "photoslibrary").unwrap_or(false);
+            if p.is_dir() && is_pkg && !candidates.contains(&p) {
+                candidates.push(p);
+            }
+        }
+    }
+    for pkg in candidates {
+        for sub in ["originals", "Masters"] {
+            let d = pkg.join(sub);
+            if d.is_dir() {
+                return Some(d.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
 /// 将文本文件写入指定目录
 #[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
@@ -3062,7 +3093,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

@@ -16,6 +16,7 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 
 const PLAY_VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v'])
 const FOLDERS_KEY = 'acm.gallery.folders.v1'
 const FAVS_KEY = 'acm.gallery.favs.v1'
+const PHOTOS_ON_KEY = 'acm.gallery.photosLib'
 
 interface GItem { path: string; name: string; size: number; mtime: number; kind: 'image' | 'video'; source: string; ai: boolean }
 type GalView = 'ai' | 'all' | 'video' | 'fav'
@@ -45,6 +46,8 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
   const desktop = isDesktopApp()
   const mediaDir = useMemo(() => { try { return storageDir('media', loadStoragePrefs()) } catch { return null } }, [])
   const [folders, setFolders] = useState<string[]>(() => loadList(FOLDERS_KEY))
+  const [photosDir, setPhotosDir] = useState<string | null>(null)
+  const [photosOn, setPhotosOn] = useState(() => { try { return localStorage.getItem(PHOTOS_ON_KEY) !== '0' } catch { return true } })
   const [favs, setFavs] = useState<Set<string>>(() => new Set(loadList(FAVS_KEY)))
   const [items, setItems] = useState<GItem[]>([])
   const [scanning, setScanning] = useState(false)
@@ -66,7 +69,8 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
     try {
       const sources: { dir: string; label: string; ai: boolean }[] = []
       if (mediaDir) sources.push({ dir: mediaDir, label: 'AI 生成', ai: true })
-      for (const f of folders) if (f !== mediaDir) sources.push({ dir: f, label: baseName(f), ai: false })
+      if (photosDir && photosOn && photosDir !== mediaDir) sources.push({ dir: photosDir, label: '照片图库', ai: false })
+      for (const f of folders) if (f !== mediaDir && f !== photosDir) sources.push({ dir: f, label: baseName(f), ai: false })
       const byPath = new Map<string, GItem>()
       for (const src of sources) {
         try {
@@ -84,9 +88,15 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
       }
       setItems([...byPath.values()].sort((a, b) => b.mtime - a.mtime))
     } finally { setScanning(false) }
-  }, [folders, mediaDir])
+  }, [folders, mediaDir, photosDir, photosOn])
 
   useEffect(() => { if (desktop) void scan() }, [desktop, scan])
+  useEffect(() => {
+    if (!desktop) return
+    const invoke = getInvoke()
+    if (!invoke) return
+    void invoke('photos_library_dir').then(v => setPhotosDir(typeof v === 'string' ? v : null)).catch(() => {})
+  }, [desktop])
   useEffect(() => { setLimit(300) }, [view])
 
   const filtered = useMemo(() => items.filter(i =>
@@ -184,6 +194,18 @@ export function GalleryView({ notify, onBack }: { notify: (msg: string) => void;
           {mediaDir
             ? <div className="gal-src"><span className="gal-dot ai" />生成保存目录<span className="gal-src-path">{mediaDir}</span></div>
             : <div className="gal-src-none">未设置生成保存目录（设置 → 数据存储），AI 生成视图暂为空</div>}
+          {photosDir ? (
+            <div className="gal-src">
+              <span className="gal-dot" style={{ background: '#ff9500' }} />Mac 照片图库
+              <button className={`gal-switch ${photosOn ? 'on' : ''}`} title={photosOn ? '点击关闭这个来源' : '点击启用这个来源'}
+                onClick={() => { const next = !photosOn; setPhotosOn(next); try { localStorage.setItem(PHOTOS_ON_KEY, next ? '1' : '0') } catch { /* 忽略 */ } }}>
+                <span className="gal-switch-dot" />
+              </button>
+              <span className="gal-src-path">{photosDir}</span>
+            </div>
+          ) : (
+            <div className="gal-src-none">未找到 Mac 照片图库（图片文件夹下没有 .photoslibrary）</div>
+          )}
           {folders.filter(f => f !== mediaDir).map(f => (
             <div key={f} className="gal-src">
               <span className="gal-dot" />{baseName(f)}
