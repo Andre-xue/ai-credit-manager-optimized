@@ -830,9 +830,7 @@ fn gallery_scan(dir: String) -> Result<Vec<GalleryItem>, String> {
     Ok(out)
 }
 
-/// Mac 照片图库原图目录（v0.1.340）：在 ~/Pictures 下找 *.photoslibrary 包，
-/// 返回其 originals（新版）或 Masters（旧版）目录路径；找不到返回空
-#[tauri::command]
+/// 在 ~/Pictures 下找 *.photoslibrary 包（v0.1.340 起；v0.1.347 抽出供数据库读取共用）
 fn find_photos_library_package() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let pics = std::path::Path::new(&home).join("Pictures");
@@ -860,6 +858,8 @@ fn find_photos_library_package() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Mac 照片图库原图目录：返回图库包的 originals（新版）或 Masters（旧版）目录；找不到返回空
+#[tauri::command]
 fn photos_library_dir() -> Option<String> {
     let pkg = find_photos_library_package()?;
     for sub in ["originals", "Masters"] {

@@ -33,6 +33,33 @@ function getInvoke(): InvokeFn | null {
   return w.__TAURI_INTERNALS__?.invoke ?? null
 }
 const extOf = (name: string) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : '' }
+
+// ---- 扫描缓存（v0.1.348）：进图库先用上次扫描结果秒开，后台全量刷新完成再替换 ----
+const SCAN_DB = 'acm-gallery-scan'
+function openScanDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(SCAN_DB, 1)
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('snap')) req.result.createObjectStore('snap', { keyPath: 'key' }) }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+async function loadScanCache(key: string): Promise<GItem[] | null> {
+  try {
+    const db = await openScanDb()
+    return await new Promise<GItem[] | null>((resolve) => {
+      const rq = db.transaction('snap', 'readonly').objectStore('snap').get(key)
+      rq.onsuccess = () => resolve((rq.result as { items?: GItem[] } | undefined)?.items ?? null)
+      rq.onerror = () => resolve(null)
+    })
+  } catch { return null }
+}
+async function saveScanCache(key: string, items: GItem[]): Promise<void> {
+  try {
+    const db = await openScanDb()
+    db.transaction('snap', 'readwrite').objectStore('snap').put({ key, items, at: Date.now() })
+  } catch { /* 缓存失败不影响功能 */ }
+}
 const baseName = (p: string) => p.split('/').pop() ?? p
 function loadList(key: string): string[] {
   try { const v = JSON.parse(localStorage.getItem(key) ?? '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : [] } catch { return [] }
@@ -128,10 +155,27 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
           }
         } catch { /* 单个来源失败忽略 */ }
       }
-      setItems([...byPath.values()].sort((a, b) => b.mtime - a.mtime))
+      const merged = [...byPath.values()].sort((a, b) => b.mtime - a.mtime)
+      setItems(merged)
+      fullScannedRef.current = true
+      void saveScanCache(scanKey, merged)
     } finally { setScanning(false) }
   }, [folders, mediaDir, photosDir, photosOn])
 
+  const scanKey = useMemo(() => [mediaDir ?? '', photosOn ? (photosDir ?? '') : '', ...folders].join('|'),
+    [mediaDir, photosDir, photosOn, folders])
+  const fullScannedRef = useRef(false)
+  useEffect(() => {
+    if (!desktop) return
+    let dead = false
+    void loadScanCache(scanKey).then(cached => {
+      // 全量扫描还没回来时，先用缓存秒开
+      if (!dead && cached && cached.length > 0 && !fullScannedRef.current) {
+        setItems([...cached].sort((a, b) => b.mtime - a.mtime))
+      }
+    })
+    return () => { dead = true }
+  }, [desktop, scanKey])
   useEffect(() => { if (desktop) void scan() }, [desktop, scan])
   useEffect(() => {
     if (!desktop) return
