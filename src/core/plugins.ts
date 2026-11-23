@@ -71,6 +71,9 @@ export function loadPlugins(): InstalledPlugin[] {
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
     return arr.filter(p => p && typeof p === 'object' && p.manifest && typeof p.code === 'string')
+      // v0.1.326：下架的「余额适配器模板」示例是占位模板（hosts 仍为 api.example.com 即未改过的）
+      // 对用户纯属不能用的摆设，加载时直接滤掉；已被改成真实域名的（真在用的适配器）保留
+      .filter(p => !(p.manifest.id === 'acm-template-adapter' && (p.manifest.hosts ?? []).includes('api.example.com')))
   } catch { return [] }
 }
 
@@ -377,32 +380,6 @@ document.getElementById('dg-go').addEventListener('click', async () => {
     render(await acm.digest())
     atEl.textContent = '更新于 ' + new Date().toLocaleTimeString()
   } catch (e) { out.textContent = '读取失败：' + (e && e.message ? e.message : e) }
-})
-`,
-  },
-  {
-    manifest: {
-      id: 'acm-template-adapter',
-      name: '余额适配器模板（示例）',
-      version: '1.0.0',
-      description: '适配器插件模板：把 providers 改成目标平台 id、hosts 改成其官方 API 域名、接口地址与解析字段改成真实值后启用，即可给原本不支持的平台加上自动查余额。默认停用，避免误触发。',
-      author: 'AI 魔方',
-      provides: ['adapter'],
-      permissions: ['network'],
-      hosts: ['api.example.com'],
-      providers: ['example-provider'],
-    },
-    code: `
-// 余额适配器：宿主在用户点「查询/刷新余额」且保险箱已解锁时调用，
-// ctx.apiKey 是该账户的明文 Key（仅本次调用传入），ctx.http 只能访问清单 hosts 里的域名。
-acm.registerBalanceAdapter('example-provider', async (ctx) => {
-  const res = await ctx.http('https://api.example.com/v1/balance', {
-    headers: { Authorization: 'Bearer ' + ctx.apiKey },
-  })
-  if (res.status !== 200) throw new Error('接口返回 ' + res.status)
-  const j = JSON.parse(res.text)
-  // 按目标平台的真实返回结构取字段，返回 { total, used } 或 { remaining } 等（单位默认 currency）
-  return { remaining: Number(j.balance), total: Number(j.balance), unit: 'currency', symbol: '¥' }
 })
 `,
   },

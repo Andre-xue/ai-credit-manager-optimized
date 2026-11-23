@@ -367,6 +367,22 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
   }, [isProcess, desktop, m.id])
 
   const refreshOutput = async () => setOutput(await pluginProcessOutput(m.id))
+  // 卡片折叠（v0.1.326 Ethan 要求）：折叠状态按插件 id 存本机，折起后只剩标题行，列表更清爽
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem('acm.plugins.collapsed') ?? '[]') as string[]).includes(m.id) } catch { return false }
+  })
+  const toggleCollapsed = () => {
+    setCollapsed(v => {
+      const next = !v
+      try {
+        const arr = JSON.parse(localStorage.getItem('acm.plugins.collapsed') ?? '[]') as string[]
+        const set = new Set(arr)
+        if (next) set.add(m.id); else set.delete(m.id)
+        localStorage.setItem('acm.plugins.collapsed', JSON.stringify([...set]))
+      } catch { /* 忽略 */ }
+      return next
+    })
+  }
 
   return (
     <div className={`plugin-card ${plugin.enabled ? '' : 'disabled'}`}>
@@ -377,7 +393,11 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
           <div className="plugin-sub">{m.author ?? ''}{m.author ? ' · ' : ''}{plugin.source === 'builtin' ? t('示例') : plugin.source === 'file' ? t('文件/URL 安装') : t('自建')}</div>
         </div>
         <JellyToggle checked={plugin.enabled} onChange={v => setPluginEnabled(m.id, v)} />
+        <button className="icon-btn" title={collapsed ? t('展开') : t('收起')} onClick={toggleCollapsed}>
+          <ChevronDown size={16} style={{ transform: collapsed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+        </button>
       </div>
+      {!collapsed && (<>
       {m.description && <p className="plugin-desc">{m.description}</p>}
       <div className="plugin-chips">
         {m.provides.map(v => <span key={v} className="plugin-chip">{t(PROVIDE_LABEL[v])}</span>)}
@@ -415,6 +435,7 @@ function PluginCard({ plugin, notify, desktop, panelOpen, onTogglePanel, onOpenS
         <button className="btn sm ghost" onClick={onEdit}><Pencil size={13} /> {t('编辑')}</button>
         <HoldToConfirm title={t('卸载插件')} size={30} onConfirm={() => { uninstallPlugin(m.id); notify(t('插件已卸载：{name}', { name: m.name })) }} />
       </div>
+      </>)}
     </div>
   )
 }
@@ -485,7 +506,7 @@ function PluginSettingsModal({ plugin, notify, onClose }: {
 function McpSection({ notify, desktop }: { notify: (msg: string) => void; desktop: boolean }) {
   const [servers, setServers] = useState<McpServerConfig[]>(() => loadMcpServers())
   const [, setTick] = useState(0)
-  const [form, setForm] = useState<{ name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string } | null>(null)
+  const [form, setForm] = useState<{ editId?: string; name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string } | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
 
   useEffect(() => {
@@ -499,14 +520,16 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
     if (!form.name.trim()) { notify(t('请填写服务器名称')); return }
     if (form.transport === 'stdio' && !form.command.trim()) { notify(t('请填写启动命令')); return }
     if (form.transport === 'http' && !/^https?:\/\//i.test(form.url.trim())) { notify(t('请填写有效的服务器 URL')); return }
+    const id = form.editId ?? newMcpServerId()
+    if (form.editId) void disconnectMcpServer(id)
     upsertMcpServer({
-      id: newMcpServerId(), name: form.name.trim(), transport: form.transport,
+      id, name: form.name.trim(), transport: form.transport,
       command: form.transport === 'stdio' ? form.command.trim() : undefined,
       args: form.transport === 'stdio' ? form.args.split(/\s+/).map(x => x.trim()).filter(Boolean) : undefined,
       url: form.transport === 'http' ? form.url.trim() : undefined,
     })
     setForm(null)
-    notify(t('MCP 服务器已添加'))
+    notify(form.editId ? t('MCP 服务器已更新') : t('MCP 服务器已添加'))
   }
 
   return (
@@ -552,7 +575,7 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
           )}
           <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn sm" onClick={() => setForm(null)}>{t('取消')}</button>
-            <button className="btn sm primary" onClick={saveForm}>{t('添加')}</button>
+            <button className="btn sm primary" onClick={saveForm}>{form.editId ? t('保存') : t('添加')}</button>
           </div>
         </div>
       )}
@@ -562,18 +585,20 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
       <div className="plugin-list">
         {servers.map(s => (
           <McpServerCard key={s.id} server={s} notify={notify}
-            expanded={expanded === s.id} onToggle={() => setExpanded(expanded === s.id ? null : s.id)} />
+            expanded={expanded === s.id} onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
+            onEdit={() => setForm({ editId: s.id, name: s.name, transport: s.transport, command: s.command ?? '', args: (s.args ?? []).join(' '), url: s.url ?? '' })} />
         ))}
       </div>
     </div>
   )
 }
 
-function McpServerCard({ server, notify, expanded, onToggle }: {
+function McpServerCard({ server, notify, expanded, onToggle, onEdit }: {
   server: McpServerConfig
   notify: (msg: string) => void
   expanded: boolean
   onToggle: () => void
+  onEdit: () => void
 }) {
   const conn = getMcpConnection(server.id)
   const [busy, setBusy] = useState(false)
@@ -612,6 +637,7 @@ function McpServerCard({ server, notify, expanded, onToggle }: {
             <Wrench size={13} /> {t('工具（{n}）', { n: conn.tools.length })} <ChevronDown size={13} style={{ transform: expanded ? 'rotate(180deg)' : undefined }} />
           </button>
         )}
+        <button className="btn sm ghost" onClick={onEdit}><Pencil size={13} /> {t('编辑')}</button>
         {server.transport === 'stdio' && (
           <button className="btn sm ghost" onClick={async () => setLogs(await mcpServerLogs(server.id))}>{t('日志')}</button>
         )}

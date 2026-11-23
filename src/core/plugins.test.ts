@@ -115,6 +115,19 @@ describe('isHostAllowed', () => {
   })
 })
 
+describe('下架示例模板的清理（v0.1.326）', () => {
+  it('未改过的余额适配器模板（占位域名）被滤掉，改成真实域名的保留', () => {
+    const untouched = { ...validPkg, manifest: { ...validPkg.manifest, id: 'acm-template-adapter', hosts: ['api.example.com'] } }
+    const edited = { ...validPkg, manifest: { ...validPkg.manifest, id: 'acm-template-adapter', hosts: ['api.real.com'] } }
+    installPlugin(untouched, 'builtin')
+    expect(loadPlugins().some(p => p.manifest.id === 'acm-template-adapter')).toBe(false)
+    uninstallPlugin('acm-template-adapter')
+    installPlugin(edited, 'builtin')
+    expect(loadPlugins().some(p => p.manifest.id === 'acm-template-adapter')).toBe(true)
+    uninstallPlugin('acm-template-adapter')
+  })
+})
+
 describe('插件安装与私有存储', () => {
   it('安装 / 启停 / 卸载全流程，卸载清私有存储', () => {
     installPlugin(validPkg, 'editor')
