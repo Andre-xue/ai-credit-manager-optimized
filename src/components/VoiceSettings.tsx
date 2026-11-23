@@ -72,6 +72,16 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [cloneError, setCloneError] = useState('')
   const [volcConfig, setVolcConfig] = useState<VolcConfig>(() => getVolcConfig())
   const [volcOpen, setVolcOpen] = useState(false)
+  // 区块折叠（Edge / 声音克隆 / 已保存的克隆音色），展开状态记本机
+  const [secOpen, setSecOpen] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('acm.voice.sections') || '{}') as Record<string, boolean> } catch { return {} }
+  })
+  const isSecOpen = (k: string, dflt: boolean) => secOpen[k] ?? dflt
+  const toggleSec = (k: string, dflt: boolean) => setSecOpen(prev => {
+    const next = { ...prev, [k]: !(prev[k] ?? dflt) }
+    try { localStorage.setItem('acm.voice.sections', JSON.stringify(next)) } catch { /* ignore */ }
+    return next
+  })
   const desktop = isDesktopApp()
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -312,8 +322,11 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         {previewing ? <Square size={14} /> : <Play size={14} />} {previewing ? t('停止试听') : t('试听克隆音色')}
       </button>
 
-      {/* Edge 免费音色 */}
-      <div className="voice-section-label dialect"><Volume2 size={14} /> {t('Edge 免费音色（微软云端 · 免费）')}</div>
+      {/* Edge 免费音色（可折叠） */}
+      <button className="voice-config-toggle" onClick={() => toggleSec('edge', true)}>
+        <Volume2 size={14} /> {t('Edge 免费音色（微软云端 · 免费）')} <span>{isSecOpen('edge', true) ? t('收起') : t('展开')}</span>
+      </button>
+      {isSecOpen('edge', true) && <>
       <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('不需要 Key、不花钱；点任意音色即切换，行尾可试听')}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
         {EDGE_VOICES.map(v => (
@@ -325,9 +338,13 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           </div>
         ))}
       </div>
+      </>}
 
-      {/* 声音克隆 */}
-      <div className="voice-section-label dialect"><Volume2 size={14} /> {t('声音克隆（录音 / 音频文件 → AI 发音）')}</div>
+      {/* 声音克隆（可折叠） */}
+      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('clone', false)}>
+        <Volume2 size={14} /> {t('声音克隆（录音 / 音频文件 → AI 发音）')} <span>{isSecOpen('clone', false) ? t('收起') : t('展开')}</span>
+      </button>
+      {isSecOpen('clone', false) && <>
       <div className="voice-row" style={{ flexWrap: 'wrap', gap: 8 }}>
         <button className="btn sm" disabled={desktop} title={desktop ? t('桌面 WebView 不支持浏览器录音') : t('连续朗读 12 秒（10~20 秒最佳）')} onClick={() => void doRecord()}><Mic size={14} /> {t('录音 12 秒')}</button>
         {desktop ? (
@@ -379,16 +396,20 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       )}
       {!ttsConfigured && <div className="voice-hint"><Info size={13} /> {t('声音克隆需配置语音服务：在「API Key 管理 → 添加账户 → 语音配置(APP)」保存 Key，或按下方直连配置；内置免费模型不提供克隆能力。')}</div>}
       {desktop && <div className="voice-hint"><Info size={13} /> {t('桌面 WebView 不提供浏览器录音接口；请用「选择音频文件」导入样本（可先用 QuickTime 等工具录音）。')}</div>}
+      </>}
 
-      {/* 已保存的克隆音色列表：可命名、切换、删除 */}
-      <div className="voice-section-label dialect" style={{ marginTop: 14 }}>
-        {t('已保存的克隆音色（{n}）· 点击切换', { n: clonedVoices.length })}
-        {config.provider === 'voicestudio' && (
-          <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => void importVoiceStudioVoices()} disabled={importingVoices}>
+      {/* 已保存的克隆音色列表（可折叠）：可命名、切换、删除 */}
+      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('saved', true)}>
+        <Volume2 size={14} /> {t('已保存的克隆音色（{n}）· 点击切换', { n: clonedVoices.length })} <span>{isSecOpen('saved', true) ? t('收起') : t('展开')}</span>
+      </button>
+      {isSecOpen('saved', true) && <>
+      {config.provider === 'voicestudio' && (
+        <div style={{ margin: '6px 0' }}>
+          <button className="btn sm ghost" onClick={() => void importVoiceStudioVoices()} disabled={importingVoices}>
             {importingVoices ? t('导入中…') : t('从 VoiceStudio 导入')}
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {clonedVoices.length > 0 ? (
         <div className="cloned-voice-list">
           {clonedVoices.map(v => {
@@ -423,6 +444,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         <div className="voice-empty">{t('还没有克隆音色。导入一段清晰人声（10~20 秒），点「克隆为 AI 发音」即可创建。')}</div>
       )}
       <div className="voice-hint">{t('克隆音色保存在本机；删除记录只移除本机引用，云端音色请到百炼控制台清理以释放配额。')}</div>
+      </>}
 
       {/* 第三方 TTS 配置 */}
       <button className="voice-config-toggle" onClick={() => setConfigOpen(v => !v)}>

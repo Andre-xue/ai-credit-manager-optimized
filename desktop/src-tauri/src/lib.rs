@@ -2342,6 +2342,125 @@ async fn tts_synthesize_direct(api_key: String, voice: String, text: String) -> 
     Ok(format!("data:audio/mp3;base64,{}", base64_encode(&bytes)))
 }
 
+// ==================== Edge 免费音色（微软云端 WSS，桌面端原生实现） ====================
+// 桌面 WebView（WKWebView）里 new WebSocket 会抛 SecurityError「The operation is insecure.」
+// （应用页面走自定义协议、不是安全上下文），JS 版在桌面端连不上，故桌面端改走原生 WSS；
+// 手机端 Chromium WebView 是 https://localhost 安全上下文，仍用 JS 版（core/edgeTts.ts）。
+
+const EDGE_TOKEN: &str = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+const EDGE_GEC_VERSION: &str = "1-143.0.3650.75";
+
+/// Sec-MS-GEC：SHA256( 向下取整到 300 秒的 Windows 文件时间 + Token )，大写十六进制
+fn edge_gec() -> String {
+    use sha2::Digest;
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let mut ticks = secs + 11644473600;
+    ticks -= ticks % 300;
+    let raw = format!("{}{}", ticks * 10_000_000, EDGE_TOKEN);
+    let digest = sha2::Sha256::digest(raw.as_bytes());
+    digest.iter().map(|b| format!("{:02X}", b)).collect()
+}
+
+/// JS Date 的 UTC 串风格："Tue Nov 24 2026 05:11:00 GMT+0000 (Coordinated Universal Time)"
+fn edge_timestamp() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let days = secs.div_euclid(86400);
+    let tod = secs.rem_euclid(86400);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // 1970-01-01 是周四
+    let wd = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][days.rem_euclid(7) as usize];
+    // civil-from-days（Howard Hinnant 算法，已对 1970-01-01 与 2026-11-24 校验）
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr = if mo <= 2 { y + 1 } else { y };
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{} {} {:02} {} {:02}:{:02}:{:02} GMT+0000 (Coordinated Universal Time)",
+        wd, months[(mo - 1) as usize], d, yr, h, mi, s)
+}
+
+fn edge_xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+/// 简单 xorshift 随机字节（仅作握手 nonce / 请求 ID，不作安全用途）
+fn edge_rand_bytes(n: usize) -> Vec<u8> {
+    let mut x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ^ ((std::process::id() as u128) << 64) ^ 0x9E3779B97F4A7C15u128;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        out.push((x & 0xff) as u8);
+    }
+    out
+}
+
+/// Edge 免费音色合成：WSS 直连微软 Edge 朗读接口，返回 data:audio/mp3;base64,...
+#[tauri::command]
+async fn edge_tts_synthesize(text: String, voice: String) -> Result<String, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let url = format!("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken={}&Sec-MS-GEC={}&Sec-MS-GEC-Version={}",
+        EDGE_TOKEN, edge_gec(), EDGE_GEC_VERSION);
+    let req = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(url.as_str())
+        .header("Host", "speech.platform.bing.com")
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Key", base64_encode(&edge_rand_bytes(16)))
+        .header("Sec-WebSocket-Version", "13")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+        .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+        .body(())
+        .map_err(|e| format!("Edge 请求构造失败：{}", e))?;
+    let (mut ws, _resp) = tokio::time::timeout(std::time::Duration::from_secs(20),
+        tokio_tungstenite::connect_async(req))
+        .await.map_err(|_| "Edge 音色连接超时".to_string())?
+        .map_err(|e| format!("Edge 音色连接失败：{}", e))?;
+    let ts = edge_timestamp();
+    let req_id: String = edge_rand_bytes(16).iter().map(|b| format!("{:02x}", b)).collect();
+    let config_body = serde_json::json!({
+        "context": { "synthesis": { "audio": {
+            "metadataoptions": { "sentenceBoundaryEnabled": "false", "wordBoundaryEnabled": "false" },
+            "outputFormat": "audio-24khz-48kbitrate-mono-mp3"
+        } } }
+    }).to_string();
+    let config = format!("X-Timestamp:{}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{}", ts, config_body);
+    let ssml = format!("X-RequestId:{}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:{}\r\nPath:ssml\r\n\r\n<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"zh-CN\"><voice name=\"{}\"><prosody pitch=\"+0Hz\" rate=\"+0%\" volume=\"+0%\">{}</prosody></voice></speak>",
+        req_id, ts, voice, edge_xml_escape(&text));
+    ws.send(Message::Text(config.into())).await.map_err(|e| format!("Edge 发送失败：{}", e))?;
+    ws.send(Message::Text(ssml.into())).await.map_err(|e| format!("Edge 发送失败：{}", e))?;
+    let mut audio: Vec<u8> = Vec::new();
+    let read_loop = async {
+        while let Some(msg) = ws.next().await {
+            match msg {
+                Ok(Message::Binary(data)) => {
+                    if data.len() < 2 { continue }
+                    let hlen = ((data[0] as usize) << 8) | data[1] as usize;
+                    if data.len() < 2 + hlen { continue }
+                    let header = String::from_utf8_lossy(&data[2..2 + hlen]).into_owned();
+                    if header.contains("Path:audio") { audio.extend_from_slice(&data[2 + hlen..]) }
+                }
+                Ok(Message::Text(t)) => { if t.to_string().contains("Path:turn.end") { break } }
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(e) => return Err(format!("Edge 接收失败：{}", e)),
+            }
+        }
+        Ok::<(), String>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), read_loop).await
+        .map_err(|_| "Edge 音色合成超时".to_string())??;
+    if audio.is_empty() { return Err("Edge 未返回音频".to_string()) }
+    Ok(format!("data:audio/mp3;base64,{}", base64_encode(&audio)))
+}
+
 // ==================== VoiceStudio 本地语音服务（OpenAI 兼容 :3900） ====================
 
 /// 规范化 VoiceStudio 基址：默认 http://127.0.0.1:3900，去掉末尾斜杠
@@ -3473,7 +3592,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

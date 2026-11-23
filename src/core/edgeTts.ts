@@ -1,5 +1,15 @@
 // Edge 免费音色：微软 Edge「大声朗读」的云端神经网络音色（非官方接口，无需 Key、不花钱）。
-// WebView 内直接走 WSS，桌面/手机通用。微软若调整校验（Sec-MS-GEC 版本号），需跟着更新 GEC_VERSION。
+// 手机端 WebView 直接走 WSS；桌面端 WKWebView 里 new WebSocket 会抛 SecurityError
+// 「The operation is insecure.」（自定义协议非安全上下文），故桌面端走 Rust 原生命令
+// edge_tts_synthesize（同一套协议）。微软若调整校验（Sec-MS-GEC 版本号），需跟着更新 GEC_VERSION。
+import { isDesktopApp } from './openExternal'
+
+type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+function getInvoke(): Invoke | null {
+  if (!isDesktopApp()) return null
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: Invoke } }
+  return w.__TAURI_INTERNALS__?.invoke ?? null
+}
 const TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
 const GEC_VERSION = '1-143.0.3650.75'
 const EDGE_VOICE_KEY = 'acm.tts.edgeVoice'
@@ -49,8 +59,22 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 }
 
-/** 用指定 Edge 音色合成一句话，返回 mp3 的 ArrayBuffer */
+/** 用指定 Edge 音色合成一句话，返回 mp3 的 ArrayBuffer。桌面端走 Rust 原生 WSS，其余走 WebView WSS */
 export async function synthesizeEdgeMp3(text: string, voice: string): Promise<ArrayBuffer> {
+  const invoke = getInvoke()
+  if (invoke) {
+    const dataUrl = await invoke('edge_tts_synthesize', { text, voice }) as string
+    const b64 = dataUrl.split(',')[1] ?? ''
+    const bin = atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return bytes.buffer
+  }
+  return synthesizeEdgeMp3Ws(text, voice)
+}
+
+/** WebView 内 WSS 直连实现（手机端用；桌面端 WKWebView 会抛 insecure 错误，不走这里） */
+async function synthesizeEdgeMp3Ws(text: string, voice: string): Promise<ArrayBuffer> {
   const gec = await secMsGec()
   const url = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${TOKEN}&Sec-MS-GEC=${gec}&Sec-MS-GEC-Version=${GEC_VERSION}`
   return new Promise<ArrayBuffer>((resolve, reject) => {
