@@ -1085,26 +1085,31 @@ function App() {
     return () => window.clearInterval(t)
   }, [cloudUser])
 
-  // ---- 自动签到（v0.1.362）：本机开关打开后，保险箱解锁状态下每天静默签一次 ----
-  // 解锁时先查一次，之后每 30 分钟看一眼（覆盖跨午夜常驻）；结果留痕，迷你窗可直接看到。
+  // ---- 自动签到（v0.1.362；v0.1.372 起锁定也能签）：本机开关打开后每天静默签一次 ----
+  // 启动/解锁时先查一次，之后每 30 分钟看一眼（覆盖跨午夜常驻）；结果留痕，迷你窗可直接看到。
+  // 密码来源：已解锁用会话密码；锁定中用指纹解锁留下的本机副本（getBiometricPassword，
+  // 仅开过指纹解锁的设备才有，且读取不弹验证框；没开指纹的设备锁定中跳过、解锁后补签）。
   const autoCheckinRunningRef = useRef(false)
+  const sessionPwdRef = useRef(sessionPwd)
+  sessionPwdRef.current = sessionPwd
   useEffect(() => {
-    if (!sessionPwd) return
     const tick = async () => {
       if (autoCheckinRunningRef.current) return
       if (!getAutoCheckinEnabled() || !hasCheckinSources()) return
       if (checkinRunIsToday(readLastCheckinRun())) return
+      const pwd = sessionPwdRef.current ?? getBiometricPassword()
+      if (!pwd) return
       autoCheckinRunningRef.current = true
       try {
-        const run = await runAllCheckins(sessionPwd)
-        notify(`自动签到完成：${summarizeCheckinRun(run)}`)
+        const run = await runAllCheckins(pwd)
+        if (sessionPwdRef.current) notify(`自动签到完成：${summarizeCheckinRun(run)}`)
       } catch { /* 静默：失败原因会在迷你窗/签到页手动刷新时呈现 */ }
       finally { autoCheckinRunningRef.current = false }
     }
     void tick()
     const t = window.setInterval(() => { void tick() }, 30 * 60 * 1000)
     return () => window.clearInterval(t)
-  }, [sessionPwd, notify])
+  }, [notify])
 
   // ---- 全局刷新（v0.1.302）：Key 管理 / 额度看板 / 用量费用三页的「刷新」按钮共用 ----
   // 立即全量拉一遍可查余额平台的官方余额并落快照，同时重置自动巡检计时。

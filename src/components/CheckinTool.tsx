@@ -425,7 +425,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 13.5 }}>自动签到</b>
-          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行且保险箱解锁后每天自动把所有账号签一遍（结果在菜单栏迷你窗能看到）；App 没运行或保险箱没解锁时不会执行，解锁后会补上。</span>
+          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行中每天自动把所有账号签一遍（结果在菜单栏迷你窗能看到）；保险箱锁定时，开过指纹解锁的设备会用本机指纹副本照常签，没开指纹的解锁后补上；App 没运行则不会执行。</span>
         </div>
         <button className="btn sm" onClick={() => { const v = !autoOn; setAutoOn(v); setAutoCheckinEnabled(v); notify(v ? '自动签到已开启' : '自动签到已关闭') }}>
           {autoOn ? '已开启' : '已关闭'}
