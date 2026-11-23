@@ -211,6 +211,35 @@ export function applyPayload(payload: SyncPayload, local: AppState): AppState {
   })
 }
 
+/** 为同步剥离本机专属内容（云端与文件通道共用口径）：网关令牌永不离开本机、
+ * 界面语言仅本机；本地模型账户默认不进同步（includeLocal 时才带上） */
+export function strippedSyncState(appState: AppState, includeLocal = false): AppState {
+  const localIds = new Set(includeLocal ? [] : appState.accounts.filter(a => isLocalProvider(a.providerId)).map(a => a.id))
+  const noTokenState: AppState = { ...appState, settings: { ...appState.settings, gatewayToken: undefined, language: undefined } }
+  if (!localIds.size) return noTokenState
+  return {
+    ...noTokenState,
+    accounts: noTokenState.accounts.filter(a => !localIds.has(a.id)),
+    quotas: noTokenState.quotas.filter(q => !localIds.has(q.accountId)),
+    usage: noTokenState.usage.filter(u => !localIds.has(u.accountId)),
+    checkins: noTokenState.checkins.filter(c => !c.accountId || !localIds.has(c.accountId)),
+  }
+}
+
+/** 纯函数构建同步载荷（不落库）：WebDAV / iCloud Drive 文件通道用（v0.1.352）。
+ * keyBackups 与云端快照与远端已有内容合并保留，普通通道同步不许把它们冲掉 */
+export function prepareSyncPayload(appState: AppState, remotePrev: SyncPayload | null | undefined, opts?: { includeLocal?: boolean; newBackups?: KeyBackupFile[] }): SyncPayload {
+  const backups = [...(remotePrev?.keyBackups ?? []), ...(opts?.newBackups ?? [])].slice(-MAX_CLOUD_BACKUPS)
+  return {
+    appState: strippedSyncState(appState, opts?.includeLocal),
+    vault: getVaultSyncMaterial(),
+    keyBackups: backups,
+    stateSnapshots: remotePrev?.stateSnapshots ?? [],
+    clientAt: new Date().toISOString(),
+    clientId: getClientId(),
+  }
+}
+
 export function getLastSyncAt(): string | null {
   try { return localStorage.getItem(LAST_SYNC_KEY) } catch { return null }
 }

@@ -82,6 +82,7 @@ import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
+import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
@@ -697,6 +698,60 @@ function App() {
       } else { setSyncError(null); notify('云端暂无数据') }
     } finally { syncingRef.current = false; setSyncing(false) }
   }, [notify, applyRemote])
+
+  // ---- 备用同步通道（v0.1.352）：WebDAV / iCloud Drive，与云同步独立，云端不可用时照常工作 ----
+  const altSyncBusy = useRef(false)
+  const [altSyncing, setAltSyncing] = useState(false)
+  const [altStatus, setAltStatus] = useState(loadAltStatus)
+  const runAltSync = useCallback(async (manual = false) => {
+    if (altSyncBusy.current) return
+    const jobs: { label: string; io: ChannelIO }[] = []
+    const wcfg = loadWebdavConfig()
+    if (wcfg.enabled && wcfg.username.trim()) jobs.push({ label: 'WebDAV', io: webdavIO(wcfg) })
+    if (loadIcloudSyncConfig().enabled && isDesktopApp()) jobs.push({ label: 'iCloud Drive', io: icloudIO() })
+    if (!jobs.length) { if (manual) notify('备用同步通道还没有启用或配置不完整'); return }
+    altSyncBusy.current = true
+    setAltSyncing(true)
+    try {
+      let cur = stateRef.current
+      for (const job of jobs) {
+        try {
+          const r = await syncChannel(job.io, cur, {
+            includeLocal: !!cur.settings.syncLocalProviders,
+            apply: next => {
+              skipPushOnce.current = true
+              lastPullAt.current = Date.now()
+              stateRef.current = next
+              setState(next)
+            },
+          })
+          cur = r.state
+          if (manual) notify(r.action === 'applied' ? `${job.label}：已同步其他设备的最新数据` : r.action === 'pushed' ? `${job.label}：本机数据已推送` : `${job.label}：已是最新，无需同步`)
+        } catch (e) {
+          if (manual) notify(`${job.label} 同步失败：${(e as Error)?.message ?? String(e)}`)
+        }
+      }
+    } finally {
+      altSyncBusy.current = false
+      setAltSyncing(false)
+      setAltStatus(loadAltStatus())
+    }
+  }, [notify])
+
+  // 备用通道自动同步：启动后跑一次，之后每 45 秒与切回前台时各跑一次（未启用时立即返回）
+  useEffect(() => {
+    const t0 = window.setTimeout(() => { void runAltSync(false) }, 4000)
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void runAltSync(false)
+    }, 45000)
+    const onVis = () => { if (document.visibilityState === 'visible') void runAltSync(false) }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [runAltSync])
 
   const handleCloudLogin = useCallback(async (user: CloudUser) => {
     setLoginOpen(false)
@@ -1615,6 +1670,9 @@ function App() {
           onLogin={() => setLoginOpen(true)}
           onLogout={handleCloudLogout}
           onSync={() => void pullCloud()}
+          onAltSync={() => void runAltSync(true)}
+          altSyncing={altSyncing}
+          altStatus={altStatus}
         />
         return (
           <div className="set-modal-backdrop" onClick={() => setSettingsOpen(false)}>
@@ -4927,7 +4985,7 @@ const AI_TOOLBAR_LABELS: Record<string, string> = {
   myData: '引用我的数据', webSearch: '联网搜索', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
 }
 
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, onRestoreSnapshot, isPhone, onClearData }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onAltSync, altSyncing, altStatus, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, onRestoreSnapshot, isPhone, onClearData }: {
   onClearData?: (cats: ClearCat[]) => void
   isPhone?: boolean
   state: AppState
@@ -4952,6 +5010,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   onLogin: () => void
   onLogout: () => void
   onSync: () => void
+  onAltSync: () => void
+  altSyncing: boolean
+  altStatus: ReturnType<typeof loadAltStatus>
   onCheckUpdate: () => void
 }) {
   const s = state.settings
@@ -5070,6 +5131,22 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     const next = { ...storagePrefs, [kind]: { ...storagePrefs[kind], dir } }
     patchStorage(next, kind === 'apikey')
   }
+  // ---- 备用同步通道配置（v0.1.352，仅本机保存）：WebDAV + iCloud Drive ----
+  const [wcfg, setWcfg] = useState(loadWebdavConfig)
+  const patchW = (next: typeof wcfg) => { setWcfg(next); saveWebdavConfig(next) }
+  const [icEnabled, setIcEnabled] = useState(() => loadIcloudSyncConfig().enabled)
+  const patchIc = (v: boolean) => { setIcEnabled(v); saveIcloudSyncConfig({ enabled: v }) }
+  const [wTest, setWTest] = useState<string | null>(null)
+  const [wTesting, setWTesting] = useState(false)
+  const doWTest = async () => {
+    setWTesting(true)
+    try { setWTest(await webdavTest(wcfg)) }
+    catch (e) { setWTest(`连接失败：${(e as Error)?.message ?? String(e)}`) }
+    finally { setWTesting(false) }
+  }
+  const altStatusText = (m: { lastOkAt?: string; lastError?: string }) =>
+    m.lastError ? `上次失败：${m.lastError}` : m.lastOkAt ? `最近同步：${new Date(m.lastOkAt).toLocaleString(locale())}` : '尚未同步过'
+
   // ---- 照片图库授权（仅桌面端，v0.1.347）：触发系统弹窗 / 读一次数据库验证权限 ----
   const probePhotosAccess = async () => {
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string) => Promise<string> } }
@@ -5642,6 +5719,44 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
             <p className="set-note">{t('支持微信扫码、手机号验证码、邮箱验证码、WorkBuddy 账号登录。登录后任意端的增删改会在约 5 秒内自动同步到其他端；同步内容包含账户、额度、签到、用量与加密密钥（密文），各端需用同一主密码解锁。')}</p>
           </SettingsSection>
+
+          <SettingsSection title="WebDAV 同步" desc="备用通道：同步到你自己的网盘（坚果云等），不依赖云端账号" icon={Cloud} tone="indigo">
+            <SettingsRow title="启用 WebDAV 同步" desc="开启后自动同步（启动时、每 45 秒、切回前台时），规则与云同步一致：静默覆盖、新盖旧">
+              <Toggle checked={wcfg.enabled} onChange={v => patchW({ ...wcfg, enabled: v })} />
+            </SettingsRow>
+            <SettingsRow title="服务器地址" desc="坚果云默认已填好；其他支持 WebDAV 的网盘改这里（需 https）">
+              <input className="input" style={{ width: 250 }} value={wcfg.url} onChange={e => patchW({ ...wcfg, url: e.target.value })} placeholder="https://dav.jianguoyun.com/dav/" />
+            </SettingsRow>
+            <SettingsRow title="账号" desc="坚果云填你的登录邮箱">
+              <input className="input" style={{ width: 250 }} value={wcfg.username} onChange={e => patchW({ ...wcfg, username: e.target.value })} placeholder="邮箱" />
+            </SettingsRow>
+            <SettingsRow title="应用密码" desc="不是登录密码：坚果云网页版 → 账户信息 → 安全设置 → 第三方应用管理 → 添加应用密码">
+              <input className="input" style={{ width: 250 }} type="password" value={wcfg.passcode} onChange={e => patchW({ ...wcfg, passcode: e.target.value })} placeholder="应用密码" />
+            </SettingsRow>
+            <SettingsRow title="文件路径" desc="同步文件在网盘里的位置，不存在会自动创建">
+              <input className="input" style={{ width: 250 }} value={wcfg.path} onChange={e => patchW({ ...wcfg, path: e.target.value })} placeholder="AI魔方/sync.json" />
+            </SettingsRow>
+            <SettingsRow title="立即同步" desc={altStatusText(altStatus.webdav)}>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn sm" disabled={wTesting || !wcfg.username.trim()} onClick={() => void doWTest()}>{wTesting ? '测试中…' : '测试连接'}</button>
+                <button className="btn sm primary" disabled={altSyncing || !wcfg.enabled} onClick={onAltSync}>{altSyncing ? '同步中…' : '立即同步'}</button>
+              </div>
+            </SettingsRow>
+            {wTest && <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--text-2)' }}>{wTest}</div>}
+            <p className="set-note">配置与应用密码只保存在本机，不进任何同步与备份。同步内容与云同步口径一致（密钥为密文，需同一主密码解锁）。与云同步可以同时开，以最后修改的一端为准。</p>
+          </SettingsSection>
+
+          {desktopShell && (
+            <SettingsSection title="iCloud Drive 同步" desc="备用通道（苹果设备）：同步文件放 iCloud Drive，苹果设备间自动同步" icon={Cloud} tone="indigo">
+              <SettingsRow title="启用 iCloud Drive 同步" desc="同步文件写在 iCloud Drive 根目录的「AI魔方同步.json」；仅装了 iCloud Drive 的电脑可用，安卓无法使用此通道">
+                <Toggle checked={icEnabled} onChange={patchIc} />
+              </SettingsRow>
+              <SettingsRow title="立即同步" desc={altStatusText(altStatus.icloud)}>
+                <button className="btn sm primary" disabled={altSyncing || !icEnabled} onClick={onAltSync}>{altSyncing ? '同步中…' : '立即同步'}</button>
+              </SettingsRow>
+              <p className="set-note">适合多台苹果设备之间同步；跨安卓请用 WebDAV 通道。两个备用通道可同时开，以最后修改的一端为准。</p>
+            </SettingsSection>
+          )}
 
           <SettingsSection title="云端自动备份" desc="定时快照存云端，出事可回滚（与云同步互补）" icon={Cloud} tone="indigo">
             <SettingsRow title="自动备份" desc="开启后本机在 App 运行期间按间隔自动存快照；此偏好仅本机保存，各设备可各自设置">
