@@ -233,13 +233,14 @@ class McpClient {
         }).catch(() => { /* 读取失败静默，等下个周期 */ })
       }, 250)
     }
+    // 首次连接 npx/uvx 要现下载服务包，20 秒常不够（Ethan 实测 Everything 初始化超时）——放宽到 90 秒
     const init = await this.request<{ serverInfo?: { name?: string; version?: string } }>('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: 'AI Credit Manager', version: '0.1.264' },
-    }, 20000)
+    }, 90000)
     await this.notify('notifications/initialized').catch(() => { /* 部分服务器不接受通知，忽略 */ })
-    const listed = await this.request<{ tools?: McpTool[] }>('tools/list', {}, 20000)
+    const listed = await this.request<{ tools?: McpTool[] }>('tools/list', {}, 90000)
     const tools = Array.isArray(listed?.tools) ? listed.tools : []
     const info = init?.serverInfo ? `${init.serverInfo.name ?? ''} ${init.serverInfo.version ?? ''}`.trim() : undefined
     return { tools, serverInfo: info || undefined }
