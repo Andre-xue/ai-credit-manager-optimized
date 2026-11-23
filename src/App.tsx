@@ -84,6 +84,7 @@ import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from 
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
+import { getAutoCheckinEnabled, readLastCheckinRun, checkinRunIsToday, runAllCheckins, summarizeCheckinRun, hasCheckinSources } from './core/checkinRun'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -1083,6 +1084,27 @@ function App() {
     const t = window.setInterval(() => { void tick() }, 10 * 60 * 1000)
     return () => window.clearInterval(t)
   }, [cloudUser])
+
+  // ---- 自动签到（v0.1.362）：本机开关打开后，保险箱解锁状态下每天静默签一次 ----
+  // 解锁时先查一次，之后每 30 分钟看一眼（覆盖跨午夜常驻）；结果留痕，迷你窗可直接看到。
+  const autoCheckinRunningRef = useRef(false)
+  useEffect(() => {
+    if (!sessionPwd) return
+    const tick = async () => {
+      if (autoCheckinRunningRef.current) return
+      if (!getAutoCheckinEnabled() || !hasCheckinSources()) return
+      if (checkinRunIsToday(readLastCheckinRun())) return
+      autoCheckinRunningRef.current = true
+      try {
+        const run = await runAllCheckins(sessionPwd)
+        notify(`自动签到完成：${summarizeCheckinRun(run)}`)
+      } catch { /* 静默：失败原因会在迷你窗/签到页手动刷新时呈现 */ }
+      finally { autoCheckinRunningRef.current = false }
+    }
+    void tick()
+    const t = window.setInterval(() => { void tick() }, 30 * 60 * 1000)
+    return () => window.clearInterval(t)
+  }, [sessionPwd, notify])
 
   // ---- 全局刷新（v0.1.302）：Key 管理 / 额度看板 / 用量费用三页的「刷新」按钮共用 ----
   // 立即全量拉一遍可查余额平台的官方余额并落快照，同时重置自动巡检计时。

@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { latestQuota, loadState, todayISO } from '../core/store'
+import { latestQuota, loadState } from '../core/store'
 import { predictExhaustion } from '../core/forecast'
-import { CHECKIN_TOOLS } from '../data/agentTools'
 import { PROVIDER_MAP } from '../data/providers'
+import { getBiometricPassword } from '../core/crypto'
+import {
+  readLastCheckinRun, runAllCheckins, summarizeCheckinRun, checkinRunIsToday,
+  getAutoCheckinEnabled, hasCheckinSources, type CheckinRun,
+} from '../core/checkinRun'
 import type { AppState } from '../core/types'
 import { t } from '../core/i18n'
 
@@ -21,13 +25,37 @@ function tauriInvoke(): InvokeFn | undefined {
 
 export function MiniView() {
   const [state, setState] = useState<AppState>(() => loadState())
+  const [lastRun, setLastRun] = useState<CheckinRun | null>(() => readLastCheckinRun())
+  const [autoOn, setAutoOn] = useState(() => getAutoCheckinEnabled())
+  const [checking, setChecking] = useState(false)
+  const [checkMsg, setCheckMsg] = useState('')
+  const [pwdInput, setPwdInput] = useState('')
+  const [needPwd, setNeedPwd] = useState(false)
   const [updatedAt, setUpdatedAt] = useState(() => new Date())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
 
   const refresh = useCallback(() => {
     setState(loadState())
+    setLastRun(readLastCheckinRun())
+    setAutoOn(getAutoCheckinEnabled())
     setUpdatedAt(new Date())
   }, [])
+
+  // 一键签到：全程在本窗完成。密码优先用指纹解锁留下的副本，没有就用本窗输入的主密码。
+  const doCheckin = async () => {
+    if (checking) return
+    const pwd = getBiometricPassword() || pwdInput
+    if (!pwd) { setNeedPwd(true); setCheckMsg('保险箱没解锁：输入主密码，或在主窗口开启指纹解锁后这里可免密签到'); return }
+    setChecking(true); setCheckMsg('')
+    try {
+      const run = await runAllCheckins(pwd)
+      setLastRun(run)
+      setNeedPwd(false); setPwdInput('')
+      setCheckMsg(summarizeCheckinRun(run))
+    } catch (e) {
+      setCheckMsg(e instanceof Error ? e.message : '签到失败')
+    } finally { setChecking(false) }
+  }
 
   useEffect(() => {
     // 主窗口落盘变更（storage 事件）/ 迷你窗重新聚焦 / 定时，三路刷新
@@ -50,10 +78,6 @@ export function MiniView() {
   const themePref = state.settings.theme ?? 'system'
   const dark = themePref === 'dark' || (themePref === 'system' && systemDark)
 
-  const pending = useMemo(
-    () => CHECKIN_TOOLS.filter((t) => !state.checkins.some((c) => c.providerId === t.id && c.date === todayISO() && c.done)),
-    [state],
-  )
   const balances = useMemo(
     () =>
       state.accounts
@@ -92,7 +116,7 @@ export function MiniView() {
       onMouseLeave={() => void invoke?.('mini_hover', { inside: false })}
       onPointerDownCapture={() => void invoke?.('mini_interacted')}
       onKeyDownCapture={() => void invoke?.('mini_interacted')}
-      style={{ minHeight: '100vh', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
+      style={{ height: '100vh', overflowY: 'auto', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 26, height: 26, borderRadius: 8, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
         <b style={{ fontSize: 14 }}>{t('AI 魔方')}</b>
@@ -101,16 +125,41 @@ export function MiniView() {
       </div>
 
       <div style={card}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontSize: 24, fontWeight: 700, color: pending.length ? '#d97706' : '#16a34a' }}>{pending.length}</span>
-          <span style={{ fontSize: 12.5, color: c.sub }}>{t('个工具今日待签到')}</span>
-          <button onClick={() => goMain('checkin')} style={{ ...btn, marginLeft: 'auto', background: 'linear-gradient(135deg,#6d28d9,#9333ea)', color: '#fff', border: 'none', fontWeight: 600 }}>{t('去签到')}</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <b style={{ fontSize: 13.5 }}>每日签到</b>
+          {autoOn && <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 999, border: `1px solid ${c.border}`, color: c.sub }}>自动签到开</span>}
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>
+            {lastRun ? `${checkinRunIsToday(lastRun) ? '今天' : new Date(lastRun.at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${new Date(lastRun.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '还没签过'}
+          </span>
         </div>
-        {pending.length > 0 && (
-          <div style={{ marginTop: 6, fontSize: 12, color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {pending.slice(0, 6).map((tool) => tool.name).join(' · ')}{pending.length > 6 ? ` ${t('等 {count} 个', { count: pending.length })}` : ''}
+        {lastRun && lastRun.items.length > 0 && (
+          <div style={{ marginTop: 7, display: 'grid', gap: 3, maxHeight: 118, overflowY: 'auto' }}>
+            {lastRun.items.map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6, fontSize: 12, alignItems: 'baseline' }}>
+                <span style={{ flexShrink: 0 }}>{it.outcome === 'claimed' ? '✅' : it.outcome === 'already' ? '✓' : '⚠️'}</span>
+                <span style={{ color: c.sub, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</span>
+                <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', color: it.outcome === 'error' ? '#dc2626' : c.text }}>{it.message}</span>
+              </div>
+            ))}
           </div>
         )}
+        {!lastRun && hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>点下面「一键签到」，WorkBuddy 池和 MiniMax 一起签，不用打开主窗口。</div>}
+        {!hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>还没连接签到账号（在主窗口工坊「每日签到 / 账号池」里添加）。</div>}
+        {checkMsg && <div style={{ marginTop: 6, fontSize: 12, color: c.text }}>{checkMsg}</div>}
+        {needPwd && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <input type="password" placeholder="保险箱主密码" value={pwdInput} onChange={(e) => setPwdInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void doCheckin() }}
+              style={{ flex: 1, minWidth: 0, border: `1px solid ${c.border}`, background: c.bg, color: c.text, borderRadius: 10, padding: '7px 10px', fontSize: 12.5 }} />
+            <button onClick={() => void doCheckin()} style={{ ...btn, fontWeight: 600 }}>解锁并签到</button>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={() => void doCheckin()} disabled={checking} style={{ ...btn, flex: 1, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', color: '#fff', border: 'none', fontWeight: 600, opacity: checking ? 0.6 : 1 }}>
+            {checking ? '签到中…' : '一键签到'}
+          </button>
+          <button onClick={refresh} style={{ ...btn, flex: 1 }}>刷新</button>
+        </div>
       </div>
 
       <div style={card}>

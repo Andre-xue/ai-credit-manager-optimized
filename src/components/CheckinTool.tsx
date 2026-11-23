@@ -13,6 +13,7 @@ import {
   migrateLegacyWorkbuddyCred, poolAccountStatuses, poolClaimOne, listPoolMeta,
   type PoolAccountStatus,
 } from '../core/wbPool'
+import { getAutoCheckinEnabled, setAutoCheckinEnabled } from '../core/checkinRun'
 
 /**
  * 每日签到工具页（v0.1.356 上线，v0.1.359 WorkBuddy 改走账号池）：
@@ -35,6 +36,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   // WorkBuddy 账号池
   const [poolStatuses, setPoolStatuses] = useState<PoolAccountStatus[]>([])
   const [busy, setBusy] = useState('')
+  const [autoOn, setAutoOn] = useState(() => getAutoCheckinEnabled())
   const pollRef = useRef<number | null>(null)
 
   useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
@@ -147,6 +149,16 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           </div>
         </div>
       )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <b style={{ fontSize: 13.5 }}>自动签到</b>
+          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行且保险箱解锁后每天自动签一次（结果在菜单栏迷你窗能看到）；App 没运行或保险箱没解锁时不会执行，解锁后会补上。</span>
+        </div>
+        <button className="btn sm" onClick={() => { const v = !autoOn; setAutoOn(v); setAutoCheckinEnabled(v); notify(v ? '自动签到已开启' : '自动签到已关闭') }}>
+          {autoOn ? '已开启' : '已关闭'}
+        </button>
+      </div>
 
       {/* WorkBuddy：账号池 */}
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
