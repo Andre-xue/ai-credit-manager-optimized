@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Play, Heart, FolderPlus, X, ChevronLeft, ChevronRight, ExternalLink, Copy, Loader2, Image as ImageIcon, Film,
-  Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square,
+  Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square, Cloud,
 } from 'lucide-react'
 import { loadStoragePrefs, storageDir } from '../core/storagePrefs'
-import { isDesktopApp } from '../core/openExternal'
+import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExternal'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
 import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, type CaptionRec } from '../core/galleryIndex'
@@ -25,7 +25,7 @@ const FAVS_KEY = 'acm.gallery.favs.v1'
 const PHOTOS_ON_KEY = 'acm.gallery.photosLib'
 const TAG_ROUTE_KEY = 'acm.gallery.tagRoute'
 
-interface GItem { path: string; name: string; size: number; mtime: number; kind: 'image' | 'video'; source: string; ai: boolean }
+interface GItem { path: string; name: string; size: number; mtime: number; kind: 'image' | 'video'; source: string; ai: boolean; cloud?: boolean; dur?: number }
 type GalView = 'ai' | 'all' | 'video' | 'fav'
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 function getInvoke(): InvokeFn | null {
@@ -82,6 +82,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const [indexing, setIndexing] = useState<{ done: number; total: number } | null>(null)
   const cancelRef = useRef(false)
   const [query, setQuery] = useState('')
+  const [photosDbFailed, setPhotosDbFailed] = useState(false)
 
   const scan = useCallback(async () => {
     const invoke = getInvoke()
@@ -90,9 +91,29 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     try {
       const sources: { dir: string; label: string; ai: boolean }[] = []
       if (mediaDir) sources.push({ dir: mediaDir, label: 'AI 生成', ai: true })
-      if (photosDir && photosOn && photosDir !== mediaDir) sources.push({ dir: photosDir, label: '照片图库', ai: false })
       for (const f of folders) if (f !== mediaDir && f !== photosDir) sources.push({ dir: f, label: baseName(f), ai: false })
       const byPath = new Map<string, GItem>()
+      // 照片图库：优先读 Photos 数据库全量列出（含只在 iCloud 云端的项），读不到再回退扫 originals 文件夹
+      let photosDbOk = false
+      if (photosDir && photosOn && photosDir !== mediaDir) {
+        try {
+          const res = (await invoke('photos_db_assets')) as { assets?: { name: string; dir: string; created: number; kind: string; dur: number; local: boolean; size: number }[] }
+          if (res && Array.isArray(res.assets) && res.assets.length > 0) {
+            photosDbOk = true
+            for (const a of res.assets) {
+              const path = `${photosDir}/${a.dir}/${a.name}`
+              if (byPath.has(path)) continue
+              byPath.set(path, {
+                path, name: a.name, size: a.size || 0, mtime: a.created,
+                kind: a.kind === 'video' ? 'video' : 'image',
+                source: '照片图库', ai: false, cloud: !a.local, dur: a.dur || 0,
+              })
+            }
+          }
+        } catch { /* 回退文件夹扫描 */ }
+        if (!photosDbOk) sources.push({ dir: photosDir, label: '照片图库', ai: false })
+      }
+      setPhotosDbFailed(!!(photosDir && photosOn && !photosDbOk))
       for (const src of sources) {
         try {
           const raw = (await invoke('gallery_scan', { dir: src.dir })) as { path: string; size: number; mtime: number }[]
@@ -164,8 +185,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     return out
   }, [visible, displayItems, searching, query])
 
-  const indexedCount = useMemo(() => items.filter(i => captions.get(i.path)?.mtime === i.mtime).length, [items, captions])
-  const pendingCount = items.length - indexedCount
+  const indexedCount = useMemo(() => items.filter(i => !i.cloud && captions.get(i.path)?.mtime === i.mtime).length, [items, captions])
+  const pendingCount = useMemo(() => items.filter(i => !i.cloud && captions.get(i.path)?.mtime !== i.mtime).length, [items, captions])
 
   const ensureThumb = useCallback(async (path: string) => {
     if (thumbs.has(path) || thumbBusy.current.has(path)) return
@@ -200,7 +221,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
 
   const runIndex = async () => {
     if (!tagRoute || !routeData) { notify('先选一个能看图的模型（带看图能力的免费模型或自有账户）'); return }
-    const pending = items.filter(i => captions.get(i.path)?.mtime !== i.mtime).slice(0, 60)
+    const pending = items.filter(i => !i.cloud && captions.get(i.path)?.mtime !== i.mtime).slice(0, 60)
     if (pending.length === 0) { notify('都索引过了，没有新增或变化的'); return }
     cancelRef.current = false
     setIndexing({ done: 0, total: pending.length })
@@ -374,6 +395,12 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
           </div>
           <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
             onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
+          {photosDbFailed && (
+            <div className="gal-search-hint">
+              没读到照片数据库（多半是还没给 AI 魔方照片权限），现在只显示本地已下载的文件。
+              <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => void openExternalUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Photos')}>打开照片权限设置</button>
+            </div>
+          )}
           {searching && indexedCount === 0 && (
             <div className="gal-search-hint">还没有 AI 索引，现在只能按文件名搜。点左侧「建立 AI 索引」后，就能按画面内容搜了。</div>
           )}
@@ -447,11 +474,12 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
   onHoverEnd: () => void
 }) {
   const [dur, setDur] = useState(0)
-  const playable = item.kind === 'video' && PLAY_VIDEO_EXTS.has(extOf(item.name))
+  const playable = !item.cloud && item.kind === 'video' && PLAY_VIDEO_EXTS.has(extOf(item.name))
   useEffect(() => {
+    if (item.cloud) return
     ensureThumb(item.path)
     if (playable) ensureAssetUrl(item.path)
-  }, [item.path, playable, ensureThumb, ensureAssetUrl])
+  }, [item.path, item.cloud, playable, ensureThumb, ensureAssetUrl])
 
   return (
     <button className="gal-tile" onClick={onOpen}
@@ -462,7 +490,9 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
         onHoverVideo(item.path, Math.min(r.right + 10, window.innerWidth - 372), Math.max(8, r.top - 10))
       }}
       onMouseLeave={() => { if (playable) onHoverEnd() }}>
-      {thumb
+      {item.cloud
+        ? <span className="gal-ph"><Cloud size={26} /></span>
+        : thumb
         ? <img className="gal-media" src={thumb} alt={item.name} loading="lazy" />
         : playable && assetUrl
           ? <video className="gal-media" src={assetUrl} preload="metadata" muted playsInline
@@ -473,8 +503,9 @@ function GalTile({ item, fav, thumb, assetUrl, ensureThumb, ensureAssetUrl, onOp
           onLoadedMetadata={e => setDur(e.currentTarget.duration || 0)} />
       )}
       {item.kind === 'video' && (
-        <span className="gal-bdg"><Play size={10} /> {dur > 0 ? fmtDur(dur) : '视频'}</span>
+        <span className="gal-bdg"><Play size={10} /> {dur > 0 ? fmtDur(dur) : item.dur ? fmtDur(item.dur) : '视频'}</span>
       )}
+      {item.cloud && <span className="gal-cloud-bdg"><Cloud size={10} /> iCloud 云端</span>}
       {item.ai && <span className="gal-src-tag">AI</span>}
       {fav && <span className="gal-fav"><Heart size={12} fill="currentColor" /></span>}
     </button>
@@ -496,11 +527,12 @@ function GalLightbox({ item, index, total, fav, caption, assetUrl, thumb, ensure
   onToggleFav: () => void
   notify: (m: string) => void
 }) {
-  const playable = item.kind === 'video' && PLAY_VIDEO_EXTS.has(extOf(item.name))
+  const playable = !item.cloud && item.kind === 'video' && PLAY_VIDEO_EXTS.has(extOf(item.name))
   useEffect(() => {
+    if (item.cloud) return
     if (item.kind === 'image' || playable) ensureAssetUrl(item.path)
     else ensureThumb(item.path)
-  }, [item.path, item.kind, playable, ensureAssetUrl, ensureThumb])
+  }, [item.path, item.kind, item.cloud, playable, ensureAssetUrl, ensureThumb])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -526,7 +558,14 @@ function GalLightbox({ item, index, total, fav, caption, assetUrl, thumb, ensure
       </div>
       <button className="gal-lb-nav left" onClick={e => { e.stopPropagation(); onNav(-1) }} disabled={index <= 0}><ChevronLeft size={22} /></button>
       <div className="gal-lb-body" onClick={e => e.stopPropagation()}>
-        {item.kind === 'image'
+        {item.cloud ? (
+          <div className="gal-lb-wait" style={{ maxWidth: 420, textAlign: 'center', lineHeight: 1.7 }}>
+            <Cloud size={28} style={{ display: 'block', margin: '0 auto 8px' }} />
+            这一项只在 iCloud 云端，本机还没有原文件。<br />
+            在照片 App 里打开它一次（照片会自动下载原图），回到图库点刷新就能看了。
+          </div>
+        ) : (
+        item.kind === 'image'
           ? (assetUrl
             ? <img className="gal-lb-media" src={assetUrl} alt={item.name} />
             : <div className="gal-lb-wait"><Loader2 size={20} className="spin" /> 加载中…</div>)
@@ -536,7 +575,7 @@ function GalLightbox({ item, index, total, fav, caption, assetUrl, thumb, ensure
               : <div className="gal-lb-wait"><Loader2 size={20} className="spin" /> 正在准备播放…</div>)
             : (thumb
               ? <img className="gal-lb-media" src={thumb} alt={item.name} />
-              : <div className="gal-lb-wait">此格式应用内不能直接播放，点下方「打开」用系统播放器看</div>)}
+              : <div className="gal-lb-wait">此格式应用内不能直接播放，点下方「打开」用系统播放器看</div>))}
       </div>
       <button className="gal-lb-nav right" onClick={e => { e.stopPropagation(); onNav(1) }} disabled={index >= total - 1}><ChevronRight size={22} /></button>
       <div className="gal-lb-bar" onClick={e => e.stopPropagation()}>

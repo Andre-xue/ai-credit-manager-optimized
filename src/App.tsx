@@ -5070,6 +5070,14 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     const next = { ...storagePrefs, [kind]: { ...storagePrefs[kind], dir } }
     patchStorage(next, kind === 'apikey')
   }
+  // ---- 照片图库授权（仅桌面端，v0.1.347）：触发系统弹窗 / 读一次数据库验证权限 ----
+  const probePhotosAccess = async () => {
+    const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string) => Promise<string> } }
+    const invoke = w.__TAURI_INTERNALS__?.invoke
+    if (!invoke) return
+    try { notify(await invoke('photos_access_probe')) }
+    catch (e) { notify(`照片授权未通过：${String(e)}`) }
+  }
   // ---- 提醒通知（系统通知） ----
   const np = notifyPrefsOf(s)
   const [notifyPerm, setNotifyPerm] = useState<NotificationPermissionState>('prompt')
@@ -5782,7 +5790,20 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </SettingsRow>
           </SettingsSection>
 
-          {isDesktopApp() && (
+          {isDesktopApp() && (<>
+          {!phoneShell && isDesktopApp() && (
+          <SettingsSection title="照片图库授权" desc="macOS 要求获得许可后，AI 魔方才能读取照片图库与它的数据库（仅本机）" icon={Folder} tone="blue">
+            <SettingsRow title="照片权限" desc="点「打开系统照片权限」去系统设置里给 AI 魔方打开开关（请选完全访问）；或点「触发授权弹窗」让系统直接弹窗询问。应用更新后若再被问一次，是安装包签名变化所致，重新允许即可">
+              <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn sm" onClick={() => void openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Photos')}>打开系统照片权限</button>
+                <button className="btn sm" onClick={() => void probePhotosAccess()}>触发授权弹窗</button>
+              </span>
+            </SettingsRow>
+            <SettingsRow title="授权后能看到什么" desc="图库会读照片数据库，把全部照片和视频都列出来；只在 iCloud 云端、本机还没下载的会标「iCloud 云端」，在照片 App 里打开一次下载到本机后，回到图库刷新即可查看">
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>授权后回图库点刷新生效</span>
+            </SettingsRow>
+          </SettingsSection>
+          )}
           <SettingsSection title="数据存储" desc="为三类文件指定本机存放文件夹；设置只保存在此设备，不云同步" icon={Folder} tone="blue">
             <SettingsRow title="数据存储" desc="总开关：开启后下面三类各有独立开关，互不影响；关闭则全部按默认方式存放">
               <Toggle checked={storagePrefs.enabled} onChange={v => patchStorage({ ...storagePrefs, enabled: v }, v)} />
@@ -5812,7 +5833,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </SettingsRow>
             )}
           </SettingsSection>
-          )}
+          </>)}
 
           {pendingImport && (
             <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingImport(null) }}>

@@ -833,7 +833,7 @@ fn gallery_scan(dir: String) -> Result<Vec<GalleryItem>, String> {
 /// Mac 照片图库原图目录（v0.1.340）：在 ~/Pictures 下找 *.photoslibrary 包，
 /// 返回其 originals（新版）或 Masters（旧版）目录路径；找不到返回空
 #[tauri::command]
-fn photos_library_dir() -> Option<String> {
+fn find_photos_library_package() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let pics = std::path::Path::new(&home).join("Pictures");
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
@@ -852,13 +852,120 @@ fn photos_library_dir() -> Option<String> {
     }
     for pkg in candidates {
         for sub in ["originals", "Masters"] {
-            let d = pkg.join(sub);
-            if d.is_dir() {
-                return Some(d.to_string_lossy().to_string());
+            if pkg.join(sub).is_dir() {
+                return Some(pkg);
             }
         }
     }
     None
+}
+
+fn photos_library_dir() -> Option<String> {
+    let pkg = find_photos_library_package()?;
+    for sub in ["originals", "Masters"] {
+        let d = pkg.join(sub);
+        if d.is_dir() {
+            return Some(d.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// 对 Photos.sqlite 跑一条查询，返回 JSON 行数组文本。
+/// 先只读直读原库；失败则把库（连 -wal/-shm）复制到临时目录再查（绕开锁定/权限边角）。
+fn run_photos_sqlite(db: &std::path::Path, sql: &str) -> Result<String, String> {
+    let run = |path: &std::path::Path, readonly: bool| -> Result<String, String> {
+        let mut cmd = std::process::Command::new("/usr/bin/sqlite3");
+        cmd.arg("-json");
+        if readonly {
+            cmd.arg("-readonly");
+        }
+        cmd.arg(path).arg(sql);
+        let out = cmd.output().map_err(|e| format!("sqlite3 启动失败：{e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    match run(db, true) {
+        Ok(t) => Ok(t),
+        Err(first) => {
+            let tmp = std::env::temp_dir().join("acm-photos-db");
+            let _ = std::fs::create_dir_all(&tmp);
+            let copy = tmp.join("Photos.sqlite");
+            let copied = std::fs::copy(db, &copy).is_ok();
+            if copied {
+                for suffix in ["-wal", "-shm"] {
+                    let src = std::path::PathBuf::from(format!("{}{suffix}", db.to_string_lossy()));
+                    if src.exists() {
+                        let _ = std::fs::copy(&src, tmp.join(format!("Photos.sqlite{suffix}")));
+                    }
+                }
+                run(&copy, false).map_err(|e| if e.is_empty() { first } else { e })
+            } else {
+                Err(first)
+            }
+        }
+    }
+}
+
+const PHOTOS_SQL_FULL: &str = "SELECT ZFILENAME AS name, ZDIRECTORY AS dir, CAST(ZDATECREATED AS INTEGER) AS created, ZKIND AS kind, COALESCE(ZVIDEODURATION, 0) AS dur FROM ZASSET WHERE ZTRASHEDSTATE = 0 AND ZHIDDEN = 0 LIMIT 80000";
+const PHOTOS_SQL_MIN: &str = "SELECT ZFILENAME AS name, ZDIRECTORY AS dir, CAST(ZDATECREATED AS INTEGER) AS created, ZKIND AS kind FROM ZASSET WHERE ZTRASHEDSTATE = 0 LIMIT 80000";
+
+/// 照片数据库全量资产（v0.1.347，Ethan 选 B 方案）：读 Photos.sqlite 列出全部照片/视频，
+/// 逐项核对 originals 里有没有本地原文件——没有的就是只在 iCloud 云端的项（local=false）。
+#[tauri::command]
+fn photos_db_assets() -> Result<serde_json::Value, String> {
+    let pkg = find_photos_library_package().ok_or("未找到照片图库")?;
+    let db = pkg.join("database").join("Photos.sqlite");
+    if !db.exists() {
+        return Err("照片图库数据库不存在".into());
+    }
+    let text = run_photos_sqlite(&db, PHOTOS_SQL_FULL)
+        .or_else(|_| run_photos_sqlite(&db, PHOTOS_SQL_MIN))
+        .map_err(|e| format!("读取照片数据库失败（可能未授权）：{e}"))?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let originals = pkg.join("originals");
+    let originals = if originals.is_dir() { originals } else { pkg.join("Masters") };
+    let mut assets = Vec::new();
+    for r in rows {
+        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let dir = r.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let created_raw = r.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
+        let kind_num = r.get("kind").and_then(|v| v.as_i64()).unwrap_or(0);
+        let dur = r.get("dur").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let full = originals.join(&dir).join(&name);
+        let meta = std::fs::metadata(&full).ok();
+        assets.push(serde_json::json!({
+            "name": name,
+            "dir": dir,
+            "created": created_raw + 978307200,
+            "kind": if kind_num == 1 { "video" } else { "image" },
+            "dur": dur,
+            "local": meta.is_some(),
+            "size": meta.map(|m| m.len()).unwrap_or(0),
+        }));
+    }
+    Ok(serde_json::json!({ "assets": assets }))
+}
+
+/// 照片授权探测（v0.1.347）：试读图库包与数据库计数，能触发系统授权弹窗；返回可读状态
+#[tauri::command]
+fn photos_access_probe() -> Result<String, String> {
+    let pkg = find_photos_library_package().ok_or("未找到照片图库")?;
+    std::fs::read_dir(&pkg).map_err(|e| format!("读不到图库（可能未授权）：{e}"))?;
+    let db = pkg.join("database").join("Photos.sqlite");
+    if db.exists() {
+        let text = run_photos_sqlite(&db, "SELECT COUNT(*) AS n FROM ZASSET WHERE ZTRASHEDSTATE = 0")
+            .map_err(|e| format!("数据库读不到（可能未授权）：{e}"))?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let n = rows.first().and_then(|r| r.get("n")).and_then(|v| v.as_i64()).unwrap_or(0);
+        return Ok(format!("已可读取照片图库数据库，共 {n} 项"));
+    }
+    Ok("已可访问图库文件夹".into())
 }
 
 /// 更新镜像源（v0.1.346）：GitHub 直连 + 国内常用加速前缀，测速选最快、慢/断自动切换
@@ -3322,7 +3429,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
