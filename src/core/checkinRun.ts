@@ -1,8 +1,9 @@
 import {
   hasCheckinCred, loadCheckinCred, getCheckinStatus, claimCheckin,
-  getWorkbuddyStatus, claimWorkbuddy,
+  getWorkbuddyStatus, claimWorkbuddy, getMinimaxStatus, claimMinimax,
 } from './checkin'
-import { listPoolMeta, poolCredBox } from './wbPool'
+import { listPoolMeta, poolCredBox, migrateLegacyWorkbuddyCred } from './wbPool'
+import { listMmMeta, mmCredBox, migrateLegacyMinimaxCred } from './mmPool'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
@@ -47,7 +48,8 @@ export function setAutoCheckinEnabled(v: boolean): void {
 
 /** 有没有任何已连接的签到来源 */
 export function hasCheckinSources(): boolean {
-  return hasCheckinCred('minimax') || listPoolMeta().length > 0
+  return hasCheckinCred('minimax') || hasCheckinCred('workbuddy')
+    || listPoolMeta().length > 0 || listMmMeta().length > 0
 }
 
 /**
@@ -55,6 +57,9 @@ export function hasCheckinSources(): boolean {
  */
 export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
   if (!pwd) throw new Error('保险箱未解锁')
+  // 旧单账号凭据先迁进多账号存储（签到页/池页没打开过时自动签到也能覆盖到）
+  await migrateLegacyWorkbuddyCred(pwd).catch(() => false)
+  await migrateLegacyMinimaxCred(pwd).catch(() => false)
   // 先探一次密码对不对：任一已存凭据能解开即视为正确
   let probed = false
   if (hasCheckinCred('minimax')) {
@@ -65,10 +70,34 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
       if (await poolCredBox(meta.id, pwd).load()) { probed = true; break }
     }
   }
+  if (!probed) {
+    for (const meta of listMmMeta()) {
+      if (await mmCredBox(meta.id, pwd).load()) { probed = true; break }
+    }
+  }
   if (!probed && hasCheckinSources()) throw new Error('主密码不正确，凭据解不开')
 
   const items: CheckinRunItem[] = []
-  if (hasCheckinCred('minimax')) {
+  // MiniMax 多账号
+  for (const meta of listMmMeta()) {
+    const box = mmCredBox(meta.id, pwd)
+    const label = `MiniMax · ${meta.label}`
+    try {
+      const st = await getMinimaxStatus(box)
+      if (st.state === 'claimable') {
+        const r = await claimMinimax(box)
+        items.push({ label, outcome: 'claimed', message: r.message, points: r.points })
+      } else if (st.state === 'claimed') {
+        items.push({ label, outcome: 'already', message: st.message })
+      } else {
+        items.push({ label, outcome: 'error', message: st.message })
+      }
+    } catch (e) {
+      items.push({ label, outcome: 'error', message: e instanceof Error ? e.message : '签到失败' })
+    }
+  }
+  // 迁移没成功时兜底走旧单账号路径
+  if (!listMmMeta().length && hasCheckinCred('minimax')) {
     try {
       const st = await getCheckinStatus('minimax', pwd)
       if (st.state === 'claimable') {

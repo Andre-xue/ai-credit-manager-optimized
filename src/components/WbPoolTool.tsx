@@ -166,60 +166,58 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
         <button className="btn" disabled={!sessionPwd || busy === 'status'} onClick={() => void refreshStatuses()}>
           {busy === 'status' ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} 刷新全部状态
         </button>
-        <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>池里共 {metas.length} 个账号。在浏览器里换个账号登录确认，就能把另一个号也加进来。</span>
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+          共 {metas.length} 个账号
+          {(() => { const cool = metas.filter(m => (poolState[m.id]?.cooldownUntil ?? 0) > Date.now()).length; const off = metas.filter(m => poolState[m.id]?.disabled).length; return ` · 可用 ${metas.length - cool - off}${cool ? ` · 冷却 ${cool}` : ''}${off ? ` · 停用 ${off}` : ''}` })()}
+          （换号登录确认即可再加）
+        </span>
       </div>
 
-      <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+      <div style={{ marginTop: 12, border: metas.length ? '1px solid var(--border)' : 'none', borderRadius: 14, background: 'var(--panel)', padding: '2px 14px' }}>
         {metas.map(m => {
           const st = poolState[m.id] ?? {}
           const info = statusOf(m.id)
           const exp = expires[m.id]
           const cooling = (st.cooldownUntil ?? 0) > Date.now()
+          const iconBtn: React.CSSProperties = { padding: '4px 7px' }
           return (
-            <div key={m.id} style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '12px 16px', background: 'var(--panel)', opacity: st.disabled ? 0.6 : 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <b style={{ fontSize: 14.5 }}>{m.label}</b>
-                {m.uid && <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>ID …{m.uid.slice(-6)}</span>}
-                {st.pinned && <span className="ws-tag">置顶优先</span>}
-                {st.disabled && <span className="ws-tag">已停用</span>}
-                {cooling && <span className="ws-tag">冷却中（至 {new Date(st.cooldownUntil!).toLocaleTimeString()}）</span>}
-                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                  {exp ? `令牌到期 ${new Date(exp).toLocaleString()}` : ''}
-                  {st.lastUsedAt ? ` · 最近调用 ${new Date(st.lastUsedAt).toLocaleTimeString()}` : ''}
+            <div key={m.id} style={{ padding: '9px 0', borderTop: '1px solid var(--border)', opacity: st.disabled ? 0.55 : 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: st.disabled ? 'var(--text-3)' : cooling ? '#d97706' : info?.error ? 'var(--danger, #d33)' : '#16a34a' }}>
+                  {st.disabled ? '已停用' : cooling ? '冷却中' : info?.error ? '异常' : '可用'}
+                </span>
+                <b style={{ fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%' }}>{m.label}</b>
+                {m.uid && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>…{m.uid.slice(-6)}</span>}
+                {st.pinned && <span className="ws-tag">置顶</span>}
+                <span style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {info?.error ? `签到查询失败：${info.error}` : info?.status ? `${info.status.message}${info.status.streakDays > 0 ? ` · 连签 ${info.status.streakDays} 天` : ''}` : ''}
+                  {exp ? ` · 令牌 ${new Date(exp).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} 到期` : ''}
+                  {st.lastUsedAt ? ` · 最近调用 ${new Date(st.lastUsedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                  {cooling ? ` · 冷却至 ${new Date(st.cooldownUntil!).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                </span>
+                <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexShrink: 0 }}>
+                  {info?.status?.state === 'claimable' && (
+                    <button className="btn sm primary" disabled={busy === `claim:${m.id}`} onClick={() => void claim(m.id, m.label)}>
+                      {busy === `claim:${m.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{info.status.points ? ` +${info.status.points}` : ''}
+                    </button>
+                  )}
+                  <button className="btn sm ghost" style={iconBtn} title={st.pinned ? '取消置顶' : '置顶优先'} onClick={() => { patchPoolState(m.id, { pinned: !st.pinned }); reloadLocal() }}>
+                    {st.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                  </button>
+                  <button className="btn sm ghost" style={iconBtn} title={st.disabled ? '启用' : '停用'} onClick={() => { patchPoolState(m.id, { disabled: !st.disabled }); reloadLocal() }}>
+                    <Power size={14} />
+                  </button>
+                  {cooling && (
+                    <button className="btn sm ghost" style={iconBtn} title="清除冷却" onClick={() => { patchPoolState(m.id, { cooldownUntil: undefined }); reloadLocal() }}>
+                      <XCircle size={14} />
+                    </button>
+                  )}
+                  <button className="btn sm ghost" style={iconBtn} title="移出池子" onClick={() => { removePoolAccount(m.id); reloadLocal(); notify('已移出池子（本机凭据已删除）') }}>
+                    <Trash2 size={14} />
+                  </button>
                 </span>
               </div>
-              {st.lastError && <div style={{ fontSize: 12.5, color: 'var(--danger, #d33)', marginTop: 4 }}>最近错误：{st.lastError}</div>}
-              <div style={{ fontSize: 13, marginTop: 6 }}>
-                {info?.error && <span style={{ color: 'var(--danger, #d33)' }}>签到状态查询失败：{info.error}</span>}
-                {info?.status && (
-                  <span>
-                    <CalendarCheck size={13} style={{ verticalAlign: -2 }} /> {info.status.message}
-                    {info.status.streakDays > 0 && <span style={{ color: 'var(--text-3)' }}> · 连签 {info.status.streakDays} 天</span>}
-                  </span>
-                )}
-                {!info && sessionPwd && <span style={{ color: 'var(--text-3)' }}>状态加载中…</span>}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                {info?.status?.state === 'claimable' && (
-                  <button className="btn sm primary" disabled={busy === `claim:${m.id}`} onClick={() => void claim(m.id, m.label)}>
-                    {busy === `claim:${m.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{info.status.points ? ` +${info.status.points}` : ''}
-                  </button>
-                )}
-                <button className="btn sm" onClick={() => { patchPoolState(m.id, { pinned: !st.pinned }); reloadLocal() }}>
-                  {st.pinned ? <PinOff size={14} /> : <Pin size={14} />} {st.pinned ? '取消置顶' : '置顶'}
-                </button>
-                <button className="btn sm" onClick={() => { patchPoolState(m.id, { disabled: !st.disabled }); reloadLocal() }}>
-                  <Power size={14} /> {st.disabled ? '启用' : '停用'}
-                </button>
-                {cooling && (
-                  <button className="btn sm" onClick={() => { patchPoolState(m.id, { cooldownUntil: undefined }); reloadLocal() }}>
-                    <XCircle size={14} /> 清除冷却
-                  </button>
-                )}
-                <button className="btn sm ghost" onClick={() => { removePoolAccount(m.id); reloadLocal(); notify('已移出池子（本机凭据已删除）') }}>
-                  <Trash2 size={14} /> 移出
-                </button>
-              </div>
+              {st.lastError && <div style={{ fontSize: 12, color: 'var(--danger, #d33)', marginTop: 3 }}>最近错误：{st.lastError}</div>}
             </div>
           )
         })}

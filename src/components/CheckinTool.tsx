@@ -1,23 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CalendarCheck, Fingerprint, Loader2, LogIn, LogOut, RefreshCw, Sparkles } from 'lucide-react'
+import { CalendarCheck, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
 import { openExternal, biometricAvailable } from '../core/openExternal'
 import { resolveBiometricVaultPassword } from '../core/biometric'
 import {
-  hasCheckinCred, loadCheckinCred, saveCheckinCred, clearCheckinCred,
   minimaxBeginDevice, minimaxPollDevice,
-  getCheckinStatus, claimCheckin,
-  type CheckinCred, type CheckinStatus, type MinimaxDeviceFlow,
+  type MinimaxDeviceFlow,
 } from '../core/checkin'
 import {
   migrateLegacyWorkbuddyCred, poolAccountStatuses, poolClaimOne, listPoolMeta,
   type PoolAccountStatus,
 } from '../core/wbPool'
+import {
+  migrateLegacyMinimaxCred, listMmMeta, addMmAccount, removeMmAccount,
+  mmAccountStatuses, mmClaimOne, type MmAccountStatus,
+} from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled } from '../core/checkinRun'
 
 /**
- * 每日签到工具页（v0.1.356 上线，v0.1.359 WorkBuddy 改走账号池）：
- * WorkBuddy 的签到对象是账号池里的每个账号；MiniMax 仍是单账号授权。
+ * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号）：
+ * 两个平台都是多账号——逐个查状态、可逐个签或全部签。
  * 凭据都用保险箱主密码加密、只存本机。
  */
 export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
@@ -28,15 +30,13 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
 }) {
   const [pwdInput, setPwdInput] = useState('')
   const [bioOk, setBioOk] = useState(false)
-  // MiniMax 单账号
-  const [mmCred, setMmCred] = useState<CheckinCred | null>(null)
-  const [mmStatus, setMmStatus] = useState<CheckinStatus | null>(null)
-  const [mmError, setMmError] = useState('')
-  const [mmAuth, setMmAuth] = useState<{ authUrl: string; userCode: string } | null>(null)
-  // WorkBuddy 账号池
-  const [poolStatuses, setPoolStatuses] = useState<PoolAccountStatus[]>([])
-  const [busy, setBusy] = useState('')
   const [autoOn, setAutoOn] = useState(() => getAutoCheckinEnabled())
+  const [poolStatuses, setPoolStatuses] = useState<PoolAccountStatus[]>([])
+  const [mmStatuses, setMmStatuses] = useState<MmAccountStatus[]>([])
+  const [mmAuth, setMmAuth] = useState<{ authUrl: string; userCode: string } | null>(null)
+  const [busy, setBusy] = useState('')
+  const [wbOpen, setWbOpen] = useState<boolean | null>(null)
+  const [mmOpen, setMmOpen] = useState<boolean | null>(null)
   const pollRef = useRef<number | null>(null)
 
   useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
@@ -46,17 +46,14 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     else notify('未通过指纹验证，或还没开启指纹解锁（先输一次主密码，并在设置里开启指纹/生物解锁后再用）')
   }
 
-  const refreshMm = useCallback(async () => {
-    setBusy('mm-status')
-    try {
-      setMmStatus(await getCheckinStatus('minimax', sessionPwd))
-      setMmError('')
-    } catch (e) { setMmError(e instanceof Error ? e.message : '查询失败') } finally { setBusy('') }
-  }, [sessionPwd])
-
   const refreshPool = useCallback(async () => {
     setBusy('wb-status')
     try { setPoolStatuses(await poolAccountStatuses(sessionPwd)) } finally { setBusy('') }
+  }, [sessionPwd])
+
+  const refreshMm = useCallback(async () => {
+    setBusy('mm-status')
+    try { setMmStatuses(await mmAccountStatuses(sessionPwd)) } finally { setBusy('') }
   }, [sessionPwd])
 
   useEffect(() => {
@@ -64,18 +61,17 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     let dead = false
     void (async () => {
       await migrateLegacyWorkbuddyCred(sessionPwd).catch(() => false)
+      await migrateLegacyMinimaxCred(sessionPwd).catch(() => false)
       if (dead) return
-      if (hasCheckinCred('minimax')) {
-        const cred = await loadCheckinCred('minimax', sessionPwd)
-        if (!dead && cred) { setMmCred(cred); void refreshMm() }
-      }
       if (listPoolMeta().length) void refreshPool()
+      if (listMmMeta().length) void refreshMm()
     })()
     return () => { dead = true }
-  }, [sessionPwd, refreshMm, refreshPool])
+  }, [sessionPwd, refreshPool, refreshMm])
 
   useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
+  // ---------- MiniMax 添加账号（设备码授权） ----------
   const startMmAuth = async () => {
     setBusy('mm-auth')
     try {
@@ -90,9 +86,9 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         void minimaxPollDevice(flow).then(async cred => {
           if (!cred) return
           window.clearInterval(timer)
-          await saveCheckinCred('minimax', cred, sessionPwd)
-          setMmCred(cred); setMmAuth(null)
-          notify('MiniMax 已连接')
+          const meta = await addMmAccount(cred, sessionPwd)
+          setMmAuth(null)
+          notify(`MiniMax 已添加：${meta.label}`)
           void refreshMm()
         }).catch(e => {
           window.clearInterval(timer); setMmAuth(null)
@@ -101,15 +97,6 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       }, flow.intervalSecs * 1000)
       pollRef.current = timer
     } catch (e) { notify(e instanceof Error ? e.message : '发起授权失败') } finally { setBusy('') }
-  }
-
-  const claimMm = async () => {
-    setBusy('mm-claim')
-    try {
-      const r = await claimCheckin('minimax', sessionPwd)
-      notify(r.message)
-      void refreshMm()
-    } catch (e) { notify(e instanceof Error ? e.message : '签到失败') } finally { setBusy('') }
   }
 
   const claimPoolOne = async (id: string, label: string) => {
@@ -128,15 +115,43 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       if (s.status?.state !== 'claimable') continue
       try { await poolClaimOne(sessionPwd, s.meta.id); done++ } catch { /* 单个失败不阻塞其余 */ }
     }
-    notify(done ? `已给 ${done} 个账号签到` : '没有可签到的账号')
+    notify(done ? `已给 ${done} 个 WorkBuddy 账号签到` : '没有可签到的 WorkBuddy 账号')
     void refreshPool()
     setBusy('')
   }
 
-  const claimableCount = poolStatuses.filter(s => s.status?.state === 'claimable').length
+  const claimMmOne = async (id: string, label: string) => {
+    setBusy(`mm-claim:${id}`)
+    try {
+      const r = await mmClaimOne(sessionPwd, id)
+      notify(`${label}：${r.message}`)
+      void refreshMm()
+    } catch (e) { notify(e instanceof Error ? e.message : '签到失败') } finally { setBusy('') }
+  }
+
+  const claimMmAll = async () => {
+    setBusy('mm-claim-all')
+    let done = 0
+    for (const s of mmStatuses) {
+      if (s.status?.state !== 'claimable') continue
+      try { await mmClaimOne(sessionPwd, s.meta.id); done++ } catch { /* 单个失败不阻塞其余 */ }
+    }
+    notify(done ? `已给 ${done} 个 MiniMax 账号签到` : '没有可签到的 MiniMax 账号')
+    void refreshMm()
+    setBusy('')
+  }
+
+  const wbClaimable = poolStatuses.filter(s => s.status?.state === 'claimable').length
+  const mmClaimable = mmStatuses.filter(s => s.status?.state === 'claimable').length
+  const wbDone = poolStatuses.filter(s => s.status?.state === 'claimed').length
+  const mmDone = mmStatuses.filter(s => s.status?.state === 'claimed').length
+  const wbShowList = wbOpen ?? (wbClaimable > 0 || poolStatuses.some(x => x.error))
+  const mmShowList = mmOpen ?? (mmClaimable > 0 || mmStatuses.some(x => x.error) || !!mmAuth)
+  const aggText = (total: number, done: number, claimable: number) =>
+    !total ? '' : claimable > 0 ? `${total} 个账号 · ${claimable} 个待签到` : done === total ? `${total} 个账号 · 今日全部已签 ✓` : `${total} 个账号 · 已签 ${done}`
 
   return (
-    <ToolShell title="每日签到" desc="WorkBuddy（账号池里的每个号）/ MiniMax Code 的每日积分签到。凭据加密只存本机。" onBack={onBack}>
+    <ToolShell title="每日签到" desc="WorkBuddy（账号池）/ MiniMax Code 的每日积分签到，两个平台都支持多账号。凭据加密只存本机。" onBack={onBack}>
       {!sessionPwd && (
         <div className="ws-result">
           保险箱还没解锁：签到凭据要用主密码加密保存，在这里直接解锁即可，不用去别的页面。
@@ -153,7 +168,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 13.5 }}>自动签到</b>
-          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行且保险箱解锁后每天自动签一次（结果在菜单栏迷你窗能看到）；App 没运行或保险箱没解锁时不会执行，解锁后会补上。</span>
+          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行且保险箱解锁后每天自动把所有账号签一遍（结果在菜单栏迷你窗能看到）；App 没运行或保险箱没解锁时不会执行，解锁后会补上。</span>
         </div>
         <button className="btn sm" onClick={() => { const v = !autoOn; setAutoOn(v); setAutoCheckinEnabled(v); notify(v ? '自动签到已开启' : '自动签到已关闭') }}>
           {autoOn ? '已开启' : '已关闭'}
@@ -166,16 +181,19 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           <span className="ws-tico g2"><CalendarCheck size={20} /></span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>WorkBuddy（账号池）</div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>池里每个账号每天 100 积分，在工坊「WorkBuddy 账号池」里添加/管理账号</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(poolStatuses.length, wbDone, wbClaimable) || '池里每个账号每天 100 积分，在工坊「WorkBuddy 账号池」里添加/管理账号'}</div>
           </div>
+          {poolStatuses.length > 1 && (
+            <button className="btn sm ghost" onClick={() => setWbOpen(!wbShowList)}>{wbShowList ? '收起' : '展开'}</button>
+          )}
           {poolStatuses.length > 0 && (
             <button className="btn sm" disabled={!sessionPwd || busy === 'wb-status'} onClick={() => void refreshPool()}>
               {busy === 'wb-status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
             </button>
           )}
-          {claimableCount > 0 && (
+          {wbClaimable > 0 && (
             <button className="btn sm primary" disabled={busy === 'wb-claim-all'} onClick={() => void claimPoolAll()}>
-              {busy === 'wb-claim-all' ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 全部签到（{claimableCount}）
+              {busy === 'wb-claim-all' ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 全部签到（{wbClaimable}）
             </button>
           )}
         </div>
@@ -184,41 +202,57 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
             {sessionPwd ? '账号池还是空的：去工坊主页打开「WorkBuddy 账号池」，添加账号后回到这里就能逐个签到。' : '解锁后显示池里账号的签到状态。'}
           </div>
         )}
-        <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
-          {poolStatuses.map(s => (
-            <div key={s.meta.id} style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 10, padding: '8px 12px' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <b style={{ fontSize: 13.5 }}>{s.meta.label}</b>
-                <div style={{ fontSize: 12.5, color: s.error ? 'var(--danger, #d33)' : 'var(--text-3)' }}>
-                  {s.error ? `查询失败：${s.error}` : s.status
-                    ? `${s.status.message}${s.status.streakDays > 0 ? ` · 连签 ${s.status.streakDays} 天` : ''}`
-                    : '状态加载中…'}
-                </div>
+        {wbShowList && (
+          <div style={{ marginTop: 6 }}>
+            {poolStatuses.map(s => (
+              <div key={s.meta.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 2px', borderTop: '1px solid var(--border)' }}>
+                <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: s.error ? 'var(--danger, #d33)' : s.status?.state === 'claimable' ? 'var(--accent, #6c5ce7)' : 'var(--text-3)' }}>
+                  {s.error ? '异常' : s.status?.state === 'claimable' ? '待签到' : s.status?.state === 'claimed' ? '已签 ✓' : '…'}
+                </span>
+                <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '38%' }}>{s.meta.label}</b>
+                <span style={{ fontSize: 12, color: s.error ? 'var(--danger, #d33)' : 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {s.error ? s.error : s.status ? `${s.status.message}${s.status.streakDays > 0 ? ` · 连签 ${s.status.streakDays} 天` : ''}` : '状态加载中…'}
+                </span>
+                {s.status?.state === 'claimable' && (
+                  <button className="btn sm primary" style={{ marginLeft: 'auto', flexShrink: 0 }} disabled={busy === `wb-claim:${s.meta.id}`} onClick={() => void claimPoolOne(s.meta.id, s.meta.label)}>
+                    {busy === `wb-claim:${s.meta.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{s.status.points ? ` +${s.status.points}` : ''}
+                  </button>
+                )}
               </div>
-              {s.status?.state === 'claimable' && (
-                <button className="btn sm primary" disabled={busy === `wb-claim:${s.meta.id}`} onClick={() => void claimPoolOne(s.meta.id, s.meta.label)}>
-                  {busy === `wb-claim:${s.meta.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{s.status.points ? ` +${s.status.points}` : ''}
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* MiniMax：单账号 */}
+      {/* MiniMax：多账号 */}
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)', marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="ws-tico g3"><CalendarCheck size={20} /></span>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>MiniMax Code</div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>每日签到基础 400 积分，第 4 / 7 天 1,000</div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>MiniMax Code（多账号）</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(mmStatuses.length, mmDone, mmClaimable) || '每个账号每日签到基础 400 积分，第 4 / 7 天 1,000'}</div>
           </div>
-          {mmCred && <span className="ws-tag free">{mmCred.label}</span>}
+          {mmStatuses.length > 1 && (
+            <button className="btn sm ghost" onClick={() => setMmOpen(!mmShowList)}>{mmShowList ? '收起' : '展开'}</button>
+          )}
+          <button className="btn sm" disabled={!sessionPwd || busy === 'mm-auth' || !!mmAuth} onClick={() => void startMmAuth()}>
+            {busy === 'mm-auth' ? <Loader2 size={14} className="spin" /> : <UserPlus size={14} />} 添加账号
+          </button>
+          {mmStatuses.length > 0 && (
+            <button className="btn sm" disabled={!sessionPwd || busy === 'mm-status'} onClick={() => void refreshMm()}>
+              {busy === 'mm-status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
+            </button>
+          )}
+          {mmClaimable > 0 && (
+            <button className="btn sm primary" disabled={busy === 'mm-claim-all'} onClick={() => void claimMmAll()}>
+              {busy === 'mm-claim-all' ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 全部签到（{mmClaimable}）
+            </button>
+          )}
         </div>
 
         {mmAuth && (
           <div className="ws-result" style={{ marginTop: 10 }}>
-            <Loader2 size={14} className="spin" /> 在浏览器里确认授权（约 5 分钟内有效），本页会自动完成连接…
+            <Loader2 size={14} className="spin" /> 在浏览器里确认授权（约 5 分钟内有效），本页会自动完成添加。要加另一个号，先在浏览器里切换成那个账号再确认。
             <div style={{ marginTop: 6 }}>授权码：<b style={{ fontSize: 16, letterSpacing: 2 }}>{mmAuth.userCode}</b>（页面若没自动带上，手动填它）</div>
             <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
               <button className="btn sm" onClick={() => void openExternal(mmAuth.authUrl)}>重新打开授权页</button>
@@ -227,58 +261,55 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           </div>
         )}
 
-        {!mmCred && !mmAuth && (
-          <div style={{ marginTop: 10 }}>
-            <button className="btn primary" disabled={!sessionPwd || busy === 'mm-auth'} onClick={() => void startMmAuth()}>
-              {busy === 'mm-auth' ? <Loader2 size={15} className="spin" /> : <LogIn size={15} />} 连接账号
-            </button>
-            <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--text-3)' }}>会打开浏览器让你登录确认，只需一次</span>
+        {mmStatuses.length === 0 && !mmAuth && (
+          <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
+            {sessionPwd ? '还没有 MiniMax 账号：点右上「添加账号」，在浏览器登录确认即可；多个号就重复添加（每次换号登录）。' : '解锁后显示各账号的签到状态。'}
           </div>
         )}
 
-        {mmCred && !mmAuth && (
-          <div style={{ marginTop: 10 }}>
-            {mmError && <div className="ws-result" style={{ color: 'var(--danger, #d33)' }}>状态查询失败：{mmError}</div>}
-            {mmStatus && (
-              <div style={{ fontSize: 13.5 }}>
-                <Sparkles size={14} style={{ verticalAlign: -2 }} /> {mmStatus.message}
-                {mmStatus.streakDays > 0 && <span style={{ color: 'var(--text-3)' }}> · 已连签 {mmStatus.streakDays} 天</span>}
-                {typeof mmStatus.balance === 'number' && <span style={{ color: 'var(--text-3)' }}> · 剩余积分 {Math.round(mmStatus.balance)}</span>}
-              </div>
-            )}
-            {mmStatus?.days && mmStatus.days.length > 0 && (
-              <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                {mmStatus.days.map(d => (
-                  <span key={d.dayNo} style={{
-                    fontSize: 11.5, padding: '3px 8px', borderRadius: 999,
-                    border: d.isToday ? '1.5px solid var(--accent, #6c5ce7)' : '1px solid var(--border)',
-                    opacity: d.claimed ? 1 : 0.75, background: d.claimed ? 'var(--panel-2)' : 'transparent',
-                  }}>
-                    第{d.dayNo}天 · {d.points}{d.claimed ? ' ✓' : d.isToday ? ' · 今天' : ''}
+        {mmShowList && (
+          <div style={{ marginTop: 6 }}>
+            {mmStatuses.map(s => (
+              <div key={s.meta.id} style={{ padding: '7px 2px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: s.error ? 'var(--danger, #d33)' : s.status?.state === 'claimable' ? 'var(--accent, #6c5ce7)' : 'var(--text-3)' }}>
+                    {s.error ? '异常' : s.status?.state === 'claimable' ? '待签到' : s.status?.state === 'claimed' ? '已签 ✓' : '…'}
                   </span>
-                ))}
+                  <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '34%' }}>{s.meta.label}</b>
+                  <span style={{ fontSize: 12, color: s.error ? 'var(--danger, #d33)' : 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {s.error ? s.error : s.status ? <><Sparkles size={11} style={{ verticalAlign: -1 }} /> {s.status.message}{s.status.streakDays > 0 ? ` · 连签 ${s.status.streakDays} 天` : ''}{typeof s.status.balance === 'number' ? ` · 剩余 ${Math.round(s.status.balance)}` : ''}</> : '状态加载中…'}
+                  </span>
+                  {s.status?.state === 'claimable' && (
+                    <button className="btn sm primary" style={{ marginLeft: 'auto', flexShrink: 0 }} disabled={busy === `mm-claim:${s.meta.id}`} onClick={() => void claimMmOne(s.meta.id, s.meta.label)}>
+                      {busy === `mm-claim:${s.meta.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{s.status.points ? ` +${s.status.points}` : ''}
+                    </button>
+                  )}
+                  <button className="btn sm ghost" style={{ flexShrink: 0 }} onClick={() => { removeMmAccount(s.meta.id); void refreshMm(); notify('已移除该 MiniMax 账号（本机凭据已删除）') }}>
+                    <LogOut size={14} /> 移除
+                  </button>
+                </div>
+                {s.status?.days && s.status.days.length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                    {s.status.days.map(d => (
+                      <span key={d.dayNo} style={{
+                        fontSize: 11, padding: '2px 7px', borderRadius: 999,
+                        border: d.isToday ? '1.5px solid var(--accent, #6c5ce7)' : '1px solid var(--border)',
+                        opacity: d.claimed ? 1 : 0.75, background: d.claimed ? 'var(--panel-2)' : 'transparent',
+                      }}>
+                        第{d.dayNo}天 · {d.points}{d.claimed ? ' ✓' : d.isToday ? ' · 今天' : ''}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              {mmStatus?.state === 'claimable' && (
-                <button className="btn primary" disabled={busy === 'mm-claim'} onClick={() => void claimMm()}>
-                  {busy === 'mm-claim' ? <Loader2 size={15} className="spin" /> : <CalendarCheck size={15} />} 立即签到{mmStatus.points ? ` +${mmStatus.points}` : ''}
-                </button>
-              )}
-              <button className="btn" disabled={busy === 'mm-status'} onClick={() => void refreshMm()}>
-                {busy === 'mm-status' ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} 刷新状态
-              </button>
-              <button className="btn ghost" onClick={() => { clearCheckinCred('minimax'); setMmCred(null); setMmStatus(null); notify('已断开 MiniMax（本机凭据已删除）') }}>
-                <LogOut size={15} /> 断开
-              </button>
-            </div>
+            ))}
           </div>
         )}
       </div>
 
       <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, marginTop: 14 }}>
         说明：签到走各平台客户端同款接口（非公开接口，平台调整后可能失效，失效时这里会如实报错）；
-        登录凭据用保险箱主密码加密、只存这台设备，不随云同步走。自动代签到存在平台风控可能，本工具只做手动领取，风险请自行评估。
+        登录凭据用保险箱主密码加密、只存这台设备，不随云同步走。自动签到同样基于这套凭据，平台风控风险请自行评估。
         做法参考了开源项目 CheckinBox-Tools 与 dsh-xdpool 的公开协议行为，代码为独立实现。
       </p>
     </ToolShell>

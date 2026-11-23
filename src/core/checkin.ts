@@ -463,9 +463,9 @@ export async function claimWorkbuddy(box: CredBox): Promise<{ message: string; p
   })
 }
 
-export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): Promise<CheckinStatus> {
-  if (platform === 'workbuddy') return getWorkbuddyStatus(singleCredBox(platform, pwd))
-  return withFreshCred(platform, singleCredBox(platform, pwd), async cred => {
+/** MiniMax 签到状态（凭据盒版，供多账号逐个调用） */
+export async function getMinimaxStatus(box: CredBox): Promise<CheckinStatus> {
+  return withFreshCred('minimax', box, async cred => {
     const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/status', 'GET')
     const status = parseMinimaxStatus(body)
     status.balance = await minimaxBalance(cred)
@@ -473,9 +473,9 @@ export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): 
   })
 }
 
-export async function claimCheckin(platform: CheckinPlatform, pwd: string): Promise<{ message: string; points: number }> {
-  if (platform === 'workbuddy') return claimWorkbuddy(singleCredBox(platform, pwd))
-  return withFreshCred(platform, singleCredBox(platform, pwd), async cred => {
+/** MiniMax 签到领取（凭据盒版） */
+export async function claimMinimax(box: CredBox): Promise<{ message: string; points: number }> {
+  return withFreshCred('minimax', box, async cred => {
     const body = await minimaxApi(cred, '/minimax-cloud/api/v1/signin/claim', 'POST')
     mmCheckBase(body)
     const data = obj(body.data)
@@ -485,4 +485,14 @@ export async function claimCheckin(platform: CheckinPlatform, pwd: string): Prom
     if (result === 2) return { message: '今日已签到', points }
     throw new Error(str(data.claim_id) ? '上游未确认领取结果，请稍后刷新状态' : '签到失败，请稍后重试')
   })
+}
+
+export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): Promise<CheckinStatus> {
+  if (platform === 'workbuddy') return getWorkbuddyStatus(singleCredBox(platform, pwd))
+  return getMinimaxStatus(singleCredBox(platform, pwd))
+}
+
+export async function claimCheckin(platform: CheckinPlatform, pwd: string): Promise<{ message: string; points: number }> {
+  if (platform === 'workbuddy') return claimWorkbuddy(singleCredBox(platform, pwd))
+  return claimMinimax(singleCredBox(platform, pwd))
 }
