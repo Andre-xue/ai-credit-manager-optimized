@@ -60,7 +60,12 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
   const refreshStatuses = useCallback(async () => {
     if (!sessionPwd) return
     setBusy('status')
-    try { setStatuses(await poolAccountStatuses(sessionPwd)) }
+    try {
+      setStatuses(await poolAccountStatuses(sessionPwd))
+      // 状态刷新可能刚轮换过 token，目录若还没拉到就串行补拉一次
+      const ms = await poolModels(sessionPwd).catch(() => [])
+      if (ms.length) setModels(ms)
+    }
     finally { setBusy('') }
   }, [sessionPwd])
 
@@ -74,9 +79,10 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
       reloadLocal()
       const list = listPoolMeta()
       void loadExpires(sessionPwd, list)
-      void refreshStatuses()
+      await refreshStatuses()
+      if (dead) return
       const ms = await poolModels(sessionPwd).catch(() => [])
-      if (!dead) setModels(ms)
+      if (!dead && ms.length) setModels(ms)
     })()
     return () => { dead = true }
   }, [sessionPwd, reloadLocal, loadExpires, refreshStatuses])
@@ -173,6 +179,7 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
             <div key={m.id} style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '12px 16px', background: 'var(--panel)', opacity: st.disabled ? 0.6 : 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <b style={{ fontSize: 14.5 }}>{m.label}</b>
+                {m.uid && <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>ID …{m.uid.slice(-6)}</span>}
                 {st.pinned && <span className="ws-tag">置顶优先</span>}
                 {st.disabled && <span className="ws-tag">已停用</span>}
                 {cooling && <span className="ws-tag">冷却中（至 {new Date(st.cooldownUntil!).toLocaleTimeString()}）</span>}
