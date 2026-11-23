@@ -39,7 +39,9 @@ function parseListDir(text: string): Entry[] {
 const joinPath = (dir: string, name: string) => (dir.endsWith('/') ? dir + name : `${dir}/${name}`)
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'])
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'ts', 'mpg', 'mpeg', 'flv', 'wmv'])
+/** WebView 能直接播放的视频格式（走 Tauri asset 协议流式播放，不整文件读进内存） */
+const PLAY_VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v'])
 const HIDDEN_KEY = 'acm.filemgr.showHidden'
 const loadShowHidden = () => { try { return localStorage.getItem(HIDDEN_KEY) === '1' } catch { return false } }
 
@@ -87,6 +89,8 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
   const [showHidden, setShowHidden] = useState<boolean>(loadShowHidden)
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map())
   const thumbBusy = useState(() => new Set<string>())[0]
+  const [videoUrls, setVideoUrls] = useState<Map<string, string>>(new Map())
+  const videoUrlBusy = useState(() => new Set<string>())[0]
   const [hoverImg, setHoverImg] = useState<{ src: string; x: number; y: number } | null>(null)
   const [previewImg, setPreviewImg] = useState('')
   const [page, setPage] = useState(1)
@@ -122,15 +126,44 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
     } catch { /* 旧版服务器无此工具时静默 */ } finally { thumbBusy.delete(path) }
   }, [server, thumbs, thumbBusy])
 
-  // 当前目录的图片自动加载缩略图（上限 80 张，防大目录刷爆）
+  /** 可播视频：经 Tauri convertFileSrc 拿 asset 流地址（支持大文件边播边读） */
+  const ensureVideoUrl = useCallback(async (path: string) => {
+    if (videoUrls.has(path) || videoUrlBusy.has(path)) return
+    videoUrlBusy.add(path)
+    try {
+      const { convertFileSrc } = await import('@tauri-apps/api/core')
+      const url = convertFileSrc(path)
+      setVideoUrls(prev => new Map(prev).set(path, url))
+    } catch { /* 非桌面端忽略 */ } finally { videoUrlBusy.delete(path) }
+  }, [videoUrls, videoUrlBusy])
+
+  /** 其他格式视频（ts/mkv 等）：经 Rust qlmanage 生成缩略图（macOS），存进 thumbs 与图片共用展示 */
+  const ensureVideoThumb = useCallback(async (path: string) => {
+    if (thumbs.has(path) || thumbBusy.has(path)) return
+    thumbBusy.add(path)
+    try {
+      const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<string> } }
+      const invoke = w.__TAURI_INTERNALS__?.invoke
+      if (!invoke) return
+      const url = await invoke('video_thumb', { path })
+      if (url) setThumbs(prev => new Map(prev).set(path, url))
+    } catch { /* 生成失败回落图标 */ } finally { thumbBusy.delete(path) }
+  }, [thumbs, thumbBusy])
+
+  // 当前目录的媒体自动备好：图片缩略图（≤80）、可播视频的流地址、其他视频的 ql 缩略图（≤12，防大目录刷爆）
   useEffect(() => {
     if (!ready || !cwd) return
     let n = 0
+    let q = 0
     for (const e of pagedEntries) {
-      if (n >= 80) break
-      if (!e.isDir && IMAGE_EXTS.has(extOf(e.name))) { n++; void ensureThumb(joinPath(cwd, e.name)) }
+      if (e.isDir) continue
+      const ext = extOf(e.name)
+      const p = joinPath(cwd, e.name)
+      if (IMAGE_EXTS.has(ext)) { if (n < 80) { n++; void ensureThumb(p) } }
+      else if (PLAY_VIDEO_EXTS.has(ext)) { void ensureVideoUrl(p) }
+      else if (VIDEO_EXTS.has(ext)) { if (q < 12) { q++; void ensureVideoThumb(p) } }
     }
-  }, [pagedEntries, cwd, ready, ensureThumb])
+  }, [pagedEntries, cwd, ready, ensureThumb, ensureVideoUrl, ensureVideoThumb])
 
   useEffect(() => {
     const on = () => { setServer(findFilesystemServer()); setTick(x => x + 1) }
@@ -184,6 +217,12 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
       const cached = thumbs.get(p)
       if (cached) setPreviewImg(cached)
       else void ensureThumb(p).then(() => setThumbs(prev => { const u = prev.get(p); if (u) setPreviewImg(u); return prev }))
+    }
+    if (PLAY_VIDEO_EXTS.has(extOf(e.name))) void ensureVideoUrl(p)
+    else if (VIDEO_EXTS.has(extOf(e.name))) {
+      const cached = thumbs.get(p)
+      if (cached) setPreviewImg(cached)
+      else void ensureVideoThumb(p).then(() => setThumbs(prev => { const u = prev.get(p); if (u) setPreviewImg(u); return prev }))
     }
     if (TEXT_EXTS.has(extOf(e.name))) {
       void callMcpTool(server.id, 'read_text_file', { path: p }).then(r => {
@@ -434,15 +473,17 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                       <div className="fm-grid">
                         {pagedEntries.map(e => {
                           const p = joinPath(cwd, e.name)
-                          const thumb = !e.isDir && IMAGE_EXTS.has(extOf(e.name)) ? thumbs.get(p) : undefined
+                          const thumb = !e.isDir && (IMAGE_EXTS.has(extOf(e.name)) || VIDEO_EXTS.has(extOf(e.name))) ? thumbs.get(p) : undefined
                           return (
                             <button key={e.name} className={`fm-file ${selected === p ? 'sel' : ''} ${e.name.startsWith('.') ? 'fm-dot' : ''}`}
                               onClick={() => openEntry(e)} onDoubleClick={() => openEntry(e)}
                               onMouseEnter={ev => { if (thumb) { const r = ev.currentTarget.getBoundingClientRect(); setHoverImg({ src: thumb, x: r.right + 10, y: Math.max(8, r.top - 10) }) } }}
                               onMouseLeave={() => setHoverImg(null)}>
                               {e.isDir ? <Folder size={38} className="fm-folder-ico" />
-                                : thumb ? <img className="fm-thumb" src={thumb} alt={e.name} />
-                                  : <FileIcon size={34} className="fm-file-ico" />}
+                                : !e.isDir && PLAY_VIDEO_EXTS.has(extOf(e.name)) && videoUrls.get(p)
+                                  ? <video className="fm-thumb" src={videoUrls.get(p)} preload="metadata" muted playsInline />
+                                  : thumb ? <img className="fm-thumb" src={thumb} alt={e.name} />
+                                    : <FileIcon size={34} className="fm-file-ico" />}
                               <span>{e.name}</span>
                             </button>
                           )
@@ -471,13 +512,16 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                 <div className="fm-preview">
                   <div className="fm-pv-name">{selected.split('/').pop()}</div>
                   <div className="fm-pv-path">{selected}</div>
-                  {previewImg
-                    ? <img className="fm-pv-img" src={previewImg} alt={selected.split('/').pop()} />
-                    : preview
-                      ? <pre className="fm-pv-text">{preview}</pre>
-                      : <div className="fm-pv-meta">{TEXT_EXTS.has(extOf(selected)) || IMAGE_EXTS.has(extOf(selected))
-                        ? '正在读取…'
-                        : VIDEO_EXTS.has(extOf(selected)) ? '视频文件：点下方「打开」用系统播放器查看' : '此类型暂不支持内容预览（文本与图片可预览）'}</div>}
+                  {PLAY_VIDEO_EXTS.has(extOf(selected)) && videoUrls.get(selected)
+                    ? <video className="fm-pv-video" src={videoUrls.get(selected)} controls preload="metadata" />
+                    : previewImg
+                      ? <img className="fm-pv-img" src={previewImg} alt={selected.split('/').pop()} />
+                      : preview
+                        ? <pre className="fm-pv-text">{preview}</pre>
+                        : <div className="fm-pv-meta">{TEXT_EXTS.has(extOf(selected)) || IMAGE_EXTS.has(extOf(selected))
+                          ? '正在读取…'
+                          : PLAY_VIDEO_EXTS.has(extOf(selected)) ? '正在准备播放…'
+                            : VIDEO_EXTS.has(extOf(selected)) ? '此格式应用内不能直接播放（已尽量显示缩略图），点下方「打开」用系统播放器看' : '此类型暂不支持内容预览（文本与图片可预览）'}</div>}
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(selected).catch(() => {})}><Copy size={12} /> 复制路径</button>
                     {desktop && <button className="btn sm" onClick={() => void openExternalPath(selected).then(ok => { if (!ok) notify('打开失败') }).catch(() => notify('打开失败'))}><ExternalLink size={12} /> 打开</button>}

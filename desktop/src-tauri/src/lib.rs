@@ -706,6 +706,52 @@ fn icloud_drive_dir() -> Option<String> {
     None
 }
 
+/// 视频缩略图（v0.1.337，仅 macOS）：用系统 qlmanage 生成 QuickLook 缩略图，返回 data URL。
+/// 按 路径+修改时间 哈希缓存到临时目录，重复打开不重复生成；其他平台返回错误，JS 回落图标/打开按钮。
+#[tauri::command]
+async fn video_thumb(path: String) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        return Err("当前平台不支持生成视频缩略图".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut h: u64 = 1469598103934665603;
+        for b in format!("{path}:{mtime}").bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        let dir = std::env::temp_dir().join("acm-vthumbs");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let cached = dir.join(format!("{h:x}.png"));
+        if !cached.exists() {
+            let _ = std::process::Command::new("qlmanage")
+                .args(["-t", "-s", "512", "-o", dir.to_str().unwrap_or_default(), &path])
+                .output()
+                .map_err(|e| e.to_string())?;
+            let base = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let produced = dir.join(format!("{base}.png"));
+            if !produced.exists() {
+                return Err("生成缩略图失败".into());
+            }
+            std::fs::rename(&produced, &cached).map_err(|e| e.to_string())?;
+        }
+        let bytes = std::fs::read(&cached).map_err(|e| e.to_string())?;
+        Ok(format!("data:image/png;base64,{}", base64_encode(&bytes)))
+    }
+}
+
 /// 将文本文件写入指定目录
 #[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
@@ -2939,7 +2985,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
