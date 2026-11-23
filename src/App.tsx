@@ -93,6 +93,7 @@ const ImageView = lazy(() => import('./components/ImageView').then(m => ({ defau
 const VideoView = lazy(() => import('./components/VideoView').then(m => ({ default: m.VideoView })))
 const LocalImageView = lazy(() => import('./components/LocalImageView').then(m => ({ default: m.LocalImageView })))
 const LocalVideoView = lazy(() => import('./components/LocalVideoView').then(m => ({ default: m.LocalVideoView })))
+const WorkshopView = lazy(() => import('./components/WorkshopView').then(m => ({ default: m.WorkshopView })))
 const AIView = lazy(() => import('./components/AIView').then(m => ({ default: m.AIView })))
 const VoiceSettings = lazy(() => import('./components/VoiceSettings').then(m => ({ default: m.VoiceSettings })))
 const CalendarView = lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })))
@@ -112,7 +113,7 @@ type CsvImportPreview =
   | { kind: 'quotas'; quotas: ReturnType<typeof parseQuotasCsv> }
   | { kind: 'usage'; events: UsageEventInput[] }
 
-type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings' | 'plugins'
+type Tab = 'ai' | 'dashboard' | 'checkin' | 'benefits' | 'chat-translate' | 'image' | 'video' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'docs' | 'settings' | 'plugins' | 'workshop'
 
 const UNIT_LABEL: Record<CreditUnit, string> = {
   credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天',
@@ -297,7 +298,7 @@ function App() {
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
-    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'docs', 'settings'].includes(t)
+    if (t && ['ai', 'dashboard', 'checkin', 'benefits', 'chat-translate', 'image', 'video', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'docs', 'settings', 'workshop'].includes(t)
       && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
     return isPhone ? 'ai' : 'dashboard'
   })
@@ -1113,6 +1114,7 @@ function App() {
     { id: 'calendar', label: '额度日历', icon: CalendarDays },
     { id: 'voice', label: '语音配置', icon: Volume2 },
     { id: 'docs', label: '文档问答', icon: FileText },
+    { id: 'workshop', label: 'AI 工坊', icon: Wrench },
     { id: 'plugins', label: '插件', icon: Puzzle },
     { id: 'settings', label: '设置', icon: Settings },
   ]
@@ -1120,7 +1122,7 @@ function App() {
   // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
     { label: '概览', ids: ['ai', 'dashboard'] },
-    { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs'] },
+    { label: 'AI 创作', ids: ['image', 'video', 'benefits', 'docs', 'workshop'] },
     { label: '资产管理', ids: ['keys', 'usage', 'calendar', 'checkin'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
@@ -1130,7 +1132,7 @@ function App() {
   const shortLabel: Record<Tab, string> = {
     ai: 'AI', dashboard: '看板', checkin: '工具', benefits: '翻译', 'chat-translate': '对话翻译', image: '图像', video: '视频',
     'local-image': '本地图像', 'local-video': '本地视频',
-    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置', plugins: '插件',
+    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', docs: '文档', settings: '设置', plugins: '插件', workshop: '工坊',
   }
 
   // ---- 全局搜索（Cmd/Ctrl+K） ----
@@ -1455,6 +1457,8 @@ function App() {
           {tab === 'report' && <ReportView state={state} notify={notify} />}
 
           {tab === 'plugins' && <PluginsView notify={notify} />}
+
+          {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} onOpenTab={(tb) => openTab(tb as Tab)} />}
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
