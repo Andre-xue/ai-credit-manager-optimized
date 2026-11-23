@@ -7,7 +7,10 @@ import { loadStoragePrefs, storageDir } from '../core/storagePrefs'
 import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExternal'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
-import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, type CaptionRec } from '../core/galleryIndex'
+import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, accountVisionRoutes, type CaptionRec } from '../core/galleryIndex'
+import { workshopAccounts } from '../core/workshopChat'
+import { fetchProviderModels } from '../core/providerCall'
+import { decryptSecret } from '../core/crypto'
 import { ToolShell, RouteSelect } from './WorkshopView'
 import { Pager } from './Pager'
 
@@ -193,9 +196,30 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accounts.length])
 
+  const [acctVisionRoutes, setAcctVisionRoutes] = useState<WorkshopRoute[]>([])
+  const acctFetchedRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!sessionPwd) return
+    const candidates = workshopAccounts(accounts).filter(a => a.encryptedKey && !acctFetchedRef.current.has(a.id))
+    if (!candidates.length) return
+    let dead = false
+    void (async () => {
+      for (const acct of candidates) {
+        acctFetchedRef.current.add(acct.id)
+        try {
+          const key = await decryptSecret(acct.encryptedKey!, sessionPwd)
+          const models = await fetchProviderModels(acct, key)
+          const routes = accountVisionRoutes(acct, models)
+          if (!dead && routes.length) setAcctVisionRoutes(prev => [...prev.filter(r => r.kind !== 'account' || r.accountId !== acct.id), ...routes])
+        } catch { /* 拉不到模型列表的账户跳过，基础路线不受影响 */ }
+      }
+    })()
+    return () => { dead = true }
+  }, [accounts, sessionPwd])
+
   const visionRoutes = useMemo<WorkshopRoute[]>(() => {
     if (!routeData) return []
-    return routeData.routes.filter(r => {
+    const base = routeData.routes.filter(r => {
       if (r.kind === 'free') {
         const opt = routeData.freeOptions.find(o => `free:${o.key}` === r.key)
         return !!opt && opt.source !== 'cloud' && isVisionModelId(opt.modelId)
@@ -203,7 +227,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
       const acct = accounts.find(a => a.id === r.accountId)
       return !!acct && isVisionModelId(acct.label)
     })
-  }, [routeData, accounts])
+    return [...base, ...acctVisionRoutes]
+  }, [routeData, accounts, acctVisionRoutes])
   const tagRoute: WorkshopRoute | null = visionRoutes.find(r => r.key === tagRouteKey) ?? visionRoutes[0] ?? null
   const visionData: WorkshopRouteData | null = routeData ? { routes: visionRoutes, freeOptions: routeData.freeOptions } : null
 
@@ -459,6 +484,9 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               }} />
               {routeData && visionRoutes.length === 0 && (
                 <div className="gal-idx-hint">没有能看图的模型：免费模型里挑带「看图」的，或用支持多模态的自有账户。</div>
+              )}
+              {routeData && !sessionPwd && (
+                <div className="gal-idx-hint">想用自有账户：先解锁保险箱，这里会自动列出你每个账户下能看图的模型（逐个模型可选）。</div>
               )}
               <div className="gal-idx-status">
                 已索引 {indexedCount} / {items.length} 个

@@ -10,7 +10,7 @@ import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeA
 
 export type WorkshopRoute =
   | { kind: 'free'; key: string; label: string }
-  | { kind: 'account'; key: string; label: string; accountId: string; engine?: string }
+  | { kind: 'account'; key: string; label: string; accountId: string; engine?: string; modelId?: string }
 
 export interface WorkshopRouteData {
   routes: WorkshopRoute[]

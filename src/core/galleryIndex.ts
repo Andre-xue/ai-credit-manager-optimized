@@ -5,6 +5,7 @@ import { chatUpstream } from './upstreamFree'
 import { classifyModelPurpose } from './modelPurpose'
 import type { FreeAiOption } from './freeAi'
 import type { WorkshopRoute } from './workshopChat'
+import { PROVIDER_MAP } from '../data/providers'
 
 /**
  * AI 图库索引（v0.1.343）：用看图模型给每张图片/每个视频首帧生成中文描述+标签，
@@ -61,6 +62,15 @@ export function isVisionModelId(id: string): boolean {
 const TAG_PROMPT = '请用中文描述这张图片（视频取的是首帧）：第一行写一句不超过30字的画面描述；第二行以「标签：」开头，写 5-8 个便于检索的关键词（空格分隔），覆盖人物、场景、物体、颜色、氛围。只输出这两行，不要解释。'
 
 /** 给一张图（data URL）打标，返回描述+标签文本 */
+/** 自有账户下「能看图」的模型逐个列成路线（v0.1.354）：账户本身配置的模型（acct.label）
+ * 已由基础路线覆盖，这里只补同一账户还能调的其他看图模型 */
+export function accountVisionRoutes(acct: Account, models: string[]): WorkshopRoute[] {
+  const providerName = PROVIDER_MAP[acct.providerId]?.name ?? acct.providerId
+  return models
+    .filter(m => m !== acct.label && isVisionModelId(m))
+    .map(m => ({ kind: 'account' as const, key: `acct:${acct.id}:${m}`, label: `自有 · ${providerName} · ${m}`, accountId: acct.id, modelId: m }))
+}
+
 export async function visionTagImage(params: {
   route: WorkshopRoute
   freeOptions: FreeAiOption[]
@@ -93,7 +103,7 @@ export async function visionTagImage(params: {
   if (!sessionPwd) throw new Error('保险箱未解锁，无法使用自有账户（可改用免费模型）')
   if (!acct.encryptedKey) throw new Error('该账户没有保存的密钥')
   const key = await decryptSecret(acct.encryptedKey, sessionPwd)
-  const r = await callChat(acct, key, messages, route.engine)
+  const r = await callChat(acct, key, messages, route.modelId ?? route.engine)
   if (!r.ok) throw new Error(r.text || '调用失败')
   return r.text.trim()
 }

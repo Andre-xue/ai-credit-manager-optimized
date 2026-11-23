@@ -82,3 +82,19 @@ describe('sync.prepareSyncPayload', () => {
     expect(p.stateSnapshots).toHaveLength(1)
   })
 })
+
+import { accountVisionRoutes } from './galleryIndex'
+import type { Account } from './types'
+
+describe('galleryIndex.accountVisionRoutes 自有账户看图模型罗列', () => {
+  const acct = { id: 'a9', providerId: 'openai', label: 'gpt-4o-mini', encryptedKey: 'x', mode: 'api', createdAt: '', updatedAt: '' } as unknown as Account
+  it('只列能看图的模型，排除账户自身配置的模型与纯文本模型', () => {
+    const routes = accountVisionRoutes(acct, ['gpt-4o-mini', 'gpt-4o', 'text-embedding-3-small', 'gpt-4.1'])
+    expect(routes.map(r => r.key)).toEqual(['acct:a9:gpt-4o'])
+    expect(routes[0].label).toContain('gpt-4o')
+    expect(routes[0].kind).toBe('account')
+  })
+  it('没有看图模型时返回空', () => {
+    expect(accountVisionRoutes(acct, ['deepseek-chat', 'gpt-4o-mini'])).toEqual([])
+  })
+})
