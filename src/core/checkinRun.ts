@@ -4,6 +4,7 @@ import {
 } from './checkin'
 import { listPoolMeta, poolCredBox, migrateLegacyWorkbuddyCred } from './wbPool'
 import { listMmMeta, mmCredBox, migrateLegacyMinimaxCred } from './mmPool'
+import { getPlatformEnabled } from './checkinPlatforms'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
@@ -78,8 +79,8 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
   if (!probed && hasCheckinSources()) throw new Error('主密码不正确，凭据解不开')
 
   const items: CheckinRunItem[] = []
-  // MiniMax 多账号
-  for (const meta of listMmMeta()) {
+  // MiniMax 多账号（平台开关关掉时批量签到跳过该平台）
+  if (getPlatformEnabled('minimax')) for (const meta of listMmMeta()) {
     const box = mmCredBox(meta.id, pwd)
     const label = `MiniMax · ${meta.label}`
     try {
@@ -97,7 +98,7 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
     }
   }
   // 迁移没成功时兜底走旧单账号路径
-  if (!listMmMeta().length && hasCheckinCred('minimax')) {
+  if (getPlatformEnabled('minimax') && !listMmMeta().length && hasCheckinCred('minimax')) {
     try {
       const st = await getCheckinStatus('minimax', pwd)
       if (st.state === 'claimable') {
@@ -112,7 +113,7 @@ export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
       items.push({ label: 'MiniMax Code', outcome: 'error', message: e instanceof Error ? e.message : '签到失败' })
     }
   }
-  for (const meta of listPoolMeta()) {
+  if (getPlatformEnabled('workbuddy')) for (const meta of listPoolMeta()) {
     const box = poolCredBox(meta.id, pwd)
     const label = `WorkBuddy · ${meta.label}`
     try {

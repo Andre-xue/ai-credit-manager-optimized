@@ -16,12 +16,45 @@ import {
   mmAccountStatuses, mmClaimOne, type MmAccountStatus,
 } from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, type CheckinRun } from '../core/checkinRun'
+import { getPlatformEnabled, setPlatformEnabled, platformMeta, type CheckinPlatformId } from '../core/checkinPlatforms'
 
 /**
  * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号）：
  * 两个平台都是多账号——逐个查状态、可逐个签或全部签。
  * 凭据都用保险箱主密码加密、只存本机。
  */
+function JellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  const [anim, setAnim] = useState<'on' | 'off' | null>(null)
+  const prev = useRef(checked)
+  useEffect(() => {
+    if (prev.current !== checked) {
+      setAnim(checked ? 'on' : 'off')
+      prev.current = checked
+      const t = window.setTimeout(() => setAnim(null), 360)
+      return () => window.clearTimeout(t)
+    }
+  }, [checked])
+  return (
+    <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
+      className={`jelly-toggle ${checked ? 'is-on' : ''}`} aria-label={checked ? '关闭' : '开启'}>
+      <span className={`jelly-dot ${anim ? `anim-${anim}` : (checked ? 'static-on' : 'static-off')}`} />
+    </button>
+  )
+}
+
+/** 平台分组头：区域 · 分类 + 该平台的自动签到开关（关掉后批量签到跳过它） */
+function PlatformGroupHead({ id, enabled, onToggle }: { id: CheckinPlatformId; enabled: boolean; onToggle: (v: boolean) => void }) {
+  const meta = platformMeta(id)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '2px 4px 8px' }}>
+      <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', letterSpacing: 0.4 }}>{meta.regionLabel} · {meta.category}</span>
+      <span style={{ flex: 1 }} />
+      <span style={{ fontSize: 12.5, color: enabled ? 'var(--text-3)' : 'var(--danger, #d33)' }}>{enabled ? '自动签到' : '已关闭自动签到（批量签到会跳过）'}</span>
+      <JellyToggle checked={enabled} onChange={onToggle} />
+    </div>
+  )
+}
+
 export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   sessionPwd: string
   onUnlock: (pwd: string) => void
@@ -35,6 +68,8 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [mmStatuses, setMmStatuses] = useState<MmAccountStatus[]>([])
   const [mmAuth, setMmAuth] = useState<{ authUrl: string; userCode: string } | null>(null)
   const [lastRun, setLastRun] = useState<CheckinRun | null>(() => readLastCheckinRun())
+  const [wbEnabled, setWbEnabled] = useState(() => getPlatformEnabled('workbuddy'))
+  const [mmEnabled, setMmEnabled] = useState(() => getPlatformEnabled('minimax'))
   const [busy, setBusy] = useState('')
   const [wbOpen, setWbOpen] = useState<boolean | null>(null)
   const [mmOpen, setMmOpen] = useState<boolean | null>(null)
@@ -212,6 +247,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       )}
 
       {/* WorkBuddy：账号池 */}
+      <PlatformGroupHead id="workbuddy" enabled={wbEnabled} onToggle={v => { setWbEnabled(v); setPlatformEnabled('workbuddy', v); notify(v ? 'WorkBuddy 已加入自动签到' : 'WorkBuddy 已移出自动签到（批量签到会跳过）') }} />
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="ws-tico g2"><CalendarCheck size={20} /></span>
@@ -261,7 +297,10 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       </div>
 
       {/* MiniMax：多账号 */}
-      <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)', marginTop: 12 }}>
+      <div style={{ marginTop: 16 }}>
+        <PlatformGroupHead id="minimax" enabled={mmEnabled} onToggle={v => { setMmEnabled(v); setPlatformEnabled('minimax', v); notify(v ? 'MiniMax 已加入自动签到' : 'MiniMax 已移出自动签到（批量签到会跳过）') }} />
+      </div>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="ws-tico g3"><CalendarCheck size={20} /></span>
           <div style={{ flex: 1 }}>
