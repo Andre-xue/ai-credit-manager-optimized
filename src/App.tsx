@@ -85,6 +85,7 @@ import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, che
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { getAutoCheckinEnabled, readLastCheckinRun, checkinRunIsToday, runAllCheckins, summarizeCheckinRun, hasCheckinSources } from './core/checkinRun'
+import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult } from './core/freeGames'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -1105,6 +1106,30 @@ function App() {
         if (sessionPwdRef.current) notify(`自动签到完成：${summarizeCheckinRun(run)}`)
       } catch { /* 静默：失败原因会在迷你窗/签到页手动刷新时呈现 */ }
       finally { autoCheckinRunningRef.current = false }
+    }
+    void tick()
+    const t = window.setInterval(() => { void tick() }, 30 * 60 * 1000)
+    return () => window.clearInterval(t)
+  }, [notify])
+
+  // ---- 免费游戏自动领取（v0.1.384）：Epic 绑定后按偏好间隔巡查，拉取本周免费并自动领入库 ----
+  // 启动/解锁时先看一眼，之后每 30 分钟看一眼（覆盖跨周四 23:00 换新）；失败原因写进
+  // 工坊领取记录，不静默跳过。密码来源与自动签到同款：会话密码或指纹副本。
+  const autoFgRunningRef = useRef(false)
+  useEffect(() => {
+    const tick = async () => {
+      if (autoFgRunningRef.current) return
+      if (!freeGamesCheckDue()) return
+      const pwd = sessionPwdRef.current ?? getBiometricPassword()
+      if (!pwd) return
+      autoFgRunningRef.current = true
+      try {
+        const res = await runFreeGamesCheck(pwd)
+        if (sessionPwdRef.current && (res.claimed.length || res.errors.length)) {
+          notify(`免费游戏自动领取：${summarizeCheckResult(res)}`)
+        }
+      } catch { /* 静默：失败原因写进领取记录，打开工坊可见 */ }
+      finally { autoFgRunningRef.current = false }
     }
     void tick()
     const t = window.setInterval(() => { void tick() }, 30 * 60 * 1000)
