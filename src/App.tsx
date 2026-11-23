@@ -289,7 +289,7 @@ function App() {
   }, [])
   // 同步账户到语音模块（供语音 Key 读取，账户变化时自动失效缓存）
   useEffect(() => { syncVoiceAccounts(state.accounts) }, [state.accounts])
-  // 手机原生端（安卓/iOS）默认进入 AI 聊天页、侧栏抽屉默认隐藏；其他端沿用旧行为
+  // 全端默认进入 AI 助手页（v0.1.333 Ethan 定案；此前桌面端默认额度看板）；手机端侧栏抽屉默认隐藏
   // 预览参数仅用于浏览器验收手机端界面，生产环境不会带此参数
   const phonePreview = typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone'))
   const isPhone = isNativeApp() || phonePreview
@@ -298,7 +298,7 @@ function App() {
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
     if (t && ['ai', 'dashboard', 'checkin', 'chat-translate', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'settings', 'workshop'].includes(t)
       && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
-    return isPhone ? 'ai' : 'dashboard'
+    return 'ai'
   })
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(() => {
     if (phonePreview) return location.hash.includes('drawer') || new URLSearchParams(location.search).get('drawer') === '1'
@@ -1148,9 +1148,10 @@ function App() {
 
   // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
-    { label: '概览', ids: ['ai', 'dashboard'] },
+    // v0.1.333 Ethan 定案：首组取消组名、只留 AI 助手；额度看板移入资产管理
+    { label: '', ids: ['ai'] },
     { label: 'AI 创作', ids: ['workshop'] },
-    { label: '资产管理', ids: ['keys', 'usage', 'calendar'] },
+    { label: '资产管理', ids: ['dashboard', 'keys', 'usage', 'calendar'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
 
@@ -1237,12 +1238,14 @@ function App() {
             if (!visibleIds.length) return null
             const groupClosed = sidebarVisible && closedNavGroups.includes(group.label)
             return (
-              <div className="nav-group" key={group.label}>
-                <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? t('展开分组') : t('收起分组')}>
-                  <span>{t(group.label)}</span>
-                  {groupClosed && <span className="nav-group-count">{visibleIds.length}</span>}
-                  <ChevronDown size={12} className={`nav-group-chevron ${groupClosed ? '' : 'open'}`} />
-                </div>
+              <div className="nav-group" key={group.label || 'top'}>
+                {group.label !== '' && (
+                  <div className="nav-group-label collapsible" onClick={() => toggleNavGroup(group.label)} title={groupClosed ? t('展开分组') : t('收起分组')}>
+                    <span>{t(group.label)}</span>
+                    {groupClosed && <span className="nav-group-count">{visibleIds.length}</span>}
+                    <ChevronDown size={12} className={`nav-group-chevron ${groupClosed ? '' : 'open'}`} />
+                  </div>
+                )}
                 {!groupClosed && visibleIds.map((id) => {
                   const tabDef = tabs.find((x) => x.id === id)!
                   const Icon = tabDef.icon

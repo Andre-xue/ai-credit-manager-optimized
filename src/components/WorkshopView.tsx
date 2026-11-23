@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   FolderCog, FileText, Languages, PenLine, Image as ImageIcon, SearchCheck, Search, Table2, Mic,
-  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, LayoutGrid,
+  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, ChevronDown, LayoutGrid,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
@@ -399,6 +399,15 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
 }) {
   const [tool, setTool] = useState<ToolId>('hub')
   const back = () => setTool('hub')
+  // 工坊主页分组折叠（v0.1.333 Ethan 要求，与插件页折叠同一处理）：点组标题收起该组卡片，状态存本机
+  const [closedGroups, setClosedGroups] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('acm.workshop.closedGroups') ?? '[]') as string[] } catch { return [] }
+  })
+  const toggleGroup = (title: string) => setClosedGroups(prev => {
+    const next = prev.includes(title) ? prev.filter(x => x !== title) : [...prev, title]
+    try { localStorage.setItem('acm.workshop.closedGroups', JSON.stringify(next)) } catch { /* 忽略 */ }
+    return next
+  })
   const toolProps: ToolProps = { accounts, sessionPwd, notify, onBack: back }
 
   // 外部直达信号（看板瓷砖等）：打开工坊时直达指定工具页
@@ -469,7 +478,12 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
       </div>
       {groups.map(g => (
         <div key={g.title}>
-          <div className="ws-group-title">{g.title} <small>{g.sub}</small></div>
+          <div className="ws-group-title" role="button" tabIndex={0} style={{ cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => toggleGroup(g.title)} title={closedGroups.includes(g.title) ? '展开分组' : '收起分组'}>
+            {g.title} <small>{g.sub}</small>
+            <ChevronDown size={14} style={{ marginLeft: 6, verticalAlign: -2, transform: closedGroups.includes(g.title) ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+          </div>
+          {!closedGroups.includes(g.title) && (
           <div className="ws-grid">
             {g.cards.map(c => (
               <button key={c.id} className="ws-card" onClick={c.action}>
@@ -484,6 +498,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
               </button>
             ))}
           </div>
+          )}
         </div>
       ))}
     </div>
