@@ -519,6 +519,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                 <button className={viewMode === 'list' ? 'on' : ''} onClick={() => setViewMode('list')}><ListIcon size={13} /> 列表</button>
               </div>
               <button className="btn sm ghost" onClick={() => server && cwd && void loadDir(server, cwd)}><RefreshCw size={13} /></button>
+              <span className="fm-count">共 {visibleEntries.length} 项{pageCount > 1 ? ` · 第 ${safePage} / ${pageCount} 页` : ''}</span>
             </div>
             <div className="fm-body">
               <div className="fm-side">
@@ -537,6 +538,11 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
                 {!indexing && indexNote && <div className="fm-side-meta">{indexNote}</div>}
               </div>
               <div className="fm-main">
+                {pageCount > 1 && !loadingDir && (
+                  <div className="fm-pager-top">
+                    <Pager page={safePage} pageCount={pageCount} total={visibleEntries.length} onPage={setPage} />
+                  </div>
+                )}
                 {loadingDir ? <div className="fm-empty"><Loader2 size={16} className="spin" /> 读取中…</div>
                   : visibleEntries.length === 0 ? <div className="fm-empty">这个文件夹是空的（或只有隐藏文件）</div>
                     : viewMode === 'grid' ? (

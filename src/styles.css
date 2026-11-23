@@ -2172,6 +2172,9 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .gal-ai-card .gal-prog i { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
 .gal-prog i { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
 .gal-pager-sticky { position: sticky; bottom: 14px; display: flex; justify-content: center; z-index: 20; pointer-events: none; margin-top: 12px; }
+.fm-count { font-size: 12px; color: var(--text-3); white-space: nowrap; margin-left: 2px; }
+.fm-pager-top { display: flex; justify-content: center; margin-bottom: 10px; }
+.fm-pager-top .fm-pager { padding: 0; }
 .fm-pager-sticky { position: sticky; bottom: 14px; display: flex; justify-content: center; z-index: 20; pointer-events: none; margin-top: 12px; }
 .fm-pager-sticky .fm-pager { pointer-events: auto; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(30, 25, 70, .16); border-radius: 999px; padding: 5px 12px; margin: 0; }
 .gal-pager-sticky .fm-pager { pointer-events: auto; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(30, 25, 70, .16); border-radius: 999px; padding: 5px 12px; margin: 0; }

@@ -8,7 +8,8 @@ import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExter
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
 import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, accountVisionRoutes, type CaptionRec } from '../core/galleryIndex'
-import { workshopAccounts } from '../core/workshopChat'
+import { isVoiceConfigAccount } from '../core/modelCategories'
+import { PROVIDER_MAP } from '../data/providers'
 import { fetchProviderModels } from '../core/providerCall'
 import { decryptSecret } from '../core/crypto'
 import { ToolShell, RouteSelect } from './WorkshopView'
@@ -197,25 +198,37 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   }, [accounts.length])
 
   const [acctVisionRoutes, setAcctVisionRoutes] = useState<WorkshopRoute[]>([])
+  const [acctEnum, setAcctEnum] = useState<{ loading: boolean; errors: string[] }>({ loading: false, errors: [] })
   const acctFetchedRef = useRef(new Set<string>())
-  useEffect(() => {
+  const acctFailedRef = useRef(new Set<string>())
+  // 自有账户看图模型枚举（v0.1.355 重做）：不再套工坊账户的分类/能力门槛——
+  // 只要有保存的密钥、非本地非语音配置就逐个拉模型列表，能不能看图由模型名决定；
+  // 拉取状态与失败原因直接显示在弹层里，不再静默跳过；失败的账户下次打开弹层自动重试。
+  const enumerateAcctModels = useCallback(async (retryFailed: boolean) => {
     if (!sessionPwd) return
-    const candidates = workshopAccounts(accounts).filter(a => a.encryptedKey && !acctFetchedRef.current.has(a.id))
+    const candidates = accounts.filter(a =>
+      !!a.encryptedKey && !a.providerId?.startsWith('local-') && !isVoiceConfigAccount(a.providerId, a.note)
+      && !acctFetchedRef.current.has(a.id) && (retryFailed || !acctFailedRef.current.has(a.id)))
     if (!candidates.length) return
-    let dead = false
-    void (async () => {
-      for (const acct of candidates) {
+    setAcctEnum(e => ({ ...e, loading: true }))
+    const errors: string[] = []
+    for (const acct of candidates) {
+      try {
+        const key = await decryptSecret(acct.encryptedKey!, sessionPwd)
+        const models = await fetchProviderModels(acct, key)
         acctFetchedRef.current.add(acct.id)
-        try {
-          const key = await decryptSecret(acct.encryptedKey!, sessionPwd)
-          const models = await fetchProviderModels(acct, key)
-          const routes = accountVisionRoutes(acct, models)
-          if (!dead && routes.length) setAcctVisionRoutes(prev => [...prev.filter(r => r.kind !== 'account' || r.accountId !== acct.id), ...routes])
-        } catch { /* 拉不到模型列表的账户跳过，基础路线不受影响 */ }
+        acctFailedRef.current.delete(acct.id)
+        const routes = accountVisionRoutes(acct, models)
+        if (routes.length) setAcctVisionRoutes(prev => [...prev.filter(r => r.kind !== 'account' || r.accountId !== acct.id), ...routes])
+      } catch (e) {
+        acctFailedRef.current.add(acct.id)
+        errors.push(`${PROVIDER_MAP[acct.providerId]?.name ?? acct.providerId}：${((e as Error)?.message ?? String(e)).slice(0, 60)}`)
       }
-    })()
-    return () => { dead = true }
+    }
+    setAcctEnum({ loading: false, errors })
   }, [accounts, sessionPwd])
+  useEffect(() => { void enumerateAcctModels(false) }, [enumerateAcctModels])
+  useEffect(() => { if (aiPanelOpen) void enumerateAcctModels(true) }, [aiPanelOpen, enumerateAcctModels])
 
   const visionRoutes = useMemo<WorkshopRoute[]>(() => {
     if (!routeData) return []
@@ -487,6 +500,15 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               )}
               {routeData && !sessionPwd && (
                 <div className="gal-idx-hint">想用自有账户：先解锁保险箱，这里会自动列出你每个账户下能看图的模型（逐个模型可选）。</div>
+              )}
+              {routeData && sessionPwd && acctEnum.loading && (
+                <div className="gal-idx-hint">正在读取自有账户的模型列表…</div>
+              )}
+              {routeData && sessionPwd && !acctEnum.loading && acctVisionRoutes.length > 0 && (
+                <div className="gal-idx-hint">已列出自有账户的看图模型 {acctVisionRoutes.length} 个，在上方菜单里选「自有 · …」即可用。</div>
+              )}
+              {routeData && sessionPwd && !acctEnum.loading && acctEnum.errors.length > 0 && (
+                <div className="gal-idx-hint">有账户的模型列表没拉到：{acctEnum.errors.join('；')}</div>
               )}
               <div className="gal-idx-status">
                 已索引 {indexedCount} / {items.length} 个
