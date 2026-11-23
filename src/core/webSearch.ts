@@ -35,6 +35,20 @@ html
 ).replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * 修复 UTF-8 被按 Latin-1 误读的乱码串（v0.1.320）：atob/旧式解码会把 UTF-8 字节
+ * 当单字节字符，中文 URL 变成 å¼ç½ 这类乱码。把每个字符还原回字节再按 UTF-8 解码；
+ * 解出替换字符（�）说明原本没坏，原样返回。
+ */
+export function repairMojibake(s: string): string {
+  if (!/[\u0080-\u00ff]/.test(s)) return s
+  try {
+    const bytes = Uint8Array.from(s, c => c.charCodeAt(0) & 0xff)
+    const fixed = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+    return fixed.includes('\uFFFD') ? s : fixed
+  } catch { return s }
+}
+
 /** 必应结果链接是自家跳转地址（/ck/a?…&u=a1<base64>），解出真实目标地址 */
 export function decodeBingRedirect(url: string): string {
   if (!/bing\.com\/ck\//.test(url)) return url
@@ -42,9 +56,26 @@ export function decodeBingRedirect(url: string): string {
   if (!m) return url
   try {
     const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/')
-    const decoded = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))
+    // atob 给的是字节串（每字符一个字节），必须再按 UTF-8 解码，否则中文地址变乱码
+    const bytes = Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), c => c.charCodeAt(0))
+    const decoded = new TextDecoder('utf-8').decode(bytes)
     return /^https?:\/\//.test(decoded) ? decoded : url
   } catch { return url }
+}
+
+/** 结果去重：同 URL 或同标题（维基多语言镜像等）只留第一条（v0.1.320） */
+export function dedupeResults(results: WebSearchResult[]): WebSearchResult[] {
+const seenUrl = new Set<string>()
+const seenTitle = new Set<string>()
+const out: WebSearchResult[] = []
+for (const r of results) {
+const titleKey = r.title.trim().toLowerCase()
+if (seenUrl.has(r.url) || (titleKey && seenTitle.has(titleKey))) continue
+seenUrl.add(r.url)
+if (titleKey) seenTitle.add(titleKey)
+out.push(r)
+}
+return out
 }
 
 /** 解析必应搜索结果页（li.b_algo 结构） */
@@ -53,7 +84,7 @@ const out: WebSearchResult[] = []
 for (const block of html.split(/<li class="b_algo"/).slice(1)) {
 const m = block.match(/<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
 if (!m) continue
-const url = decodeBingRedirect(decodeEntities(m[1]))
+const url = repairMojibake(decodeBingRedirect(decodeEntities(m[1])))
 if (!/^https?:\/\//.test(url)) continue
 const snippetM = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
 out.push({ title: stripHtmlToText(m[2]), url, snippet: snippetM? stripHtmlToText(snippetM[1]).slice(0, 220): ''})
@@ -72,7 +103,7 @@ let url = decodeEntities(m[1])
 const uddg = url.match(/[?&]uddg=([^&]+)/)
 if (uddg) { try { url = decodeURIComponent(uddg[1])} catch { /* 保持原链接 */}}
 if (!/^https?:\/\//.test(url)) continue
-out.push({ title: stripHtmlToText(m[2]), url, snippet: stripHtmlToText(m[3]).slice(0, 220)})
+out.push({ title: stripHtmlToText(m[2]), url: repairMojibake(url), snippet: stripHtmlToText(m[3]).slice(0, 220)})
 if (out.length >= 6) break
 }
 return out
@@ -176,13 +207,7 @@ export async function buildSearchContext(question: string): Promise<SearchContex
 const queries = deriveSearchQueries(question)
 if (!queries.length) return null
 const perQuery = await Promise.all(queries.map(q => searchWeb(q, 5).catch(() => [] as WebSearchResult[])))
-const seen = new Set<string>()
-const merged: WebSearchResult[] = []
-for (const r of perQuery.flat()) {
-if (seen.has(r.url)) continue
-seen.add(r.url)
-merged.push(r)
-}
+const merged = dedupeResults(perQuery.flat())
 const results = filterRelevantResults(queries, merged).slice(0, 5)
 if (!results.length) return null
 const pages = await Promise.all(results.slice(0, 4).map(async r => {

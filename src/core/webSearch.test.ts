@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeBingRedirect, deriveSearchQueries, filterRelevantResults, parseBingResults, parseDdgResults, stripHtmlToText } from './webSearch'
+import { decodeBingRedirect, dedupeResults, deriveSearchQueries, filterRelevantResults, parseBingResults, parseDdgResults, repairMojibake, stripHtmlToText } from './webSearch'
 
 describe('stripHtmlToText', () => {
   it('去脚本/样式/标签并解实体', () => {
@@ -63,6 +63,31 @@ describe('filterRelevantResults（v0.1.319）', () => {
     const a = { title: '甲', url: 'https://a.example/', snippet: '无关内容' }
     const b = { title: '乙', url: 'https://b.example/', snippet: '也无关' }
     expect(filterRelevantResults(['量子纠缠实验'], [a, b])).toHaveLength(2)
+  })
+})
+
+describe('乱码修复与去重（v0.1.320）', () => {
+  it('repairMojibake 把 Latin-1 误读的 UTF-8 还原成中文', () => {
+    const original = 'https://global.hk01.com/地區/60409650/日本72歲保安'
+    const mojibake = [...new TextEncoder().encode(original)].map(b => String.fromCharCode(b)).join('')
+    expect(mojibake).not.toBe(original) // 确实先坏掉
+    expect(repairMojibake(mojibake)).toBe(original)
+    expect(repairMojibake(original)).toBe(original) // 没坏的不动
+    expect(repairMojibake('https://example.com/plain')).toBe('https://example.com/plain')
+  })
+
+  it('必应跳转里含中文的真实地址解码不乱码', () => {
+    const target = 'https://global.hk01.com/地區/60409650/日本72歲保安'
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(target))).replace(/=+$/, '')
+    const redir = `https://www.bing.com/ck/a?!&&p=xx&u=a1${b64}&ntb=1`
+    expect(decodeBingRedirect(redir)).toBe(target)
+  })
+
+  it('同标题结果去重（维基多语言镜像）', () => {
+    const a = { title: '佐藤修悦 - 维基百科', url: 'https://zh.wikipedia.org/zh-cn/x', snippet: '甲' }
+    const b = { title: '佐藤修悦 - 维基百科', url: 'https://zh.wikipedia.org/zh-my/x', snippet: '乙' }
+    const c = { title: '别的', url: 'https://e.example/', snippet: '丙' }
+    expect(dedupeResults([a, b, c]).map(r => r.url)).toEqual([a.url, c.url])
   })
 })
 
