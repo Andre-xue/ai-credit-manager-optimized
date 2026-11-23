@@ -35,7 +35,7 @@ import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHis
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDelayMs, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
 import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
-import { testFreeAiOption, type FreeAiOption } from '../core/freeAi'
+import { testFreeAiOption, classifyFreeTestError, type FreeAiOption } from '../core/freeAi'
 import { collectMcpTools, loadToolCallingEnabled, runToolChatLoop } from '../core/toolChat'
 import { buildSearchContextCached, loadWebSearchEnabled, saveWebSearchEnabled } from '../core/webSearch'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
@@ -705,17 +705,43 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       if (!r.ok) throw new Error(r.error ?? t('本地模型调用失败'))
       return r.text
     }
-    // 内置免费通道（Zen / Kilo 公共网关）：非流式，整段返回后一次性上屏；不带图片附件
-    if (opt?.upstream) {
-      const src = opt.upstream
-      const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
-      const text = await chatUpstream(src, opt.key.slice(`up:${src}:`.length), msgs, effectiveReasoning)
-      if (onDelta) onDelta(text); else setStreamingText(text)
-      return text
+    // 免费模型（云端免费 / Zen / Kilo）：主选不可用时自动换下一个候选，不再让用户逐个试。
+    // 候选顺序：主选 → 已测跑通的 → 未测的 → 已知测不通的；换成功后同步切换当前选择并标记状态。
+    // 指定 optKey 的调用（对比/换 Key 重试）不兜底，失败原样抛出。
+    if (opt?.free) {
+      const fid = (o: (typeof allOptions)[number]) => (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key)
+      const score = (o: (typeof allOptions)[number]) => { const tt = freeTest[o.key]; return tt?.state === 'done' ? (tt.ok ? 0 : 2) : 1 }
+      const candidates = [opt, ...allOptions.filter(o => o.free && o.key !== opt.key).sort((a, b) => score(a) - score(b))]
+      let firstErr: unknown = null
+      for (const cand of candidates) {
+        if (signal?.aborted) throw new Error(t('已停止'))
+        let emitted = false
+        try {
+          let text: string
+          if (cand.upstream) {
+            const src = cand.upstream
+            const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
+            text = await chatUpstream(src, fid(cand), msgs, effectiveReasoning)
+            if (onDelta) onDelta(text); else setStreamingText(text)
+          } else {
+            text = await streamChat(cand.key, voiceHistory, content, delta => { emitted = true; if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
+          }
+          if (cand.key !== opt.key) {
+            setFreeTest(prev => ({ ...prev, [cand.key]: { state: 'done', ok: true, ms: 0 } }))
+            setModel(cand.key); saveModel(cand.key)
+            notify(t('免费模型 {name} 不可用，已自动切换到 {next}', { name: fid(opt), next: fid(cand) }))
+          }
+          return text
+        } catch (e) {
+          if (!firstErr) firstErr = e
+          setFreeTest(prev => ({ ...prev, [cand.key]: { state: 'done', ok: false, ms: 0, error: classifyFreeTestError(e) } }))
+          if (optKey || emitted) throw e
+        }
+      }
+      throw firstErr ?? new Error(t('调用失败'))
     }
-    // 平台免费模型：流式输出（图片附件随多模态消息发送）
-    // 指定了 optKey（换 Key 重试/多模型对比）时按该选项自己的模型 id 调用，否则用当前所选模型
-    return streamChat(opt?.free ? opt.key : (model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
+    // 自有账户等其他模型：流式输出
+    return streamChat((model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
   }
 
   // 报错自动换 Key：调用失败（鉴权/额度类）时，若同平台还有别的可用账户，给出「一键切换重试」
@@ -1127,6 +1153,43 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return PURPOSE_ORDER.filter(p => byPurpose.has(p)).map(p => ({ purpose: p, options: byPurpose.get(p)! }))
   }, [category, visibleOptions])
 
+  const [probingAll, setProbingAll] = useState(false)
+  const lastProbeAtRef = useRef(0)
+  const toFreeAiOption = (o: (typeof allOptions)[number]): FreeAiOption => ({
+    key: o.key, label: o.label,
+    group: o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费',
+    source: o.upstream ?? 'cloud', modelId: freeModelIdOf(o),
+  })
+  /** 一键全测：并发 3 路逐个测活，结果实时打标；当前主选已死时自动选第一个活的 */
+  const probeAllFree = async (autoSelect: boolean) => {
+    if (probingAll) return
+    const list = allOptions.filter(o => o.free)
+    if (!list.length) return
+    setProbingAll(true)
+    lastProbeAtRef.current = Date.now()
+    setFreeTest(prev => { const n = { ...prev }; for (const o of list) n[o.key] = { state: 'testing' }; return n })
+    const results = new Map<string, boolean>()
+    let idx = 0
+    const worker = async () => {
+      while (idx < list.length) {
+        const o = list[idx++]
+        const r = await testFreeAiOption(toFreeAiOption(o), 12000)
+        results.set(o.key, r.ok)
+        setFreeTest(prev => ({ ...prev, [o.key]: { state: 'done', ok: r.ok, ms: r.ms, error: r.error } }))
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+    setProbingAll(false)
+    if (autoSelect) {
+      const cur = allOptions.find(o => o.key === model)
+      const firstOk = list.find(o => results.get(o.key))
+      if (cur?.free && !results.get(cur.key) && firstOk) {
+        setModel(firstOk.key); saveModel(firstOk.key)
+        notify(t('已自动选到可用的免费模型：{name}', { name: freeModelIdOf(firstOk) }))
+      }
+    }
+  }
+
   const selectFreeModel = (o: (typeof visibleOptions)[number]) => {
     setModel(o.key); saveModel(o.key); setModelOpen(false)
     const id = freeModelIdOf(o)
@@ -1144,10 +1207,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
 
   const modelDropdown = <div className="ai-model-wrap">
-    <button className="ai-model-btn" onClick={() => { setModelOpen(v => !v); setCategoryOpen(false) }} title={t('切换模型')}>
+    <button className="ai-model-btn" onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(true) }} title={t('切换模型')}>
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
+      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('自动标出哪些还能用，并选到第一个可用的')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {category === '免费模型' && groupedFreeOptions?.map(g => (

@@ -7,6 +7,12 @@
 import type { Lang } from './i18n'
 
 export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
+  '已停止': { 'zh-TW': '已停止', en: 'Stopped', ja: '停止しました', ko: '중지됨' },
+  '一键检测全部免费模型': { 'zh-TW': '一鍵檢測全部免費模型', en: 'Check all free models', ja: '無料モデルをすべてチェック', ko: '무료 모델 전체 검사' },
+  '正在检测全部免费模型…': { 'zh-TW': '正在檢測全部免費模型…', en: 'Checking all free models…', ja: '無料モデルをすべてチェック中…', ko: '무료 모델 전체 검사 중…' },
+  '自动标出哪些还能用，并选到第一个可用的': { 'zh-TW': '自動標出哪些還能用，並選到第一個可用的', en: 'Marks which ones still work and selects the first available', ja: '使えるものを自動でマークし、最初の利用可能モデルを選択します', ko: '사용 가능한 모델을 자동으로 표시하고 첫 번째 사용 가능 모델을 선택합니다' },
+  '免费模型 {name} 不可用，已自动切换到 {next}': { 'zh-TW': '免費模型 {name} 不可用，已自動切換到 {next}', en: 'Free model {name} is unavailable; switched to {next} automatically', ja: '無料モデル {name} は利用できないため、{next} に自動で切り替えました', ko: '무료 모델 {name}을(를) 사용할 수 없어 {next}(으)로 자동 전환했습니다' },
+  '已自动选到可用的免费模型：{name}': { 'zh-TW': '已自動選到可用的免費模型：{name}', en: 'Automatically selected an available free model: {name}', ja: '利用可能な無料モデルを自動選択しました：{name}', ko: '사용 가능한 무료 모델을 자동 선택했습니다: {name}' },
   // ---- 问候语（timeGreeting / welcomeText 动态键） ----
   '早上好': { 'zh-TW': '早安', en: 'Good morning', ja: 'おはようございます', ko: '좋은 아침입니다' },
   '中午好': { 'zh-TW': '午安', en: 'Good afternoon', ja: 'こんにちは', ko: '안녕하세요' },
