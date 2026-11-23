@@ -372,6 +372,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               ))}
             </span>
           </div>
+          <Pager page={safeGalPage} pageCount={galPageCount} total={displayItems.length}
+            onPage={n => { setGalPage(n); galMainRef.current?.scrollIntoView({ block: 'start' }) }} />
           {searching && indexedCount === 0 && (
             <div className="gal-search-hint">还没有 AI 索引，现在只能按文件名搜。点左侧「建立 AI 索引」后，就能按画面内容搜了。</div>
           )}

@@ -18,6 +18,31 @@ const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`
 /** Tauri 更新清单直链：走 Release 资产 CDN，不经过 api.github.com（未认证 60 次/小时/IP，极易触发限流） */
 const LATEST_JSON_URL = `https://github.com/${REPO}/releases/latest/download/latest.json`
 
+/** 更新镜像（v0.1.346）：直连 + 公共加速前缀；检查清单多源竞速、下载测速选最快 */
+export const UPDATE_MIRROR_PREFIXES = [
+  'https://gh-proxy.com/https://github.com',
+  'https://ghproxy.net/https://github.com',
+  'https://ghfast.top/https://github.com',
+  'https://github.com',
+]
+const LATEST_JSON_CANDIDATES = [...UPDATE_MIRROR_PREFIXES.slice(0, 3).map(p => `${p}/${REPO}/releases/latest/download/latest.json`), LATEST_JSON_URL]
+
+/** 多源竞速拉一个小文件：谁先完整返回用谁（单源 6 秒超时） */
+export async function fetchFastestText(urls: string[], timeoutMs = 6000): Promise<string | null> {
+  const fetchOne = async (url: string): Promise<string> => {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), timeoutMs)
+    try {
+      const res = await fetch(url, { signal: ctl.signal })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.text()
+    } finally { clearTimeout(timer) }
+  }
+  try {
+    return await Promise.any(urls.map(fetchOne))
+  } catch { return null }
+}
+
 /** 解析 latest.json（Tauri updater 清单）；无效返回 null */
 export function parseLatestJson(text: string): { version: string; notes: string; pubDate?: string } | null {
   try {
@@ -36,9 +61,9 @@ export function apkUrlForVersion(version: string): string {
 
 /** 先经 latest.json 查更新（不限流）；清单存在即说明该版本安装包已就绪 */
 async function checkViaLatestJson(): Promise<UpdateInfo | null> {
-  const res = await fetch(LATEST_JSON_URL)
-  if (!res.ok) return null
-  const parsed = parseLatestJson(await res.text())
+  const text = await fetchFastestText(LATEST_JSON_CANDIDATES)
+  if (!text) return null
+  const parsed = parseLatestJson(text)
   if (!parsed) return null
   return {
     current: APP_VERSION,
@@ -197,6 +222,12 @@ export interface InstallProgress { downloaded: number }
 
 /** 桌面端：下载并安装更新。macOS/Linux 安装后需调用 relaunchApp() */
 export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
+  // 先走镜像快速通道（v0.1.346）：测速选源、慢了自动换、SHA256 校验、本地安装；
+  // 任一步失败都回退下面的官方 updater，保证更新不会被镜像问题卡死
+  try {
+    const fast = await installViaMirrorFast(onProgress)
+    if (fast) return true
+  } catch { /* 回退官方通道 */ }
   try {
     const { check } = await import('@tauri-apps/plugin-updater')
     const update = await check()
@@ -210,6 +241,34 @@ export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => 
     })
     return true
   } catch { return false }
+}
+
+/** 镜像快速更新：从 latest.json 找本平台安装包路径，交给 Rust 测速下载+校验+安装 */
+async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
+  const text = await fetchFastestText(LATEST_JSON_CANDIDATES)
+  if (!text) return false
+  const manifest = JSON.parse(text) as { version?: string; platforms?: Record<string, { url?: string }> }
+  if (!manifest.version || !manifest.platforms) return false
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  const keys = /Mac/i.test(ua)
+    ? ['darwin-aarch64', 'darwin-x86_64']
+    : /Win/i.test(ua)
+      ? ['windows-x86_64', 'windows-aarch64']
+      : ['linux-x86_64', 'linux-aarch64']
+  const key = keys.find(k => manifest.platforms?.[k]?.url)
+  if (!key) return false
+  const url = manifest.platforms[key].url as string
+  const marker = `github.com/${REPO}/`
+  const idx = url.indexOf(marker)
+  if (idx < 0) return false
+  const path = url.slice(idx + marker.length)
+  const fileName = decodeURIComponent(path.split('/').pop() ?? '')
+  if (!fileName) return false
+  const { invoke, Channel } = await import('@tauri-apps/api/core')
+  const channel = new Channel<number>()
+  channel.onmessage = (downloaded: number) => onProgress?.({ downloaded })
+  await invoke('update_fast_install', { path, fileName, onProgress: channel })
+  return true
 }
 
 /** 桌面端：重启应用以启用新版本 */
@@ -234,11 +293,11 @@ export function dockerUpdateCommands(): string {
 
 /** 获取最新 APK 下载地址 */
 export async function latestApkUrl(): Promise<string | null> {
-  // 同样优先 latest.json（不限流），拿到版本号后拼固定资产直链
+  // 同样优先 latest.json（不限流、多源竞速），拿到版本号后拼固定资产直链
   try {
-    const res = await fetch(LATEST_JSON_URL)
-    if (res.ok) {
-      const parsed = parseLatestJson(await res.text())
+    const text = await fetchFastestText(LATEST_JSON_CANDIDATES)
+    if (text) {
+      const parsed = parseLatestJson(text)
       if (parsed) return apkUrlForVersion(parsed.version)
     }
   } catch { /* 回退 API */ }

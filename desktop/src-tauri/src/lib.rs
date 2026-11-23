@@ -861,6 +861,234 @@ fn photos_library_dir() -> Option<String> {
     None
 }
 
+/// 更新镜像源（v0.1.346）：GitHub 直连 + 国内常用加速前缀，测速选最快、慢/断自动切换
+const UPDATE_MIRRORS: [&str; 4] = [
+    "https://gh-proxy.com/https://github.com",
+    "https://ghproxy.net/https://github.com",
+    "https://ghfast.top/https://github.com",
+    "https://github.com",
+];
+const UPDATE_REPO: &str = "Andre-xue/ai-credit-manager-optimized";
+
+/// 测速：对每个候选源拉前 32KB，按耗时排序（失败排最后）
+fn probe_mirror_order(path: &str) -> Vec<String> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return UPDATE_MIRRORS.iter().map(|m| format!("{m}/{UPDATE_REPO}/{path}")).collect(),
+    };
+    let mut scored: Vec<(u128, String)> = Vec::new();
+    for m in UPDATE_MIRRORS {
+        let url = format!("{m}/{UPDATE_REPO}/{path}");
+        let t0 = std::time::Instant::now();
+        let ok = client
+            .get(&url)
+            .header("Range", "bytes=0-32767")
+            .send()
+            .and_then(|r| r.bytes())
+            .map(|b| !b.is_empty())
+            .unwrap_or(false);
+        let ms = if ok { t0.elapsed().as_millis() } else { u128::MAX };
+        scored.push((ms, url));
+    }
+    scored.sort_by_key(|(ms, _)| *ms);
+    scored.into_iter().map(|(_, u)| u).collect()
+}
+
+/// 更新快速安装（v0.1.346）：镜像测速下载更新包（stall 看门狗：8 秒窗口 <240KB 自动换源重下），
+/// 用 SHA256SUMS.txt（尽量与安装包不同源）校验完整性，随后按平台安装：
+/// macOS 解压替换 .app 并重启；Windows 运行安装器；其他平台报错由前端回退官方 updater。
+#[tauri::command]
+fn update_fast_install(
+    app: tauri::AppHandle,
+    path: String,
+    file_name: String,
+    on_progress: tauri::ipc::Channel<u64>,
+) -> Result<String, String> {
+    use sha2::Digest;
+    let order = probe_mirror_order(&path);
+    // 1) 取校验和：优先与安装包不同源的 SHA256SUMS.txt
+    let sums_path = path
+        .rsplit_once('/')
+        .map(|(d, _)| format!("{d}/SHA256SUMS.txt"))
+        .unwrap_or_default();
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut expected: Option<String> = None;
+    for base in UPDATE_MIRRORS {
+        let url = format!("{base}/{UPDATE_REPO}/{sums_path}");
+        if let Ok(r) = client.get(&url).timeout(std::time::Duration::from_secs(8)).send() {
+            if let Ok(text) = r.text() {
+                for line in text.lines() {
+                    let mut it = line.split_whitespace();
+                    if let (Some(hash), Some(name)) = (it.next(), it.next()) {
+                        if name.trim_start_matches('*') == file_name {
+                            expected = Some(hash.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        if expected.is_some() {
+            break;
+        }
+    }
+    let expected = expected.ok_or("拿不到官方校验和，已回退官方更新通道")?;
+    // 2) 按测速顺序逐源下载，带 stall 看门狗
+    let tmp_dir = std::env::temp_dir().join("acm-update");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let dest = tmp_dir.join(&file_name);
+    let mut used_url = String::new();
+    let mut last_err = String::new();
+    for url in &order {
+        let _ = std::fs::remove_file(&dest);
+        match download_with_watchdog(&client, url, &dest, &on_progress) {
+            Ok(()) => {
+                used_url = url.clone();
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    if used_url.is_empty() {
+        return Err(format!("所有镜像下载失败：{last_err}"));
+    }
+    // 3) 校验完整性
+    let bytes = std::fs::read(&dest).map_err(|e| e.to_string())?;
+    let got = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if got != expected {
+        return Err("更新包校验不一致，已回退官方更新通道".into());
+    }
+    // 4) 安装
+    install_downloaded_update(&app, &dest, &file_name)?;
+    Ok(used_url)
+}
+
+/// 流式下载 + stall 看门狗：每 8 秒窗口下载量 <240KB 判定太慢，中断换源
+fn download_with_watchdog(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    dest: &std::path::Path,
+    on_progress: &tauri::ipc::Channel<u64>,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let mut resp = client.get(url).send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 65536];
+    let mut total: u64 = 0;
+    let start = std::time::Instant::now();
+    let mut window_start = std::time::Instant::now();
+    let mut window_bytes: u64 = 0;
+    loop {
+        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        total += n as u64;
+        window_bytes += n as u64;
+        let _ = on_progress.send(total);
+        if window_start.elapsed() >= std::time::Duration::from_secs(8) {
+            if start.elapsed() > std::time::Duration::from_secs(10) && window_bytes < 240 * 1024 {
+                return Err("该镜像速度过慢，自动切换".into());
+            }
+            window_start = std::time::Instant::now();
+            window_bytes = 0;
+        }
+    }
+    if total < 1024 * 1024 {
+        return Err("下载内容异常过小".into());
+    }
+    Ok(())
+}
+
+/// 安装已下载并校验过的更新包（平台分支）
+fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        if !file_name.ends_with(".app.tar.gz") {
+            return Err("macOS 更新包格式不符".into());
+        }
+        let extract = std::env::temp_dir().join("acm-update-extract");
+        let _ = std::fs::remove_dir_all(&extract);
+        std::fs::create_dir_all(&extract).map_err(|e| e.to_string())?;
+        let st = std::process::Command::new("tar")
+            .args(["-xzf", &dest.to_string_lossy(), "-C", &extract.to_string_lossy()])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err("更新包解压失败".into());
+        }
+        let new_app = find_app_bundle(&extract).ok_or("更新包里没找到 .app")?;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let bundle = exe
+            .ancestors()
+            .nth(3)
+            .map(|p| p.to_path_buf())
+            .filter(|p| p.extension().map(|x| x == "app").unwrap_or(false))
+            .ok_or("定位不到当前应用包")?;
+        let backup = bundle.with_extension("app.acm-bak");
+        let _ = std::fs::remove_dir_all(&backup);
+        std::fs::rename(&bundle, &backup).map_err(|e| format!("替换应用失败（权限）：{e}"))?;
+        if let Err(e) = std::fs::rename(&new_app, &bundle) {
+            let _ = std::fs::rename(&backup, &bundle);
+            return Err(format!("写入新应用失败：{e}"));
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+        std::process::Command::new("open")
+            .arg(&bundle)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        std::process::exit(0);
+        #[allow(unreachable_code)]
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if !file_name.ends_with(".exe") {
+            return Err("Windows 更新包格式不符".into());
+        }
+        std::process::Command::new(dest).spawn().map_err(|e| e.to_string())?;
+        app.exit(0);
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (app, dest, file_name);
+        Err("该平台暂走官方更新通道".into())
+    }
+}
+
+/// 在解压目录里找 .app（顶层或一层子目录）
+fn find_app_bundle(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if p.extension().map(|x| x == "app").unwrap_or(false) {
+                return Some(p);
+            }
+            subdirs.push(p);
+        }
+    }
+    for d in subdirs {
+        if let Some(found) = find_app_bundle(&d) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// 将文本文件写入指定目录
 #[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
@@ -3094,7 +3322,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
