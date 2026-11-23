@@ -148,6 +148,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [category, setCategory] = useState<ModelCategory>('免费模型')
   const [categoryOpen, setCategoryOpen] = useState(false)
   const [streamingText, setStreamingText] = useState('')
+  // 联网搜索进行中（驱动流式气泡里的旋转地球动画，v0.1.323 Ethan 要求）
+  const [searching, setSearching] = useState(false)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
   // 自动朗读：AI 回复完成后自动朗读（只读文字，去表情/标点），开关持久化
   const [autoSpeak, setAutoSpeak] = useState(() => {
@@ -623,6 +625,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     searchSourcesRef.current = []
     if (webSearchOn && !voiceMode) {
       if (!onDelta) setStreamingText(t('🔍 正在联网搜索…'))
+      setSearching(true)
       try {
         const ctx = await buildSearchContextCached(content)
         if (ctx) {
@@ -630,6 +633,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           searchSourcesRef.current = ctx.sources
         } else if (!onDelta) notify(t('联网搜索没拿到结果，已按普通对话回答'))
       } catch { if (!onDelta) notify(t('联网搜索失败，已按普通对话回答')) }
+      finally { setSearching(false) }
     }
     // 语音模式：关闭推理、只带最近 2 条上下文，最大限度缩短首字延迟
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
@@ -1418,7 +1422,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               {generating && streamingText && (
                 <div className="ai-msg assistant">
                   <div className="ai-avatar" style={{ background: avatarBg(botProfile) }}>{avatarContent(botProfile)}</div>
-                  <div className="ai-bubble"><span className="ai-typing">{streamingText}</span><span className="ai-cursor" /></div>
+                  <div className="ai-bubble">{searching && <span className="ai-search-anim"><Globe size={15} /></span>}<span className="ai-typing">{streamingText}</span><span className="ai-cursor" /></div>
                 </div>
               )}
               {generating && !streamingText && (
