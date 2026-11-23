@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  FolderCog, FileText, Languages, PenLine, Image as ImageIcon, SearchCheck, Search, Table2, Mic,
+  FolderCog, FileText, Languages, PenLine, Image as ImageIcon, Images, SearchCheck, Search, Table2, Mic,
   ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, ChevronDown, LayoutGrid,
 } from 'lucide-react'
 import type { Account } from '../core/types'
@@ -8,6 +8,7 @@ import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopR
 import { buildSearchContextCached } from '../core/webSearch'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { FileManagerView } from './FileManagerView'
+import { GalleryView } from './GalleryView'
 import { TranslationView } from './TranslationView'
 import { ImageView } from './ImageView'
 import { VideoView } from './VideoView'
@@ -16,7 +17,7 @@ import type { AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
 import { RefreshCw, Film, MessagesSquare, Download } from 'lucide-react'
 
-type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa'
+type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery'
 
 /** 工具页共用：加载可选对话路线（免费模型 + 自有账户） */
 export function useRouteData(accounts: Account[]) {
@@ -49,7 +50,7 @@ export function RouteSelect({ data, routeKey, setRouteKey }: { data: WorkshopRou
   )
 }
 
-function ToolShell({ title, desc, onBack, children }: { title: string; desc: string; onBack: () => void; children: React.ReactNode }) {
+export function ToolShell({ title, desc, onBack, children }: { title: string; desc: string; onBack: () => void; children: React.ReactNode }) {
   const [nonce, setNonce] = useState(0)
   return (
     <div className="ws-tool">
@@ -416,6 +417,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
   }, [openSignal])
 
   if (tool === 'files') return <FileManagerView accounts={accounts} sessionPwd={sessionPwd} notify={notify} onBack={back} />
+  if (tool === 'gallery') return <GalleryView notify={notify} onBack={back} />
   if (tool === 'summary') return <SummaryTool {...toolProps} />
   if (tool === 'polish') return <PolishTool {...toolProps} />
   if (tool === 'webcheck') return <WebCheckTool {...toolProps} />
@@ -457,6 +459,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
         { id: 'polish', name: '文案润色', desc: '改写、扩写、缩写、换语气——把草稿变成能直接发的成稿。', tag: '免费模型可用', tagClass: 'free', grad: 'g3', icon: <PenLine size={21} />, action: () => setTool('polish') },
         { id: 'image', name: 'AI 图像', desc: '云端生图，生成完自动存进你的文件夹（本地生图在侧边栏本地生成里）。', tag: '云端生图', grad: 'g6', icon: <ImageIcon size={21} />, action: () => setTool('image') },
         { id: 'video', name: 'AI 视频', desc: '云端生视频，生成完自动存进你的文件夹（本地生视频在侧边栏本地生成里）。', tag: '云端生视频', grad: 'g5', icon: <Film size={21} />, action: () => setTool('video') },
+        { id: 'gallery', name: 'AI 图库', desc: '苹果照片式图库：AI 生成与本地照片视频按日期成册，悬停播放、点开大图慢慢看。', tag: '照片式浏览', grad: 'g2', icon: <Images size={21} />, action: () => setTool('gallery'), isNew: true },
         { id: 'voice', name: '语音转写', desc: '录音、会议音频转文字稿——本地 whisper 引擎制作中，下一批上架。', tag: '第二批', grad: 'g4', icon: <Mic size={21} />, action: () => notify('语音转写在第二批：本地 whisper 引擎接入中') },
       ],
     },

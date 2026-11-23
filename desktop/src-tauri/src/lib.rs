@@ -752,6 +752,83 @@ async fn video_thumb(path: String) -> Result<String, String> {
     }
 }
 
+/// 媒体缩略图（图库用）：与 video_thumb 同实现（qlmanage 对图片同样有效）
+#[tauri::command]
+async fn media_thumb(path: String) -> Result<String, String> {
+    video_thumb(path).await
+}
+
+#[derive(serde::Serialize)]
+struct GalleryItem {
+    path: String,
+    size: u64,
+    mtime: u64,
+}
+
+/// 图库扫描（v0.1.339）：递归列出一个文件夹内的图片/视频文件（路径/大小/修改时间秒），
+/// 跳过隐藏项，深度 ≤5、总量 ≤5000，供 AI 图库按日期分组展示
+#[tauri::command]
+fn gallery_scan(dir: String) -> Result<Vec<GalleryItem>, String> {
+    let root = std::path::Path::new(&dir);
+    if !root.is_dir() {
+        return Err("文件夹不存在".into());
+    }
+    const EXTS: [&str; 21] = [
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "heic",
+        "mp4", "mov", "webm", "m4v", "ts", "mkv", "avi", "flv", "wmv", "mpg", "mpeg",
+    ];
+    let mut out: Vec<GalleryItem> = Vec::new();
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        if depth > 5 || out.len() >= 5000 {
+            continue;
+        }
+        let rd = match std::fs::read_dir(&d) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for e in rd.flatten() {
+            if out.len() >= 5000 {
+                break;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let ft = match e.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let p = e.path();
+            if ft.is_dir() {
+                stack.push((p, depth + 1));
+                continue;
+            }
+            let ext = p
+                .extension()
+                .map(|x| x.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            if !EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            if let Ok(md) = e.metadata() {
+                let mtime = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                out.push(GalleryItem {
+                    path: p.to_string_lossy().to_string(),
+                    size: md.len(),
+                    mtime,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 将文本文件写入指定目录
 #[tauri::command]
 async fn write_file_to_dir(dir: String, filename: String, content: String) -> Result<String, String> {
@@ -2985,7 +3062,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
