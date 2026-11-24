@@ -3206,7 +3206,8 @@ fn open_epic_browser(app: tauri::AppHandle, url: String, title: String) -> Resul
             let Some(w) = handle.get_webview_window(EPIC_BROWSER_LABEL) else {
                 return;
             };
-            let cur = w.url();
+            // 注意：WebviewWindow::url() 返回 Result<Url>（本版 Tauri），不是 Url
+            let Ok(cur) = w.url() else { continue; };
             let cur_str = cur.as_str().to_string();
             // 登录页：内嵌浏览器里没登录 Epic，用户需在窗口内登录
             if cur.path().contains("/login") {
