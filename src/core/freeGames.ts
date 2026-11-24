@@ -1,16 +1,15 @@
-// 工坊 · 免费游戏（v0.1.384）：Epic 每周喜加一自动领取 + GOG / 育碧列表与一键直达。
+// 工坊 · 免费游戏（v0.1.384）：Epic 每周喜加一自动领取。
+// v0.1.398：只保留 Epic，GOG / 育碧分组已删（Ethan 拍板；当初只做列表+直达官网，没有自动领取逻辑）。
 // Epic 发现用公开 freeGamesPromotions 接口（2026-11-24 实测通）；领取照抄
 // node-epicgames-client 的 purchase 流程（quickPurchase → purchaseToken →
 // order-preview → confirm-order），参考 Revadike/epicgames-freebies-claimer。
-// GOG / 育碧没有公开领取接口：只做列表展示（抓不到就空态）+ 点击直达官网，
-// 界面明示「暂不支持 App 内自动领取」，绝不放假入口。
 // 全部偏好、领取记录、Epic 设备授权均为仅本机 localStorage，不进云同步/备份；
 // 设备授权用保险箱主密码加密（仿照 tokenPool），绝不明文落盘。
 
 import { encryptSecret, decryptSecret } from './crypto'
 import { isNativeApp } from './openExternal'
 
-export type FreeGamePlatform = 'epic' | 'gog' | 'ubisoft'
+export type FreeGamePlatform = 'epic'
 
 export interface FreeGame {
   platform: FreeGamePlatform
@@ -49,8 +48,6 @@ export interface FreeGamesPrefs {
   notify: boolean
   captchaRemind: boolean
   epicEnabled: boolean
-  gogEnabled: boolean
-  ubiEnabled: boolean
 }
 
 export const PREFS_KEY = 'acm.freegames.prefs.v1'
@@ -65,8 +62,6 @@ export const PAGE_SIZE = 8
 
 export const EPIC_LOGIN_URL =
   'https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode'
-export const GOG_STORE_URL = 'https://www.gog.com/'
-export const UBI_STORE_URL = 'https://store.ubisoft.com/cn/free-games'
 
 const EPIC_CLIENT_ID = '34a02cf8f4414e29b15921876da36f9a'
 const EPIC_CLIENT_SECRET = 'daafbccc737745039dffe53d94fc76cf'
@@ -103,8 +98,6 @@ export function defaultPrefs(): FreeGamesPrefs {
     notify: true,
     captchaRemind: true,
     epicEnabled: true,
-    gogEnabled: true,
-    ubiEnabled: true,
   }
 }
 
@@ -302,52 +295,6 @@ export async function fetchEpicFreeGames(): Promise<{ current: FreeGame[]; upcom
   return parseEpicPromotions(JSON.parse(res.text))
 }
 
-// ---------------- GOG / 育碧：尽力拉取，抓不到就空态 ----------------
-
-interface GogProduct {
-  title: string
-  slug: string
-  image?: string
-  price?: { isFree?: boolean; amount?: string; symbol?: string }
-}
-
-function parseGogProducts(data: unknown): FreeGame[] {
-  const products = (data as { products?: GogProduct[] })?.products ?? []
-  return products
-    .filter(p => p?.price?.isFree === true && p.slug)
-    .map(p => ({
-      platform: 'gog' as const,
-      id: p.slug,
-      title: p.title,
-      slug: p.slug,
-      url: `https://www.gog.com/game/${p.slug}`,
-      imageUrl: p.image ? `https:${p.image}` : undefined,
-      originalPrice: '',
-      isFree: true,
-      status: 'free' as const,
-      startDate: null,
-      endDate: null,
-      autoClaimable: false,
-    }))
-}
-
-export async function fetchGogFreeGames(): Promise<FreeGame[]> {
-  try {
-    const res = await epicRequest(
-      'https://embed.gog.com/games/ajax/filtered?mediaType=game&priceRange=0,0&sort=popularity&page=1',
-      'GET',
-      { Accept: 'application/json' },
-    )
-    if (!res.ok) return []
-    return parseGogProducts(JSON.parse(res.text))
-  } catch { return [] }
-}
-
-/** 育碧商店没有可用的公开接口：第一版只给入口链接，不造假列表 */
-export function ubisoftFreeGames(): FreeGame[] {
-  return []
-}
-
 // ---------------- Epic：设备授权绑定 ----------------
 
 // 注意：响应字段名用 Record + 字符串取值，避免在源码里写出会被脱敏管道
@@ -400,7 +347,7 @@ export interface NativeHttpResult { ok: boolean; status: number; text: string }
  * 根因：Epic 接口不返回 Access-Control-Allow-Origin，桌面 WKWebView 里前端
  * fetch 会被 CORS 直接拦掉抛 "Load failed"，换节点也修不好（2026-11-24 实测）。
  * plugin_http 自带 SSRF 校验（validate_proxy_url）：仅放行公网 https 域名，
- * Epic/GOG 的域名都是公网 https，通过校验；不改弱全局规则。
+ * Epic 的域名是公网 https，通过校验；不改弱全局规则。
  */
 export async function epicRequest(url: string, method: string, headers: Record<string, string>, body?: string): Promise<NativeHttpResult> {
   const w = typeof window !== 'undefined'
@@ -834,7 +781,6 @@ export interface FreeGamesCache {
   at: number
   epicCurrent: FreeGame[]
   epicUpcoming: FreeGame[]
-  gog: FreeGame[]
 }
 
 export function loadCache(): FreeGamesCache | null {
@@ -852,7 +798,7 @@ function saveCache(c: FreeGamesCache): void {
 
 export interface FreeGamesCheckResult {
   at: number
-  fetched: { epicCurrent: number; epicUpcoming: number; gog: number }
+  fetched: { epicCurrent: number; epicUpcoming: number }
   claimed: string[]
   already: string[]
   errors: string[]
@@ -867,7 +813,6 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
   const at = Date.now()
   let epicCurrent: FreeGame[] = []
   let epicUpcoming: FreeGame[] = []
-  let gog: FreeGame[] = []
   let fetchError: string | null = null
   try {
     const epic = await fetchEpicFreeGames()
@@ -876,13 +821,12 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
   } catch (e) {
     fetchError = e instanceof Error ? e.message : 'Epic 免费游戏拉取失败'
   }
-  try { gog = await fetchGogFreeGames() } catch { gog = [] }
-  saveCache({ at, epicCurrent, epicUpcoming, gog })
+  saveCache({ at, epicCurrent, epicUpcoming })
   saveLastCheck(at, fetchError)
 
   const result: FreeGamesCheckResult = {
     at,
-    fetched: { epicCurrent: epicCurrent.length, epicUpcoming: epicUpcoming.length, gog: gog.length },
+    fetched: { epicCurrent: epicCurrent.length, epicUpcoming: epicUpcoming.length },
     claimed: [],
     already: [],
     errors: fetchError ? [fetchError] : [],

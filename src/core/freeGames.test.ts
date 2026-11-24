@@ -828,3 +828,12 @@ describe('freeGames claimEpicGame purchaseToken 两次尝试（v0.1.392）', () 
     }
   })
 })
+
+describe('freeGames 只保留 Epic（v0.1.398）', () => {
+  it('默认偏好里没有 GOG/育碧开关', () => {
+    const prefs = defaultPrefs()
+    expect('gogEnabled' in prefs).toBe(false)
+    expect('ubiEnabled' in prefs).toBe(false)
+    expect(prefs.epicEnabled).toBe(true)
+  })
+})

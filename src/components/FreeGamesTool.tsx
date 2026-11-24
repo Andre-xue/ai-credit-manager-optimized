@@ -1,4 +1,5 @@
-// 工坊 · 免费游戏（v0.1.384）：Epic 喜加一自动领取 + GOG / 育碧列表直达。
+// 工坊 · 免费游戏（v0.1.384）：Epic 喜加一自动领取。
+// v0.1.398：只保留 Epic，GOG / 育碧分组已删。
 // Ethan 追加要求：①分组各自可展开折叠（状态本机记忆），每组列表分页（每页 8 条）；
 // ②点每个游戏卡片直达官网领取页面（桌面走 Tauri open_url，手机走系统浏览器）。
 // 领取记录：失败组置顶；验证码/登录失效明说原因并给重新绑定入口，绝不静默跳过。
@@ -10,11 +11,11 @@ import {
 import {
   loadPrefs, savePrefs, loadCache, readRecords, clearRecords, sortRecords,
   loadClosedGroups, saveClosedGroups, pageSlice, pageCount,
-  fetchEpicFreeGames, fetchGogFreeGames, ubisoftFreeGames,
+  fetchEpicFreeGames,
   runFreeGamesCheck, claimEpicGameManual, summarizeCheckResult,
   bindEpicWithAuthCode, hasEpicAuth, unbindEpic, loadEpicAuth,
   loadLastCheckAt, loadLastError, nextCheckAt,
-  EPIC_LOGIN_URL, GOG_STORE_URL, UBI_STORE_URL,
+  EPIC_LOGIN_URL,
   sanitizeLoadFailedMessage, checkoutUrlOf,
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
 } from '../core/freeGames'
@@ -188,9 +189,8 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     setRefreshing(true)
     try {
       const epic = await fetchEpicFreeGames().catch(e => { throw e })
-      const gog = await fetchGogFreeGames()
       const at = Date.now()
-      const next: FreeGamesCache = { at, epicCurrent: epic.current, epicUpcoming: epic.upcoming, gog }
+      const next: FreeGamesCache = { at, epicCurrent: epic.current, epicUpcoming: epic.upcoming }
       try { localStorage.setItem('acm.freegames.cache.v1', JSON.stringify(next)) } catch { /* 忽略 */ }
       setCache(next)
       notifySafe(`已刷新：本周免费 ${epic.current.length} 款，预告 ${epic.upcoming.length} 款`)
@@ -294,24 +294,12 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       emptyText: '暂无预告。Epic 每周四 23:00（北京时间）换新免费游戏。',
     },
     {
-      id: 'gog', title: 'GOG 免费', sub: '暂不支持 App 内自动领取',
-      games: prefs.gogEnabled ? (cache?.gog ?? []) : [],
-      emptyText: '这次没拉到 GOG 的免费游戏（GOG 赠送不定期）。',
-      emptyUrl: GOG_STORE_URL, emptyUrlLabel: '去 GOG 商店看看',
-    },
-    {
-      id: 'ubisoft', title: '育碧免费', sub: '暂不支持 App 内自动领取',
-      games: prefs.ubiEnabled ? ubisoftFreeGames() : [],
-      emptyText: '育碧免费游戏不定期放出，App 内只给入口，不造假列表。',
-      emptyUrl: UBI_STORE_URL, emptyUrlLabel: '去育碧商店看看',
-    },
-    {
       id: 'claimed', title: '已入库', sub: '通过 App 领到的游戏',
       games: records
         .filter(r => (r.outcome === 'claimed' || r.outcome === 'already'))
         .map(r => ({
           platform: r.platform, id: r.title, title: r.title, slug: '',
-          url: r.platform === 'epic' ? 'https://store.epicgames.com/zh-CN/free-games' : r.platform === 'gog' ? GOG_STORE_URL : UBI_STORE_URL,
+          url: 'https://store.epicgames.com/zh-CN/free-games',
           originalPrice: '', isFree: true, status: 'free' as const, startDate: null, endDate: null, autoClaimable: false,
         })),
       emptyText: '还没通过 App 领到游戏。绑定 Epic 后每周自动领。',
@@ -327,7 +315,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
         <button className="btn sm ghost" title="只刷新游戏列表（不领取）" onClick={() => void refreshListsOnly()}><RefreshCw size={14} /></button>
       </div>
       <h3 className="ws-tool-title">免费游戏</h3>
-      <p className="ws-tool-desc">Epic 每周喜加一：绑定一次，定时自动领入库；GOG、育碧免费游戏一并列出，点卡片直达官网领取。只领完全免费的，绝不花一分钱。</p>
+      <p className="ws-tool-desc">Epic 每周喜加一：绑定一次，定时自动领入库。只领完全免费的，绝不花一分钱。</p>
 
       {!sessionPwd && (
         <div className="fg-unlock">
@@ -416,39 +404,6 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
           )}
         </div>
 
-        <div className="fg-plat">
-          <div className="fg-plat-head">
-            <span className="fg-plat-name"><Store size={16} /> GOG</span>
-            <JellyToggle checked={prefs.gogEnabled} onChange={v => updatePrefs({ gogEnabled: v })} />
-          </div>
-          <div className="fg-plat-body">
-            <div>未连接 · GOG 没有公开领取接口，App 内只做列表展示。</div>
-            <div className="fg-muted">开关控制是否在下方显示 GOG 分组；领取请点卡片去官网。</div>
-          </div>
-          <div className="fg-plat-foot">
-            <button className="btn sm" onClick={() => void openExternal(GOG_STORE_URL)}>
-              <ExternalLink size={13} /> 去 GOG 商店看看
-            </button>
-            <span className="fg-muted">暂不支持自动领取</span>
-          </div>
-        </div>
-
-        <div className="fg-plat">
-          <div className="fg-plat-head">
-            <span className="fg-plat-name"><Store size={16} /> 育碧</span>
-            <JellyToggle checked={prefs.ubiEnabled} onChange={v => updatePrefs({ ubiEnabled: v })} />
-          </div>
-          <div className="fg-plat-body">
-            <div>未连接 · 育碧没有公开领取接口，App 内只做入口。</div>
-            <div className="fg-muted">开关控制是否在下方显示育碧分组；领取请点卡片去官网。</div>
-          </div>
-          <div className="fg-plat-foot">
-            <button className="btn sm" onClick={() => void openExternal(UBI_STORE_URL)}>
-              <ExternalLink size={13} /> 去育碧商店看看
-            </button>
-            <span className="fg-muted">暂不支持自动领取</span>
-          </div>
-        </div>
       </div>
 
       {/* 定时设置 */}
@@ -539,7 +494,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                 <div className="fg-record-main">
                   <div className="fg-record-title">
                     {r.title}
-                    <span className="fg-muted"> · {r.platform === 'epic' ? 'Epic' : r.platform === 'gog' ? 'GOG' : '育碧'} · {fmtTime(r.at)}</span>
+                    <span className="fg-muted"> · Epic · {fmtTime(r.at)}</span>
                   </div>
                   <div className="fg-record-msg">{r.message}</div>
                 </div>
