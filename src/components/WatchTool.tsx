@@ -1363,7 +1363,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   }
 
   // 海报墙卡片网格 + 分页（点播页签与 18+ 页签共用；卡片点开进同一详情弹层）
-  const WallGrid = ({ items, page, onPage }: { items: VodWallItem[]; page: number; onPage: (n: number) => void }) => (
+  // v0.1.424：点播墙分页栏贴底——stickyPager 时分页栏包一层 sticky 容器，
+  // 滚动时贴在 main 滚动容器底部，随时能翻页；翻到底时回到自然位置、不挡内容。
+  // 祖先链已核查：pager → .wt-tab-body → .ws-tool → .content → main.main（overflow auto，
+  // 真正的滚动容器），中间全是 overflow visible，sticky 不会被截断（401 教训）；
+  // .app-shell 的 overflow hidden 在 main 之上，不影响 main 内的 sticky。
+  // 18+ 墙不传 stickyPager，范围只限点播页签。
+  const WallGrid = ({ items, page, onPage, stickyPager }: { items: VodWallItem[]; page: number; onPage: (n: number) => void; stickyPager?: boolean }) => (
     <>
       <div className="wt-wall">
         {pageSlice(items, page, 12).map(item => {
@@ -1392,7 +1398,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           )
         })}
       </div>
-      <Pager page={page} pageCount={pageCount(items.length, 12)} total={items.length} unit="部" onPage={onPage} />
+      {stickyPager && pageCount(items.length, 12) > 1 ? (
+        <div className="wt-pager-sticky">
+          <Pager page={page} pageCount={pageCount(items.length, 12)} total={items.length} unit="部" onPage={onPage} />
+        </div>
+      ) : (
+        <Pager page={page} pageCount={pageCount(items.length, 12)} total={items.length} unit="部" onPage={onPage} />
+      )}
     </>
   )
 
@@ -1908,7 +1920,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 )}
               </div>
             ) : (
-              <WallGrid items={wallShown} page={vodPage} onPage={setVodPage} />
+              <WallGrid items={wallShown} page={vodPage} onPage={setVodPage} stickyPager />
             )}
           </>
         )}

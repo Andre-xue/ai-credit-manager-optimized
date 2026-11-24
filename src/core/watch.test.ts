@@ -752,7 +752,12 @@ describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () 
     // v0.1.408：墙网格抽成 WallGrid（点播与 18+ 共用），12 部一页的行为不变
     expect(src).toContain('pageSlice(items, page, 12)')
     expect(src).toContain('pageCount(items.length, 12)')
-    expect(src).toContain('<WallGrid items={wallShown} page={vodPage} onPage={setVodPage} />')
+    // v0.1.424：点播墙分页栏贴底——stickyPager 只在点播墙用，18+ 墙不贴底
+    expect(src).toContain('<WallGrid items={wallShown} page={vodPage} onPage={setVodPage} stickyPager />')
+    expect(src).toContain('stickyPager?: boolean')
+    expect(src).toContain('wt-pager-sticky')
+    const css424 = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    expect(css424).toContain('.wt-pager-sticky { position: sticky; bottom: 14px;')
     expect(src).toContain('<WallGrid items={adultWallItems} page={adultWallPage} onPage={setAdultWallPage} />')
     for (const s of ['VodDetailSheet', 'wt-sheet-backdrop', 'wt-eps', 'wt-src-chips', 'wt-playbar', '暂无片源 · 仅展示', '＋ 加入片单']) {
       expect(src).toContain(s)

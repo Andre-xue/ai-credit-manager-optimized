@@ -2205,6 +2205,11 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .fm-pager-sticky { position: sticky; bottom: 14px; display: flex; justify-content: center; z-index: 20; pointer-events: none; margin-top: 12px; }
 .fm-pager-sticky .fm-pager { pointer-events: auto; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(30, 25, 70, .16); border-radius: 999px; padding: 5px 12px; margin: 0; }
 .gal-pager-sticky .fm-pager { pointer-events: auto; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(30, 25, 70, .16); border-radius: 999px; padding: 5px 12px; margin: 0; }
+/* v0.1.424：点播墙分页栏贴底（同图库 388 / 文件管理器做法）：sticky 贴 main 滚动容器底部，
+   内层分页器收成药丸浮层（实底色+边框+阴影），浮在海报上也看得清；外层 pointer-events none，
+   只有药丸本身可点，不挡墙面点击 */
+.wt-pager-sticky { position: sticky; bottom: 14px; display: flex; justify-content: center; z-index: 20; pointer-events: none; margin-top: 12px; }
+.wt-pager-sticky .fm-pager { pointer-events: auto; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(30, 25, 70, .16); border-radius: 999px; padding: 5px 12px; margin: 0; }
 
 /* ---- AI 图库横向布局（v0.1.388，Ethan 按预览拍板）：侧边栏改横向筛选条、可折叠、吸顶、网格加宽 ---- */
 .gal-wrap { display: block; }
