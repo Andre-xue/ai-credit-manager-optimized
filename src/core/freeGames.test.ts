@@ -8,7 +8,7 @@ import {
   epicAccessToken, describeDeviceAuthError, loadEpicAuth,
   EPIC_LAUNCHER_UA, EPIC_AUTH_KEY, EPIC_WEB_UA,
   extractPurchaseToken, describePurchasePage,
-  buildEpicCheckoutUrl, buildEpicCheckoutLoginUrl,
+  buildEpicCheckoutUrl,
   EpicManualCheckoutError, checkoutUrlOf,
   type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
@@ -731,11 +731,11 @@ describe('freeGames 浏览器结账链接（v0.1.392）', () => {
     expect(buildEpicCheckoutUrl(fakeGame({ id: '1f9a12b06b4f437790b6913ad136a08c', namespace: '3d6441ab9d4246208bc97d7babf664b5' })))
       .toBe('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-3d6441ab9d4246208bc97d7babf664b5-1f9a12b06b4f437790b6913ad136a08c&orderId&purchaseToken&showNavigation=true')
   })
-  it('buildEpicCheckoutLoginUrl 包一层 id/login 跳转（未登录先登录再回结账页）', () => {
-    const u = buildEpicCheckoutLoginUrl(fakeGame({ id: 'x1', namespace: 'ns1' }))
-    expect(u).toContain('https://www.epicgames.com/id/login?noHostRedirect=true&redirectUrl=')
-    expect(u).toContain('client_id=34a02cf8f4414e29b15921876da36f9a')
-    expect(decodeURIComponent(u)).toContain('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-ns1-x1')
+  it('v0.1.396 回归：兜底链接就是商店结账页本身，不再包 id/login 跳转（启动器客户端没登记商店页当 redirectUrl，包了就报无效客户端）', () => {
+    const u = buildEpicCheckoutUrl(fakeGame({ id: 'x1', namespace: 'ns1' }))
+    expect(u).toBe('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-ns1-x1&orderId&purchaseToken&showNavigation=true')
+    expect(u).not.toContain('id/login')
+    expect(u).not.toContain('client_id')
   })
   it('checkoutUrlOf 只从手动结账错误里取链接，普通错误返回 undefined', () => {
     const err = new EpicManualCheckoutError('拿不到 token', 'https://example.com/checkout')
@@ -765,8 +765,8 @@ describe('freeGames claimEpicGame purchaseToken 两次尝试（v0.1.392）', () 
       let caught: unknown
       try { await p } catch (e) { caught = e }
       expect(caught).toBeInstanceOf(EpicManualCheckoutError)
-      expect(checkoutUrlOf(caught)).toContain('epicgames.com/id/login')
-      expect(checkoutUrlOf(caught)).toContain('store%2Fpurchase')
+      // v0.1.396：手动结账链接就是商店结账页直链，不再包 id/login（包了报无效客户端）
+      expect(checkoutUrlOf(caught)).toBe('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-ns1-x1&orderId&purchaseToken&showNavigation=true')
       // 两次取页：启动器内嵌页 + 商店站内页
       const pageCalls = calls.filter(c => String(c.args.url).includes('/purchase'))
       expect(pageCalls).toHaveLength(2)

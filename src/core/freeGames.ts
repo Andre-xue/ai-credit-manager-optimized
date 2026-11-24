@@ -679,15 +679,19 @@ export function describePurchasePage(status: number, html: string): string {
 /**
  * 浏览器结账页（claabs/epicgames-freegames-node 的 generateCheckoutUrl 同款格式）：
  * 在用户自己的浏览器里打开，Epic 网页登录态在，登录后点一下就能领。
+ *
+ * v0.1.396：兜底链接直接打开商店结账页，不再包 id/login 跳转。
+ * 2026-11-24 实机：包跳转的版本在 Ethan 浏览器报「无效客户端 / 客户未知的
+ * 重定向 URL」——启动器客户端 34a02cf8… 只登记了 id/api/redirect 这一个跳转
+ * 地址（绑定登录用的就是它），Epic 不认商店页当 redirectUrl。claabs 能包是
+ * 因为它用的是商店网页客户端 875a3b57…，登记的跳转地址含商店页。直接打开
+ * 结账页不需要任何客户端登记：已登录就直达结账页，未登录时 Epic 商店自己跳
+ * 登录、登录完回到结账页。空的 orderId/purchaseToken 参数照抄 claabs 格式，
+ * 商店接受（结账页按 offers 参数重建订单）。
  */
 export function buildEpicCheckoutUrl(game: FreeGame): string {
   const offers = `1-${game.namespace ?? ''}-${game.id}`
   return `${EPIC_STORE_PURCHASE_URL}?highlightColor=0078f2&offers=${encodeURIComponent(offers)}&orderId&purchaseToken&showNavigation=true`
-}
-
-/** 结账页再包一层 Epic 登录跳转：没登录时先登录，登录完自动回到结账页 */
-export function buildEpicCheckoutLoginUrl(game: FreeGame): string {
-  return `https://www.epicgames.com/id/login?noHostRedirect=true&redirectUrl=${encodeURIComponent(buildEpicCheckoutUrl(game))}&client_id=${EPIC_CLIENT_ID}`
 }
 
 /** 自动领取拿不到 purchaseToken 时抛：带上浏览器结账链接，UI 可一键打开 */
@@ -772,7 +776,7 @@ export async function claimEpicGame(access: string, accountId: string, game: Fre
   if (!purchaseToken) {
     throw new EpicManualCheckoutError(
       `Epic 没给到 purchaseToken（${pageDiags.join('；')}）。请在浏览器打开结账页完成领取（登录后点一下即可）`,
-      buildEpicCheckoutLoginUrl(game),
+      buildEpicCheckoutUrl(game),
     )
   }
   const pciHeaders = { ...bearer, 'Content-Type': 'application/json', 'x-requested-with': purchaseToken }
