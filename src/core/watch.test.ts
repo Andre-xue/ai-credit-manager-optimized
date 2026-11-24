@@ -4,6 +4,7 @@ import {
   mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
   isUnofficialStreamUrl, isChannelUnofficial,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
+  fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
   PLAYLIST_CACHE_KEY, CUSTOM_SOURCES_KEY,
   type LiveChannel, type SourceSet,
 } from './watch'
@@ -377,5 +378,94 @@ describe('watch 短剧专区已移除（v0.1.390）', () => {
     // 删的是专区不是全部短剧：AI 找剧仍可搜短剧、片单仍有短剧类型、央视 iframe 入口还在
     expect(src).toContain('tv.cctv.com/live/')
     expect(src).toContain("option value=\"short\"")
+  })
+})
+
+// 横向标题（v0.1.394）：TMDB 热门范围 + 推荐偏好存取；内容页签不再放设置输入框
+describe('watch.fetchTmdbTrending 范围（v0.1.394）', () => {
+  const tmdbPage = (items: unknown[]) => ({ ok: true, json: async () => ({ results: items }) })
+  const tvItem = { id: 1, media_type: 'tv', name: '示例剧集', overview: '', vote_average: 8.4 }
+  const movieItem = { id: 2, media_type: 'movie', title: '示例电影', overview: '', vote_average: 8.1 }
+  it('默认走 trending/week（老行为不变）', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (u: unknown) => { urls.push(String(u)); return tmdbPage([tvItem, movieItem]) })
+    const list = await fetchTmdbTrending('KEY')
+    expect(list).toHaveLength(4)
+    expect(urls.some(u => u.includes('/trending/tv/week'))).toBe(true)
+    expect(urls.some(u => u.includes('/trending/movie/week'))).toBe(true)
+  })
+  it("'day' 走 trending/day", async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (u: unknown) => { urls.push(String(u)); return tmdbPage([tvItem]) })
+    await fetchTmdbTrending('KEY', 'day')
+    expect(urls.some(u => u.includes('/trending/tv/day'))).toBe(true)
+    expect(urls.some(u => u.includes('/trending/movie/day'))).toBe(true)
+  })
+  it("'top' 走 discover 按评分倒序（vote_count ≥ 300），无 media_type 时按端点补类型", async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      urls.push(String(u))
+      return tmdbPage([{ id: 3, title: '高分片', overview: '', vote_average: 9.2 }])
+    })
+    const list = await fetchTmdbTrending('KEY', 'top')
+    expect(urls.some(u => u.includes('/discover/tv?sort_by=vote_average.desc&vote_count.gte=300'))).toBe(true)
+    expect(urls.some(u => u.includes('/discover/movie?sort_by=vote_average.desc&vote_count.gte=300'))).toBe(true)
+    expect(list[0].mediaType).toBe('tv')
+    expect(list[1].mediaType).toBe('movie')
+    expect(list[0].vote).toBe(9.2)
+  })
+  it('非 200 抛中文错', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 401, json: async () => ({}) }))
+    await expect(fetchTmdbTrending('BAD')).rejects.toThrow('401')
+  })
+})
+
+describe('watch 推荐偏好（v0.1.394）', () => {
+  it('默认 本周热门 + 剧集电影；非法值回落默认', () => {
+    expect(loadRecPrefs()).toEqual({ range: 'week', type: 'all' })
+    ls().setItem(REC_PREFS_KEY, JSON.stringify({ range: 'nope', type: 'short' }))
+    expect(loadRecPrefs()).toEqual({ range: 'week', type: 'all' })
+  })
+  it('保存后读回一致', () => {
+    saveRecPrefs({ range: 'top', type: 'tv' })
+    expect(loadRecPrefs()).toEqual({ range: 'top', type: 'tv' })
+    saveRecPrefs({ range: 'day', type: 'movie' })
+    expect(loadRecPrefs()).toEqual({ range: 'day', type: 'movie' })
+  })
+})
+
+describe('watch 看剧横向标题（v0.1.394）', () => {
+  it('WatchTool.tsx：七个页签在、AI 找剧收进搜索图标、设置输入框只在设置页签', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    // 页签：七个标题 + 切换入口都在
+    const tabs: [string, string][] = [
+      ['trending', '热门推荐'], ['continue', '继续观看'], ['live', '直播'],
+      ['vod', '点播'], ['calendar', '追剧日历'], ['watchlist', '我的片单'], ['settings', '设置'],
+    ]
+    for (const [id, title] of tabs) {
+      expect(src).toContain(`setActiveTab('${id}')`)
+      expect(src).toContain(`>${title}`)
+    }
+    expect(src).toContain("activeTab === 'settings'")
+    // AI 找剧不再是分区标题：无 Section id="ai"，搜索图标 + 面板 + Esc 收起
+    expect(src).not.toContain('id="ai"')
+    expect(src).toContain("title=\"AI 找剧\"")
+    expect(src).toContain("key === 'Escape'")
+    // 热门页签不再放 TMDB Key 输入框，只有去设置页签的链接按钮
+    expect(src).toContain('去「设置」页签填 Key')
+    // 设置页签四段齐全
+    for (const s of ['自定义直播源', '自定义点播源', 'TMDB API Key', '推荐设置']) {
+      expect(src).toContain(s)
+    }
+    // 推荐设置三组控件齐全
+    for (const s of ['本周热门', '今日热门', '高分精选', '剧集 + 电影', '只看剧集', '只看电影', '找剧模型']) {
+      expect(src).toContain(s)
+    }
+  })
+  it('styles.css：--accent 已定义（否则 .wt-chip.on 选中态白字透明底、看不见选中项）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    expect(css).toMatch(/--accent:\s*#[0-9a-f]{6}/i)
   })
 })

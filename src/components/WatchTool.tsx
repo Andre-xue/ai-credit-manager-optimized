@@ -26,9 +26,9 @@ import {
   loadClosedGroups, saveClosedGroups,
   loadCustomSources, saveCustomSources, fetchSourceSet,
   hasTmdbKey, loadTmdbKey, saveTmdbKey, clearTmdbKey,
-  fetchTmdbTrending, fetchTmdbProviders,
+  fetchTmdbTrending, fetchTmdbProviders, loadRecPrefs, saveRecPrefs,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
-  type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin,
+  type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
 } from '../core/watch'
 import { pageSlice, pageCount } from '../core/freeGames'
 import type { Account } from '../core/types'
@@ -377,6 +377,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   onBack: () => void
 }) {
   const { data, route, routeKey, setRouteKey } = useRouteData(accounts)
+  // v0.1.394：横向页签导航（默认热门推荐）+ AI 找剧收进标题栏右端搜索图标
+  type WatchTab = 'trending' | 'continue' | 'live' | 'vod' | 'calendar' | 'watchlist' | 'settings'
+  const [activeTab, setActiveTab] = useState<WatchTab>('trending')
+  const [aiSearchOpen, setAiSearchOpen] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (!aiSearchOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setAiSearchOpen(false) }
+    window.addEventListener('keydown', onKey)
+    searchInputRef.current?.focus()
+    return () => window.removeEventListener('keydown', onKey)
+  }, [aiSearchOpen])
   const [closedGroups, setClosedGroups] = useState<string[]>(loadClosedGroups)
   const [pwdInput, setPwdInput] = useState('')
   const [player, setPlayer] = useState<PlayerState>(null)
@@ -484,7 +496,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [tmdbBusy, setTmdbBusy] = useState(false)
   const [tmdbSaving, setTmdbSaving] = useState(false)
   const [trending, setTrending] = useState<TmdbTitle[]>([])
-  const [trendingTab, setTrendingTab] = useState<'all' | 'tv' | 'movie'>('all')
+  // v0.1.394：推荐偏好（热门范围 + 推荐类型）仅本机，设置页签与热门页签共用同一份
+  const [recPrefs, setRecPrefs] = useState<RecPrefs>(() => loadRecPrefs())
+  const [trendingTab, setTrendingTab] = useState<'all' | 'tv' | 'movie'>(recPrefs.type)
+  const [trendRange, setTrendRange] = useState<TrendRange>(recPrefs.range)
+  const updateRecPrefs = (patch: Partial<RecPrefs>) => {
+    setRecPrefs(prev => { const next = { ...prev, ...patch }; saveRecPrefs(next); return next })
+  }
+  const setTrendType = (t: 'all' | 'tv' | 'movie') => { setTrendingTab(t); setTrendPage(1); updateRecPrefs({ type: t }) }
   const [trendPage, setTrendPage] = useState(1)
   const [detailId, setDetailId] = useState<number | null>(null)
   const [providers, setProviders] = useState<{ name: string; link: string }[]>([])
@@ -501,17 +520,23 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     } catch (e) { notify(e instanceof Error ? e.message : '保存失败', 'err') } finally { setTmdbSaving(false) }
   }
 
-  const loadTrending = async () => {
+  const loadTrending = async (range: TrendRange = trendRange) => {
     const pwd = sessionPwd || getBiometricPassword() || ''
     if (!pwd) { notify('请先解锁保险箱，才能读取已保存的 TMDB Key'); return }
     setTmdbBusy(true)
     try {
       const key = await loadTmdbKey(pwd)
       if (!key) { notify('还没保存 TMDB Key', 'err'); return }
-      const list = await fetchTmdbTrending(key)
+      const list = await fetchTmdbTrending(key, range)
       setTrending(list); setTrendPage(1)
-      notify(`已加载本周热门 ${list.length} 部`)
+      notify(`已加载${range === 'day' ? '今日热门' : range === 'top' ? '高分精选' : '本周热门'} ${list.length} 部`)
     } catch (e) { notify(e instanceof Error ? e.message : '加载失败', 'err') } finally { setTmdbBusy(false) }
+  }
+
+  // v0.1.394：设置页签改热门范围时，已有 Key 就直接按新范围重拉
+  const setTrendRangeAndLoad = (r: TrendRange) => {
+    setTrendRange(r); updateRecPrefs({ range: r })
+    if (tmdbKeySet) void loadTrending(r)
   }
 
   const showProviders = async (t: TmdbTitle) => {
@@ -539,8 +564,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [vodTitles, setVodTitles] = useState<VodTitle[]>([])
   const [vodKind, setVodKind] = useState<'all' | 'movie' | 'series'>('all')
   const [vodPage, setVodPage] = useState(1)
-  const [customLabel, setCustomLabel] = useState('')
-  const [customUrl, setCustomUrl] = useState('')
+  // v0.1.394：设置页签分开填直播源 / 点播源；底层仍是同一份自定义源列表
+  // （一个 m3u 里既可含直播台也可含点播条目，拉取后自动拆到两个区）
+  const [liveLabel, setLiveLabel] = useState('')
+  const [liveUrl, setLiveUrl] = useState('')
+  const [vodLabel, setVodLabel] = useState('')
+  const [vodUrl, setVodUrl] = useState('')
   const [customSources, setCustomSources] = useState<CustomSource[]>(loadCustomSources)
   const [customTesting, setCustomTesting] = useState<string | null>(null)
   const [customTestResult, setCustomTestResult] = useState('')
@@ -560,13 +589,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const liveGroups = groupChannels(liveChannels, liveCountry)
   const liveContents = ['all', ...liveGroups.contents]
 
-  const addCustomSource = async () => {
-    const url = customUrl.trim()
+  const addCustomSource = async (label: string, urlRaw: string, which: 'live' | 'vod') => {
+    const url = urlRaw.trim()
     if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 m3u 订阅链接', 'err'); return }
-    const src: CustomSource = { id: `${Date.now()}`, label: customLabel.trim() || '自定义源', url, addedAt: Date.now() }
+    const src: CustomSource = { id: `${Date.now()}`, label: label.trim() || '自定义源', url, addedAt: Date.now() }
     const next = [...customSources, src]
     setCustomSources(next); saveCustomSources(next)
-    setCustomLabel(''); setCustomUrl('')
+    if (which === 'live') { setLiveLabel(''); setLiveUrl('') } else { setVodLabel(''); setVodUrl('') }
     setCustomTesting(src.id)
     try {
       const { channels, result } = await fetchSourceSet({ id: `custom-${src.id}`, label: src.label, url, country: 'WORLD' })
@@ -602,25 +631,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     calendarMap.set(w.nextDate!, arr)
   }
   const todayStr = new Date().toISOString().slice(0, 10)
-
-  // ---- 分区折叠 ----
-  const Section = ({ id, title, sub, count, children }: {
-    id: string; title: string; sub?: string; count?: string; children: React.ReactNode
-  }) => {
-    const closed = closedGroups.includes(id)
-    return (
-      <div className="fg-group">
-        <div className="fg-group-head" role="button" tabIndex={0} style={{ cursor: 'pointer', userSelect: 'none' }}
-          onClick={() => toggleGroup(id)} title={closed ? '展开分区' : '收起分区'}>
-          <ChevronDown size={15} style={{ transform: closed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
-          <span>{title}</span>
-          {sub && <small>{sub}</small>}
-          {count && <span className="fg-group-count">{count}</span>}
-        </div>
-        {!closed && <div className="wt-section-body">{children}</div>}
-      </div>
-    )
-  }
 
   // 直播频道列表（内容筛选 + 分页，每页 8 条）
   const ChannelList = ({ channels, pageKey }: { channels: LiveChannel[]; pageKey: string }) => {
@@ -683,10 +693,28 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           onAddCalendar={() => { addToWatchlist({ title: player.title, type: 'tv', platform: '官方 App', platformUrl: player.url }); setPlayer(null) }} />
       )}
 
-      {/* AI 找剧 */}
-      <Section id="ai" title="AI 找剧" sub="免费模型推荐 · 只推正版平台" count={aiRecs.length ? `${aiRecs.length} 部` : undefined}>
+      {/* v0.1.394：横向页签（吸顶）+ AI 找剧收进标题栏右端搜索图标 */}
+      <div className="wt-tabs" role="tablist">
+        <button role="tab" aria-selected={activeTab === 'trending'} className={`wt-tab${activeTab === 'trending' ? ' on' : ''}`} onClick={() => setActiveTab('trending')}>热门推荐{trending.length ? <span className="wt-tab-count">{trending.length} 部</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'continue'} className={`wt-tab${activeTab === 'continue' ? ' on' : ''}`} onClick={() => setActiveTab('continue')}>继续观看{continueList.length ? <span className="wt-tab-count">{continueList.length} 条</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'live'} className={`wt-tab${activeTab === 'live' ? ' on' : ''}`} onClick={() => setActiveTab('live')}>直播{liveLoaded ? <span className="wt-tab-count">{liveChannels.length} 个台</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'vod'} className={`wt-tab${activeTab === 'vod' ? ' on' : ''}`} onClick={() => setActiveTab('vod')}>点播{vodTitles.length ? <span className="wt-tab-count">{vodTitles.length} 部</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'calendar'} className={`wt-tab${activeTab === 'calendar' ? ' on' : ''}`} onClick={() => setActiveTab('calendar')}>追剧日历{dated.length ? <span className="wt-tab-count">{dated.length} 条</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'watchlist'} className={`wt-tab${activeTab === 'watchlist' ? ' on' : ''}`} onClick={() => setActiveTab('watchlist')}>我的片单<span className="wt-tab-count">{watchlist.length} 部</span></button>
+        <button role="tab" aria-selected={activeTab === 'settings'} className={`wt-tab${activeTab === 'settings' ? ' on' : ''}`} onClick={() => setActiveTab('settings')}>设置</button>
+        <button className={`wt-tab-search${aiSearchOpen ? ' on' : ''}`} title="AI 找剧" aria-label="AI 找剧" aria-expanded={aiSearchOpen} onClick={() => setAiSearchOpen(v => !v)}><Search size={16} /></button>
+      </div>
+
+      {/* AI 找剧（搜索图标展开的面板，Esc / ✕ / 再点图标收起） */}
+      {aiSearchOpen && (
+        <div className="wt-ai-panel">
+          <div className="wt-ai-panel-head">
+            <span className="wt-ai-panel-title">AI 找剧</span>
+            <span className="fg-muted">免费模型推荐 · 只推正版平台</span>
+            <button className="btn sm ghost" aria-label="收起 AI 找剧" onClick={() => setAiSearchOpen(false)}><X size={14} /></button>
+          </div>
         <div className="wt-ai-row">
-          <input className="input" placeholder="一句话说说想看什么，如：最近有什么好看的悬疑剧"
+          <input className="input" ref={searchInputRef} placeholder="一句话说说想看什么，如：最近有什么好看的悬疑剧"
             value={aiQuery} onChange={e => setAiQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') void runAi(aiQuery) }} />
           <button className="btn sm primary" disabled={aiBusy} onClick={() => void runAi(aiQuery)}>
@@ -721,33 +749,31 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           <div className="wt-ai-raw">{aiRaw}</div>
         )}
         {aiBusy && <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在想推荐…</div>}
-      </Section>
+        </div>
+      )}
 
       {/* 热门推荐 */}
-      <Section id="trending" title="热门推荐" sub="TMDB 本周热门 · 需填 Key 才显示海报" count={trending.length ? `${trending.length} 部` : undefined}>
+      {activeTab === 'trending' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">TMDB {trendRange === 'day' ? '今日热门' : trendRange === 'top' ? '高分精选' : '本周热门'} · 海报 · 评分 · 上映日期</div>
         {!tmdbKeySet ? (
           <div className="fg-empty">
             <div>还没填 TMDB API Key：热门榜单需要 Key 才能调用（TMDB 免费注册）。不填也可以用 AI 找剧与直播。</div>
-            <input className="input" type="password" placeholder="粘贴 TMDB API Key（v3 auth 密钥）" value={tmdbInput}
-              onChange={e => setTmdbInput(e.target.value)} />
-            <button className="btn sm primary" disabled={tmdbSaving || !tmdbInput.trim()} onClick={() => void saveTmdb()}>
-              {tmdbSaving ? <Loader2 size={13} className="spin" /> : <Lock size={13} />} 保存 Key（加密存本机）
-            </button>
+            <button className="btn sm primary" onClick={() => setActiveTab('settings')}>去「设置」页签填 Key</button>
           </div>
         ) : trending.length === 0 ? (
           <div className="fg-empty">
-            <div>已保存 TMDB Key。点下面加载本周热门（剧集 + 电影）。</div>
+            <div>已保存 TMDB Key。点下面加载{trendRange === 'day' ? '今日热门' : trendRange === 'top' ? '高分精选' : '本周热门'}（剧集 + 电影）。</div>
             <button className="btn sm primary" disabled={tmdbBusy} onClick={() => void loadTrending()}>
               {tmdbBusy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} 加载热门榜单
             </button>
-            <button className="btn sm ghost" onClick={() => { clearTmdbKey(); setTmdbKeySet(false); setTrending([]) }}>清除 Key</button>
           </div>
         ) : (
           <>
             <div className="wt-chips">
               {(['all', 'tv', 'movie'] as const).map(t => (
                 <button key={t} className={`wt-chip${trendingTab === t ? ' on' : ''}`}
-                  onClick={() => { setTrendingTab(t); setTrendPage(1) }}>
+                  onClick={() => setTrendType(t)}>
                   {t === 'all' ? '全部' : t === 'tv' ? '剧集' : '电影'}
                 </button>
               ))}
@@ -785,10 +811,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               onPage={setTrendPage} />
           </>
         )}
-      </Section>
+        </div>
+      )}
 
       {/* 继续观看 */}
-      <Section id="continue" title="继续观看" sub="上次看到一半的" count={continueList.length ? `${continueList.length} 条` : undefined}>
+      {activeTab === 'continue' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">上次看到一半的</div>
         {continueList.length === 0 ? (
           <div className="fg-empty">还没看过：直播台或点播看过后，这里会出现继续观看的入口（带进度）。</div>
         ) : (
@@ -830,10 +859,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               onPage={setContinuePage} />
           </>
         )}
-      </Section>
+        </div>
+      )}
 
       {/* 直播 */}
-      <Section id="live" title="直播" sub="iptv-org + Free-TV 内置源 · 一个播不了自动换下一个" count={liveLoaded ? `${liveChannels.length} 个台` : undefined}>
+      {activeTab === 'live' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">iptv-org + Free-TV 内置源 · 一个播不了自动换下一个</div>
         <div className="wt-chips">
           {COUNTRIES.map(c => (
             <button key={c.code} className={`wt-chip${liveCountry === c.code ? ' on' : ''}`}
@@ -857,6 +889,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <span className="fg-muted">自定义源优先于内置源；同名台自动合并多条地址。</span>
           </div>
         )}
+        <div className="fg-muted">自定义直播源不在这里填了，去「设置」页签粘贴 m3u 地址，保存后频道会合并进来。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
         {!liveLoaded && liveLoading && <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取频道列表…</div>}
         {liveLoaded && (
           <>
@@ -890,10 +923,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             )}
           </>
         )}
-      </Section>
+        </div>
+      )}
 
       {/* 点播 */}
-      <Section id="vod" title="点播" sub="电影 / 剧集 · 从 m3u 认出单放" count={vodTitles.length ? `${vodTitles.length} 部` : undefined}>
+      {activeTab === 'vod' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">电影 / 剧集 · 从 m3u 认出单放</div>
+          <div className="fg-muted">在「设置」页签的「自定义点播源」里粘含 mp4 / mkv 条目的 m3u，电影和剧集会自动认出来放到这里；同一个地址里的直播流仍留在直播区。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
         {!liveLoaded && liveLoading ? (
           <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取…</div>
         ) : vodTitles.length === 0 ? (
@@ -926,10 +963,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               onPage={setVodPage} />
           </>
         )}
-      </Section>
+        </div>
+      )}
 
       {/* 追剧日历 */}
-      <Section id="calendar" title="追剧日历" sub="由片单的下次更新日期派生" count={dated.length ? `${dated.length} 条` : undefined}>
+      {activeTab === 'calendar' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">由片单的下次更新日期派生</div>
         {calendarMap.size === 0 ? (
           <div className="fg-empty">还没有排期：片单里给一部剧填上「下次更新」日期，这里就会按日期列出来。</div>
         ) : (
@@ -956,10 +996,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             setRemindTitle(''); setRemindDate('')
           }}><Plus size={13} /> 添加提醒</button>
         </div>
-      </Section>
+        </div>
+      )}
 
       {/* 我的片单 */}
-      <Section id="watchlist" title="我的片单" sub="只存本机，不云同步" count={`${watchlist.length} 部`}>
+      {activeTab === 'watchlist' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">只存本机，不云同步</div>
         <div className="wt-ai-row">
           <input className="input" placeholder="剧名" value={wlTitle} onChange={e => setWlTitle(e.target.value)} />
           <select className="input" value={wlType} onChange={e => setWlType(e.target.value as WatchType)} style={{ maxWidth: 110 }}>
@@ -1001,44 +1044,99 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             ))}
           </div>
         )}
-      </Section>
+        </div>
+      )}
 
-      {/* 设置：TMDB Key 与自定义源 */}
-      <Section id="settings" title="设置" sub="TMDB Key · 自定义源">
-        <div className="wt-set-row">
-          <span>TMDB API Key</span>
-          {tmdbKeySet
-            ? <><span className="fg-muted"><Check size={13} /> 已保存（加密存本机）</span>
-              <button className="btn sm ghost" onClick={() => { clearTmdbKey(); setTmdbKeySet(false); setTrending([]) }}>清除</button></>
-            : <span className="fg-muted">未设置：热门推荐无海报、纯文字展示（见上方热门推荐区）。</span>}
-        </div>
-        <div className="wt-set-row">
-          <span>自定义源（m3u 订阅链接）</span>
-          <span className="fg-muted">自己粘贴，像 VLC 里粘地址；留空不预填任何地址。自定义源优先于内置源；直播台进直播区，点播条目进点播区。</span>
-        </div>
-        <div className="wt-ai-row">
-          <input className="input" placeholder="名称，如：我的收藏" value={customLabel} onChange={e => setCustomLabel(e.target.value)} />
-          <input className="input" placeholder="粘贴 m3u 订阅链接（http(s)://…）" value={customUrl} onChange={e => setCustomUrl(e.target.value)} />
-          <button className="btn sm primary" disabled={customTesting !== null || !customUrl.trim()} onClick={() => void addCustomSource()}>
-            {customTesting ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 添加并拉取
-          </button>
-        </div>
-        {customTestResult && <div className="fg-muted">{customTestResult}</div>}
-        {customSources.length > 0 && (
-          <div className="wt-watchlist">
-            {customSources.map(s => (
-              <div key={s.id} className="wt-wl-row">
-                <div className="wt-wl-main">
-                  <div className="fg-card-title">{s.label}</div>
-                  <div className="fg-muted">{s.url}</div>
-                </div>
-                <button className="btn sm ghost" onClick={() => removeCustomSource(s.id)} title="删除"><Trash2 size={13} /></button>
-              </div>
-            ))}
+      {/* 设置：源、Key 与推荐都集中在这里，只存本机 */}
+      {activeTab === 'settings' && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">源、Key 与推荐都集中在这里，只存本机</div>
+          <div className="wt-set-block">
+            <h4>自定义直播源</h4>
+            <div className="wt-set-note">粘贴一个 m3u 直播源地址，保存后里面的频道会合并到「直播」页签；留空不填就是只用内置源（iptv-org + Free-TV）。</div>
+            <div className="wt-ai-row">
+              <input className="input" placeholder="名称，如：我的直播源" value={liveLabel} onChange={e => setLiveLabel(e.target.value)} />
+              <input className="input" placeholder="粘贴 m3u 直播源地址（http(s)://…）" value={liveUrl} onChange={e => setLiveUrl(e.target.value)} />
+              <button className="btn sm primary" disabled={customTesting !== null || !liveUrl.trim()} onClick={() => void addCustomSource(liveLabel, liveUrl, 'live')}>
+                {customTesting ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 保存
+              </button>
+            </div>
           </div>
-        )}
-        <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
-      </Section>
+          <div className="wt-set-block">
+            <h4>自定义点播源</h4>
+            <div className="wt-set-note">粘贴含电影、剧集条目（mp4 / mkv / 点播 m3u8）的 m3u 地址，保存后会自动认出电影和剧集，放进「点播」页签；同一个地址里的直播流仍进直播区。</div>
+            <div className="wt-ai-row">
+              <input className="input" placeholder="名称，如：我的点播源" value={vodLabel} onChange={e => setVodLabel(e.target.value)} />
+              <input className="input" placeholder="粘贴 m3u 点播源地址（http(s)://…）" value={vodUrl} onChange={e => setVodUrl(e.target.value)} />
+              <button className="btn sm primary" disabled={customTesting !== null || !vodUrl.trim()} onClick={() => void addCustomSource(vodLabel, vodUrl, 'vod')}>
+                {customTesting ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 保存
+              </button>
+            </div>
+          </div>
+          {customTestResult && <div className="fg-muted">{customTestResult}</div>}
+          {customSources.length > 0 && (
+            <div className="wt-watchlist">
+              {customSources.map(s => (
+                <div key={s.id} className="wt-wl-row">
+                  <div className="wt-wl-main">
+                    <div className="fg-card-title">{s.label}</div>
+                    <div className="fg-muted">{s.url}</div>
+                  </div>
+                  <button className="btn sm ghost" onClick={() => removeCustomSource(s.id)} title="删除"><Trash2 size={13} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="wt-set-block">
+            <h4>TMDB API Key</h4>
+            <div className="wt-set-note">热门推荐的榜单、海报和评分来自 TMDB，需要 Key 才能调用（TMDB 官网免费注册申请）。Key 加密存本机，不上传；不填不影响 AI 找剧和直播。</div>
+            {tmdbKeySet ? (
+              <div className="wt-set-row">
+                <span className="fg-muted"><Check size={13} /> 已保存（加密存本机）</span>
+                <button className="btn sm ghost" onClick={() => { clearTmdbKey(); setTmdbKeySet(false); setTrending([]) }}>清除</button>
+              </div>
+            ) : (
+              <div className="wt-ai-row">
+                <input className="input" type="password" placeholder="粘贴 TMDB API Key（v3 auth 密钥）" value={tmdbInput}
+                  onChange={e => setTmdbInput(e.target.value)} />
+                <button className="btn sm primary" disabled={tmdbSaving || !tmdbInput.trim()} onClick={() => void saveTmdb()}>
+                  {tmdbSaving ? <Loader2 size={13} className="spin" /> : <Lock size={13} />} 保存 Key（加密存本机）
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="wt-set-block">
+            <h4>推荐设置</h4>
+            <div className="wt-set-note">管热门推荐榜单和 AI 找剧的推荐口径。</div>
+            <div className="wt-set-row">
+              <span>热门范围</span>
+              <div className="wt-chips">
+                {(['week', 'day', 'top'] as const).map(r => (
+                  <button key={r} className={`wt-chip${trendRange === r ? ' on' : ''}`} onClick={() => setTrendRangeAndLoad(r)}>
+                    {r === 'week' ? '本周热门' : r === 'day' ? '今日热门' : '高分精选'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="wt-set-row">
+              <span>推荐类型</span>
+              <div className="wt-chips">
+                {(['all', 'tv', 'movie'] as const).map(t => (
+                  <button key={t} className={`wt-chip${trendingTab === t ? ' on' : ''}`} onClick={() => setTrendType(t)}>
+                    {t === 'all' ? '剧集 + 电影' : t === 'tv' ? '只看剧集' : '只看电影'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="wt-set-row">
+              <span>找剧模型</span>
+              <div className="wt-route"><RouteSelect data={data} routeKey={routeKey} setRouteKey={setRouteKey} /></div>
+            </div>
+            <div className="wt-set-note">推荐口径：AI 找剧只推正版平台（爱奇艺 / 腾讯视频 / 优酷 / 芒果 TV 等），不推盗版站。</div>
+          </div>
+          <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
+        </div>
+      )}
     </div>
   )
 }

@@ -700,17 +700,41 @@ async function tmdbGet(key: string, path: string): Promise<unknown> {
   return res.json()
 }
 
-/** 本周热门：剧集 + 电影各 20 条（需 Key；无 Key 时调用方直接不请求） */
-export async function fetchTmdbTrending(key: string): Promise<TmdbTitle[]> {
-  const [tv, movie] = await Promise.all([
-    tmdbGet(key, '/trending/tv/week'),
-    tmdbGet(key, '/trending/movie/week'),
-  ])
+/** 热门范围（v0.1.394 推荐设置）：本周热门 / 今日热门 / 高分精选 */
+export type TrendRange = 'week' | 'day' | 'top'
+
+/** 热门榜单：剧集 + 电影各 20 条（需 Key；无 Key 时调用方直接不请求）
+ *  range 省略时默认 'week'（老行为不变）；'day' 走 trending/day；
+ *  'top' 走 discover 按评分倒序（vote_count ≥ 300，避免冷门高分刷榜） */
+export async function fetchTmdbTrending(key: string, range: TrendRange = 'week'): Promise<TmdbTitle[]> {
+  const [tv, movie] = await Promise.all(
+    range === 'top'
+      ? [tmdbGet(key, '/discover/tv?sort_by=vote_average.desc&vote_count.gte=300'), tmdbGet(key, '/discover/movie?sort_by=vote_average.desc&vote_count.gte=300')]
+      : [tmdbGet(key, `/trending/tv/${range}`), tmdbGet(key, `/trending/movie/${range}`)],
+  )
   const items = [
     ...(((tv as { results?: TmdbApiItem[] }).results ?? []).map(i => toTmdbTitle(i, 'tv'))),
     ...(((movie as { results?: TmdbApiItem[] }).results ?? []).map(i => toTmdbTitle(i, 'movie'))),
   ]
   return items.filter((x): x is TmdbTitle => !!x).slice(0, 40)
+}
+
+/** 推荐偏好（v0.1.394 设置页签「推荐设置」：热门范围 + 推荐类型），仅本机 */
+export interface RecPrefs { range: TrendRange; type: 'all' | 'tv' | 'movie' }
+export const REC_PREFS_KEY = 'acm.watch.recPrefs.v1'
+
+export function loadRecPrefs(): RecPrefs {
+  try {
+    const v = JSON.parse(localStorage.getItem(REC_PREFS_KEY) ?? 'null') as Partial<RecPrefs> | null
+    return {
+      range: v?.range === 'day' || v?.range === 'top' ? v.range : 'week',
+      type: v?.type === 'tv' || v?.type === 'movie' ? v.type : 'all',
+    }
+  } catch { return { range: 'week', type: 'all' } }
+}
+
+export function saveRecPrefs(p: RecPrefs): void {
+  try { localStorage.setItem(REC_PREFS_KEY, JSON.stringify(p)) } catch { /* 忽略 */ }
 }
 
 /** 某部剧/电影在中国区的正版播出平台（TMDB watch/providers） */
