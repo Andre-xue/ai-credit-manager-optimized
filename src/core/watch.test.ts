@@ -1131,7 +1131,7 @@ describe('watch 源体检结构（v0.1.391：WatchTool.tsx + styles.css）', () 
   it('直播页签有体检入口、状态行、过滤/排序开关；频道卡片按结果打角标', async () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
-    for (const s of ['开始体检', '体检中', '停止', '上次体检', '显示已测不通的台', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead', '真验流', '仅测连通']) {
+    for (const s of ['开始体检', '体检中', '停止', '上次体检', '显示已测不通的台', '快的排前面', '重新体检', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead', '仅测连通']) {
       expect(src).toContain(s)
     }
     // 死台变淡、不通角标；通的角标带耗时

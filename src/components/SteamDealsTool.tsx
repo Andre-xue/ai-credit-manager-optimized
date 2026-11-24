@@ -196,8 +196,8 @@ export function SteamDealsTool({ notify, onBack }: {
 
       {cache && (
         <div className="sd-source">
-          数据来源：Steam 商店公开接口（免 Key）· 更新于 {fmtTime(cache.at)}
-          · Steam 当前共 {cache.total.toLocaleString('zh-CN')} 款打折中，已拉 {searchFetched.toLocaleString('zh-CN')} 款
+          Steam 商店公开接口 · 更新于 {fmtTime(cache.at)}
+          · 共 {cache.total.toLocaleString('zh-CN')} 款打折中，已拉 {searchFetched.toLocaleString('zh-CN')} 款
           {packageCount > 0 && `，其中 ${packageCount} 款为合集包`}
           {enriching && ' · 正在补齐合集包…'}
           {enrichFailed && ' · 合集包补齐失败（网络原因，主列表不受影响，刷新可再试）'}

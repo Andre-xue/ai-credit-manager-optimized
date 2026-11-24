@@ -440,7 +440,6 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
 
       {activeTab === 'edge' && <>
       <div className="wt-tab-sub">{t('Edge 免费音色（微软云端 · 免费）')}</div>
-      <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('不需要 Key、不花钱；点任意音色即切换，行尾可试听')}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
         {EDGE_VOICES.map(v => (
           <div key={v.id} className="voice-row" style={{ justifyContent: 'space-between', gap: 8 }}>

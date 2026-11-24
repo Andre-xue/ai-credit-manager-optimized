@@ -447,7 +447,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 13.5 }}>自动签到</b>
-          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行中每天自动把所有账号签一遍（结果在菜单栏迷你窗能看到）；保险箱锁定时，开过指纹解锁的设备会用本机指纹副本照常签，没开指纹的解锁后补上；App 没运行则不会执行。</span>
+          <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 8 }}>开着时，App 运行中每天自动把所有账号签一遍（结果在菜单栏迷你窗能看到）；App 没运行则不会执行。</span>
         </div>
         <button className="btn sm" onClick={() => { const v = !autoOn; setAutoOn(v); setAutoCheckinEnabled(v); notify(v ? '自动签到已开启' : '自动签到已关闭') }}>
           {autoOn ? '已开启' : '已关闭'}
@@ -521,7 +521,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '0 4px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>手机上也要签？凭据只存本机、不上云：在这台设备点「导出凭据」生成加密文件，传到手机后在手机签到页点「导入凭据」选它即可（需同一主密码）。</span>
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>凭据只存本机、不上云：点「导出凭据」生成加密文件，传到手机后在手机签到页点「导入凭据」选它即可（需同一主密码）。</span>
         <button className="btn sm" disabled={!sessionPwd} onClick={async () => {
           try { const text = await exportTokenCredentials(sessionPwd); await saveExportFile('ai-cube-checkin-credentials.json', text); notify('凭据文件已导出（主密码加密）：传到手机后在签到页导入') }
           catch (e) { notify(e instanceof Error ? e.message : '导出失败') }
@@ -711,13 +711,6 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       {!effectiveTab && (
         <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 12 }}>没有符合筛选的平台，换个筛选试试。</div>
       )}
-
-      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, marginTop: 14 }}>
-        说明：签到走各平台客户端同款接口（非公开接口，平台调整后可能失效，失效时这里会如实报错）；
-        登录凭据用保险箱主密码加密、只存这台设备，不随云同步走。自动签到同样基于这套凭据，平台风控风险请自行评估。
-        做法参考了开源项目 CheckinBox-Tools、dsh-xdpool 与 dsh-checkin-all 的公开协议行为，代码为独立实现。
-        另：Trae 国际版与 WorkBuddy 国际版经核实没有每日签到活动（只有国内版有），故未接入。
-      </p>
     </ToolShell>
   )
 }

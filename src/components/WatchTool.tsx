@@ -65,13 +65,6 @@ import {
 import { pageSlice, pageCount } from '../core/freeGames'
 import type { Account } from '../core/types'
 
-/** 缓存时间文案：刚刚 / N 小时前 */
-function cacheAgeText(at?: number): string {
-  if (!at) return ''
-  const h = Math.floor((Date.now() - at) / 3600000)
-  return h < 1 ? '刚刚' : `${h} 小时前`
-}
-
 // ---------------- 播放器 ----------------
 
 type PlayerState =
@@ -384,7 +377,6 @@ function IframePlayer({ title, url, onClose }: { title: string; url: string; onC
     <div className="wt-player">
       <div className="wt-player-head">
         <span className="wt-player-title"><Clapperboard size={15} /> {title}</span>
-        <span className="fg-muted">官方播放页嵌进 App 里播</span>
         <button className="btn sm ghost" onClick={onClose}><X size={14} /> 关闭</button>
       </div>
       <div className="wt-iframe-wrap">
@@ -1523,7 +1515,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {/* 热门推荐 */}
       {activeTab === 'trending' && (
         <div className="wt-tab-body">
-          <div className="wt-tab-sub">TMDB {trendRange === 'day' ? '今日热门' : trendRange === 'top' ? '高分精选' : '本周热门'} · 海报 · 评分 · 上映日期</div>
         {!tmdbKeySet ? (
           <div className="fg-empty">
             <div>还没填 TMDB API Key：热门榜单需要 Key 才能调用（TMDB 免费注册）。不填也可以用 AI 找剧与直播。</div>
@@ -1588,7 +1579,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {/* 继续观看 */}
       {activeTab === 'continue' && (
         <div className="wt-tab-body">
-          <div className="wt-tab-sub">上次看到一半的</div>
         {continueList.length === 0 ? (
           <div className="fg-empty">还没看过：直播台或点播看过后，这里会出现继续观看的入口（带进度）。</div>
         ) : (
@@ -1662,33 +1652,29 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </button>
         </div>
         <div className="wt-unofficial-note"><CircleAlert size={13} /> 部分频道为第三方转播、未经授权，随时可能失效；带「未授权转播」角标的即是，官方源不受影响。</div>
-        {liveLoaded && (
+        {liveLoaded && liveSets.some(s => !s.ok) && (
           <div className="wt-set-status">
-            {liveSets.map(s => (
+            {liveSets.filter(s => !s.ok).map(s => (
               <span key={s.setId} className="fg-muted">
-                {s.label}：{s.ok ? `${s.count} 个台${s.cached ? `（缓存${cacheAgeText(s.cachedAt)}，24 小时内不重新拉）` : ''}` : `失败：${s.error ?? '未知错误'}`}
+                {s.label}：失败：{s.error ?? '未知错误'}
               </span>
             ))}
-            <span className="fg-muted">自定义源优先于内置源；同名台自动合并多条地址。</span>
           </div>
         )}
-        {liveLoaded && (
+        {liveLoaded && (healthRunning || healthCountsNow.tested > 0) && (
           <div className="wt-health-bar">
             {healthRunning && healthProgress ? (
-              <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {healthProgress.done}/{healthProgress.total} 个台…（后台进行，不影响看列表；可点「停止」）</span>
-            ) : healthCountsNow.tested > 0 ? (
+              <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {healthProgress.done}/{healthProgress.total} 个台…</span>
+            ) : (
               <>
-                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{healthCountsNow.unverified > 0 ? `；其中 ${healthCountsNow.unverified} 个仅测连通（浏览器跨域限制）` : ''}）{healthCountsNow.bad > 0 && !showDead ? ' · 不通的台已默认隐藏（设置里可打开显示）' : ''}</span>
+                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通{healthCountsNow.unverified > 0 ? `；其中 ${healthCountsNow.unverified} 个仅测连通（浏览器跨域限制）` : ''}{healthCountsNow.bad > 0 && !showDead ? ' · 不通的台已默认隐藏（设置里可打开显示）' : ''}</span>
                 <button className="btn sm ghost" disabled={healthRunning} onClick={() => void startHealth()}>
                   <RefreshCw size={13} /> 重新体检
                 </button>
               </>
-            ) : (
-              <span className="fg-muted">还没体检过：点「开始体检」逐个拉播放列表验分片、测快慢，死的标出来、快的排前面（404/空列表/坏流都判不通）。</span>
             )}
           </div>
         )}
-        <div className="fg-muted">自定义直播源不在这里填了，去「设置」页签粘贴 m3u 地址，保存后频道会合并进来。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
         {!liveLoaded && liveLoading && <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取频道列表…</div>}
         {liveLoaded && (
           <>
@@ -1780,9 +1766,9 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                   <button className="btn sm ghost" onClick={stopSiteHealth}>停止</button>
                 )}
                 {siteHealthRunning && siteHealthProgress ? (
-                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 测站中 {siteHealthProgress.done}/{siteHealthProgress.total} 个…（后台进行，不影响看墙；可点「停止」）</span>
+                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 测站中 {siteHealthProgress.done}/{siteHealthProgress.total} 个…</span>
                 ) : siteHealthCountsNow.tested > 0 ? (
-                  <span className="fg-muted">上次测站{siteHealthAgeText}：{siteHealthCountsNow.tested} 个站已测 · {siteHealthCountsNow.ok} 活 · {siteHealthCountsNow.bad} 死（结果保留 30 分钟）{siteHealthCountsNow.bad > 0 && !showDeadSites ? ' · 死的站已默认隐藏（设置里可打开显示）' : ''}</span>
+                  <span className="fg-muted">上次测站{siteHealthAgeText}：{siteHealthCountsNow.tested} 个站已测 · {siteHealthCountsNow.ok} 活 · {siteHealthCountsNow.bad} 死{siteHealthCountsNow.bad > 0 && !showDeadSites ? ' · 死的站已默认隐藏（设置里可打开显示）' : ''}</span>
                 ) : null}
               </div>
               {tvboxSite && (
@@ -1813,20 +1799,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <span className="fg-muted">{tvboxSite && tvboxError ? `「${tvboxSite.name}」拉取失败，墙上没片子可测` : tvboxSite && tvboxLoading ? '正在拉取片单…' : '墙上没片子，先选一个能拉出片单的站'}</span>
             )}
           </div>
-          {allVodTitles.length > 0 && (
+          {allVodTitles.length > 0 && (vodHealthRunning || vodHealthCountsNow.tested > 0) && (
             <>
               <div className="wt-health-bar">
                 {vodHealthRunning && vodHealthProgress ? (
-                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…（后台进行，不影响看墙；可点「停止」）</span>
-                ) : vodHealthCountsNow.tested > 0 ? (
+                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…</span>
+                ) : (
                   <>
-                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{vodHealthCountsNow.unverified > 0 ? `；其中 ${vodHealthCountsNow.unverified} 部仅测连通（浏览器跨域限制）` : ''}）{vodHealthCountsNow.bad > 0 && !showDeadVod ? ' · 不通的片子已默认隐藏（设置里可打开显示）' : ''}</span>
+                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通{vodHealthCountsNow.unverified > 0 ? `；其中 ${vodHealthCountsNow.unverified} 部仅测连通（浏览器跨域限制）` : ''}{vodHealthCountsNow.bad > 0 && !showDeadVod ? ' · 不通的片子已默认隐藏（设置里可打开显示）' : ''}</span>
                     <button className="btn sm ghost" disabled={vodHealthRunning} onClick={() => void startVodHealth()}>
                       <RefreshCw size={13} /> 重新体检
                     </button>
                   </>
-                ) : (
-                  <span className="fg-muted">还没体检过：点「开始体检」逐部拉播放列表验分片、测快慢，死的标出来并默认隐藏、快的排前面（404/空列表/坏流都判不通）。</span>
                 )}
               </div>
               {vodHealthCountsNow.tested > 0 && (
@@ -1946,9 +1930,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                     onClick={() => selectSite(s, 'adult')}>{s.name}</button>
                 ))}
               </div>
-              {!adultSite ? (
-                <div className="fg-muted">点一个站，加载它的片单。</div>
-              ) : adultLoading ? (
+              {!adultSite ? null : adultLoading ? (
                 <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取「{adultSite.name}」的片单…</div>
               ) : adultError ? (
                 <div className="fg-muted">「{adultSite.name}」拉取失败：{adultError}</div>
@@ -2054,10 +2036,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {/* 设置：源、Key 与推荐都集中在这里，只存本机 */}
       {activeTab === 'settings' && (
         <div className="wt-tab-body">
-          <div className="wt-tab-sub">源、Key 与推荐都集中在这里，只存本机</div>
           <div className="wt-set-block">
             <h4>自定义直播源</h4>
-            <div className="wt-set-note">粘贴一个 m3u 直播源地址，保存后里面的频道会合并到「直播」页签；留空不填就是只用内置源（iptv-org + Free-TV）。</div>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：我的直播源" value={liveLabel} onChange={e => setLiveLabel(e.target.value)} />
               <input className="input" placeholder="粘贴 m3u 直播源地址（http(s)://…）" value={liveUrl} onChange={e => setLiveUrl(e.target.value)} />
@@ -2068,7 +2048,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>自定义点播源</h4>
-            <div className="wt-set-note">粘贴含电影、剧集条目（mp4 / mkv / 点播 m3u8）的 m3u 地址，保存后会自动认出电影和剧集，放进「点播」页签；同一个地址里的直播流仍进直播区。TVBox 的 .json 配置不要粘这里，去下面「TVBox 点播源」。</div>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：我的点播源" value={vodLabel} onChange={e => setVodLabel(e.target.value)} />
               <input className="input" placeholder="粘贴 m3u 点播源地址（http(s)://…）" value={vodUrl} onChange={e => setVodUrl(e.target.value)} />
@@ -2079,7 +2058,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>TVBox 点播源（JSON）</h4>
-            <div className="wt-set-note">粘 TVBox 配置地址（影视仓 / OK影视用的 .json，里面是站点接口不是 m3u）。只接 type 0/1 资源站（api.php/provide/vod）；爬虫站（JS / Python 规则）没有爬虫引擎、接不了，解析时会跳过并写清跳了多少个；这类源本身不稳定易失效，拉不到会写清原因。</div>
+            <div className="wt-set-note">只接 type 0/1 资源站（api.php/provide/vod）；爬虫站（JS / Python 规则）接不了，解析时会跳过。</div>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：test1" value={tvboxLabel} onChange={e => setTvboxLabel(e.target.value)} />
               <input className="input" placeholder="粘贴 TVBox 配置地址（.json）" value={tvboxUrl} onChange={e => setTvboxUrl(e.target.value)} />
@@ -2119,7 +2098,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           )}
           <div className="wt-set-block">
             <h4>TMDB API Key</h4>
-            <div className="wt-set-note">热门推荐的榜单、海报和评分来自 TMDB，需要 Key 才能调用（TMDB 官网免费注册申请）。Key 加密存本机，不上传；不填不影响 AI 找剧和直播。</div>
+            <div className="wt-set-note">热门推荐的榜单、海报和评分来自 TMDB，需要 Key 才能调用（TMDB 官网免费注册申请）。Key 加密存本机，不上传。</div>
             {tmdbKeySet ? (
               <div className="wt-set-row">
                 <span className="fg-muted"><Check size={13} /> 已保存（加密存本机）</span>
@@ -2137,7 +2116,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>推荐设置</h4>
-            <div className="wt-set-note">管热门推荐榜单和 AI 找剧的推荐口径。</div>
             <div className="wt-set-row">
               <span>热门范围</span>
               <div className="wt-chips">
@@ -2162,11 +2140,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <span>找剧模型</span>
               <div className="wt-route"><RouteSelect data={data} routeKey={routeKey} setRouteKey={setRouteKey} /></div>
             </div>
-            <div className="wt-set-note">推荐口径：AI 找剧只推正版平台（爱奇艺 / 腾讯视频 / 优酷 / 芒果 TV 等），不推盗版站。</div>
           </div>
           <div className="wt-set-block">
             <h4>直播体检</h4>
-            <div className="wt-set-note">真验流：拉播放列表验分片才算通，404/空列表/坏流都判不通；4 路并行、结果保留 30 分钟。体检后不通的台默认从直播列表隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的台一直显示。</div>
+            <div className="wt-set-note">体检后不通的台默认从直播列表隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的台一直显示。</div>
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showDead} onChange={toggleShowDead} />
               <span>显示已测不通的台</span>
@@ -2174,7 +2151,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>点播体检</h4>
-            <div className="wt-set-note">体检后不通的片子默认从点播墙隐藏（m3u 点播与 TVBox 资源站片单都一样）；打开后恢复显示（仍带 ✗ 不通角标）。未测的片子一直显示。测活（点播页「测站点」）后不通的站默认从站点列表隐藏。</div>
+            <div className="wt-set-note">体检后不通的片子/站点默认隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的片子一直显示。</div>
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showDeadVod} onChange={toggleShowDeadVod} />
               <span>显示已测不通的点播</span>
@@ -2186,7 +2163,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>18+ 专区</h4>
-            <div className="wt-set-note">成人站（按站名判断，名字起得隐晦的会漏进普通区）单独归到「18+」页签；开关开着才显示这个页签，关了就整个隐藏。默认关，只存本机。</div>
+            <div className="wt-set-note">成人站按站名归类，单独进「18+」页签；开关开着才显示这个页签。</div>
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showAdult} onChange={toggleShowAdult} />
               <span>显示 18+ 页签</span>
@@ -2194,7 +2171,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>弹幕源</h4>
-            <div className="wt-set-note">弹幕来自开源弹幕库服务 danmu_api（兼容弹弹play协议），按片名匹配弹幕。官方弹弹play要申请 appid、App 里接不了；自己部署一个免费实例就能用：点「部署方法」看项目页（Vercel 一键部署 / Docker），把部署好的地址粘到这里。没填就不显示远程弹幕（本地发送的弹幕照常用）；拉不到弹幕时播放器里会写清原因。</div>
+            <div className="wt-set-note">弹幕来自开源弹幕库 danmu_api，按片名匹配。自己部署一个免费实例，把地址粘到这里就能用；不填只用本地弹幕。</div>
             <div className="wt-ai-row">
               <input className="input" placeholder="弹幕源地址，如 https://xxx.vercel.app" value={danmuBaseInput} onChange={e => setDanmuBaseInput(e.target.value)} />
               <button className="btn sm primary" onClick={saveDanmuBase}>保存</button>
@@ -2206,7 +2183,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             {danmuBaseSaved && <div className="fg-muted">已保存：{danmuBaseSaved}</div>}
             {danmuTestResult && <div className="fg-muted">{danmuTestResult}</div>}
           </div>
-          <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
         </div>
       )}
       {vodDetail && <VodDetailSheet item={vodDetail} />}
