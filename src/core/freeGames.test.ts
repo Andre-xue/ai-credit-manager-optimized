@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseEpicPromotions, assertFreeToClaim, buildQuickPurchaseBody,
   sortRecords, pageSlice, pageCount, defaultPrefs, nextCheckAt,
+  EPIC_LOGIN_URL, fetchEpicFreeGames,
   type FreeGame, type ClaimRecord,
 } from './freeGames'
 
@@ -146,5 +147,83 @@ describe('freeGames prefs', () => {
     const p = defaultPrefs()
     expect(nextCheckAt(p, 1_000_000)).toBe(1_000_000 + 6 * 3600_000)
     expect(nextCheckAt(p, null)).toBeLessThanOrEqual(Date.now())
+  })
+})
+
+describe('freeGames EPIC_LOGIN_URL', () => {
+  it('必须是 OAuth 授权地址（带 redirectUrl 到 id/api/redirect），不是 /id/login/welcome', () => {
+    // 2026-11-24 实机：旧地址缺 redirectUrl，Epic 把登录跳到 /id/login/welcome
+    // 并直接报「无法完成登陆」，连账号密码都没法输（v0.1.385 修）
+    expect(EPIC_LOGIN_URL).not.toContain('/id/login/welcome')
+    expect(EPIC_LOGIN_URL).toContain('www.epicgames.com/id/login?redirectUrl=')
+    const u = new URL(EPIC_LOGIN_URL)
+    const redirect = u.searchParams.get('redirectUrl') ?? ''
+    expect(redirect).toContain('www.epicgames.com/id/api/redirect')
+    expect(redirect).toContain('clientId=34a02cf8f4414e29b15921876da36f9a')
+    expect(redirect).toContain('responseType=code')
+  })
+})
+
+describe('freeGames bindEpicWithAuthCode', () => {
+  it('换 token 时 form 体带 token_type=eg1（legendary 做法；缺了 Epic 会拒）', async () => {
+    const { webcrypto } = await import('node:crypto')
+    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
+    if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
+      const m = new Map<string, string>()
+      ;(globalThis as unknown as Record<string, unknown>).localStorage = {
+        getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+        setItem: (k: string, v: string) => { m.set(k, v) },
+        removeItem: (k: string) => { m.delete(k) },
+        clear: () => m.clear(),
+      }
+    }
+    const calls: Array<{ url: string; body: string }> = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      const u = String(url)
+      calls.push({ url: u, body: String(init?.body ?? '') })
+      if (u.includes('/oauth/token')) {
+        return { ok: true, text: async () => JSON.stringify({ access_token: 'AT', account_id: 'ACC' }), json: async () => ({}) }
+      }
+      return { ok: true, text: async () => '{}', json: async () => ({ deviceId: 'D', secret: 'S', accountId: 'ACC' }) }
+    }) as typeof fetch
+    try {
+      const { initVault } = await import('./crypto')
+      await initVault('testpwd8')
+      const { bindEpicWithAuthCode } = await import('./freeGames')
+      const auth = await bindEpicWithAuthCode('CODE123', 'testpwd8')
+      expect(auth.accountId).toBe('ACC')
+      expect(auth.deviceId).toBe('D')
+      const tokCall = calls.find(c => c.url.includes('/oauth/token'))
+      expect(tokCall).toBeDefined()
+      const params = new URLSearchParams(tokCall!.body)
+      expect(params.get('grant_type')).toBe('authorization_code')
+      expect(params.get('code')).toBe('CODE123')
+      expect(params.get('token_type')).toBe('eg1')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('freeGames fetchEpicFreeGames 报错文案', () => {
+  it('网络失败（WKWebView 只抛英文 Load failed）要换成中文并提示换节点', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new TypeError('Load failed') }) as typeof fetch
+    try {
+      await expect(fetchEpicFreeGames()).rejects.toThrow(/免费游戏列表加载失败/)
+      await expect(fetchEpicFreeGames()).rejects.toThrow(/换个节点/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+  it('接口非 200 要写清状态码', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) })) as unknown as typeof fetch
+    try {
+      await expect(fetchEpicFreeGames()).rejects.toThrow(/免费游戏列表加载失败：Epic 接口返回 403/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
   })
 })

@@ -274,6 +274,9 @@ tbody tr:hover { background: var(--panel-2); }
   background: #111827; color: #fff; padding: 11px 18px; border-radius: 10px; font-size: 13px;
   box-shadow: 0 10px 30px rgba(0,0,0,.25); animation: rise .2s ease; display: flex; align-items: center; gap: 8px;
 }
+/* 失败提示不用打勾图标那套黑底：深红底 + 三角警告，免得和成功提示混淆（v0.1.385） */
+.toast.err { background: #991b1b; }
+.toast.err svg { color: #fecaca; }
 
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 

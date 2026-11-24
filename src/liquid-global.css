@@ -117,6 +117,9 @@ html:has(.app-shell.liquid-ui) body { background: #eef1ff; }
    否则提示文字看不清（v0.1.294 实机录屏坐实）。深色下 --text 为浅色、
    玻璃底为深色，同一条规则同样成立 */
 .app-shell.liquid-ui .toast { color: var(--text); }
+/* 失败 toast：液态主题下同样走深红底白字，不跟成功提示混淆（v0.1.385） */
+.app-shell.liquid-ui .toast.err { background: rgba(153, 27, 27, .92); color: #fff; border-color: rgba(254, 202, 202, .4); }
+.app-shell.liquid-ui .toast.err svg { color: #fecaca; }
 
 /* ---------- 3. 控件 ---------- */
 .app-shell.liquid-ui .btn:not(.primary) {

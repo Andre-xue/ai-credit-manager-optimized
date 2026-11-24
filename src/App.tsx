@@ -378,7 +378,7 @@ function App() {
     backupOnly: boolean
     after: () => void
   } | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'err' } | null>(null)
   const [backupDue, setBackupDue] = useState(false)
   const [bioAvailableGlobal, setBioAvailableGlobal] = useState(false)
   const [bioLabel, setBioLabel] = useState('生物识别')
@@ -440,8 +440,8 @@ function App() {
   useEffect(() => { stateRef.current = state }, [state])
 
   const toastTimer = useRef<number | null>(null)
-  const notify = useCallback((msg: string) => {
-    setToast(msg)
+  const notify = useCallback((msg: string, kind: 'ok' | 'err' = 'ok') => {
+    setToast({ msg, kind })
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
   }, [])
@@ -1923,7 +1923,7 @@ function App() {
         <button onClick={() => { try { localStorage.setItem('acm.backup.snoozeUntil', String(Date.now() + 3 * 86400000)) } catch { /* 忽略 */ } setBackupDue(false) }}>{t('3 天后再提醒')}</button>
         <button className="backup-due-close" onClick={() => setBackupDue(false)} title={t('本次忽略')}><X size={14} /></button>
       </div>}
-      {toast && !undo && <div className="toast"><Check size={15} /> {t(toast)}</div>}
+      {toast && !undo && <div className={toast.kind === 'err' ? 'toast err' : 'toast'}>{toast.kind === 'err' ? <AlertTriangle size={15} /> : <Check size={15} />} {t(toast.msg)}</div>}
     </div>
   )
 }

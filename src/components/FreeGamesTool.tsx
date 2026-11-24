@@ -104,7 +104,7 @@ function GameCard({ game, claimed, claiming, onClaim }: {
 export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   sessionPwd: string
   onUnlock: (pwd: string) => void
-  notify: (m: string) => void
+  notify: (m: string, kind?: 'ok' | 'err') => void
   onBack: () => void
 }) {
   const [prefs, setPrefs] = useState<FreeGamesPrefs>(loadPrefs)
@@ -160,7 +160,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       setCache(next)
       notify(`已刷新：本周免费 ${epic.current.length} 款，预告 ${epic.upcoming.length} 款`)
     } catch (e) {
-      notify(e instanceof Error ? e.message : '拉取失败')
+      notify(e instanceof Error ? e.message : '拉取失败', 'err')
     } finally { setRefreshing(false) }
   }
 
@@ -171,10 +171,10 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       const res = await runFreeGamesCheck(pwd)
       refreshMeta()
       refreshRecords()
-      if (res.errors.length) notify(`检查完成：${summarizeCheckResult(res)}；${res.errors[0]}`)
+      if (res.errors.length) notify(`检查完成：${summarizeCheckResult(res)}；${res.errors[0]}`, 'err')
       else notify(`检查完成：${summarizeCheckResult(res)}`)
     } catch (e) {
-      notify(e instanceof Error ? e.message : '检查失败')
+      notify(e instanceof Error ? e.message : '检查失败', 'err')
     } finally { setChecking(false) }
   }
 
@@ -190,7 +190,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       notify(`「${game.title}」已领取入库`)
     } catch (e) {
       refreshRecords()
-      notify(e instanceof Error ? e.message : '领取失败')
+      notify(e instanceof Error ? e.message : '领取失败', 'err')
     } finally { setClaimingId('') }
   }
 
@@ -205,7 +205,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       setAuthCode('')
       notify('Epic 已绑定，自动领取已就绪')
     } catch (e) {
-      notify(e instanceof Error ? e.message : '绑定失败')
+      notify(e instanceof Error ? e.message : '绑定失败', 'err')
     } finally { setBindBusy(false) }
   }
 
@@ -326,7 +326,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
               <div className="fg-bind-title">绑定 Epic 账号（设备授权，只存本机、主密码加密）</div>
               <ol className="fg-bind-steps">
                 <li>点下面按钮，在浏览器打开 Epic 登录页并登录你的 Epic 账号。</li>
-                <li>登录成功后，浏览器会跳转到一个显示授权码的页面，把地址栏里 <code>authorizationCode=</code> 后面的那串字符复制下来。</li>
+                <li>登录成功后，页面会显示一段 JSON，复制其中 authorizationCode 的值粘贴到下面（只粘码，不要粘整个页面内容）。</li>
                 <li>粘贴到下面，点「确认绑定」——App 只保存设备授权，不保存你的 Epic 密码。</li>
               </ol>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

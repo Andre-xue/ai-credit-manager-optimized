@@ -61,7 +61,7 @@ export const LAST_ERROR_KEY = 'acm.freegames.lastError.v1'
 export const PAGE_SIZE = 8
 
 export const EPIC_LOGIN_URL =
-  'https://www.epicgames.com/id/login?clientId=34a02cf8f4414e29b15921876da36f9a&responseType=code'
+  'https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode'
 export const GOG_STORE_URL = 'https://www.gog.com/'
 export const UBI_STORE_URL = 'https://store.ubisoft.com/cn/free-games'
 
@@ -274,8 +274,15 @@ export function parseEpicPromotions(data: unknown): { current: FreeGame[]; upcom
 }
 
 export async function fetchEpicFreeGames(): Promise<{ current: FreeGame[]; upcoming: FreeGame[] }> {
-  const res = await fetch(PROMO_URL, { headers: { Accept: 'application/json' } })
-  if (!res.ok) throw new Error(`Epic 免费游戏接口返回 ${res.status}`)
+  let res: Response
+  try {
+    res = await fetch(PROMO_URL, { headers: { Accept: 'application/json' } })
+  } catch {
+    // WKWebView 下网络失败只抛一句英文 "Load failed"，不说明哪一步失败；
+    // 在这里换成中文，并点出代理被拦的可能（Ethan 的 Clash 出口曾多次被拦）
+    throw new Error('免费游戏列表加载失败：网络请求失败，Epic 接口可能被代理/网络拦截，请换个节点再试')
+  }
+  if (!res.ok) throw new Error(`免费游戏列表加载失败：Epic 接口返回 ${res.status}`)
   return parseEpicPromotions(await res.json())
 }
 
@@ -371,7 +378,7 @@ export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<E
   const clean = code.trim()
   if (!clean) throw new Error('请先粘贴授权码')
   if (!pwd) throw new Error('请先解锁保险箱')
-  const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean })
+  const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean, token_type: 'eg1' })
   const access = pickStr(tok, 'access_token')
   const accountId = pickStr(tok, 'account_id')
   if (!access || !accountId) throw new Error('Epic 授权码无效或已过期，请重新登录获取')
@@ -415,6 +422,7 @@ export async function epicAccessToken(auth: EpicDeviceAuth): Promise<{ access: s
       account_id: auth.accountId,
       device_id: auth.deviceId,
       secret: auth.secret,
+      token_type: 'eg1',
     })
     const access = pickStr(tok, 'access_token')
     if (!access) throw new Error('Epic 登录失效')
