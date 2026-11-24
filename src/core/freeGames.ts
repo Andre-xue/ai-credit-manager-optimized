@@ -71,8 +71,13 @@ const EPIC_CLIENT_SECRET = 'daafbccc737745039dffe53d94fc76cf'
 const PROMO_URL =
   'https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=CN&allowCountries=CN'
 const TOKEN_URL = 'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/token'
-const DEVICE_AUTH_URL =
-  'https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/device/auth'
+// 创建设备授权（v0.1.387 修正）：旧的设备授权端点已死——prod03 与 prod
+// 两个 host 用假 token 探都返回 404 errors.com.epicgames.common.not_found，
+// 路由本身不存在。正确端点是 public/account/{account_id}/deviceAuth
+// （假 token 探返回 401 invalid_token，说明路由存在、只是在验 token）。
+export function deviceAuthUrl(accountId: string): string {
+  return `https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/${encodeURIComponent(accountId)}/deviceAuth`
+}
 const QUICK_PURCHASE_URL =
   'https://orderprocessor-public-service-ecomprod01.ol.epicgames.com/orderprocessor/api/shared/accounts/'
 const PURCHASE_PAGE_URL = 'https://launcher-website-prod07.ol.epicgames.com/purchase'
@@ -441,7 +446,7 @@ export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<E
   if (!access || !accountId) throw new Error('Epic 授权码无效或已过期，请重新登录获取')
   let res: NativeHttpResult
   try {
-    res = await epicRequest(DEVICE_AUTH_URL, 'POST', { Authorization: `Bearer ${access}` })
+    res = await epicRequest(deviceAuthUrl(accountId), 'POST', { Authorization: `Bearer ${access}` })
   } catch (e) {
     throw toChineseFetchError(e, 'Epic 绑定失败')
   }

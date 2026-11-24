@@ -4,7 +4,7 @@ import {
   sortRecords, pageSlice, pageCount, defaultPrefs, nextCheckAt,
   EPIC_LOGIN_URL, fetchEpicFreeGames,
   toChineseFetchError, sanitizeLoadFailedMessage,
-  bindEpicWithAuthCode, claimEpicGame,
+  bindEpicWithAuthCode, claimEpicGame, deviceAuthUrl,
   type FreeGame, type ClaimRecord,
 } from './freeGames'
 
@@ -399,12 +399,25 @@ describe('freeGames bindEpicWithAuthCode 桌面通道', () => {
       expect(params.get('code')).toBe('CODE123')
       expect(params.get('token_type')).toBe('eg1')
       const daCall = calls[1]
-      expect(String(daCall.args.url)).toContain('device/auth')
+      expect(String(daCall.args.url)).toBe('https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/ACC/deviceAuth')
       expect(JSON.parse(String(daCall.args.headersJson)).Authorization).toBe('Bearer AT')
     } finally {
       globalThis.fetch = origFetch
       unStubWindow()
     }
+  })
+})
+
+describe('freeGames deviceAuthUrl（v0.1.387）', () => {
+  it('拼出的地址含 accountId、host 为 prod03', () => {
+    expect(deviceAuthUrl('ACC-123')).toBe('https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/ACC-123/deviceAuth')
+    expect(deviceAuthUrl('a/b c')).toContain('/public/account/a%2Fb%20c/deviceAuth')
+  })
+  it('旧端点不再出现在源码里', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('./freeGames.ts', import.meta.url), 'utf8')
+    expect(src).not.toContain('account/api/oauth/device/auth')
+    expect(src).toContain('account/api/public/account/')
   })
 })
 
