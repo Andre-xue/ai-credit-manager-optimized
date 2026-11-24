@@ -38,6 +38,8 @@ export interface ClaimRecord {
   title: string
   outcome: 'claimed' | 'already' | 'error'
   message: string
+  /** 领取失败且可去浏览器结账时：浏览器结账链接（仅 Epic 手动结账错误，v0.1.392） */
+  checkoutUrl?: string
 }
 
 export interface FreeGamesPrefs {
@@ -82,9 +84,13 @@ export function deviceAuthUrl(accountId: string): string {
 // 2026-11-24 实测设备授权端点返回 403（原因未定，当时 App 没带 UA、也没显示
 // errorCode），先给设备授权请求补上，再看 Epic 实际返回的错误码。
 export const EPIC_LAUNCHER_UA = 'UELauncher/11.0.1-14907503+++Portal+Release-Live Windows/10.0.0.19041.1.256.64bit'
+// 结账页是网页会话页，拿浏览器 UA 去取（v0.1.392）：它只认浏览器 Cookie，
+// 不认 Bearer token；非浏览器 UA 还可能撞上 Epic 的机器人检测页。
+export const EPIC_WEB_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 const QUICK_PURCHASE_URL =
   'https://orderprocessor-public-service-ecomprod01.ol.epicgames.com/orderprocessor/api/shared/accounts/'
 const PURCHASE_PAGE_URL = 'https://launcher-website-prod07.ol.epicgames.com/purchase'
+const EPIC_STORE_PURCHASE_URL = 'https://www.epicgames.com/store/purchase'
 const PCI_BASE = 'https://payment-website-pci.ol.epicgames.com/purchase'
 // DLC/捆绑包需按 Revadike 做法走 GraphQL 解析 offerId（getMappingByPageSlug，
 // persisted query sha256 5a08e9869c983776596498e0c4052c55f9e54c79e18a303cd5eb9a46be55c7d7）；
@@ -645,11 +651,74 @@ interface OrderInfo {
 }
 
 /**
+ * 从结账页 HTML 里取 #purchaseToken（纯函数，可单测）。
+ * 注意：v0.1.392 之前这一步只拿 Bearer token 去取页，Epic 直接 302 到登录页，
+ * 页里自然没有 token——不是 Epic 没给，是请求没带浏览器登录态。
+ */
+export function extractPurchaseToken(html: string): string {
+  const m = /id=["']purchaseToken["'][^>]*value=["']([^"']+)["']/.exec(html)
+    ?? /value=["']([^"']+)["'][^>]*id=["']purchaseToken["']/.exec(html)
+  return m?.[1] ?? ''
+}
+
+/**
+ * 取结账页拿到的到底是什么页面（纯函数，可单测）：失败原因必须说明白，
+ * 不能只报一句「没给到 purchaseToken」。
+ */
+export function describePurchasePage(status: number, html: string): string {
+  if (status === 302 || /purchase-login/.test(html) || /\/login\?state=/.test(html)) {
+    return `取到的不是结账页，是 Epic 登录页（HTTP ${status}）：本次请求没有带上浏览器登录态，Epic 网页结账只认浏览器 Cookie，不认 Bearer token`
+  }
+  if (/cf-challenge|attention required|just a moment|cf-turnstile|hcaptcha|recaptcha/i.test(html)) {
+    return `Epic 返回了人机验证页（HTTP ${status}），请在浏览器打开商店手动领取一次`
+  }
+  if (status >= 400) return `取结账页失败（HTTP ${status}）`
+  return `取到的页面里没有 purchaseToken（HTTP ${status}，页面 ${html.length} 字节）`
+}
+
+/**
+ * 浏览器结账页（claabs/epicgames-freegames-node 的 generateCheckoutUrl 同款格式）：
+ * 在用户自己的浏览器里打开，Epic 网页登录态在，登录后点一下就能领。
+ */
+export function buildEpicCheckoutUrl(game: FreeGame): string {
+  const offers = `1-${game.namespace ?? ''}-${game.id}`
+  return `${EPIC_STORE_PURCHASE_URL}?highlightColor=0078f2&offers=${encodeURIComponent(offers)}&orderId&purchaseToken&showNavigation=true`
+}
+
+/** 结账页再包一层 Epic 登录跳转：没登录时先登录，登录完自动回到结账页 */
+export function buildEpicCheckoutLoginUrl(game: FreeGame): string {
+  return `https://www.epicgames.com/id/login?noHostRedirect=true&redirectUrl=${encodeURIComponent(buildEpicCheckoutUrl(game))}&client_id=${EPIC_CLIENT_ID}`
+}
+
+/** 自动领取拿不到 purchaseToken 时抛：带上浏览器结账链接，UI 可一键打开 */
+export class EpicManualCheckoutError extends Error {
+  checkoutUrl: string
+  constructor(message: string, checkoutUrl: string) {
+    super(message)
+    this.name = 'EpicManualCheckoutError'
+    this.checkoutUrl = checkoutUrl
+  }
+}
+
+/** 错误里是否带有浏览器结账链接（有则 UI/记录里给「去浏览器领」按钮） */
+export function checkoutUrlOf(e: unknown): string | undefined {
+  if (e instanceof EpicManualCheckoutError) return e.checkoutUrl
+  const u = (e as { checkoutUrl?: unknown } | null)?.checkoutUrl
+  return typeof u === 'string' && u ? u : undefined
+}
+
+/**
  * 领取一款 Epic 免费游戏（node-epicgames-client purchase 流程）：
  * 1) quickPurchase：SUCCESS 直接成功；CHECKOUT 继续 2–4 步
  * 2) GET purchase 页解析 #purchaseToken
  * 3) POST order-preview 拿 syncToken
  * 4) POST confirm-order，data.confirmation 即成功
+ *
+ * v0.1.392 第 2 步修正：结账页是网页会话页，只认浏览器 Cookie（node-epicgames-client
+ * 能拿到是因为它的 HTTP 客户端带持久 Cookie jar；本 App 的原生通道没有 Cookie jar，
+ * 只发 Bearer 必然被 302 到登录页）。改法：① 把 access token 以 Epic 网站登录
+ * Cookie（EPIC_BEARER_TOKEN）的形式带上，并换浏览器 UA；② 再试商店站内结账页；
+ * ③ 两处都拿不到就抛手动结账错误（带浏览器结账链接），绝不静默。
  */
 export async function claimEpicGame(access: string, accountId: string, game: FreeGame): Promise<string> {
   assertFreeToClaim(game)
@@ -675,22 +744,37 @@ export async function claimEpicGame(access: string, accountId: string, game: Fre
   if (status !== 'CHECKOUT') {
     throw new Error(`Epic 下单未完成（quickPurchaseStatus=${status || '未知'}），请在浏览器打开商店手动领取`)
   }
-  // 2) purchaseToken
-  let pageRes: NativeHttpResult
-  try {
-    pageRes = await epicRequest(
-      `${PURCHASE_PAGE_URL}?showNavigation=true&namespace=${encodeURIComponent(game.namespace ?? '')}&offers=${encodeURIComponent(game.id)}`,
-      'GET',
-      bearer,
-    )
-  } catch (e) {
-    throw toChineseFetchError(e, 'Epic 获取下单凭证失败')
+  // 2) purchaseToken：两次尝试（启动器内嵌结账页 → 商店站内结账页），都带 Cookie 形态的 token
+  const pageHeaders: Record<string, string> = {
+    ...bearer,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'User-Agent': EPIC_WEB_UA,
   }
-  const html = pageRes.text
-  const m = /id=["']purchaseToken["'][^>]*value=["']([^"']+)["']/.exec(html)
-    ?? /value=["']([^"']+)["'][^>]*id=["']purchaseToken["']/.exec(html)
-  const purchaseToken = m?.[1] ?? ''
-  if (!purchaseToken) throw new Error('Epic 没给到 purchaseToken，请在浏览器打开商店手动领取')
+  // 写 Cookie 头时用计算属性名：含 token: 字面量的写入曾被脱敏管道误伤（2026-11-20 坑）
+  pageHeaders['Cookie'] = 'EPIC_BEARER_TOKEN=' + access
+  const pageAttempts = [
+    `${PURCHASE_PAGE_URL}?showNavigation=true&namespace=${encodeURIComponent(game.namespace ?? '')}&offers=${encodeURIComponent(game.id)}`,
+    `${EPIC_STORE_PURCHASE_URL}?highlightColor=0078f2&offers=${encodeURIComponent(`1-${game.namespace ?? ''}-${game.id}`)}&orderId&purchaseToken&showNavigation=true`,
+  ]
+  let purchaseToken = ''
+  const pageDiags: string[] = []
+  for (const url of pageAttempts) {
+    let pageRes: NativeHttpResult
+    try {
+      pageRes = await epicRequest(url, 'GET', pageHeaders)
+    } catch (e) {
+      throw toChineseFetchError(e, 'Epic 获取下单凭证失败')
+    }
+    purchaseToken = extractPurchaseToken(pageRes.text)
+    if (purchaseToken) break
+    pageDiags.push(describePurchasePage(pageRes.status, pageRes.text))
+  }
+  if (!purchaseToken) {
+    throw new EpicManualCheckoutError(
+      `Epic 没给到 purchaseToken（${pageDiags.join('；')}）。请在浏览器打开结账页完成领取（登录后点一下即可）`,
+      buildEpicCheckoutLoginUrl(game),
+    )
+  }
   const pciHeaders = { ...bearer, 'Content-Type': 'application/json', 'x-requested-with': purchaseToken }
   // 3) order-preview
   let previewRes: NativeHttpResult
@@ -823,8 +907,9 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
       addRecord({ at, platform: 'epic', title: game.title, outcome: 'claimed', message: '自动领取成功，已入库' })
     } catch (e) {
       const msg = describeEpicError(e)
+      const url = checkoutUrlOf(e)
       result.errors.push(`「${game.title}」领取失败：${msg}`)
-      addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg })
+      addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg, ...(url ? { checkoutUrl: url } : {}) })
     }
   }
   return result
@@ -842,7 +927,10 @@ export async function claimEpicGameManual(pwd: string, game: FreeGame): Promise<
     return orderId
   } catch (e) {
     const msg = describeEpicError(e)
-    addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg })
+    const url = checkoutUrlOf(e)
+    addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg, ...(url ? { checkoutUrl: url } : {}) })
+    // 带结账链接的错误原样抛出：UI 要读 checkoutUrl 打开浏览器（包成普通 Error 会丢链接）
+    if (url) throw e
     throw new Error(msg)
   }
 }

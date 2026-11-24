@@ -15,7 +15,7 @@ import {
   bindEpicWithAuthCode, hasEpicAuth, unbindEpic, loadEpicAuth,
   loadLastCheckAt, loadLastError, nextCheckAt,
   EPIC_LOGIN_URL, GOG_STORE_URL, UBI_STORE_URL,
-  sanitizeLoadFailedMessage,
+  sanitizeLoadFailedMessage, checkoutUrlOf,
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
 } from '../core/freeGames'
 import { openExternal, isDesktopApp, isNativeApp } from '../core/openExternal'
@@ -207,7 +207,15 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       notifySafe(`「${game.title}」已领取入库`)
     } catch (e) {
       refreshRecords()
-      notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
+      // v0.1.392：自动领取拿不到 purchaseToken 时，直接在浏览器打开预填好的结账页
+      // （用户已在浏览器登录 Epic，点一下就能领），不要只留一条报错让用户自己找
+      const url = checkoutUrlOf(e)
+      if (url) {
+        void openExternal(url)
+        notifySafe('自动领取没拿到下单凭证，已在浏览器打开 Epic 结账页，登录后点一下就能领', 'err')
+      } else {
+        notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
+      }
     } finally { setClaimingId('') }
   }
 
@@ -500,6 +508,9 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                 )}
                 {r.outcome === 'error' && /验证码/.test(r.message) && (
                   <button className="btn sm" onClick={() => void openExternal('https://store.epicgames.com/zh-CN/free-games')}>去商店手动领</button>
+                )}
+                {r.outcome === 'error' && r.checkoutUrl && (
+                  <button className="btn sm primary" onClick={() => void openExternal(r.checkoutUrl!)}>去浏览器领</button>
                 )}
               </div>
             ))}

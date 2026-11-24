@@ -6,7 +6,10 @@ import {
   toChineseFetchError, sanitizeLoadFailedMessage,
   bindEpicWithAuthCode, claimEpicGame, deviceAuthUrl,
   epicAccessToken, describeDeviceAuthError, loadEpicAuth,
-  EPIC_LAUNCHER_UA, EPIC_AUTH_KEY,
+  EPIC_LAUNCHER_UA, EPIC_AUTH_KEY, EPIC_WEB_UA,
+  extractPurchaseToken, describePurchasePage,
+  buildEpicCheckoutUrl, buildEpicCheckoutLoginUrl,
+  EpicManualCheckoutError, checkoutUrlOf,
   type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
 
@@ -682,6 +685,145 @@ describe('freeGames bindEpicWithAuthCode 桌面通道 UA（v0.1.389）', () => {
       expect(stored?.deviceId).toBe('D')
     } finally {
       globalThis.fetch = origFetch
+      unStubWindow()
+    }
+  })
+})
+
+// v0.1.392：修 Epic 领游戏拿不到 purchaseToken
+// 根因（2026-11-24 实测）：结账页是网页会话页，无 Cookie 时 GET 直接 302 到 /login，
+// 只发 Bearer token 必然拿不到 token（node-epicgames-client 能拿到是因为它的 HTTP
+// 客户端带持久 Cookie jar；本 App 原生通道没有）。修法：取页时把 access token 以
+// Epic 网站登录 Cookie（EPIC_BEARER_TOKEN）形式带上 + 浏览器 UA；再试商店站内页；
+// 两处都拿不到就抛手动结账错误（带浏览器结账链接），不静默。
+describe('freeGames extractPurchaseToken（v0.1.392）', () => {
+  it('id 在前、value 在后能取到', () => {
+    expect(extractPurchaseToken('<input id="purchaseToken" type="hidden" value="PT-ABC123">')).toBe('PT-ABC123')
+  })
+  it('value 在前、id 在后也能取到', () => {
+    expect(extractPurchaseToken("<input value='PT-XYZ' id='purchaseToken'>")).toBe('PT-XYZ')
+  })
+  it('登录跳转页里没有 token', () => {
+    expect(extractPurchaseToken('Found. Redirecting to /login?state=%2Fpurchase-login%3FshowNavigation%3Dtrue')).toBe('')
+  })
+})
+
+describe('freeGames describePurchasePage（v0.1.392）', () => {
+  it('302 跳登录页要明说没带浏览器登录态，不认 Bearer', () => {
+    const d = describePurchasePage(302, 'Found. Redirecting to /login?state=%2Fpurchase-login%3FshowNavigation%3Dtrue')
+    expect(d).toMatch(/登录页|登录跳转/)
+    expect(d).toMatch(/Cookie/)
+    expect(d).toMatch(/Bearer/)
+  })
+  it('200 的登录页 HTML 同样识别为登录页', () => {
+    expect(describePurchasePage(200, '<html><body>purchase-login form</body></html>')).toMatch(/登录页/)
+  })
+  it('人机验证页单独说明', () => {
+    expect(describePurchasePage(200, '<html>Attention Required! cf-challenge</html>')).toMatch(/人机验证/)
+  })
+  it('其他情况报状态码与页面长度', () => {
+    expect(describePurchasePage(200, '<html>ok</html>')).toMatch(/HTTP 200/)
+  })
+})
+
+describe('freeGames 浏览器结账链接（v0.1.392）', () => {
+  it('buildEpicCheckoutUrl 按 claabs 格式出 offers=1-命名空间- offerId', () => {
+    expect(buildEpicCheckoutUrl(fakeGame({ id: '1f9a12b06b4f437790b6913ad136a08c', namespace: '3d6441ab9d4246208bc97d7babf664b5' })))
+      .toBe('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-3d6441ab9d4246208bc97d7babf664b5-1f9a12b06b4f437790b6913ad136a08c&orderId&purchaseToken&showNavigation=true')
+  })
+  it('buildEpicCheckoutLoginUrl 包一层 id/login 跳转（未登录先登录再回结账页）', () => {
+    const u = buildEpicCheckoutLoginUrl(fakeGame({ id: 'x1', namespace: 'ns1' }))
+    expect(u).toContain('https://www.epicgames.com/id/login?noHostRedirect=true&redirectUrl=')
+    expect(u).toContain('client_id=34a02cf8f4414e29b15921876da36f9a')
+    expect(decodeURIComponent(u)).toContain('https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-ns1-x1')
+  })
+  it('checkoutUrlOf 只从手动结账错误里取链接，普通错误返回 undefined', () => {
+    const err = new EpicManualCheckoutError('拿不到 token', 'https://example.com/checkout')
+    expect(checkoutUrlOf(err)).toBe('https://example.com/checkout')
+    expect(err.name).toBe('EpicManualCheckoutError')
+    expect(checkoutUrlOf(new Error('普通错'))).toBeUndefined()
+    expect(checkoutUrlOf(null)).toBeUndefined()
+  })
+})
+
+describe('freeGames claimEpicGame purchaseToken 两次尝试（v0.1.392）', () => {
+  const loginRedirectBody = 'Found. Redirecting to /login?state=%2Fpurchase-login%3FshowNavigation%3Dtrue'
+  const tokenPage = '<html><body><form><input id="purchaseToken" type="hidden" value="PT-1"></form></body></html>'
+  const previewOk = JSON.stringify({ order: { namespace: 'ns1', country: null, countryName: null, offers: ['x1'], orderResponse: { totalPrice: 0 }, syncToken: 'SYNC-1' } })
+  const confirmOk = JSON.stringify({ data: { confirmation: 'CONF-1' } })
+
+  it('两次取页都是登录跳转：抛手动结账错误，带结账链接与登录页诊断；取页请求带 Cookie 形态的 token 与浏览器 UA', async () => {
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('quickPurchase')) return pluginEnvelope(200, JSON.stringify({ quickPurchaseStatus: 'CHECKOUT' }))
+      return pluginEnvelope(302, loginRedirectBody)
+    })
+    try {
+      const p = claimEpicGame('AT', 'ACC', fakeGame())
+      await expect(p).rejects.toThrow(/没给到 purchaseToken/)
+      await expect(p).rejects.toThrow(/登录页/)
+      let caught: unknown
+      try { await p } catch (e) { caught = e }
+      expect(caught).toBeInstanceOf(EpicManualCheckoutError)
+      expect(checkoutUrlOf(caught)).toContain('epicgames.com/id/login')
+      expect(checkoutUrlOf(caught)).toContain('store%2Fpurchase')
+      // 两次取页：启动器内嵌页 + 商店站内页
+      const pageCalls = calls.filter(c => String(c.args.url).includes('/purchase'))
+      expect(pageCalls).toHaveLength(2)
+      expect(String(pageCalls[0].args.url)).toContain('launcher-website-prod07.ol.epicgames.com/purchase')
+      expect(String(pageCalls[1].args.url)).toContain('www.epicgames.com/store/purchase')
+      for (const pc of pageCalls) {
+        const h = JSON.parse(String(pc.args.headersJson)) as Record<string, string>
+        expect(h.Authorization).toBe('Bearer AT')
+        expect(h.Cookie).toBe('EPIC_BEARER_TOKEN=AT')
+        expect(h['User-Agent']).toBe(EPIC_WEB_UA)
+      }
+    } finally {
+      unStubWindow()
+    }
+  })
+
+  it('第一次取页拿到 token：继续 order-preview/confirm-order，走完领成功', async () => {
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('quickPurchase')) return pluginEnvelope(200, JSON.stringify({ quickPurchaseStatus: 'CHECKOUT' }))
+      if (u.includes('launcher-website-prod07')) return pluginEnvelope(200, tokenPage)
+      if (u.includes('order-preview')) return pluginEnvelope(200, previewOk)
+      if (u.includes('confirm-order')) return pluginEnvelope(200, confirmOk)
+      return pluginEnvelope(200, '{}')
+    })
+    try {
+      const orderId = await claimEpicGame('AT', 'ACC', fakeGame())
+      expect(orderId).toBe('CONF-1')
+      // 拿到 token 就不去试第二处
+      const pageGets = calls.filter(c => String(c.args.url).includes('launcher-website-prod07') || String(c.args.url).includes('www.epicgames.com/store/purchase'))
+      expect(pageGets).toHaveLength(1)
+      const preview = calls.find(c => String(c.args.url).includes('order-preview'))!
+      expect(JSON.parse(String(preview.args.headersJson))['x-requested-with']).toBe('PT-1')
+      const confirm = calls.find(c => String(c.args.url).includes('confirm-order'))!
+      expect(JSON.parse(String(confirm.args.headersJson))['x-requested-with']).toBe('PT-1')
+      expect(JSON.parse(String(confirm.args.body)).syncToken).toBe('SYNC-1')
+    } finally {
+      unStubWindow()
+    }
+  })
+
+  it('第一次取页是登录跳转、第二次商店站内页拿到 token：照样走完领成功', async () => {
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('quickPurchase')) return pluginEnvelope(200, JSON.stringify({ quickPurchaseStatus: 'CHECKOUT' }))
+      if (u.includes('launcher-website-prod07')) return pluginEnvelope(302, loginRedirectBody)
+      if (u.includes('www.epicgames.com/store/purchase')) return pluginEnvelope(200, tokenPage)
+      if (u.includes('order-preview')) return pluginEnvelope(200, previewOk)
+      if (u.includes('confirm-order')) return pluginEnvelope(200, confirmOk)
+      return pluginEnvelope(200, '{}')
+    })
+    try {
+      const orderId = await claimEpicGame('AT', 'ACC', fakeGame())
+      expect(orderId).toBe('CONF-1')
+      const pageGets = calls.filter(c => String(c.args.url).includes('launcher-website-prod07') || String(c.args.url).includes('www.epicgames.com/store/purchase'))
+      expect(pageGets).toHaveLength(2)
+    } finally {
       unStubWindow()
     }
   })
