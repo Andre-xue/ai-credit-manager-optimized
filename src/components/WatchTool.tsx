@@ -48,7 +48,9 @@ import {
   WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
   loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
   probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
+  probeTvboxSites, siteHealthOf, siteHealthCounts,
   loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
+  loadShowDeadSites, saveShowDeadSites,
   loadVodTvboxCollapsed, saveVodTvboxCollapsed, loadVodFiltersCollapsed, saveVodFiltersCollapsed,
   isTvboxConfigText, isAdultTvboxSite,
   loadPlayerFloat, savePlayerFloat, clampPlayerFloat,
@@ -917,6 +919,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const toggleShowDeadVod = () => {
     setShowDeadVod(v => { const next = !v; saveShowDeadVod(next); return next })
   }
+  // v0.1.418：测活后已测不通的资源站默认从站点列表隐藏；设置页签
+  // 「显示已测不通的站点」开关可恢复显示，状态只存本机。
+  const [showDeadSites, setShowDeadSites] = useState(() => loadShowDeadSites())
+  const toggleShowDeadSites = () => {
+    setShowDeadSites(v => { const next = !v; saveShowDeadSites(next); return next })
+  }
   const [healthSort, setHealthSort] = useState(false)
   const healthCtrlRef = useRef<AbortController | null>(null)
   const healthCountsNow = useMemo(() => healthCounts(liveChannels, health), [liveChannels, health])
@@ -1162,6 +1170,50 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     }
     void loadSiteTitles(site, 1, target)
   }
+  // ---- TVBox 资源站测活（v0.1.418）：一键测全部站谁活谁死；结果进同一缓存，键加 site: 前缀 ----
+  const [siteHealthRunning, setSiteHealthRunning] = useState(false)
+  const [siteHealthProgress, setSiteHealthProgress] = useState<{ done: number; total: number } | null>(null)
+  const siteHealthCtrlRef = useRef<AbortController | null>(null)
+  const siteHealthCountsNow = useMemo(() => siteHealthCounts(tvboxSites, health), [tvboxSites, health])
+  const siteHealthAt = useMemo(() => {
+    let at = 0
+    for (const s of tvboxSites) {
+      const h = siteHealthOf(health, s)
+      if (h && h.at > at) at = h.at
+    }
+    return at || null
+  }, [tvboxSites, health])
+  const siteHealthAgeText = siteHealthAt
+    ? (() => { const m = Math.floor((Date.now() - siteHealthAt) / 60000); return m < 1 ? '刚刚' : `${m} 分钟前` })()
+    : ''
+  const startSiteHealth = async () => {
+    if (siteHealthRunning || !tvboxSites.length) return
+    const ctrl = new AbortController()
+    siteHealthCtrlRef.current = ctrl
+    setSiteHealthRunning(true)
+    setSiteHealthProgress({ done: 0, total: tvboxSites.length })
+    try {
+      const fresh = await probeTvboxSites(tvboxSites, {
+        signal: ctrl.signal,
+        onProgress: (done, total, key, result) => {
+          setHealth(prev => { const next = { ...prev, [key]: result }; saveHealthCache(next); return next })
+          setSiteHealthProgress({ done, total })
+        },
+      })
+      setHealth(prev => { const next = { ...prev, ...fresh }; saveHealthCache(next); return next })
+    } finally {
+      siteHealthCtrlRef.current = null
+      setSiteHealthRunning(false)
+      setSiteHealthProgress(null)
+    }
+  }
+  const stopSiteHealth = () => { siteHealthCtrlRef.current?.abort() }
+  // 站点列表视图：已测不通的站默认隐藏（只隐藏已测不通的，未测的站不受影响）；
+  // 当前选中的站永远保留（否则选中的站一测就从列表里消失）。18+ 页签的站列表不动。
+  const visibleTvboxSites = useMemo(
+    () => normalTvboxSites.filter(s => showDeadSites || siteHealthOf(health, s)?.ok !== false || s.key === tvboxSite?.key),
+    [normalTvboxSites, health, showDeadSites, tvboxSite],
+  )
   const addTvboxConfig = async (label: string, urlRaw: string) => {
     const url = urlRaw.trim()
     if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 TVBox 配置地址', 'err'); return }
@@ -1694,7 +1746,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 {tvboxSitesCollapsed ? (
                   // v0.1.417：折叠时只留当前选中的站点（没选时是「只看 m3u 点播」）+ 展开按钮
                   tvboxSite ? (
-                    <button className="wt-chip on" aria-pressed onClick={() => selectSite(tvboxSite, 'vod')}>{tvboxSite.name}</button>
+                    <button className="wt-chip on" aria-pressed onClick={() => selectSite(tvboxSite, 'vod')}>{tvboxSite.name}{siteHealthOf(health, tvboxSite)?.ok === false ? ' ✗' : ''}</button>
                   ) : (
                     <button className="wt-chip on" aria-pressed
                       onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
@@ -1703,16 +1755,34 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                   <>
                     <button className={`wt-chip${!tvboxSite ? ' on' : ''}`} aria-pressed={!tvboxSite}
                       onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
-                    {normalTvboxSites.map(s => (
-                      <button key={s.key} className={`wt-chip${tvboxSite?.key === s.key ? ' on' : ''}`} aria-pressed={tvboxSite?.key === s.key}
-                        onClick={() => selectSite(s, 'vod')}>{s.name}</button>
-                    ))}
+                    {visibleTvboxSites.map(s => {
+                      const dead = siteHealthOf(health, s)?.ok === false
+                      return (
+                        <button key={s.key} className={`wt-chip${tvboxSite?.key === s.key ? ' on' : ''}`} aria-pressed={tvboxSite?.key === s.key}
+                          title={dead ? (siteHealthOf(health, s)?.reason ?? '该站测活不通') : undefined}
+                          onClick={() => selectSite(s, 'vod')}>{s.name}{dead ? ' ✗' : ''}</button>
+                      )
+                    })}
                   </>
                 )}
                 <button className="btn sm ghost" onClick={toggleTvboxSitesCollapsed} aria-expanded={!tvboxSitesCollapsed}>
                   <ChevronDown size={13} style={{ transform: tvboxSitesCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
                   {tvboxSitesCollapsed ? '展开' : '收起'}
                 </button>
+              </div>
+              {/* v0.1.418：站点级测活——一键测全部 TVBox 站谁活谁死（拉一页片单） */}
+              <div className="wt-chips">
+                <button className="btn sm ghost" disabled={siteHealthRunning || !tvboxSites.length} onClick={() => void startSiteHealth()} title="逐站拉一页片单，测谁活谁死（后台进行，不堵列表）">
+                  <Activity size={13} /> {siteHealthRunning ? '测站中…' : '测站点'}
+                </button>
+                {siteHealthRunning && (
+                  <button className="btn sm ghost" onClick={stopSiteHealth}>停止</button>
+                )}
+                {siteHealthRunning && siteHealthProgress ? (
+                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 测站中 {siteHealthProgress.done}/{siteHealthProgress.total} 个…（后台进行，不影响看墙；可点「停止」）</span>
+                ) : siteHealthCountsNow.tested > 0 ? (
+                  <span className="fg-muted">上次测站{siteHealthAgeText}：{siteHealthCountsNow.tested} 个站已测 · {siteHealthCountsNow.ok} 活 · {siteHealthCountsNow.bad} 死（结果保留 30 分钟）{siteHealthCountsNow.bad > 0 && !showDeadSites ? ' · 死的站已默认隐藏（设置里可打开显示）' : ''}</span>
+                ) : null}
               </div>
               {tvboxSite && (
                 <div className="fg-muted">
@@ -1730,16 +1800,20 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           {!tmdbKeySet && wallItems.length > 0 && (
             <div className="fg-muted">没填 TMDB Key：只有片名列表，没有海报、评分与类型/年份/地区筛选；去「设置」页签填 Key 后再看。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
           )}
+          {/* v0.1.418：体检按钮一直显示——没片子时灰掉并写清原因，不再整个消失 */}
+          <div className="wt-chips">
+            <button className="btn sm ghost" disabled={vodHealthRunning || !allVodTitles.length} onClick={() => void startVodHealth()} title="逐部拉播放列表验分片、测快慢（后台进行，不堵墙）">
+              <Activity size={13} /> {vodHealthRunning ? '体检中…' : '开始体检'}
+            </button>
+            {vodHealthRunning && (
+              <button className="btn sm ghost" onClick={stopVodHealth}>停止</button>
+            )}
+            {allVodTitles.length === 0 && !vodHealthRunning && (
+              <span className="fg-muted">{tvboxSite && tvboxError ? `「${tvboxSite.name}」拉取失败，墙上没片子可测` : tvboxSite && tvboxLoading ? '正在拉取片单…' : '墙上没片子，先选一个能拉出片单的站'}</span>
+            )}
+          </div>
           {allVodTitles.length > 0 && (
             <>
-              <div className="wt-chips">
-                <button className="btn sm ghost" disabled={vodHealthRunning || !allVodTitles.length} onClick={() => void startVodHealth()} title="逐部拉播放列表验分片、测快慢（后台进行，不堵墙）">
-                  <Activity size={13} /> {vodHealthRunning ? '体检中…' : '开始体检'}
-                </button>
-                {vodHealthRunning && (
-                  <button className="btn sm ghost" onClick={stopVodHealth}>停止</button>
-                )}
-              </div>
               <div className="wt-health-bar">
                 {vodHealthRunning && vodHealthProgress ? (
                   <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…（后台进行，不影响看墙；可点「停止」）</span>
@@ -2099,10 +2173,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>点播体检</h4>
-            <div className="wt-set-note">体检后不通的片子默认从点播墙隐藏（m3u 点播与 TVBox 资源站片单都一样）；打开后恢复显示（仍带 ✗ 不通角标）。未测的片子一直显示。</div>
+            <div className="wt-set-note">体检后不通的片子默认从点播墙隐藏（m3u 点播与 TVBox 资源站片单都一样）；打开后恢复显示（仍带 ✗ 不通角标）。未测的片子一直显示。测活（点播页「测站点」）后不通的站默认从站点列表隐藏。</div>
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showDeadVod} onChange={toggleShowDeadVod} />
               <span>显示已测不通的点播</span>
+            </label>
+            <label className="wt-set-row" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={showDeadSites} onChange={toggleShowDeadSites} />
+              <span>显示已测不通的站点</span>
             </label>
           </div>
           <div className="wt-set-block">

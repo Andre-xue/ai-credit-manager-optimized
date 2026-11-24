@@ -1073,6 +1073,18 @@ export function saveShowDeadVod(v: boolean): void {
   try { localStorage.setItem(SHOW_DEAD_VOD_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
 }
 
+// ---------------- 显示已测不通的资源站（v0.1.418）：与点播同款，只存本机 ----------------
+export const SHOW_DEAD_SITES_KEY = 'acm.watch.showDeadSites.v1'
+
+/** 默认关：测活后已测不通的站默认从站点列表隐藏 */
+export function loadShowDeadSites(): boolean {
+  try { return localStorage.getItem(SHOW_DEAD_SITES_KEY) === '1' } catch { return false }
+}
+
+export function saveShowDeadSites(v: boolean): void {
+  try { localStorage.setItem(SHOW_DEAD_SITES_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
 // ---------------- 点播页可折叠区（v0.1.417）：TVBox 资源站 chips 行 + 筛选区，默认展开，只存本机 ----------------
 export const VOD_TVBOX_COLLAPSED_KEY = 'acm.watch.vodTvboxCollapsed.v1'
 export const VOD_FILTERS_COLLAPSED_KEY = 'acm.watch.vodFiltersCollapsed.v1'
@@ -2039,6 +2051,76 @@ export async function fetchCmsVodList(site: TvboxSite, page = 1): Promise<CmsLis
     if (/^HTTP (\d+)/.test(msg)) return fail(`资源站返回 HTTP ${/^HTTP (\d+)/.exec(msg)?.[1]}（该站可能已失效）`)
     return fail(`拉取失败（${msg.slice(0, 60)}）`)
   }
+}
+
+// ---------------- TVBox 资源站测活（v0.1.418） ----------------
+// 站点级：拉一页片单（App 同款 ?ac=videolist&pg=1），code=1 且有数据算活；
+// 超时/403/返回网页/空列表/非 JSON 都算死并带具体原因——复用 fetchCmsVodList
+// 的中文报错，不另起一套口径。结果进同一缓存 acm.watch.health.v1，
+// 键加 `site:` 前缀，与直播台（归一化台名）/点播（vod: 前缀）不冲突。
+export function siteHealthKey(site: TvboxSite): string {
+  return `site:${site.key}`
+}
+
+/** 测一个资源站：拉第 1 页片单，有数据算活；无数据或拉取失败算死并带原因 */
+export async function probeTvboxSite(site: TvboxSite, opts: { signal?: AbortSignal } = {}): Promise<ChannelHealth> {
+  if (opts.signal?.aborted) return { ok: false, at: Date.now(), url: site.api, reason: '已取消' }
+  const t0 = Date.now()
+  const r = await fetchCmsVodList(site, 1)
+  if (opts.signal?.aborted) return { ok: false, at: Date.now(), url: site.api, reason: '已取消' }
+  if (r.error) return { ok: false, ms: Date.now() - t0, at: Date.now(), url: site.api, reason: r.error }
+  if (r.titles.length === 0) return { ok: false, ms: Date.now() - t0, at: Date.now(), url: site.api, reason: '站返回空片单（0 条）' }
+  return { ok: true, ms: Date.now() - t0, at: Date.now(), url: site.api }
+}
+
+/** 某站的测活结果：缓存条目须对应当前站的 api，否则是旧配置的残留，不用 */
+export function siteHealthOf(health: HealthMap, site: TvboxSite): ChannelHealth | undefined {
+  const h = health[siteHealthKey(site)]
+  if (!h) return undefined
+  if (h.url && h.url !== site.api) return undefined
+  return h
+}
+
+export function siteHealthCounts(sites: TvboxSite[], health: HealthMap): { tested: number; ok: number; bad: number } {
+  let tested = 0
+  let ok = 0
+  for (const s of sites) {
+    const h = siteHealthOf(health, s)
+    if (!h) continue
+    tested++
+    if (h.ok) ok++
+  }
+  return { tested, ok, bad: tested - ok }
+}
+
+export interface ProbeTvboxSitesOptions {
+  concurrency?: number
+  signal?: AbortSignal
+  onProgress?: (done: number, total: number, key: string, result: ChannelHealth) => void
+}
+
+/** 测一批资源站：限定并行数后台跑；中途取消时返回已测到的部分结果，
+ * 已取消的站不进结果（不把「已取消」写进缓存当成死站）。 */
+export async function probeTvboxSites(sites: TvboxSite[], opts: ProbeTvboxSitesOptions = {}): Promise<HealthMap> {
+  const concurrency = Math.max(1, opts.concurrency ?? HEALTH_PROBE_CONCURRENCY)
+  const out: HealthMap = {}
+  let next = 0
+  let done = 0
+  const workers = Array.from({ length: Math.min(concurrency, sites.length) }, async () => {
+    for (;;) {
+      if (opts.signal?.aborted) return
+      const i = next++
+      if (i >= sites.length) return
+      const s = sites[i]
+      const r = await probeTvboxSite(s, { signal: opts.signal })
+      if (opts.signal?.aborted) return
+      out[siteHealthKey(s)] = r
+      done++
+      opts.onProgress?.(done, sites.length, siteHealthKey(s), r)
+    }
+  })
+  await Promise.all(workers)
+  return out
 }
 
 /** 合并多来源的点播标题：同名（key）合并选集与线路，与 m3u 的

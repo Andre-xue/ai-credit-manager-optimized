@@ -10,6 +10,8 @@ import {
   healthOf, healthCounts, applyHealthView, parseM3u8Segments, probeConnectivity,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
+  loadShowDeadSites, saveShowDeadSites,
+  probeTvboxSite, probeTvboxSites, siteHealthKey, siteHealthOf, siteHealthCounts,
   loadVodTvboxCollapsed, saveVodTvboxCollapsed, loadVodFiltersCollapsed, saveVodFiltersCollapsed,
   parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig,
@@ -1294,6 +1296,111 @@ describe('watch 点播页可折叠（v0.1.417）', () => {
     saveVodFiltersCollapsed(false)
     expect(loadVodTvboxCollapsed()).toBe(false)
     expect(loadVodFiltersCollapsed()).toBe(false)
+  })
+})
+
+describe('watch TVBox 资源站测活（v0.1.418：probeTvboxSite / probeTvboxSites）', () => {
+  const jsonSite: TvboxSite = { key: 'cfg:官源蓝光', name: '官源蓝光', type: 1, api: 'https://example.com/api.php/provide/vod/' }
+  const xmlSite: TvboxSite = { key: 'cfg:大地资源', name: '大地资源', type: 0, api: 'https://dadiapi.com/api.php' }
+  const JSON_ALIVE = JSON.stringify({ code: 1, page: 1, pagecount: 1, total: 1, list: [{ vod_name: '流浪地球2', vod_play_url: '正片$https://cdn/a.mp4' }] })
+  const JSON_EMPTY = JSON.stringify({ code: 1, page: 1, pagecount: 0, total: 0, list: [] })
+  const JSON_REFUSED = JSON.stringify({ code: 0, msg: 'key错误', list: [] })
+  const XML_ALIVE = '<rss><list page="1" pagecount="1" recordcount="1"><video><name>流浪地球2</name><dl><dd flag="线路1">正片$https://cdn/a.mp4</dd></dl></video></list></rss>'
+  const XML_EMPTY = '<rss><list page="1" pagecount="0" recordcount="0"></list></rss>'
+
+  it('活站：code=1 且有数据算活；请求地址带 ac=videolist&pg=1', async () => {
+    const seen: string[] = []
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      seen.push(String(url))
+      return { ok: true, text: async () => (String(url).includes('dadiapi') ? XML_ALIVE : JSON_ALIVE) }
+    })
+    const j = await probeTvboxSite(jsonSite)
+    expect(j.ok).toBe(true)
+    expect(j.url).toBe(jsonSite.api)
+    expect(typeof j.ms).toBe('number')
+    const x = await probeTvboxSite(xmlSite)
+    expect(x.ok).toBe(true)
+    expect(seen.every(u => u.includes('ac=videolist&pg=1'))).toBe(true)
+  })
+  it('死站：空列表 / code 非 1 / 非 CMS 文本 / HTTP 403 / 网络失败都算死并带中文原因', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => JSON_EMPTY }))
+    expect(await probeTvboxSite(jsonSite)).toMatchObject({ ok: false, reason: '站返回空片单（0 条）' })
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => JSON_REFUSED }))
+    expect((await probeTvboxSite(jsonSite)).reason).toContain('资源站拒绝了请求')
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => '<html>hello</html>' }))
+    expect((await probeTvboxSite(jsonSite)).reason).toContain('不是标准苹果 CMS 数据')
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 403, text: async () => '' }))
+    expect((await probeTvboxSite(jsonSite)).reason).toContain('HTTP 403')
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    expect((await probeTvboxSite(jsonSite)).reason).toContain('网络请求失败')
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => XML_EMPTY }))
+    expect(await probeTvboxSite(xmlSite)).toMatchObject({ ok: false, reason: '站返回空片单（0 条）' })
+  })
+  it('siteHealthKey / siteHealthOf / siteHealthCounts：键带 site: 前缀；api 对不上算旧残留不用', () => {
+    const health: HealthMap = {
+      [siteHealthKey(jsonSite)]: { ok: true, ms: 120, at: Date.now(), url: jsonSite.api },
+      [siteHealthKey(xmlSite)]: { ok: false, at: Date.now(), url: 'https://other.example.com/api.php', reason: 'HTTP 403' },
+    }
+    expect(siteHealthKey(jsonSite)).toBe('site:cfg:官源蓝光')
+    expect(siteHealthOf(health, jsonSite)?.ok).toBe(true)
+    // xml 站的缓存条目 url 与当前 api 不符 → 不用
+    expect(siteHealthOf(health, xmlSite)).toBeUndefined()
+    expect(siteHealthCounts([jsonSite, xmlSite], health)).toEqual({ tested: 1, ok: 1, bad: 0 })
+    expect(siteHealthCounts([jsonSite, xmlSite], {})).toEqual({ tested: 0, ok: 0, bad: 0 })
+  })
+  it('probeTvboxSites：一批站 4 路并行、进度回调逐个回推、结果键带 site: 前缀', async () => {
+    const sites: TvboxSite[] = [1, 2, 3].map(i => ({ key: `cfg:站${i}`, name: `站${i}`, type: 1, api: `https://s${i}.example.com/api.php` }))
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('s2.example.com')) return { ok: false, status: 403, text: async () => '' }
+      return { ok: true, text: async () => JSON_ALIVE }
+    })
+    const progress: Array<[number, number]> = []
+    const out = await probeTvboxSites(sites, { onProgress: (done, total) => { progress.push([done, total]) } })
+    expect(Object.keys(out).sort()).toEqual(['site:cfg:站1', 'site:cfg:站2', 'site:cfg:站3'])
+    expect(out['site:cfg:站1'].ok).toBe(true)
+    expect(out['site:cfg:站2'].ok).toBe(false)
+    expect(out['site:cfg:站3'].ok).toBe(true)
+    expect(progress).toHaveLength(3)
+    expect(progress[2]).toEqual([3, 3])
+  })
+  it('probeTvboxSites：开始前已取消 → 一个不测、不调 fetch、返回空结果', async () => {
+    const sites: TvboxSite[] = [{ key: 'cfg:站1', name: '站1', type: 1, api: 'https://s1.example.com/api.php' }]
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON_ALIVE }))
+    vi.stubGlobal('fetch', fetchMock)
+    const ctrl = new AbortController()
+    ctrl.abort()
+    const out = await probeTvboxSites(sites, { signal: ctrl.signal })
+    expect(out).toEqual({})
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('站点隐藏开关默认关；存取往返；与点播开关各存各的键', () => {
+    expect(loadShowDeadSites()).toBe(false)
+    saveShowDeadSites(true)
+    expect(loadShowDeadSites()).toBe(true)
+    expect(loadShowDeadVod()).toBe(false)
+    saveShowDeadSites(false)
+    expect(loadShowDeadSites()).toBe(false)
+  })
+})
+
+describe('watch v0.1.418 结构（WatchTool.tsx）', () => {
+  it('测站点入口、死站 ✗ 与默认隐藏、体检按钮常驻都在', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of [
+      '测站点', '测站中', 'startSiteHealth', 'stopSiteHealth', 'siteHealthCountsNow',
+      '上次测站', '死的站已默认隐藏', 'probeTvboxSites', 'siteHealthOf', 'siteHealthCounts',
+      'visibleTvboxSites', '显示已测不通的站点', 'loadShowDeadSites', 'saveShowDeadSites', 'showDeadSites',
+      'site: 前缀',
+      // v0.1.418 ②：体检按钮不再包在 allVodTitles.length > 0 里，灰掉 + 写清原因
+      '墙上没片子，先选一个能拉出片单的站', '拉取失败，墙上没片子可测', '正在拉取片单…',
+    ]) {
+      expect(src).toContain(s)
+    }
+    // 点播体检按钮行不再整个被 allVodTitles.length > 0 包住：该条件只剩健康栏一处
+    const gated = src.match(/\{allVodTitles\.length > 0 && \(/g) ?? []
+    expect(gated).toHaveLength(1)
   })
 })
 
