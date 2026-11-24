@@ -5,7 +5,9 @@ import {
   EPIC_LOGIN_URL, fetchEpicFreeGames,
   toChineseFetchError, sanitizeLoadFailedMessage,
   bindEpicWithAuthCode, claimEpicGame, deviceAuthUrl,
-  type FreeGame, type ClaimRecord,
+  epicAccessToken, describeDeviceAuthError, loadEpicAuth,
+  EPIC_LAUNCHER_UA, EPIC_AUTH_KEY,
+  type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
 
 // fixture：按 2026-11-24 晚实测的 freeGamesPromotions 返回结构裁剪
@@ -440,6 +442,246 @@ describe('freeGames claimEpicGame 桌面通道', () => {
       expect(body.lineOffers[0].offerId).toBe('x1')
       expect(body.lineOffers[0].namespace).toBe('ns1')
     } finally {
+      unStubWindow()
+    }
+  })
+})
+
+// v0.1.389：Epic 绑定 403 诊断（显示 errorCode）+ refresh_token 兜底 + 启动器 UA
+async function setupTestVault389() {
+  const { webcrypto } = await import('node:crypto')
+  Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
+  if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
+    const m = new Map<string, string>()
+    ;(globalThis as unknown as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+      setItem: (k: string, v: string) => { m.set(k, v) },
+      removeItem: (k: string) => { m.delete(k) },
+      clear: () => m.clear(),
+    }
+  }
+  const { initVault } = await import('./crypto')
+  await initVault('testpwd8')
+  testStorage389().removeItem(EPIC_AUTH_KEY)
+}
+function testStorage389() {
+  return (globalThis as unknown as { localStorage: { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void } }).localStorage
+}
+
+describe('freeGames describeDeviceAuthError（v0.1.389）', () => {
+  it('errorCode + errorMessage 都拼进文案', () => {
+    expect(describeDeviceAuthError(403, JSON.stringify({ errorCode: 'errors.com.epicgames.account.device_auth.forbidden', errorMessage: 'not allowed' })))
+      .toBe('HTTP 403：errors.com.epicgames.account.device_auth.forbidden：not allowed')
+  })
+  it('非 JSON 体只剩状态码', () => {
+    expect(describeDeviceAuthError(403, '<html>forbidden</html>')).toBe('HTTP 403')
+  })
+  it('只有 error 字段也取', () => {
+    expect(describeDeviceAuthError(500, JSON.stringify({ error: 'server_error' }))).toBe('HTTP 500：server_error')
+  })
+})
+
+describe('freeGames bindEpicWithAuthCode 403 诊断与 refresh 兜底（v0.1.389）', () => {
+  it('设备授权 403 时错误信息带上 Epic 的 errorCode，不再只显示状态码；且不留假绑定', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    const calls: Array<{ url: string; headers: Record<string, string>; body: string }> = []
+    globalThis.fetch = (async (url: unknown, init?: { headers?: Record<string, string>; body?: unknown }) => {
+      const u = String(url)
+      calls.push({ url: u, headers: init?.headers ?? {}, body: String(init?.body ?? '') })
+      if (u.includes('/oauth/token')) {
+        // 换 token 成功，但不给 refresh token：兜底走不通，必须把 errorCode 抛出来
+        return { ok: true, text: async () => JSON.stringify({ access_token: 'AT', account_id: 'ACC' }), json: async () => ({}) }
+      }
+      return {
+        ok: false, status: 403,
+        text: async () => JSON.stringify({ errorCode: 'errors.com.epicgames.account.device_auth.forbidden', errorMessage: 'Device auth not allowed for this client' }),
+        json: async () => ({}),
+      }
+    }) as typeof fetch
+    try {
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/创建设备授权失败/)
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/errors\.com\.epicgames\.account\.device_auth\.forbidden/)
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/HTTP 403/)
+      expect(testStorage389().getItem(EPIC_AUTH_KEY)).toBeNull()
+      // 设备授权请求带启动器 UA（v0.1.389 新增）
+      const daCall = calls.find(c => c.url.includes('deviceAuth'))
+      expect(daCall).toBeDefined()
+      expect(daCall!.headers['User-Agent']).toBe(EPIC_LAUNCHER_UA)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('设备授权 403 但换 token 时拿到 refresh_token：改走 refresh_token 登录，绑定成功并标出原因', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      const u = String(url)
+      const body = String(init?.body ?? '')
+      if (u.includes('/oauth/token') && body.includes('grant_type=authorization_code')) {
+        return { ok: true, text: async () => JSON.stringify({ access_token: 'AT', account_id: 'ACC', refresh_token: 'RT1' }), json: async () => ({}) }
+      }
+      if (u.includes('/oauth/token') && body.includes('grant_type=refresh_token')) {
+        return { ok: true, text: async () => JSON.stringify({ access_token: 'AT2', account_id: 'ACC' }), json: async () => ({}) }
+      }
+      return {
+        ok: false, status: 403,
+        text: async () => JSON.stringify({ errorCode: 'errors.com.epicgames.account.device_auth.forbidden' }),
+        json: async () => ({}),
+      }
+    }) as typeof fetch
+    try {
+      const auth = await bindEpicWithAuthCode('CODE123', 'testpwd8')
+      expect(auth.authMode).toBe('refresh')
+      expect(auth.refreshToken).toBe('RT1')
+      expect(auth.deviceAuthError).toContain('errors.com.epicgames.account.device_auth.forbidden')
+      const stored = await loadEpicAuth('testpwd8')
+      expect(stored?.authMode).toBe('refresh')
+      expect(stored?.refreshToken).toBe('RT1')
+      expect(stored?.deviceAuthError).toBeUndefined()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('refresh_token 兜底也换不到 access：不留假绑定，存过的授权要清掉', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      const u = String(url)
+      const body = String(init?.body ?? '')
+      if (u.includes('/oauth/token') && body.includes('grant_type=authorization_code')) {
+        return { ok: true, text: async () => JSON.stringify({ access_token: 'AT', account_id: 'ACC', refresh_token: 'RT1' }), json: async () => ({}) }
+      }
+      if (u.includes('/oauth/token') && body.includes('grant_type=refresh_token')) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({ errorCode: 'invalid_grant' }), json: async () => ({}) }
+      }
+      return { ok: false, status: 403, text: async () => JSON.stringify({ errorCode: 'errors.com.epicgames.account.device_auth.forbidden' }), json: async () => ({}) }
+    }) as typeof fetch
+    try {
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/创建设备授权失败/)
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/兜底登录也失败/)
+      expect(testStorage389().getItem(EPIC_AUTH_KEY)).toBeNull()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('freeGames epicAccessToken refresh 路线（v0.1.389）', () => {
+  it('设备授权模式：先走 device_auth，拿到新 refresh_token 时加密存下', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    const bodies: string[] = []
+    globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+      bodies.push(String(init?.body ?? ''))
+      return { ok: true, text: async () => JSON.stringify({ access_token: 'AT2', refresh_token: 'RT2' }), json: async () => ({}) }
+    }) as typeof fetch
+    try {
+      const auth: EpicDeviceAuth = { accountId: 'ACC', deviceId: 'D', secret: 'S', refreshToken: 'RT1', authMode: 'device' }
+      const { access } = await epicAccessToken(auth, 'testpwd8')
+      expect(access).toBe('AT2')
+      expect(bodies).toHaveLength(1)
+      expect(bodies[0]).toContain('grant_type=device_auth')
+      const stored = await loadEpicAuth('testpwd8')
+      expect(stored?.refreshToken).toBe('RT2')
+      expect(stored?.authMode).toBe('device')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('设备授权失效（401）时自动用 refresh_token 兜底重试，成功后路线切到 refresh', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    const bodies: string[] = []
+    let n = 0
+    globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+      const body = String(init?.body ?? '')
+      bodies.push(body)
+      n++
+      if (n === 1) {
+        return { ok: false, status: 401, text: async () => JSON.stringify({ errorCode: 'errors.com.epicgames.account.invalid_token' }), json: async () => ({}) }
+      }
+      return { ok: true, text: async () => JSON.stringify({ access_token: 'AT3', refresh_token: 'RT3' }), json: async () => ({}) }
+    }) as typeof fetch
+    try {
+      const auth: EpicDeviceAuth = { accountId: 'ACC', deviceId: 'D', secret: 'S', refreshToken: 'RT1', authMode: 'device' }
+      const { access } = await epicAccessToken(auth, 'testpwd8')
+      expect(access).toBe('AT3')
+      expect(bodies).toHaveLength(2)
+      expect(bodies[0]).toContain('grant_type=device_auth')
+      expect(bodies[1]).toContain('grant_type=refresh_token')
+      expect(bodies[1]).toContain('refresh_token=RT1')
+      const stored = await loadEpicAuth('testpwd8')
+      expect(stored?.authMode).toBe('refresh')
+      expect(stored?.refreshToken).toBe('RT3')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('refresh 模式直接走 refresh_token 授权，不先试设备授权', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    const bodies: string[] = []
+    globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+      bodies.push(String(init?.body ?? ''))
+      return { ok: true, text: async () => JSON.stringify({ access_token: 'AT4' }), json: async () => ({}) }
+    }) as typeof fetch
+    try {
+      const auth: EpicDeviceAuth = { accountId: 'ACC', deviceId: '', secret: '', refreshToken: 'RT1', authMode: 'refresh' }
+      const { access } = await epicAccessToken(auth, 'testpwd8')
+      expect(access).toBe('AT4')
+      expect(bodies).toHaveLength(1)
+      expect(bodies[0]).toContain('grant_type=refresh_token')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('refresh token 也失效：报登录失效请重新绑定，不吐授权码文案', async () => {
+    await setupTestVault389()
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => ({
+      ok: false, status: 400,
+      text: async () => JSON.stringify({ errorCode: 'invalid_grant' }),
+      json: async () => ({}),
+    })) as unknown as typeof fetch
+    try {
+      const auth: EpicDeviceAuth = { accountId: 'ACC', deviceId: '', secret: '', refreshToken: 'RT-DEAD', authMode: 'refresh' }
+      await expect(epicAccessToken(auth, 'testpwd8')).rejects.toThrow(/Epic 登录失效，请重新绑定账号/)
+      await expect(epicAccessToken(auth, 'testpwd8')).rejects.not.toThrow(/授权码/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('freeGames bindEpicWithAuthCode 桌面通道 UA（v0.1.389）', () => {
+  it('创建设备授权经 plugin_http 发出时带启动器 UA；设备授权成功时 refresh_token 一并存下', async () => {
+    await setupTestVault389()
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('/oauth/token')) return pluginEnvelope(200, JSON.stringify({ access_token: 'AT', account_id: 'ACC', refresh_token: 'RT1' }))
+      return pluginEnvelope(200, JSON.stringify({ deviceId: 'D', secret: 'S', accountId: 'ACC' }))
+    })
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new Error('桌面通道下不应走 fetch') }) as typeof fetch
+    try {
+      const auth = await bindEpicWithAuthCode('CODE123', 'testpwd8')
+      expect(auth.authMode).toBe('device')
+      expect(auth.refreshToken).toBe('RT1')
+      expect(auth.deviceAuthError).toBeUndefined()
+      const daCall = calls.find(c => String(c.args.url).includes('deviceAuth'))
+      expect(daCall).toBeDefined()
+      expect(JSON.parse(String(daCall!.args.headersJson))['User-Agent']).toBe(EPIC_LAUNCHER_UA)
+      const stored = await loadEpicAuth('testpwd8')
+      expect(stored?.refreshToken).toBe('RT1')
+      expect(stored?.deviceId).toBe('D')
+    } finally {
+      globalThis.fetch = origFetch
       unStubWindow()
     }
   })

@@ -78,6 +78,10 @@ const TOKEN_URL = 'https://account-public-service-prod03.ol.epicgames.com/accoun
 export function deviceAuthUrl(accountId: string): string {
   return `https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/${encodeURIComponent(accountId)}/deviceAuth`
 }
+// 启动器 UA（v0.1.389）：Epic 官方文档的 token 交换写法带此 UA；
+// 2026-11-24 实测设备授权端点返回 403（原因未定，当时 App 没带 UA、也没显示
+// errorCode），先给设备授权请求补上，再看 Epic 实际返回的错误码。
+export const EPIC_LAUNCHER_UA = 'UELauncher/11.0.1-14907503+++Portal+Release-Live Windows/10.0.0.19041.1.256.64bit'
 const QUICK_PURCHASE_URL =
   'https://orderprocessor-public-service-ecomprod01.ol.epicgames.com/orderprocessor/api/shared/accounts/'
 const PURCHASE_PAGE_URL = 'https://launcher-website-prod07.ol.epicgames.com/purchase'
@@ -367,6 +371,20 @@ export function sanitizeLoadFailedMessage(msg: string): string {
   return msg.replace(/load failed/gi, '网络请求失败，Epic 接口可能被代理/网络拦截，请换个节点再试')
 }
 
+/**
+ * 设备授权失败的错误体解析（v0.1.389）：Epic 返回的 errorCode 之前被吞掉，
+ * 只显示 HTTP 状态码（2026-11-24 实机 403 原因未定）。现在把 errorCode 与
+ * errorMessage 一并拼进文案，方便对着官方文档查原因。
+ */
+export function describeDeviceAuthError(status: number, text: string): string {
+  let data: JsonObj = {}
+  try { data = JSON.parse(text) as JsonObj } catch { /* 非 JSON */ }
+  const code = pickStr(data, 'errorCode') || pickStr(data, 'error')
+  const msg = pickStr(data, 'errorMessage') || pickStr(data, 'message')
+  const detail = [code, msg].filter(Boolean).join('：')
+  return detail ? `HTTP ${status}：${detail}` : `HTTP ${status}`
+}
+
 export interface NativeHttpResult { ok: boolean; status: number; text: string }
 
 /**
@@ -433,9 +451,26 @@ export interface EpicDeviceAuth {
   deviceId: string
   secret: string
   displayName?: string
+  /** 换 token 时 Epic 一并返回的 refresh token（v0.1.389 起加密存下，仅本机） */
+  refreshToken?: string
+  /** 登录路线：device=设备授权（优先），refresh=refresh_token 兜底 */
+  authMode?: 'device' | 'refresh'
+  /** 仅 bindEpicWithAuthCode 当次返回，不持久化：设备授权建失败的原因 */
+  deviceAuthError?: string
 }
 
-/** 用浏览器登录后得到的 authorization code 换 token，再创建设备授权 */
+/** 加密保存 Epic 授权（设备授权与 refresh token 同一个密文，只存本机） */
+async function saveEpicAuth(auth: EpicDeviceAuth, pwd: string): Promise<void> {
+  const cipher = await encryptSecret(JSON.stringify(auth), pwd)
+  try { localStorage.setItem(EPIC_AUTH_KEY, JSON.stringify({ cipher })) } catch { /* 忽略 */ }
+}
+
+/**
+ * 用浏览器登录后得到的 authorization code 换 token，再创建设备授权。
+ * v0.1.389：① 设备授权请求补启动器 UA；② 失败时把 Epic 的 errorCode 显示出来；
+ * ③ 建不出设备授权时改走 refresh_token 登录（启动器客户端官方支持此流程），
+ * 当场验一次换得到 access 才算绑定成功，否则不留一个看着已绑定、实际领不了的状态。
+ */
 export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<EpicDeviceAuth> {
   const clean = code.trim()
   if (!clean) throw new Error('请先粘贴授权码')
@@ -443,24 +478,53 @@ export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<E
   const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean, token_type: 'eg1' }, undefined, 'Epic 绑定失败')
   const access = pickStr(tok, 'access_token')
   const accountId = pickStr(tok, 'account_id')
+  const refreshToken = pickStr(tok, 'refresh_token')
   if (!access || !accountId) throw new Error('Epic 授权码无效或已过期，请重新登录获取')
   let res: NativeHttpResult
   try {
-    res = await epicRequest(deviceAuthUrl(accountId), 'POST', { Authorization: `Bearer ${access}` })
+    res = await epicRequest(deviceAuthUrl(accountId), 'POST', {
+      Authorization: `Bearer ${access}`,
+      'User-Agent': EPIC_LAUNCHER_UA,
+    })
   } catch (e) {
     throw toChineseFetchError(e, 'Epic 绑定失败')
   }
-  if (!res.ok) throw new Error(`创建设备授权失败（HTTP ${res.status}），请稍后重试`)
-  let da: JsonObj = {}
-  try { da = JSON.parse(res.text) as JsonObj } catch { /* 非 JSON */ }
-  const deviceId = pickStr(da, 'deviceId')
-  const secret = pickStr(da, 'secret')
-  const daAccountId = pickStr(da, 'accountId') || accountId
-  if (!deviceId || !secret) throw new Error('创建设备授权失败：返回缺少 deviceId/secret')
-  const auth: EpicDeviceAuth = { accountId: daAccountId, deviceId, secret }
-  const cipher = await encryptSecret(JSON.stringify(auth), pwd)
-  try { localStorage.setItem(EPIC_AUTH_KEY, JSON.stringify({ cipher })) } catch { /* 忽略 */ }
-  return auth
+  let deviceAuthError = ''
+  let deviceId = ''
+  let secret = ''
+  let daAccountId = accountId
+  if (res.ok) {
+    let da: JsonObj = {}
+    try { da = JSON.parse(res.text) as JsonObj } catch { /* 非 JSON */ }
+    deviceId = pickStr(da, 'deviceId')
+    secret = pickStr(da, 'secret')
+    daAccountId = pickStr(da, 'accountId') || accountId
+    if (!deviceId || !secret) deviceAuthError = '返回缺少 deviceId/secret'
+  } else {
+    deviceAuthError = describeDeviceAuthError(res.status, res.text)
+  }
+  if (deviceId && secret) {
+    const auth: EpicDeviceAuth = {
+      accountId: daAccountId, deviceId, secret,
+      refreshToken: refreshToken || undefined, authMode: 'device',
+    }
+    await saveEpicAuth(auth, pwd)
+    return auth
+  }
+  // 设备授权建不出：没有 refresh token 就只能报错（带上 Epic 的 errorCode）
+  if (!refreshToken) {
+    throw new Error(`创建设备授权失败（${deviceAuthError}），请稍后重试或重新绑定`)
+  }
+  const fallbackAuth: EpicDeviceAuth = { accountId, deviceId: '', secret: '', refreshToken, authMode: 'refresh' }
+  await saveEpicAuth(fallbackAuth, pwd)
+  try {
+    await epicAccessToken(fallbackAuth, pwd)
+  } catch (e) {
+    unbindEpic()
+    const msg = e instanceof Error ? e.message : 'Epic 登录失效'
+    throw new Error(`创建设备授权失败（${deviceAuthError}），refresh_token 兜底登录也失败：${msg}。请重新登录获取新码再绑定`)
+  }
+  return { ...fallbackAuth, deviceAuthError }
 }
 
 export function hasEpicAuth(): boolean {
@@ -479,18 +543,61 @@ export function unbindEpic(): void {
   try { localStorage.removeItem(EPIC_AUTH_KEY) } catch { /* 忽略 */ }
 }
 
-/** 设备授权换 access token（登录态失效时抛错，提示重新绑定） */
-export async function epicAccessToken(auth: EpicDeviceAuth): Promise<{ access: string; accountId: string }> {
+/**
+ * 设备授权换 access token（登录态失效时抛错，提示重新绑定）。
+ * v0.1.389：① 有 refresh token 时按 authMode 选路线（refresh 模式直接走
+ * refresh_token 授权）；② 设备授权失效时（401/invalid_grant 等）自动用已存的
+ * refresh token 兜底重试一次，成功则把登录路线切到 refresh，不必打扰用户重新绑定；
+ * ③ Epic 每次换 token 会轮换 refresh token，拿到新的就加密存下（需传 pwd），
+ * 否则兜底路线只能用一次。
+ */
+export async function epicAccessToken(auth: EpicDeviceAuth, pwd?: string): Promise<{ access: string; accountId: string }> {
+  const useRefreshFirst = auth.authMode === 'refresh' || !auth.deviceId || !auth.secret
+  const deviceParams: Record<string, string> = {
+    grant_type: 'device_auth',
+    account_id: auth.accountId,
+    device_id: auth.deviceId,
+    secret: auth.secret,
+    token_type: 'eg1',
+  }
+  const refreshParams: Record<string, string> = {
+    grant_type: 'refresh_token',
+    refresh_token: auth.refreshToken ?? '',
+    token_type: 'eg1',
+  }
+  const isAuthFailure = (e: unknown): boolean =>
+    /401|invalid|unauthorized|失效/.test(e instanceof Error ? e.message : String(e))
   try {
-    const tok = await postForm(TOKEN_URL, {
-      grant_type: 'device_auth',
-      account_id: auth.accountId,
-      device_id: auth.deviceId,
-      secret: auth.secret,
-      token_type: 'eg1',
-    }, undefined, 'Epic 登录失败')
+    let tok: JsonObj
+    let fellBackToRefresh = false
+    if (useRefreshFirst) {
+      if (!auth.refreshToken) throw new Error('Epic 登录失效，请重新绑定账号')
+      tok = await postForm(TOKEN_URL, refreshParams, undefined, 'Epic 登录失败')
+    } else if (auth.refreshToken) {
+      try {
+        tok = await postForm(TOKEN_URL, deviceParams, undefined, 'Epic 登录失败')
+      } catch (e) {
+        // 设备授权可能被 Epic 吊销：refresh token 仍有效时直接兜底，不打扰用户
+        if (!isAuthFailure(e)) throw e
+        tok = await postForm(TOKEN_URL, refreshParams, undefined, 'Epic 登录失败')
+        fellBackToRefresh = true
+      }
+    } else {
+      tok = await postForm(TOKEN_URL, deviceParams, undefined, 'Epic 登录失败')
+    }
     const access = pickStr(tok, 'access_token')
     if (!access) throw new Error('Epic 登录失效')
+    const newRefresh = pickStr(tok, 'refresh_token')
+    if (pwd && (newRefresh || fellBackToRefresh)) {
+      await saveEpicAuth(
+        {
+          ...auth,
+          refreshToken: newRefresh || auth.refreshToken,
+          authMode: fellBackToRefresh ? 'refresh' : auth.authMode,
+        },
+        pwd,
+      )
+    }
     return { access, accountId: auth.accountId }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Epic 登录失效'
@@ -699,7 +806,7 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
   if (!auth) { result.errors.push('Epic 设备授权解不开（主密码不对或已损坏），请重新绑定'); return result }
   let tokens: { access: string; accountId: string }
   try {
-    tokens = await epicAccessToken(auth)
+    tokens = await epicAccessToken(auth, pwd)
   } catch (e) {
     const msg = describeEpicError(e)
     result.errors.push(msg)
@@ -729,7 +836,7 @@ export async function claimEpicGameManual(pwd: string, game: FreeGame): Promise<
   try {
     const auth = await loadEpicAuth(pwd)
     if (!auth) throw new Error('请先绑定 Epic 账号')
-    const tokens = await epicAccessToken(auth)
+    const tokens = await epicAccessToken(auth, pwd)
     const orderId = await claimEpicGame(tokens.access, tokens.accountId, game)
     addRecord({ at, platform: 'epic', title: game.title, outcome: 'claimed', message: `手动领取成功（订单 ${orderId}），已入库` })
     return orderId

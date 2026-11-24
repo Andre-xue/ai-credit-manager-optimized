@@ -12,7 +12,7 @@ import {
   loadClosedGroups, saveClosedGroups, pageSlice, pageCount,
   fetchEpicFreeGames, fetchGogFreeGames, ubisoftFreeGames,
   runFreeGamesCheck, claimEpicGameManual, summarizeCheckResult,
-  bindEpicWithAuthCode, hasEpicAuth, unbindEpic,
+  bindEpicWithAuthCode, hasEpicAuth, unbindEpic, loadEpicAuth,
   loadLastCheckAt, loadLastError, nextCheckAt,
   EPIC_LOGIN_URL, GOG_STORE_URL, UBI_STORE_URL,
   sanitizeLoadFailedMessage,
@@ -114,6 +114,18 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [lastCheck, setLastCheck] = useState<number | null>(() => loadLastCheckAt())
   const [lastError, setLastError] = useState<string | null>(() => loadLastError())
   const [epicBound, setEpicBound] = useState(() => hasEpicAuth())
+  // v0.1.389：设备授权建不出时改走 refresh_token 兜底登录——绑定卡上要能看出来
+  // 当前是兜底状态（解锁后从已存授权恢复；绑定当次由 doBind 设置）
+  const [epicFallback, setEpicFallback] = useState<string | null>(null)
+  useEffect(() => {
+    if (!sessionPwd || !hasEpicAuth()) return
+    let alive = true
+    void loadEpicAuth(sessionPwd).then(a => {
+      if (alive && a?.authMode === 'refresh') setEpicFallback('当前用 refresh_token 登录（设备授权未建成），自动领取可用；若之后报登录失效请重新绑定')
+      else if (alive) setEpicFallback(null)
+    })
+    return () => { alive = false }
+  }, [sessionPwd])
   const [checking, setChecking] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [claimingId, setClaimingId] = useState('')
@@ -204,11 +216,17 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     if (!pwd) { notifySafe('请先解锁保险箱，设备授权要加密保存'); return }
     setBindBusy(true)
     try {
-      await bindEpicWithAuthCode(authCode, pwd)
+      const auth = await bindEpicWithAuthCode(authCode, pwd)
       setEpicBound(true)
       setBindOpen(false)
       setAuthCode('')
-      notifySafe('Epic 已绑定，自动领取已就绪')
+      if (auth.deviceAuthError) {
+        setEpicFallback(`当前用 refresh_token 登录（设备授权创建失败：${auth.deviceAuthError}）`)
+        notifySafe(`Epic 已绑定（refresh_token 兜底）：设备授权创建失败（${auth.deviceAuthError}），已改用 refresh_token 登录，自动领取可用`)
+      } else {
+        setEpicFallback(null)
+        notifySafe('Epic 已绑定，自动领取已就绪')
+      }
     } catch (e) {
       notifySafe(e instanceof Error ? e.message : '绑定失败', 'err')
     } finally { setBindBusy(false) }
@@ -308,6 +326,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             {epicBound ? (
               <>
                 <div>已绑定 · 自动领取{epicClaimedCount ? ` · 累计领了 ${epicClaimedCount} 款` : ' · 还没领过'}</div>
+                {epicFallback && <div className="fg-err">{epicFallback}</div>}
                 {loginFailed && <div className="fg-err">登录失效，请重新绑定账号。</div>}
                 {captchaFailed && <div className="fg-err">最近一次领取遇到验证码：请在浏览器打开商店手动领取一次，验证通过后可恢复自动领取。</div>}
               </>
@@ -322,7 +341,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             {epicBound ? (
               <>
                 <button className="btn sm ghost" onClick={() => { setBindOpen(true); setAuthCode('') }}>重新绑定</button>
-                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
+                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); setEpicFallback(null); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
               </>
             ) : (
               <button className="btn sm primary" onClick={() => setBindOpen(true)}><Link2 size={13} /> 绑定 Epic 账号</button>
