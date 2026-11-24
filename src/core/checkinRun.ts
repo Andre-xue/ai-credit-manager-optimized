@@ -7,6 +7,7 @@ import { listMmMeta, mmCredBox, migrateLegacyMinimaxCred } from './mmPool'
 import { getPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS } from './checkinPlatforms'
 import { listTokenMeta, loadTokenSecret, hasAnyTokenAccounts } from './tokenPool'
 import { getTokenStatus, claimToken } from './tokenCheckin'
+import { getBiometricPassword } from './crypto'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
@@ -47,6 +48,33 @@ export function getAutoCheckinEnabled(): boolean {
 
 export function setAutoCheckinEnabled(v: boolean): void {
   try { localStorage.setItem(AUTO_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+/**
+ * 自动签到取密码（v0.1.421）：会话密码优先；锁定时会话密码是 ''（不是 null），
+ * 必须用 `||` 而非 `??` 落到指纹副本——`'' ?? copy` 仍是 ''，372「锁定也能签」
+ * 在自动路径上就是这么坏的。迷你窗手动签到一直用的就是 `||`。
+ */
+export function resolveAutoCheckinPassword(sessionPwd: string): string | null {
+  return sessionPwd || getBiometricPassword()
+}
+
+export type AutoCheckinTickResult = 'ran' | 'skipped-disabled' | 'skipped-nosource' | 'skipped-today' | 'skipped-nopwd'
+
+/**
+ * 自动签到 tick 一次（v0.1.421：从 App.tsx 抽出，便于单测钉住守卫与密码来源）。
+ * 抛错时由调用方静默吞掉（失败原因在迷你窗/签到页手动刷新时呈现），与旧行为一致；
+ * 通知只在保险箱已解锁时弹（锁定时用指纹副本静默签，不弹通知），与旧行为一致。
+ */
+export async function autoCheckinTick(sessionPwd: string, notify?: (msg: string) => void): Promise<AutoCheckinTickResult> {
+  if (!getAutoCheckinEnabled()) return 'skipped-disabled'
+  if (!hasCheckinSources()) return 'skipped-nosource'
+  if (checkinRunIsToday(readLastCheckinRun())) return 'skipped-today'
+  const pwd = resolveAutoCheckinPassword(sessionPwd)
+  if (!pwd) return 'skipped-nopwd'
+  const run = await runAllCheckins(pwd)
+  if (sessionPwd && notify) notify(`自动签到完成：${summarizeCheckinRun(run)}`)
+  return 'ran'
 }
 
 /** 有没有任何已连接的签到来源 */
