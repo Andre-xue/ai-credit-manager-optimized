@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarCheck, ChevronDown, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
 import { PlatformIcon } from './PlatformIcon'
@@ -18,6 +18,7 @@ import {
 } from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
 import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
+import { CHECKIN_TAB_LABELS, checkinTabCategories, visibleCheckinTabs, readSavedCheckinTab, saveCheckinTab, resolveCheckinTab, type CheckinRegionFilter } from '../core/checkinTabs'
 import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, exportTokenCredentials, importTokenCredentials, type TokenAccountMeta } from '../core/tokenPool'
 import { saveExportFile } from '../core/saveFile'
 import { getTokenStatus, claimToken } from '../core/tokenCheckin'
@@ -67,8 +68,9 @@ function GuideFold({ id }: { id: CheckinPlatformId }) {
 
 interface TokenRow { meta: TokenAccountMeta; status: CheckinStatus | null; error?: string }
 
-/** 令牌类平台的通用区块：粘贴凭据添加账号，状态/签到/移除都走同一套 */
-function TokenPlatformSection({ id, sessionPwd, notify }: { id: CheckinPlatformId; sessionPwd: string; notify: (m: string) => void }) {
+/** 令牌类平台的通用区块：粘贴凭据添加账号，状态/签到/移除都走同一套。
+ * onMetaChange：增删账号后通知父级刷新页签上的账号数。 */
+function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: CheckinPlatformId; sessionPwd: string; notify: (m: string) => void; onMetaChange?: () => void }) {
   const meta = platformMeta(id)
   const [enabled, setEnabled] = useState(() => getPlatformEnabled(id))
   const [rows, setRows] = useState<TokenRow[]>([])
@@ -154,6 +156,7 @@ function TokenPlatformSection({ id, sessionPwd, notify }: { id: CheckinPlatformI
       const st = await getTokenStatus(id, secretInput.trim())
       setAdding(false); setLabelInput(''); setSecretInput('')
       notify(st.state === 'unknown' ? `已添加「${m.label}」，但凭据验证没通过：${st.message}` : `已添加${meta.name}账号：${m.label}`)
+      onMetaChange?.()
       void refresh()
     } catch (e) { notify(e instanceof Error ? e.message : '添加失败') }
     setBusy('')
@@ -214,7 +217,7 @@ function TokenPlatformSection({ id, sessionPwd, notify }: { id: CheckinPlatformI
                     {busy === `claim:${r.meta.id}` ? <Loader2 size={14} className="spin" /> : <CalendarCheck size={14} />} 签到{r.status.points ? ` +${r.status.points}` : ''}
                   </button>
                 )}
-                <button className="btn sm ghost" style={{ flexShrink: 0, marginLeft: r.status?.state === 'claimable' ? 0 : 'auto' }} onClick={() => { removeTokenAccount(id, r.meta.id); void refresh(); notify('已移除该账号（本机凭据已删除）') }}>
+                <button className="btn sm ghost" style={{ flexShrink: 0, marginLeft: r.status?.state === 'claimable' ? 0 : 'auto' }} onClick={() => { removeTokenAccount(id, r.meta.id); onMetaChange?.(); void refresh(); notify('已移除该账号（本机凭据已删除）') }}>
                   <LogOut size={14} /> 移除
                 </button>
               </div>
@@ -263,6 +266,23 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [wbOpen, setWbOpen] = useState<boolean | null>(null)
   const [mmOpen, setMmOpen] = useState<boolean | null>(null)
   const pollRef = useRef<number | null>(null)
+  // 横向页签（v0.1.403，同看剧 394 样式）：9 个平台各一个页签 + 国内外 × 功能两维筛选；
+  // 页签切换状态本机记忆（acm.checkin.tab），筛选是临时的、切页不保存。
+  const [activeTab, setActiveTab] = useState<CheckinPlatformId>(() => readSavedCheckinTab())
+  const [regionFilter, setRegionFilter] = useState<CheckinRegionFilter>('全部')
+  const [catFilter, setCatFilter] = useState('全部')
+  const [tokenTick, setTokenTick] = useState(0)
+  const categories = checkinTabCategories()
+  const visibleTabs = visibleCheckinTabs(regionFilter, catFilter)
+  const effectiveTab = resolveCheckinTab(activeTab, visibleTabs)
+  const tokenCounts = useMemo(() => {
+    const m: Partial<Record<CheckinPlatformId, number>> = {}
+    for (const pid of TOKEN_PLATFORM_IDS) m[pid] = listTokenMeta(pid).length
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenTick])
+  const countFor = (id: CheckinPlatformId) => id === 'workbuddy' ? poolStatuses.length : id === 'minimax' ? mmStatuses.length : tokenCounts[id] ?? 0
+  const switchTab = (id: CheckinPlatformId) => { setActiveTab(id); saveCheckinTab(id) }
 
   useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
   const bioUnlock = async () => {
@@ -301,6 +321,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     if (!sessionPwd) return
     const onWake = () => {
       setLastRun(readLastCheckinRun())
+      setTokenTick(t => t + 1)
       if (listPoolMeta().length) void refreshPool()
       if (listMmMeta().length) void refreshMm()
     }
@@ -519,7 +540,31 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         </label>
       </div>
 
+      {/* 筛选 + 横向页签（v0.1.403，同看剧 394 样式）：只改布局与页签组织，各平台签到功能原样在对应页签内 */}
+      <div className="wt-chips" style={{ marginBottom: 8 }}>
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>国内外：</span>
+        {(['全部', '国内', '国外'] as const).map(r => (
+          <button key={r} className={`wt-chip${regionFilter === r ? ' on' : ''}`} onClick={() => setRegionFilter(r)}>{r}</button>
+        ))}
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)', marginLeft: 10 }}>功能：</span>
+        {['全部', ...categories].map(c => (
+          <button key={c} className={`wt-chip${catFilter === c ? ' on' : ''}`} onClick={() => setCatFilter(c)}>{c}</button>
+        ))}
+      </div>
+      <div className="wt-tabs" role="tablist">
+        {visibleTabs.map(p => {
+          const n = countFor(p.id)
+          return (
+            <button key={p.id} role="tab" aria-selected={effectiveTab === p.id} className={`wt-tab${effectiveTab === p.id ? ' on' : ''}`} onClick={() => switchTab(p.id)}>
+              {CHECKIN_TAB_LABELS[p.id]}
+              {n > 0 && <span className="wt-tab-count">{n} 个</span>}
+            </button>
+          )
+        })}
+      </div>
+
       {/* WorkBuddy：账号池 */}
+      {effectiveTab === 'workbuddy' && (<>
       <PlatformGroupHead id="workbuddy" enabled={wbEnabled} onToggle={v => { setWbEnabled(v); setPlatformEnabled('workbuddy', v); notify(v ? 'WorkBuddy 已加入自动签到' : 'WorkBuddy 已移出自动签到（批量签到会跳过）') }} />
       <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px', background: 'var(--panel)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -569,8 +614,10 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           </div>
         )}
       </div>
+      </>)}
 
       {/* MiniMax：多账号 */}
+      {effectiveTab === 'minimax' && (<>
       <div style={{ marginTop: 16 }}>
         <PlatformGroupHead id="minimax" enabled={mmEnabled} onToggle={v => { setMmEnabled(v); setPlatformEnabled('minimax', v); notify(v ? 'MiniMax 已加入自动签到' : 'MiniMax 已移出自动签到（批量签到会跳过）') }} />
       </div>
@@ -656,10 +703,14 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           </div>
         )}
       </div>
+      </>)}
 
-      {TOKEN_PLATFORM_IDS.map(pid => (
-        <TokenPlatformSection key={pid} id={pid} sessionPwd={sessionPwd} notify={notify} />
-      ))}
+      {effectiveTab && TOKEN_PLATFORM_IDS.includes(effectiveTab) && (
+        <TokenPlatformSection key={effectiveTab} id={effectiveTab} sessionPwd={sessionPwd} notify={notify} onMetaChange={() => setTokenTick(t => t + 1)} />
+      )}
+      {!effectiveTab && (
+        <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 12 }}>没有符合筛选的平台，换个筛选试试。</div>
+      )}
 
       <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, marginTop: 14 }}>
         说明：签到走各平台客户端同款接口（非公开接口，平台调整后可能失效，失效时这里会如实报错）；
