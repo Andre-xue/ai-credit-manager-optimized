@@ -28,6 +28,9 @@ export interface SourceSetResult {
   ok: boolean
   count: number
   error?: string
+  /** 本次结果是否来自 24 小时缓存（是则不发请求） */
+  cached?: boolean
+  cachedAt?: number
 }
 
 export interface SourceSet {
@@ -48,9 +51,10 @@ export const BUILTIN_SETS: SourceSet[] = [
   { id: 'iptv-uk', label: 'iptv-org · 英国', url: `${IPTV_ORG_BASE}/countries/uk.m3u`, country: 'GB' },
   { id: 'iptv-jp', label: 'iptv-org · 日本', url: `${IPTV_ORG_BASE}/countries/jp.m3u`, country: 'JP' },
   { id: 'iptv-kr', label: 'iptv-org · 韩国', url: `${IPTV_ORG_BASE}/countries/kr.m3u`, country: 'KR' },
-  { id: 'iptv-news', label: 'iptv-org · 新闻', url: `${IPTV_ORG_BASE}/categories/news.m3u`, country: 'WORLD' },
   { id: 'freetv', label: 'Free-TV', url: FREE_TV_URL, country: 'WORLD' },
 ]
+// 注意：分类切片（如 categories/news.m3u）不单独拉——内容分组直接用各条目
+// 的 group-title 元数据；index.m3u 总表（2.6MB、11,505 台）绝不拉。
 
 export const COUNTRIES: { code: string; label: string; setId: string }[] = [
   { code: 'CN', label: '中国', setId: 'iptv-cn' },
@@ -157,6 +161,39 @@ export function parseM3u(text: string): M3uEntry[] {
   return out
 }
 
+/** 分片解析 m3u：每 500 行让出一次主线程，大列表解析不卡界面 */
+export async function parseM3uAsync(text: string): Promise<M3uEntry[]> {
+  const lines = text.split(/\r?\n/)
+  const out: M3uEntry[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && i % 500 === 0) await new Promise(r => globalThis.setTimeout(r, 0))
+    const line = lines[i].trim()
+    if (!line.startsWith('#EXTINF')) continue
+    const attr = (key: string): string => {
+      const m = new RegExp(`${key}="([^"]*)"`).exec(line)
+      return m?.[1] ?? ''
+    }
+    const name = line.slice(line.lastIndexOf(',') + 1).trim()
+    let url = ''
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trim()
+      if (!next) continue
+      if (next.startsWith('#')) continue
+      url = next
+      break
+    }
+    if (!name || !url || !/^https?:\/\//.test(url)) continue
+    out.push({
+      name,
+      logo: attr('tvg-logo') || undefined,
+      groupTitle: attr('group-title'),
+      tvgCountry: attr('tvg-country') || undefined,
+      url,
+    })
+  }
+  return out
+}
+
 function countryOfEntry(e: M3uEntry, setCountry: string): string {
   if (e.tvgCountry) return e.tvgCountry.toUpperCase()
   if (setCountry !== 'WORLD') return setCountry
@@ -207,12 +244,63 @@ async function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<str
   }
 }
 
-/** 拉一套源：失败返回 error（中文），不抛错，供多套自动切换 */
-export async function fetchSourceSet(set: SourceSet): Promise<{ channels: LiveChannel[]; result: SourceSetResult }> {
+// ---------------- 播放列表缓存（性能，v0.1.386 追加） ----------------
+// 直播源禁止全量加载：默认只拉国家切片（中国 cn.m3u 156 台），绝不拉
+// index.m3u 总表（2.6MB、11,505 台）；外国按国家切片按需拉（点哪个国家
+// 再拉哪个）；分类切片不单独拉（内容分组直接用 group-title 元数据）。
+// 解析结果按源缓存本机 24 小时：24 小时内直接读缓存，不重新拉、不重新解析。
+export const PLAYLIST_CACHE_KEY = 'acm.watch.playlistCache.v1'
+export const PLAYLIST_CACHE_TTL_MS = 24 * 3600_000
+
+interface PlaylistCacheEntry { url: string; at: number; channels: LiveChannel[] }
+type PlaylistCache = Record<string, PlaylistCacheEntry>
+
+function loadPlaylistCache(): PlaylistCache {
+  try {
+    const v = JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) ?? '{}') as PlaylistCache
+    return v && typeof v === 'object' ? v : {}
+  } catch { return {} }
+}
+
+function savePlaylistCache(cache: PlaylistCache): void {
+  try {
+    // 每套源最多存 2000 条，防 localStorage 爆掉
+    for (const k of Object.keys(cache)) cache[k].channels = cache[k].channels.slice(0, 2000)
+    localStorage.setItem(PLAYLIST_CACHE_KEY, JSON.stringify(cache))
+  } catch { /* 忽略（存不下时下次重新拉） */ }
+}
+
+/** 缓存键：国家切片按源 id；Free-TV 按国家过滤后分开存；自定义源按 id */
+function playlistCacheKey(set: SourceSet, countryFilter?: string): string {
+  return countryFilter ? `${set.id}:${countryFilter}` : set.id
+}
+
+export function clearPlaylistCache(): void {
+  try { localStorage.removeItem(PLAYLIST_CACHE_KEY) } catch { /* 忽略 */ }
+}
+
+export interface FetchSourceSetOptions { force?: boolean; countryFilter?: string }
+
+/**
+ * 拉一套源：先读 24 小时缓存（force 时跳过），缓存失效才拉取并分片解析；
+ * 失败返回 error（中文），不抛错，供多套自动切换。
+ */
+export async function fetchSourceSet(set: SourceSet, opts: FetchSourceSetOptions = {}): Promise<{ channels: LiveChannel[]; result: SourceSetResult }> {
+  const cacheKey = playlistCacheKey(set, opts.countryFilter)
+  if (!opts.force) {
+    const hit = loadPlaylistCache()[cacheKey]
+    if (hit && hit.url === set.url && Date.now() - hit.at < PLAYLIST_CACHE_TTL_MS && Array.isArray(hit.channels)) {
+      return { channels: hit.channels, result: { setId: set.id, label: set.label, ok: true, count: hit.channels.length, cached: true, cachedAt: hit.at } }
+    }
+  }
   try {
     const text = await fetchTextWithTimeout(set.url, 20000)
-    const entries = parseM3u(text)
-    const channels = entriesToChannels(entries, set.country, set.id)
+    const entries = await parseM3uAsync(text)
+    let channels = entriesToChannels(entries, set.country, set.id)
+    if (opts.countryFilter) channels = channels.filter(c => c.country === opts.countryFilter)
+    const cache = loadPlaylistCache()
+    cache[cacheKey] = { url: set.url, at: Date.now(), channels }
+    savePlaylistCache(cache)
     return { channels, result: { setId: set.id, label: set.label, ok: true, count: channels.length } }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -248,25 +336,25 @@ function customSourcesAsSets(): SourceSet[] {
 /**
  * 拉取某国家（或 WORLD 全部）的频道：多套源并行拉，单套失败自动由其他套顶上；
  * 同名频道合并播放地址（一个播不了播另一个）。返回频道与每套源的状态。
+ * 性能：默认只拉该国家切片 + Free-TV（按国家过滤后缓存），绝不拉总表；
+ * 24 小时内读缓存不重新拉；force=true 时强制重新拉（「重新加载」按钮）。
  */
-export async function loadCountryChannels(country: string): Promise<{ channels: LiveChannel[]; sets: SourceSetResult[] }> {
+export async function loadCountryChannels(country: string, opts: { force?: boolean } = {}): Promise<{ channels: LiveChannel[]; sets: SourceSetResult[] }> {
   const sets: SourceSet[] = []
   const countrySet = BUILTIN_SETS.find(s => s.country === country && s.id.startsWith('iptv-'))
   if (countrySet) sets.push(countrySet)
-  // Free-TV 按条目国家过滤后参与合并（backup）
+  // Free-TV 按条目国家过滤后参与合并（backup），只存本国条目
   sets.push(BUILTIN_SETS.find(s => s.id === 'freetv')!)
   sets.push(...customSourcesAsSets())
   const settled = await Promise.all(sets.map(async s => {
-    const r = await fetchSourceSet(s)
-    // Free-TV 只保留属于该国家的条目（其余国家不参与本组）
-    const channels = s.id === 'freetv' && country !== 'WORLD'
-      ? r.channels.filter(c => c.country === country)
-      : r.channels
-    return { channels, result: r.result }
+    const countryFilter = s.id === 'freetv' && country !== 'WORLD' ? country : undefined
+    const r = await fetchSourceSet(s, { force: opts.force, countryFilter })
+    return { channels: r.channels, result: r.result }
   }))
   const lists = settled.map(s => s.channels)
   const channels = mergeChannels(lists)
-    .filter(c => country === 'WORLD' || c.country === country)
+    // 未标国家的自定义源条目（country WORLD）归入当前国家（用户自己粘的源，没写 tvg-country 也要能看）
+    .filter(c => country === 'WORLD' || c.country === country || (c.country === 'WORLD' && c.sourceIds.some(id => id.startsWith('custom-'))))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
   return { channels, sets: settled.map(s => s.result) }
 }

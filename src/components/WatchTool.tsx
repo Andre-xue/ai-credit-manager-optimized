@@ -28,6 +28,13 @@ import {
 import { pageSlice, pageCount } from '../core/freeGames'
 import type { Account } from '../core/types'
 
+/** 缓存时间文案：刚刚 / N 小时前 */
+function cacheAgeText(at?: number): string {
+  if (!at) return ''
+  const h = Math.floor((Date.now() - at) / 3600000)
+  return h < 1 ? '刚刚' : `${h} 小时前`
+}
+
 // ---------------- 播放器 ----------------
 
 type PlayerState =
@@ -99,7 +106,9 @@ function HlsPlayer({ title, urls, onOpened }: {
       window.clearTimeout(stallTimer)
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('error', onVideoError)
+      // 切台/切源/关闭时先停掉上一个播放器的加载，避免多路流同时占带宽
       hls?.destroy()
+      video.pause()
       video.removeAttribute('src')
       video.load()
     }
@@ -370,10 +379,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [customTesting, setCustomTesting] = useState<string | null>(null)
   const [customTestResult, setCustomTestResult] = useState('')
 
-  const loadLive = async (country: string) => {
+  const loadLive = async (country: string, force = false) => {
     setLiveLoading(true); setLiveLoaded(false)
     try {
-      const { channels, sets } = await loadCountryChannels(country)
+      const { channels, sets } = await loadCountryChannels(country, { force })
       setLiveChannels(channels); setLiveSets(sets); setLiveLoaded(true)
       setContentFilter('all')
       if (!channels.length) notify('该国家/地区的源都没拉到，请检查网络后重试', 'err')
@@ -661,7 +670,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <button key={c.code} className={`wt-chip${liveCountry === c.code ? ' on' : ''}`}
               onClick={() => setLiveCountry(c.code)}>{c.label}</button>
           ))}
-          <button className="btn sm ghost" disabled={liveLoading} onClick={() => void loadLive(liveCountry)}>
+          <button className="btn sm ghost" disabled={liveLoading} onClick={() => void loadLive(liveCountry, true)}>
             <RefreshCw size={13} /> {liveLoading ? '加载中…' : '重新加载'}
           </button>
           <button className="btn sm ghost" onClick={() => openIframe('央视官网直播间', 'https://tv.cctv.com/live/')}>
@@ -672,7 +681,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           <div className="wt-set-status">
             {liveSets.map(s => (
               <span key={s.setId} className="fg-muted">
-                {s.label}：{s.ok ? `${s.count} 个台` : `失败：${s.error ?? '未知错误'}`}
+                {s.label}：{s.ok ? `${s.count} 个台${s.cached ? `（缓存${cacheAgeText(s.cachedAt)}，24 小时内不重新拉）` : ''}` : `失败：${s.error ?? '未知错误'}`}
               </span>
             ))}
             <span className="fg-muted">自定义源优先于内置源；同名台自动合并多条地址。</span>

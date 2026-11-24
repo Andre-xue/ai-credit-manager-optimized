@@ -1,9 +1,24 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
-  parseM3u, normalizeChannelName, contentKeyOf, stationOrigin,
+  parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
   mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
+  PLAYLIST_CACHE_KEY, CUSTOM_SOURCES_KEY,
   type LiveChannel, type SourceSet,
 } from './watch'
+
+// node 环境没有 localStorage：watch.ts 的缓存/自定义源读写需要它（与 freeGames 测试同款 mock）
+if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
+  const m = new Map<string, string>()
+  ;(globalThis as unknown as Record<string, unknown>).localStorage = {
+    getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+    setItem: (k: string, v: string) => { m.set(k, v) },
+    removeItem: (k: string) => { m.delete(k) },
+    clear: () => m.clear(),
+  }
+}
+const ls = () => (globalThis as unknown as { localStorage: { getItem(k: string): string | null; setItem(k: string, v: string): void; clear(): void } }).localStorage
+
+beforeEach(() => { ls().clear() })
 
 const CN_FIXTURE = `#EXTM3U
 #EXTINF:-1 tvg-id="CCTV1.cn" tvg-logo="https://x/logo.png" group-title="General",CCTV-1 (720p)
@@ -33,6 +48,9 @@ describe('watch.parseM3u', () => {
     expect(entries[0].logo).toBe('https://x/logo.png')
     expect(entries[0].groupTitle).toBe('General')
     expect(entries[0].url).toBe('http://example.com/cctv1.m3u8')
+  })
+  it('parseM3uAsync（分片解析）与同步版结果一致', async () => {
+    expect(await parseM3uAsync(CN_FIXTURE)).toEqual(parseM3u(CN_FIXTURE))
   })
 })
 
@@ -138,5 +156,45 @@ describe('watch.loadCountryChannels', () => {
     expect(channels.find(c => c.name === '湖南卫视')).toBeDefined()
     expect(sets.find(s => s.setId === 'iptv-cn')?.ok).toBe(true)
     expect(sets.find(s => s.setId === 'freetv')?.ok).toBe(true)
+  })
+  it('自定义源里没写 tvg-country 的台也归入当前国家', async () => {
+    ls().setItem(CUSTOM_SOURCES_KEY, JSON.stringify([{ id: 'my1', label: '我的源', url: 'https://example.com/my.m3u', addedAt: 1 }]))
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('countries/cn.m3u')) return { ok: true, text: async () => CN_FIXTURE }
+      if (u.includes('Free-TV')) return { ok: true, text: async () => FREETV_FIXTURE }
+      if (u.includes('my.m3u')) return { ok: true, text: async () => '#EXTM3U\n#EXTINF:-1 group-title="News",我的收藏台\nhttp://example.com/my1.m3u8\n' }
+      return { ok: false, status: 404, text: async () => '' }
+    })
+    const { channels } = await loadCountryChannels('CN')
+    expect(channels.find(c => c.name === '我的收藏台')).toBeDefined()
+  })
+})
+
+// 性能（v0.1.386 追加）：播放列表缓存 24 小时，24 小时内不重新拉
+describe('watch.fetchSourceSet 缓存', () => {
+  const SET: SourceSet = { id: 'iptv-cn', label: 'iptv-org · 中国', url: 'https://example.com/cn.m3u', country: 'CN' }
+  it('24 小时内第二次直接读缓存，不再发请求', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => { calls++; return { ok: true, text: async () => CN_FIXTURE } })
+    const first = await fetchSourceSet(SET)
+    expect(first.result.ok).toBe(true)
+    expect(calls).toBe(1)
+    const second = await fetchSourceSet(SET)
+    expect(calls).toBe(1)
+    expect(second.result.cached).toBe(true)
+    expect(second.channels).toHaveLength(3)
+  })
+  it('缓存超过 24 小时重新拉；force 同样重新拉', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => { calls++; return { ok: true, text: async () => CN_FIXTURE } })
+    await fetchSourceSet(SET)
+    const raw = JSON.parse(ls().getItem(PLAYLIST_CACHE_KEY)!) as Record<string, { at: number }>
+    raw['iptv-cn'].at = Date.now() - 25 * 3600_000
+    ls().setItem(PLAYLIST_CACHE_KEY, JSON.stringify(raw))
+    await fetchSourceSet(SET)
+    expect(calls).toBe(2)
+    await fetchSourceSet(SET, { force: true })
+    expect(calls).toBe(3)
   })
 })
