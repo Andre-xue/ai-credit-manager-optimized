@@ -27,6 +27,8 @@ import { runWorkshopChat } from '../core/workshopChat'
 import { Pager } from './Pager'
 import { openExternal } from '../core/openExternal'
 import { getBiometricPassword } from '../core/crypto'
+import { useDanmaku, useCast, DanmakuLayer, PlayerToolsBar } from './PlayerTools'
+import { loadDanmuApiBase, saveDanmuApiBase, testDanmuApi } from '../core/danmaku'
 import {
   COUNTRIES, CONTENT_LABELS, ORIGIN_LABELS,
   loadCountryChannels, groupChannels,
@@ -47,7 +49,7 @@ import {
   isTvboxConfigText, isAdultTvboxSite,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig, fetchCmsVodList, mergeVodTitles,
   loadShowAdult, saveShowAdult,
-  isFlvUrl,
+  isFlvUrl, splitEpisode,
   type HealthMap,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
@@ -162,6 +164,13 @@ function HlsPlayer({ title, urls, onOpened }: {
     else onOpened(0)
   }
 
+  // v0.1.409：弹幕 + 投屏（与点播共用同一套工具）
+  const dm = useDanmaku(title, null, videoRef, true)
+  const cast = useCast(videoRef, () => urls[idxRef.current], () => title)
+  // 切源时若在投屏，重投新源（cast 每次渲染都是新闭包，只跟 idx）
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void cast.recastIfActive(urls[idx]) }, [idx])
+
   // 当前正在播的源是第三方转播（未授权）时提示；自动换到官方源后提示消失
   const curUnofficial = isUnofficialStreamUrl(urls[idx] ?? '')
 
@@ -176,6 +185,7 @@ function HlsPlayer({ title, urls, onOpened }: {
           失败时不再塌成一条黑条 */}
       <div className="wt-video-wrap">
         <video ref={videoRef} className="wt-video" controls playsInline />
+        <DanmakuLayer videoRef={videoRef} items={dm.items} enabled={dm.enabled} resetKey={title} live liveStartRef={dm.liveStartRef} />
         {!started && !failed && !needTap && (
           <div className="wt-vload"><Loader2 size={16} className="spin" /> 正在加载…</div>
         )}
@@ -193,6 +203,7 @@ function HlsPlayer({ title, urls, onOpened }: {
           </div>
         )}
       </div>
+      <PlayerToolsBar danmaku={dm} cast={cast} videoRef={videoRef} mediaUrl={urls[idx]} />
       {curUnofficial && (
         <div className="wt-unofficial-note"><CircleAlert size={13} /> 当前源为第三方转播 · 未经授权，可能随时失效</div>
       )}
@@ -309,6 +320,14 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
   const close = () => { onLeave(epIdx, progressNow()); onClose() }
   const curUnofficial = ep?.unofficial ?? false
 
+  // v0.1.409：弹幕 + 投屏（与直播共用同一套工具）；集号从选集标题里抠（第N集 / S01E03）
+  const epNo = splitEpisode(ep?.label ?? '').episodeNo
+  const dm = useDanmaku(title, epNo, videoRef, false)
+  const cast = useCast(videoRef, () => url, () => title)
+  // 切集/切源时若在投屏，重投新源（cast 每次渲染都是新闭包，只跟集与源）
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (url) void cast.recastIfActive(url) }, [epIdx, urlIdx])
+
   return (
     <div className="wt-player">
       <div className="wt-player-head">
@@ -319,6 +338,7 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
       {/* v0.1.407：视频区永远保留 16:9（CSS 定高），加载中与失败都是区内覆盖层 */}
       <div className="wt-video-wrap">
         <video ref={videoRef} className="wt-video" controls playsInline />
+        <DanmakuLayer videoRef={videoRef} items={dm.items} enabled={dm.enabled} resetKey={`${title}#${epIdx}`} live={false} liveStartRef={dm.liveStartRef} />
         {!started && !failed && !needTap && (
           <div className="wt-vload"><Loader2 size={16} className="spin" /> 正在加载…</div>
         )}
@@ -336,6 +356,7 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
           </div>
         )}
       </div>
+      <PlayerToolsBar danmaku={dm} cast={cast} videoRef={videoRef} mediaUrl={url} />
       {episodes.length > 1 && (
         <div className="wt-chips">
           <span className="fg-muted">选集：</span>
@@ -936,6 +957,34 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       if (!next && activeTab === 'adult') setActiveTab('vod')
       return next
     })
+  }
+
+  // ---- 弹幕源（v0.1.409） ----
+  // 弹幕库是开源 danmu_api 自部署实例（兼容弹弹play协议），地址只存本机。
+  // 官方弹弹play要申请 appid/appsecret、接不了；演示站已上鉴权，用不了。
+  const [danmuBaseInput, setDanmuBaseInput] = useState(loadDanmuApiBase)
+  const [danmuBaseSaved, setDanmuBaseSaved] = useState(loadDanmuApiBase())
+  const [danmuTestResult, setDanmuTestResult] = useState('')
+  const [danmuTesting, setDanmuTesting] = useState(false)
+  const saveDanmuBase = () => {
+    const saved = saveDanmuApiBase(danmuBaseInput)
+    setDanmuBaseSaved(saved)
+    setDanmuTestResult(
+      danmuBaseInput.trim() && !saved
+        ? '地址格式不对：要填 http(s):// 开头的地址，如 https://xxx.vercel.app'
+        : saved
+          ? '已保存（只存本机）'
+          : '已清空：不再拉远程弹幕',
+    )
+  }
+  const testDanmuBase = async () => {
+    setDanmuTesting(true)
+    try {
+      const r = await testDanmuApi(danmuBaseInput)
+      setDanmuTestResult(r.text)
+    } finally {
+      setDanmuTesting(false)
+    }
   }
   // 各配置里可接的资源站（key 前加配置 id，防两个配置里同名站撞 key）；
   // 成人站（按站名判断）只进 18+，普通区不列。
@@ -1885,6 +1934,20 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <input type="checkbox" checked={showAdult} onChange={toggleShowAdult} />
               <span>显示 18+ 页签</span>
             </label>
+          </div>
+          <div className="wt-set-block">
+            <h4>弹幕源</h4>
+            <div className="wt-set-note">弹幕来自开源弹幕库服务 danmu_api（兼容弹弹play协议），按片名匹配弹幕。官方弹弹play要申请 appid、App 里接不了；自己部署一个免费实例就能用：点「部署方法」看项目页（Vercel 一键部署 / Docker），把部署好的地址粘到这里。没填就不显示远程弹幕（本地发送的弹幕照常用）；拉不到弹幕时播放器里会写清原因。</div>
+            <div className="wt-ai-row">
+              <input className="input" placeholder="弹幕源地址，如 https://xxx.vercel.app" value={danmuBaseInput} onChange={e => setDanmuBaseInput(e.target.value)} />
+              <button className="btn sm primary" onClick={saveDanmuBase}>保存</button>
+              <button className="btn sm" disabled={danmuTesting || !danmuBaseInput.trim()} onClick={() => void testDanmuBase()}>
+                {danmuTesting ? <Loader2 size={13} className="spin" /> : null} 测试
+              </button>
+              <button className="btn sm ghost" onClick={() => void openExternal('https://github.com/huangxd-/danmu_api')}>部署方法</button>
+            </div>
+            {danmuBaseSaved && <div className="fg-muted">已保存：{danmuBaseSaved}</div>}
+            {danmuTestResult && <div className="fg-muted">{danmuTestResult}</div>}
           </div>
           <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
         </div>
