@@ -60,6 +60,14 @@ export function isEpicBrowserSupported(): boolean {
 }
 
 /**
+ * v0.1.404：自动领取失败时的第一落点——桌面端先走 App 内嵌浏览器，
+ * 非桌面（安卓/网页）直接走系统浏览器。抽成纯函数，方便单测钉住分支。
+ */
+export function claimFailureFallback(): 'in-app' | 'external' {
+  return isEpicBrowserSupported() ? 'in-app' : 'external'
+}
+
+/**
  * 打开内嵌浏览器窗口（Rust 命令 open_epic_browser 创建/聚焦窗口并注入脚本）。
  * 返回 'opened' | 'focused'；打不开时抛中文错误，调用方回落到系统浏览器。
  */

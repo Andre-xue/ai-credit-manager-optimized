@@ -21,7 +21,7 @@ import {
 } from '../core/freeGames'
 import { openExternal, isDesktopApp, isNativeApp } from '../core/openExternal'
 import {
-  openEpicBrowser, listenEpicBrowserClaim, isEpicBrowserSupported,
+  openEpicBrowser, listenEpicBrowserClaim, isEpicBrowserSupported, claimFailureFallback,
   epicBrowserOutcomeText, recordEpicBrowserOutcome,
   loadEpicBrowserStatus, saveEpicBrowserStatus,
 } from '../core/epicBrowser'
@@ -120,15 +120,22 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [lastCheck, setLastCheck] = useState<number | null>(() => loadLastCheckAt())
   const [lastError, setLastError] = useState<string | null>(() => loadLastError())
   const [epicBound, setEpicBound] = useState(() => hasEpicAuth())
-  // v0.1.389：设备授权建不出时改走 refresh_token 兜底登录——绑定卡上要能看出来
-  // 当前是兜底状态（解锁后从已存授权恢复；绑定当次由 doBind 设置）
-  const [epicFallback, setEpicFallback] = useState<string | null>(null)
+  // v0.1.404：refresh_token 兜底是正常工作状态，绑定卡平静显示（已绑定 · 自动领取 ·
+  // 当前用 refresh_token 登录），详细错误只收进可展开详情，不再红字吓人。
+  // 兜底原因（Epic 的 errorCode）随授权加密存本机，重进后详情仍在。
+  const [epicFallback, setEpicFallback] = useState(false)
+  const [epicFallbackDetail, setEpicFallbackDetail] = useState<string | null>(null)
   useEffect(() => {
     if (!sessionPwd || !hasEpicAuth()) return
     let alive = true
     void loadEpicAuth(sessionPwd).then(a => {
-      if (alive && a?.authMode === 'refresh') setEpicFallback('当前用 refresh_token 登录（设备授权未建成），自动领取可用；若之后报登录失效请重新绑定')
-      else if (alive) setEpicFallback(null)
+      if (alive && a?.authMode === 'refresh') {
+        setEpicFallback(true)
+        setEpicFallbackDetail(a.deviceAuthError ?? null)
+      } else if (alive) {
+        setEpicFallback(false)
+        setEpicFallbackDetail(null)
+      }
     })
     return () => { alive = false }
   }, [sessionPwd])
@@ -213,30 +220,6 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     } finally { setChecking(false) }
   }
 
-  const claimOne = async (game: FreeGame) => {
-    if (game.platform !== 'epic') { void openExternal(game.url); return }
-    if (!game.autoClaimable) { void openExternal(game.url); return }
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notifySafe('请先解锁保险箱（领取要用 Epic 设备授权）'); return }
-    setClaimingId(game.id)
-    try {
-      await claimEpicGameManual(pwd, game)
-      refreshRecords()
-      notifySafe(`「${game.title}」已领取入库`)
-    } catch (e) {
-      refreshRecords()
-      // v0.1.392：自动领取拿不到 purchaseToken 时，直接在浏览器打开预填好的结账页
-      // （用户已在浏览器登录 Epic，点一下就能领），不要只留一条报错让用户自己找
-      const url = checkoutUrlOf(e)
-      if (url) {
-        void openExternal(url)
-        notifySafe('自动领取没拿到下单凭证，已在浏览器打开 Epic 结账页，登录后点一下就能领', 'err')
-      } else {
-        notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
-      }
-    } finally { setClaimingId('') }
-  }
-
   // v0.1.397：内嵌浏览器自动领（实验性质，仅桌面端）。打不开就回落到 396 的
   // 手动兜底（系统浏览器直开结账页），绝不静默失败。领取结果由 Rust 事件回传，
   // 上面的监听 effect 负责显示状态与写记录。
@@ -257,6 +240,36 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     }
   }
 
+  const claimOne = async (game: FreeGame) => {
+    if (game.platform !== 'epic') { void openExternal(game.url); return }
+    if (!game.autoClaimable) { void openExternal(game.url); return }
+    const pwd = sessionPwd || getBiometricPassword() || ''
+    if (!pwd) { notifySafe('请先解锁保险箱（领取要用 Epic 设备授权）'); return }
+    setClaimingId(game.id)
+    try {
+      await claimEpicGameManual(pwd, game)
+      refreshRecords()
+      notifySafe(`「${game.title}」已领取入库`)
+    } catch (e) {
+      refreshRecords()
+      // v0.1.404：自动领取失败先走 App 内嵌浏览器（桌面端），不再直接跳外部浏览器；
+      // 内嵌浏览器打不开时 openInAppBrowser 自己回落到系统浏览器，领不成时记录里
+      // 「去浏览器领」还在（396 手动兜底）。安卓/网页保持直接走系统浏览器。
+      const url = checkoutUrlOf(e)
+      if (url) {
+        if (claimFailureFallback() === 'in-app') {
+          await openInAppBrowser(url, game.title)
+          notifySafe('自动领取没拿到下单凭证，已在 App 内嵌浏览器打开结账页，登录后点一下就能领', 'err')
+        } else {
+          void openExternal(url)
+          notifySafe('自动领取没拿到下单凭证，已在浏览器打开 Epic 结账页，登录后点一下就能领', 'err')
+        }
+      } else {
+        notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
+      }
+    } finally { setClaimingId('') }
+  }
+
   const doBind = async () => {
     const pwd = sessionPwd || getBiometricPassword() || ''
     if (!pwd) { notifySafe('请先解锁保险箱，设备授权要加密保存'); return }
@@ -267,10 +280,13 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       setBindOpen(false)
       setAuthCode('')
       if (auth.deviceAuthError) {
-        setEpicFallback(`当前用 refresh_token 登录（设备授权创建失败：${auth.deviceAuthError}）`)
-        notifySafe(`Epic 已绑定（refresh_token 兜底）：设备授权创建失败（${auth.deviceAuthError}），已改用 refresh_token 登录，自动领取可用`)
+        setEpicFallback(true)
+        setEpicFallbackDetail(auth.deviceAuthError)
+        // v0.1.404：兜底是正常状态，toast 也平静报，不再把 errorCode 贴进提示里吓人
+        notifySafe('Epic 已绑定，当前用 refresh_token 登录，自动领取可用')
       } else {
-        setEpicFallback(null)
+        setEpicFallback(false)
+        setEpicFallbackDetail(null)
         notifySafe('Epic 已绑定，自动领取已就绪')
       }
     } catch (e) {
@@ -360,7 +376,17 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             {epicBound ? (
               <>
                 <div>已绑定 · 自动领取{epicClaimedCount ? ` · 累计领了 ${epicClaimedCount} 款` : ' · 还没领过'}</div>
-                {epicFallback && <div className="fg-err">{epicFallback}</div>}
+                {epicFallback && <div className="fg-muted">当前用 refresh_token 登录，自动领取可用</div>}
+                {epicFallback && (
+                  <details className="fg-detail">
+                    <summary>为什么是 refresh_token 登录？</summary>
+                    <div>
+                      {epicFallbackDetail
+                        ? <>设备授权创建失败：{epicFallbackDetail}{/missing_permissions/.test(epicFallbackDetail) ? '。Epic 限制了这种登录方式的设备授权权限，不影响自动领取。' : ''}</>
+                        : '设备授权未建成（原因未记录），已改用 refresh_token 登录，自动领取可用。'}
+                    </div>
+                  </details>
+                )}
                 {loginFailed && <div className="fg-err">登录失效，请重新绑定账号。</div>}
                 {captchaFailed && <div className="fg-err">最近一次领取遇到验证码：请在浏览器打开商店手动领取一次，验证通过后可恢复自动领取。</div>}
               </>
@@ -375,7 +401,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             {epicBound ? (
               <>
                 <button className="btn sm ghost" onClick={() => { setBindOpen(true); setAuthCode('') }}>重新绑定</button>
-                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); setEpicFallback(null); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
+                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); setEpicFallback(false); setEpicFallbackDetail(null); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
               </>
             ) : (
               <button className="btn sm primary" onClick={() => setBindOpen(true)}><Link2 size={13} /> 绑定 Epic 账号</button>

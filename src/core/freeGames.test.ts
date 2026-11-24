@@ -542,7 +542,8 @@ describe('freeGames bindEpicWithAuthCode 403 诊断与 refresh 兜底（v0.1.389
       const stored = await loadEpicAuth('testpwd8')
       expect(stored?.authMode).toBe('refresh')
       expect(stored?.refreshToken).toBe('RT1')
-      expect(stored?.deviceAuthError).toBeUndefined()
+      // v0.1.404：兜底原因随授权加密存本机，绑定卡重进后可展开查看
+      expect(stored?.deviceAuthError).toContain('errors.com.epicgames.account.device_auth.forbidden')
     } finally {
       globalThis.fetch = origFetch
     }

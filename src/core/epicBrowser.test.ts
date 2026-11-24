@@ -8,6 +8,7 @@ import {
   epicBrowserOutcomeText,
   recordEpicBrowserOutcome,
   isEpicBrowserSupported,
+  claimFailureFallback,
   EPIC_BROWSER_STATUS_KEY,
   loadEpicBrowserStatus,
   saveEpicBrowserStatus,
@@ -110,5 +111,22 @@ describe('epicBrowserStatus 持久化', () => {
 describe('isEpicBrowserSupported', () => {
   it('非桌面环境（vitest node）返回 false', () => {
     expect(isEpicBrowserSupported()).toBe(false)
+  })
+})
+
+describe('claimFailureFallback（v0.1.404）', () => {
+  it('非桌面（无 Tauri）直接走系统浏览器', () => {
+    expect(claimFailureFallback()).toBe('external')
+  })
+  it('桌面（有 __TAURI_INTERNALS__）先走 App 内嵌浏览器', () => {
+    const g = globalThis as unknown as Record<string, unknown>
+    const prev = g.window
+    g.window = { __TAURI_INTERNALS__: {} }
+    try {
+      expect(claimFailureFallback()).toBe('in-app')
+    } finally {
+      if (prev === undefined) delete g.window
+      else g.window = prev
+    }
   })
 })

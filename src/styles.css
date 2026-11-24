@@ -2257,6 +2257,10 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .fg-plat-body { font-size: 13px; line-height: 1.6; color: var(--text-2); }
 .fg-plat-foot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: auto; }
 .fg-err { color: #b91c1c; font-size: 12.5px; line-height: 1.5; margin-top: 4px; }
+/* v0.1.404：兜底详情可展开查看，平时只显示一行平静状态，不用红色 */
+.fg-detail { color: var(--text-3); font-size: 12.5px; line-height: 1.5; margin-top: 4px; }
+.fg-detail summary { cursor: pointer; }
+.fg-detail > div { margin-top: 2px; word-break: break-all; }
 .fg-bind { border-top: 1px dashed var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
 .fg-bind-title { font-weight: 700; }
 .fg-bind-steps { margin: 0; padding-left: 18px; line-height: 1.8; color: var(--text-2); }

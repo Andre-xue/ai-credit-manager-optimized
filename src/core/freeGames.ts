@@ -408,7 +408,7 @@ export interface EpicDeviceAuth {
   refreshToken?: string
   /** 登录路线：device=设备授权（优先），refresh=refresh_token 兜底 */
   authMode?: 'device' | 'refresh'
-  /** 仅 bindEpicWithAuthCode 当次返回，不持久化：设备授权建失败的原因 */
+  /** v0.1.404 起随兜底授权一起加密存本机（只存本机、主密码加密），绑定卡重进后可展开查看失败原因 */
   deviceAuthError?: string
 }
 
@@ -468,7 +468,7 @@ export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<E
   if (!refreshToken) {
     throw new Error(`创建设备授权失败（${deviceAuthError}），请稍后重试或重新绑定`)
   }
-  const fallbackAuth: EpicDeviceAuth = { accountId, deviceId: '', secret: '', refreshToken, authMode: 'refresh' }
+  const fallbackAuth: EpicDeviceAuth = { accountId, deviceId: '', secret: '', refreshToken, authMode: 'refresh', deviceAuthError: deviceAuthError || undefined }
   await saveEpicAuth(fallbackAuth, pwd)
   try {
     await epicAccessToken(fallbackAuth, pwd)
@@ -877,7 +877,7 @@ export async function claimEpicGameManual(pwd: string, game: FreeGame): Promise<
     const msg = describeEpicError(e)
     const url = checkoutUrlOf(e)
     addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg, ...(url ? { checkoutUrl: url } : {}) })
-    // 带结账链接的错误原样抛出：UI 要读 checkoutUrl 打开浏览器（包成普通 Error 会丢链接）
+    // 带结账链接的错误原样抛出：UI 要读 checkoutUrl 打开内嵌浏览器（桌面端，v0.1.404）或系统浏览器（包成普通 Error 会丢链接）
     if (url) throw e
     throw new Error(msg)
   }
