@@ -48,7 +48,7 @@ import {
   WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
   loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
   probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
-  loadShowDead, saveShowDead,
+  loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
   isTvboxConfigText, isAdultTvboxSite,
   loadPlayerFloat, savePlayerFloat, clampPlayerFloat,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig, fetchCmsVodList, mergeVodTitles,
@@ -900,6 +900,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const toggleShowDead = () => {
     setShowDead(v => { const next = !v; saveShowDead(next); return next })
   }
+  // v0.1.416：体检后已测不通的点播默认从墙上隐藏（与直播同款）；设置页签
+  // 「显示已测不通的点播」开关可恢复显示，状态只存本机。
+  const [showDeadVod, setShowDeadVod] = useState(() => loadShowDeadVod())
+  const toggleShowDeadVod = () => {
+    setShowDeadVod(v => { const next = !v; saveShowDeadVod(next); return next })
+  }
   const [healthSort, setHealthSort] = useState(false)
   const healthCtrlRef = useRef<AbortController | null>(null)
   const healthCountsNow = useMemo(() => healthCounts(liveChannels, health), [liveChannels, health])
@@ -940,26 +946,28 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [vodHealthRunning, setVodHealthRunning] = useState(false)
   const [vodHealthProgress, setVodHealthProgress] = useState<{ done: number; total: number } | null>(null)
   const vodHealthCtrlRef = useRef<AbortController | null>(null)
-  const vodHealthCountsNow = useMemo(() => vodHealthCounts(vodTitles, health), [vodTitles, health])
+  // v0.1.416：体检对象是合并后的全部点播（m3u + TVBox 资源站），不只 m3u；
+  // 计数与进度都按合并后的数，TVBox 片子同样测活、同样默认隐藏。
+  const vodHealthCountsNow = useMemo(() => vodHealthCounts(allVodTitles, health), [allVodTitles, health])
   const vodHealthAt = useMemo(() => {
     let at = 0
-    for (const v of vodTitles) {
+    for (const v of allVodTitles) {
       const h = vodHealthOf(health, v)
       if (h && h.at > at) at = h.at
     }
     return at || null
-  }, [vodTitles, health])
+  }, [allVodTitles, health])
   const vodHealthAgeText = vodHealthAt
     ? (() => { const m = Math.floor((Date.now() - vodHealthAt) / 60000); return m < 1 ? '刚刚' : `${m} 分钟前` })()
     : ''
   const startVodHealth = async () => {
-    if (vodHealthRunning || !vodTitles.length) return
+    if (vodHealthRunning || !allVodTitles.length) return
     const ctrl = new AbortController()
     vodHealthCtrlRef.current = ctrl
     setVodHealthRunning(true)
-    setVodHealthProgress({ done: 0, total: vodTitles.length })
+    setVodHealthProgress({ done: 0, total: allVodTitles.length })
     try {
-      const fresh = await probeVodTitles(vodTitles, {
+      const fresh = await probeVodTitles(allVodTitles, {
         signal: ctrl.signal,
         onProgress: (done, total, key, result) => {
           setHealth(prev => { const next = { ...prev, [key]: result }; saveHealthCache(next); return next })
@@ -976,10 +984,15 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const stopVodHealth = () => { vodHealthCtrlRef.current?.abort() }
   // 点播体检视图作用在筛选排序后的墙上、再分页（与直播体检同款；放体检块后声明，health 在此已定义）
   const wallShown = useMemo(
-    () => applyVodHealthView(wallFiltered, health, { onlyHealthy: vodHealthOnly, sortBySpeed: vodHealthSort }),
-    [wallFiltered, health, vodHealthOnly, vodHealthSort],
+    () => applyVodHealthView(wallFiltered, health, { onlyHealthy: vodHealthOnly, sortBySpeed: vodHealthSort, hideDead: !showDeadVod }),
+    [wallFiltered, health, vodHealthOnly, vodHealthSort, showDeadVod],
   )
   const wallShownPlayCount = wallShown.filter(i => i.playable).length
+  // 当前墙上被默认隐藏的已测不通片子数（开关打开时为 0，不再隐藏）
+  const vodHiddenCount = useMemo(
+    () => (showDeadVod ? 0 : wallFiltered.filter(it => it.vod && vodHealthOf(health, it.vod)?.ok === false).length),
+    [wallFiltered, health, showDeadVod],
+  )
   // 体检视图：已测不通的默认隐藏 + 快的排前面（只作用于当前直播列表）
   const liveDisplay = useMemo(
     () => applyHealthView(liveChannels, health, { hideDead: !showDead, sortBySpeed: healthSort }),
@@ -1690,10 +1703,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           {!tmdbKeySet && wallItems.length > 0 && (
             <div className="fg-muted">没填 TMDB Key：只有片名列表，没有海报、评分与类型/年份/地区筛选；去「设置」页签填 Key 后再看。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
           )}
-          {vodTitles.length > 0 && (
+          {allVodTitles.length > 0 && (
             <>
               <div className="wt-chips">
-                <button className="btn sm ghost" disabled={vodHealthRunning || !vodTitles.length} onClick={() => void startVodHealth()} title="逐部拉播放列表验分片、测快慢（后台进行，不堵墙）">
+                <button className="btn sm ghost" disabled={vodHealthRunning || !allVodTitles.length} onClick={() => void startVodHealth()} title="逐部拉播放列表验分片、测快慢（后台进行，不堵墙）">
                   <Activity size={13} /> {vodHealthRunning ? '体检中…' : '开始体检'}
                 </button>
                 {vodHealthRunning && (
@@ -1705,13 +1718,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                   <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…（后台进行，不影响看墙；可点「停止」）</span>
                 ) : vodHealthCountsNow.tested > 0 ? (
                   <>
-                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{vodHealthCountsNow.unverified > 0 ? `；其中 ${vodHealthCountsNow.unverified} 部仅测连通（浏览器跨域限制）` : ''}）</span>
+                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{vodHealthCountsNow.unverified > 0 ? `；其中 ${vodHealthCountsNow.unverified} 部仅测连通（浏览器跨域限制）` : ''}）{vodHealthCountsNow.bad > 0 && !showDeadVod ? ' · 不通的片子已默认隐藏（设置里可打开显示）' : ''}</span>
                     <button className="btn sm ghost" disabled={vodHealthRunning} onClick={() => void startVodHealth()}>
                       <RefreshCw size={13} /> 重新体检
                     </button>
                   </>
                 ) : (
-                  <span className="fg-muted">还没体检过：点「开始体检」逐部拉播放列表验分片、测快慢，死的标出来、快的排前面（404/空列表/坏流都判不通）。</span>
+                  <span className="fg-muted">还没体检过：点「开始体检」逐部拉播放列表验分片、测快慢，死的标出来并默认隐藏、快的排前面（404/空列表/坏流都判不通）。</span>
                 )}
               </div>
               {vodHealthCountsNow.tested > 0 && (
@@ -1772,7 +1785,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               </div>
             )}
             <div className="wt-countbar">
-              <span className="wt-count-text">共 <b>{wallShown.length}</b> 部 · 其中 <span className="wt-ok">{wallShownPlayCount} 部有源可播</span>，{wallShown.length - wallShownPlayCount} 部仅展示</span>
+              <span className="wt-count-text">共 <b>{wallShown.length}</b> 部 · 其中 <span className="wt-ok">{wallShownPlayCount} 部有源可播</span>，{wallShown.length - wallShownPlayCount} 部仅展示{vodHiddenCount > 0 ? ` · 已隐藏 ${vodHiddenCount} 部测过不通的片子（设置里可打开显示）` : ''}</span>
               {tmdbKeySet && wallEnrichPending > 0 && <span className="fg-muted">正在补全海报与信息（还剩 {wallEnrichPending} 部）…</span>}
               <div className="wt-sortbox" role="group" aria-label="排序">
                 {([['updated', '最近更新'], ['rating', '评分最高'], ['year', '年份最新']] as const).map(([s, label]) => (
@@ -1782,8 +1795,17 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             </div>
             {wallShown.length === 0 ? (
               <div className="fg-empty">
-                <div>这个筛选下没有影片</div>
-                <div className="fg-muted">换个类型、年份或地区试试；没匹配到 TMDB 的影片没有类型、年份信息，筛选时只按「全部」显示。</div>
+                {vodHiddenCount > 0 ? (
+                  <>
+                    <div>测过不通的片子已默认隐藏（{vodHiddenCount} 部）</div>
+                    <div className="fg-muted">去「设置」页签打开「显示已测不通的点播」就能看到它们（仍带 ✗ 不通角标）；也可以换个类型、年份或地区试试。</div>
+                  </>
+                ) : (
+                  <>
+                    <div>这个筛选下没有影片</div>
+                    <div className="fg-muted">换个类型、年份或地区试试；没匹配到 TMDB 的影片没有类型、年份信息，筛选时只按「全部」显示。</div>
+                  </>
+                )}
               </div>
             ) : (
               <WallGrid items={wallShown} page={vodPage} onPage={setVodPage} />
@@ -2032,6 +2054,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showDead} onChange={toggleShowDead} />
               <span>显示已测不通的台</span>
+            </label>
+          </div>
+          <div className="wt-set-block">
+            <h4>点播体检</h4>
+            <div className="wt-set-note">体检后不通的片子默认从点播墙隐藏（m3u 点播与 TVBox 资源站片单都一样）；打开后恢复显示（仍带 ✗ 不通角标）。未测的片子一直显示。</div>
+            <label className="wt-set-row" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={showDeadVod} onChange={toggleShowDeadVod} />
+              <span>显示已测不通的点播</span>
             </label>
           </div>
           <div className="wt-set-block">

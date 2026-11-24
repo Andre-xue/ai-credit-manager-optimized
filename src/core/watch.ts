@@ -1023,11 +1023,13 @@ export function vodHealthCounts(titles: VodTitle[], health: HealthMap): { tested
   return { tested, ok, bad: tested - ok, unverified }
 }
 
-/** 点播体检视图：只看能播的（过滤）+ 快的排前面（通的按耗时升序，未测的
- * 居中，死的沉底；同组内保持原顺序）。入参是海报墙条目（带可选 vod），
- * 没源只展示的条目按“未测”处理。 */
-export function applyVodHealthView<T extends { vod?: VodTitle }>(items: T[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean } = {}): T[] {
+/** 点播体检视图：默认隐藏已测不通的（hideDead，与直播 407 同款；只藏有源且
+ * 已测不通的，未测的与没源只展示的都留着）+ 只看能播的（过滤）+ 快的排前面
+ * （通的按耗时升序，未测的居中，死的沉底；同组内保持原顺序）。入参是海报墙
+ * 条目（带可选 vod），没源只展示的条目按“未测”处理。 */
+export function applyVodHealthView<T extends { vod?: VodTitle }>(items: T[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean; hideDead?: boolean } = {}): T[] {
   let list = items
+  if (opts.hideDead) list = list.filter(it => !(it.vod && vodHealthOf(health, it.vod)?.ok === false))
   if (opts.onlyHealthy) list = list.filter(it => it.vod && vodHealthOf(health, it.vod)?.ok === true)
   if (opts.sortBySpeed) {
     const rank = (it: T): number => {
@@ -1057,6 +1059,18 @@ export function loadShowDead(): boolean {
 
 export function saveShowDead(v: boolean): void {
   try { localStorage.setItem(SHOW_DEAD_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+// ---------------- 显示已测不通的点播（v0.1.416）：与直播同款，只存本机 ----------------
+export const SHOW_DEAD_VOD_KEY = 'acm.watch.showDeadVod.v1'
+
+/** 默认关：体检后已测不通的点播默认从墙上隐藏 */
+export function loadShowDeadVod(): boolean {
+  try { return localStorage.getItem(SHOW_DEAD_VOD_KEY) === '1' } catch { return false }
+}
+
+export function saveShowDeadVod(v: boolean): void {
+  try { localStorage.setItem(SHOW_DEAD_VOD_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
 }
 
 // ---------------- 分组 ----------------

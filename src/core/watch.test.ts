@@ -9,7 +9,7 @@ import {
   probeStreamUrl, probeChannel, probeChannels, loadHealthCache, saveHealthCache,
   healthOf, healthCounts, applyHealthView, parseM3u8Segments, probeConnectivity,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
-  loadShowDead, saveShowDead,
+  loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
   parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig,
   loadShowAdult, saveShowAdult, SHOW_ADULT_KEY,
@@ -1220,6 +1220,19 @@ describe('watch 点播体检（v0.1.407：probeVodTitle / vodHealthOf / vodHealt
       .toEqual(['movie-a', 'series-b', 'movie-dead'])
     expect(applyVodHealthView(wall, health)).toEqual(wall)
   })
+  it('v0.1.416 hideDead：只藏已测不通的，通的、未测的、没源只展示的都留着', () => {
+    const health: HealthMap = {
+      'vod:movie-a': { ok: true, ms: 90, at: Date.now(), url: 'http://example.com/fast/a.mp4' },
+      'vod:movie-dead': { ok: false, at: Date.now(), url: 'http://example.com/dead/d.mp4' },
+    }
+    // 墙条目：死的、通的、未测的、没源只展示的（无 vod）
+    const wall = [{ vod: VOD_DEAD }, { vod: VOD_A }, { vod: VOD_B }, {}]
+    const keys = (items: { vod?: VodTitle }[]) => items.map(i => i.vod?.key ?? 'show-only')
+    expect(keys(applyVodHealthView(wall, health, { hideDead: true }))).toEqual(['movie-a', 'series-b', 'show-only'])
+    expect(keys(applyVodHealthView(wall, health, { hideDead: false }))).toEqual(['movie-dead', 'movie-a', 'series-b', 'show-only'])
+    expect(keys(applyVodHealthView(wall, health, { hideDead: true, onlyHealthy: true }))).toEqual(['movie-a'])
+    expect(keys(applyVodHealthView(wall, health, { hideDead: true, sortBySpeed: true }))).toEqual(['movie-a', 'series-b', 'show-only'])
+  })
   it('probeVodTitles：批量跑，键带 vod: 前缀', async () => {
     vodFetchStub()
     const out = await probeVodTitles([VOD_A, VOD_DEAD])
@@ -1256,6 +1269,17 @@ describe('watch 已测不通的台默认隐藏（v0.1.407）', () => {
   })
 })
 
+describe('watch 已测不通的点播默认隐藏（v0.1.416）', () => {
+  it('点播开关默认关；存取往返；与直播开关各存各的键', () => {
+    expect(loadShowDeadVod()).toBe(false)
+    saveShowDeadVod(true)
+    expect(loadShowDeadVod()).toBe(true)
+    expect(loadShowDead()).toBe(false)
+    saveShowDeadVod(false)
+    expect(loadShowDeadVod()).toBe(false)
+  })
+})
+
 describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
   it('播放器失败态在视频区内、加载态、FLV、点播体检、死台隐藏开关都在', async () => {
     const { readFileSync } = await import('node:fs')
@@ -1265,6 +1289,9 @@ describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
       'FlvJs', 'isFlvUrl', 'flv.js',
       'startVodHealth', 'stopVodHealth', 'vodHealthCountsNow', '只看能播的',
       '显示已测不通的台', 'loadShowDead', 'saveShowDead', 'hideDead',
+      // v0.1.416：点播默认隐藏 + 开关 + 计数行 + TVBox 同样进体检
+      '显示已测不通的点播', 'loadShowDeadVod', 'saveShowDeadVod', 'showDeadVod',
+      '已隐藏', '点播体检', 'allVodTitles',
       'wt-wall-card-dead', '✓ {vh.ms}ms', '✗ 不通',
     ]) {
       expect(src).toContain(s)
