@@ -3073,6 +3073,190 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 const TRAY_ID: &str = "acm-tray";
 const MINI_LABEL: &str = "mini";
+/// 内嵌浏览器窗口标签：Epic 领取专用（v0.1.397）
+const EPIC_BROWSER_LABEL: &str = "epic-browser";
+/// 内嵌浏览器领取结果事件名（发给主窗口；与 src/core/epicBrowser.ts 的 EPIC_BROWSER_EVENT 一致）
+const EPIC_BROWSER_EVENT: &str = "epic-browser-claim";
+
+/// 内嵌浏览器自动领 Epic 免费游戏用的注入脚本（v0.1.397，实验性质）。
+/// 只在 Epic 商店结账页（/store/purchase）运行：轮询找领取按钮并点它，
+/// 结果写进 URL hash（#epic-claim=<结果>），open_epic_browser 的轮询线程
+/// 读回后发事件给主窗口。按钮文案匹配与 TS 侧的说明对照，改一处要同步另一处
+/// （TS 侧不直接复用这段 JS，只解析 hash，见 epicBrowser.ts）。
+/// 故意不用远程 IPC 回传：Tauri 默认拦截远程域 invoke，开
+/// dangerousRemoteDomainIpcAccess 会让 epicgames.com 的任意 JS 都能调命令。
+const AUTO_CLAIM_JS: &str = r##"(function () {
+  if (window.__epicAutoClaimInstalled) return;
+  window.__epicAutoClaimInstalled = true;
+  var POLL_MS = 1000;
+  var TIMEOUT_MS = 120000;
+  var AFTER_CLICK_MS = 45000;
+  function setState(s) {
+    try {
+      history.replaceState(null, '', location.pathname + location.search + '#epic-claim=' + s);
+    } catch (e) { /* 忽略 */ }
+  }
+  function isPurchasePage() {
+    return /(^|\.)epicgames\.com$/.test(location.hostname) && location.pathname.indexOf('/store/purchase') !== -1;
+  }
+  function visible(el) {
+    if (!el) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    var cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
+  }
+  function isClaimButton(el) {
+    if (!el || el.disabled) return false;
+    var t = (el.innerText || el.textContent || '').trim();
+    if (!t) return false;
+    return /place order|confirm order/i.test(t)
+      || /^\s*get\s*$/i.test(t)
+      || /领取|免费获取|免费领取|下单|提交订单|确认购买|确认下单|立即购买/.test(t);
+  }
+  function findClaimButton() {
+    var els = document.querySelectorAll('button, [role="button"], a');
+    for (var i = 0; i < els.length; i++) {
+      if (visible(els[i]) && isClaimButton(els[i])) return els[i];
+    }
+    return null;
+  }
+  function isChallenge() {
+    if (document.querySelector('iframe[src*="turnstile"], iframe[src*="captcha"], iframe[src*="challenge"]')) return true;
+    var t = document.body ? document.body.innerText || '' : '';
+    return /verify you are human|just a moment|attention required|人机验证|请验证你是人类/i.test(t);
+  }
+  function isLoginPage() {
+    return location.pathname.indexOf('/login') !== -1
+      || !!document.querySelector('form[action*="login"], input[type="password"]');
+  }
+  function isSuccess() {
+    var t = document.body ? document.body.innerText || '' : '';
+    return /thank you for your order|order confirmed|order placed|感谢您的订|订单已确认|已领取|领取成功|successfully claimed/i.test(t)
+      || /confirmation|thank-you/i.test(location.pathname + location.search);
+  }
+  var start = Date.now();
+  var clickedAt = 0;
+  var timer = setInterval(function () {
+    if (!isPurchasePage() && !isLoginPage()) return;
+    if (isLoginPage()) { setState('login'); clearInterval(timer); return; }
+    if (isChallenge()) { setState('challenge'); clearInterval(timer); return; }
+    if (isSuccess()) { setState('claimed'); clearInterval(timer); return; }
+    if (clickedAt) {
+      if (Date.now() - clickedAt > AFTER_CLICK_MS) { clearInterval(timer); }
+      return;
+    }
+    var btn = findClaimButton();
+    if (btn) {
+      try { btn.click(); } catch (e) { /* 忽略 */ }
+      clickedAt = Date.now();
+      setState('clicked');
+      return;
+    }
+    if (Date.now() - start > TIMEOUT_MS) { setState('needs-manual'); clearInterval(timer); }
+  }, POLL_MS);
+})();"##;
+
+/// 在内嵌浏览器窗口打开 Epic 结账页并尝试自动领取（v0.1.397，实验性质）。
+/// 窗口用系统 webview（macOS WKWebView），Cookie 走默认数据存储、跨重启保留：
+/// 用户在窗口内登录一次 Epic，以后打开结账页就是已登录态。自动领取靠注入
+/// AUTO_CLAIM_JS 点领取按钮；结果经 URL hash 回传，轮询线程发事件给主窗口。
+/// Epic/Cloudflare 反自动化检测可能拦住内嵌浏览器，届时事件报 challenge /
+/// login / needs-manual / timeout，前端回落到 396 的手动兜底（系统浏览器
+/// 直开结账页），绝不静默失败。只允许打开 epicgames.com 的 https 链接。
+#[tauri::command]
+fn open_epic_browser(app: tauri::AppHandle, url: String, title: String) -> Result<String, String> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("链接含非法字符".into());
+    }
+    let parsed: tauri::Url = url.parse().map_err(|_| "链接格式不正确".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("只允许 https 链接".into());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if host != "epicgames.com" && !host.ends_with(".epicgames.com") {
+        return Err("内嵌浏览器只打开 Epic 商店页面".into());
+    }
+    if let Some(w) = app.get_webview_window(EPIC_BROWSER_LABEL) {
+        let _ = w.set_focus();
+        let js = format!("window.location.href = {};", serde_json::to_string(&url).unwrap_or_default());
+        let _ = w.eval(js);
+        return Ok("focused".into());
+    }
+    let win = tauri::WebviewWindowBuilder::new(
+        &app,
+        EPIC_BROWSER_LABEL,
+        tauri::WebviewUrl::External(parsed),
+    )
+    .title("Epic 领取 · AI 魔方")
+    .inner_size(1120.0, 780.0)
+    .build()
+    .map_err(|e| format!("打开内嵌浏览器失败：{e}"))?;
+    let _ = win.set_focus();
+    // 轮询线程：给结账页注入自动领取脚本，并把 URL hash 里的结果发事件给主窗口。
+    // 每 2 秒一轮、最多约 200 秒；窗口被用户关了就静默结束。
+    let handle = app.clone();
+    let checkout_url = url.clone();
+    let game_title = title.clone();
+    std::thread::spawn(move || {
+        let mut injected_for = String::new();
+        let mut clicked_reported = false;
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let Some(w) = handle.get_webview_window(EPIC_BROWSER_LABEL) else {
+                return;
+            };
+            let cur = w.url();
+            let cur_str = cur.as_str().to_string();
+            // 登录页：内嵌浏览器里没登录 Epic，用户需在窗口内登录
+            if cur.path().contains("/login") {
+                let _ = handle.emit(EPIC_BROWSER_EVENT, serde_json::json!({
+                    "outcome": "login", "title": game_title, "checkoutUrl": checkout_url,
+                }));
+                return;
+            }
+            // 下单后跳到确认页：算领取成功
+            if clicked_reported && (cur.path().contains("confirmation") || cur.path().contains("thank-you")) {
+                let _ = handle.emit(EPIC_BROWSER_EVENT, serde_json::json!({
+                    "outcome": "claimed", "title": game_title, "checkoutUrl": checkout_url,
+                }));
+                return;
+            }
+            // 注入脚本写进 hash 的结果
+            if let Some(frag) = cur.fragment() {
+                if let Some(state) = frag.strip_prefix("epic-claim=") {
+                    match state {
+                        "claimed" | "challenge" | "login" | "needs-manual" => {
+                            let _ = handle.emit(EPIC_BROWSER_EVENT, serde_json::json!({
+                                "outcome": state, "title": game_title, "checkoutUrl": checkout_url,
+                            }));
+                            return;
+                        }
+                        "clicked" => {
+                            if !clicked_reported {
+                                clicked_reported = true;
+                                let _ = handle.emit(EPIC_BROWSER_EVENT, serde_json::json!({
+                                    "outcome": "clicked", "title": game_title, "checkoutUrl": checkout_url,
+                                }));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // 结账页：注入一次自动领取脚本（换了 URL 就再注入一次）
+            if cur.path().contains("/store/purchase") && injected_for != cur_str {
+                let _ = w.eval(AUTO_CLAIM_JS);
+                injected_for = cur_str;
+            }
+        }
+        // 200 秒还没等到终端结果
+        let _ = handle.emit(EPIC_BROWSER_EVENT, serde_json::json!({
+            "outcome": "timeout", "title": game_title, "checkoutUrl": checkout_url,
+        }));
+    });
+    Ok("opened".into())
+}
 
 /// 图标显示模式：both（Dock+菜单栏）/ dock（仅 Dock，关主窗即退出）/ menubar（仅菜单栏）
 static ICON_MODE: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
@@ -3795,7 +3979,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

@@ -19,6 +19,11 @@ import {
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
 } from '../core/freeGames'
 import { openExternal, isDesktopApp, isNativeApp } from '../core/openExternal'
+import {
+  openEpicBrowser, listenEpicBrowserClaim, isEpicBrowserSupported,
+  epicBrowserOutcomeText, recordEpicBrowserOutcome,
+  loadEpicBrowserStatus, saveEpicBrowserStatus,
+} from '../core/epicBrowser'
 import { getBiometricPassword } from '../core/crypto'
 import { Pager } from './Pager'
 
@@ -135,6 +140,19 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [authCode, setAuthCode] = useState('')
   const [bindBusy, setBindBusy] = useState(false)
   const [pwdInput, setPwdInput] = useState('')
+  // v0.1.397：内嵌浏览器自动领的状态行（桌面端才有；失败原因要显示出来）
+  const [epicBrowserStatus, setEpicBrowserStatus] = useState<string | null>(() => loadEpicBrowserStatus())
+  useEffect(() => {
+    if (!isDesktopApp()) return
+    let unlisten: (() => void) | undefined
+    void listenEpicBrowserClaim(p => {
+      const text = epicBrowserOutcomeText(p.outcome)
+      setEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text)
+      if (recordEpicBrowserOutcome(p.outcome, p.title ?? '', p.checkoutUrl)) refreshRecords()
+    }).then(u => { unlisten = u }).catch(() => { /* 监听失败不影响领取 */ })
+    return () => { unlisten?.() }
+  }, [])
 
   // 兜底（v0.1.386）：任何残留的英文 "Load failed" 在进 toast 前一律换成中文，
   // 避免以后新增的 fetch 再漏包（385 只包了列表请求，绑定/领取 6 处漏了）。
@@ -217,6 +235,26 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
         notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
       }
     } finally { setClaimingId('') }
+  }
+
+  // v0.1.397：内嵌浏览器自动领（实验性质，仅桌面端）。打不开就回落到 396 的
+  // 手动兜底（系统浏览器直开结账页），绝不静默失败。领取结果由 Rust 事件回传，
+  // 上面的监听 effect 负责显示状态与写记录。
+  const openInAppBrowser = async (checkoutUrl: string, title: string) => {
+    if (!isEpicBrowserSupported()) { void openExternal(checkoutUrl); return }
+    setEpicBrowserStatus('正在打开内嵌浏览器…')
+    try {
+      await openEpicBrowser(checkoutUrl, title)
+      const text = '内嵌浏览器已打开结账页，正在尝试自动领取…（若遇人机验证，请在窗口内完成验证后手动点领取）'
+      setEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text)
+    } catch (e) {
+      const text = '内嵌浏览器打不开，已改走系统浏览器'
+      setEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text)
+      notifySafe(e instanceof Error ? e.message : '打开内嵌浏览器失败', 'err')
+      void openExternal(checkoutUrl)
+    }
   }
 
   const doBind = async () => {
@@ -472,6 +510,8 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
         )
       })}
 
+      {/* v0.1.397：内嵌浏览器自动领的状态行（桌面端才有） */}
+      {epicBrowserStatus && <div className="fg-muted" style={{ margin: '0 0 8px' }}>{epicBrowserStatus}</div>}
       {/* 领取记录：失败组置顶 */}
       <div className="fg-group">
         <div className="fg-group-head">
@@ -510,7 +550,12 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                   <button className="btn sm" onClick={() => void openExternal('https://store.epicgames.com/zh-CN/free-games')}>去商店手动领</button>
                 )}
                 {r.outcome === 'error' && r.checkoutUrl && (
-                  <button className="btn sm primary" onClick={() => void openExternal(r.checkoutUrl!)}>去浏览器领</button>
+                  <>
+                    {isDesktopApp() && (
+                      <button className="btn sm" onClick={() => void openInAppBrowser(r.checkoutUrl!, r.title)}>在 App 内领</button>
+                    )}
+                    <button className="btn sm primary" onClick={() => void openExternal(r.checkoutUrl!)}>去浏览器领</button>
+                  </>
                 )}
               </div>
             ))}
