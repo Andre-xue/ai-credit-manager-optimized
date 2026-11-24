@@ -2035,7 +2035,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 
       {/* 设置：源、Key 与推荐都集中在这里，只存本机 */}
       {activeTab === 'settings' && (
-        <div className="wt-tab-body">
+        <div className="wt-tab-body wt-set-grid">
           <div className="wt-set-block">
             <h4>自定义直播源</h4>
             <div className="wt-ai-row">

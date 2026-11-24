@@ -2376,6 +2376,13 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-set-block { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .wt-set-block:last-child { border-bottom: 0; }
 .wt-set-block h4 { margin: 0; font-size: 13.5px; font-weight: 700; }
+/* v0.1.423：设置页签改横向卡片式——各设置段成卡片、网格横向排列。
+   auto-fill + min(320px,100%)：桌面多列、窄屏自动减列、手机单列，且列宽
+   永不超过容器（不产生横向溢出）；网格本身不设 overflow，不截断页签栏 sticky。
+   卡片样式沿用看剧自己的 .wt-ai-panel（圆角 12、var(--bg-2)）。 */
+.wt-set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 12px; align-items: start; }
+.wt-set-grid .wt-set-block { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); padding: 14px 16px; overflow: clip; }
+.wt-set-grid > .wt-watchlist, .wt-set-grid > .fg-muted { grid-column: 1 / -1; }
 .wt-set-note { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
 .wt-ai-panel .ws-route > span, .wt-set-block .ws-route > span { white-space: nowrap; flex: none; }
 /* v0.1.407：视频区永远 16:9 定高（.wt-video 绝对定位铺满），加载中与失败是区内覆盖层，
