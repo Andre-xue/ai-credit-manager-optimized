@@ -40,6 +40,8 @@ export interface CloneResult {
   ok: boolean
   voiceId?: string
   error?: string
+  /** Qwen 克隆试合成返回的音频（v0.1.428：克隆成功后直接播放，不再丢弃） */
+  audioDataUrl?: string
 }
 
 /**
@@ -303,6 +305,71 @@ export async function ensureWavDataUrl(dataUrl: string): Promise<WavDataUrlResul
   return { ok: true, dataUrl: await blobToDataUrl(wav), converted: true }
 }
 
+/** 参考音频最长保留秒数（v0.1.428）：过长的参考音频会让服务端合成卡住，导入时只取前 15 秒。 */
+export const MAX_REF_AUDIO_SECONDS = 15
+
+export interface TrimAudioResult {
+  /** 最终样本（未超长时即原 blob；超长时为截取后重编码的 WAV） */
+  blob: Blob
+  /** 是否被截取过 */
+  trimmed: boolean
+  /** 原音频时长（秒；解不开时为 0） */
+  originalDurationS: number
+  /** 最终音频时长（秒；解不开时为 0） */
+  durationS: number
+}
+
+/** 用 <audio> 只读元数据探时长（不解码，毫秒级）；探不到返回 null（由调用方走解码确认）。 */
+async function probeAudioDurationS(blob: Blob): Promise<number | null> {
+  if (typeof Audio === 'undefined') return null
+  return new Promise((resolve) => {
+    let url = ''
+    try {
+      url = URL.createObjectURL(blob)
+      const audio = new Audio()
+      const done = (v: number | null) => { try { URL.revokeObjectURL(url) } catch { /* ignore */ } resolve(v) }
+      const timer = setTimeout(() => done(null), 5000)
+      audio.onloadedmetadata = () => { clearTimeout(timer); done(Number.isFinite(audio.duration) ? audio.duration : null) }
+      audio.onerror = () => { clearTimeout(timer); done(null) }
+      audio.preload = 'metadata'
+      audio.src = url
+    } catch {
+      try { if (url) URL.revokeObjectURL(url) } catch { /* ignore */ }
+      resolve(null)
+    }
+  })
+}
+
+/**
+ * 导入参考音频时限制时长：解码后若超过 maxSeconds，只取前 maxSeconds 重编码为 WAV。
+ * 先探元数据时长：没超长直接返回原 blob（不解码）；超长或探不到时才解码确认/截取。
+ * 解不开的格式返回原 blob（不阻断导入，下游 ensureWavDataUrl 会明确报错）；
+ * 浏览器无 AudioContext 时同样返回原 blob。
+ */
+export async function trimAudioBlob(blob: Blob, maxSeconds: number = MAX_REF_AUDIO_SECONDS): Promise<TrimAudioResult> {
+  const probed = await probeAudioDurationS(blob)
+  if (probed !== null && probed <= maxSeconds) return { blob, trimmed: false, originalDurationS: probed, durationS: probed }
+  let ctx: AudioContext | null = null
+  try {
+    const Ctx = (typeof window !== 'undefined' && (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)) || null
+    if (!Ctx) return { blob, trimmed: false, originalDurationS: probed ?? 0, durationS: probed ?? 0 }
+    ctx = new Ctx()
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer())
+    if (!decoded || !decoded.duration) return { blob, trimmed: false, originalDurationS: probed ?? 0, durationS: probed ?? 0 }
+    const originalDurationS = decoded.duration
+    if (originalDurationS <= maxSeconds) return { blob, trimmed: false, originalDurationS, durationS: originalDurationS }
+    const keep = Math.floor(maxSeconds * decoded.sampleRate)
+    const channels: Float32Array[] = []
+    const n = Math.min(2, decoded.numberOfChannels)
+    for (let c = 0; c < n; c++) channels.push(decoded.getChannelData(c).slice(0, keep))
+    return { blob: encodePcm16Wav(channels, decoded.sampleRate), trimmed: true, originalDurationS, durationS: maxSeconds }
+  } catch {
+    return { blob, trimmed: false, originalDurationS: probed ?? 0, durationS: probed ?? 0 }
+  } finally {
+    try { void ctx?.close() } catch { /* ignore */ }
+  }
+}
+
 /** 挑选 MediaRecorder 支持的音频 MIME。
  *  安卓 WebView 通常只支持 webm/opus 或 mp4；优先 mp4（下游兼容性好），再 wav/webm。 */
 export function pickRecordMime(): string | undefined {
@@ -417,10 +484,11 @@ export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, r
       const wav = await ensureWavDataUrl(sample.dataUrl)
       if (!wav.ok) return { ok: false, error: wav.error }
       onProgress?.('synthesize')
-      await qwenTtsSynthesize(wav.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
+      // 试合成的音频留下来（v0.1.428）：克隆成功后直接播放它，不再重新合成一次
+      const previewAudio = await qwenTtsSynthesize(wav.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
       onProgress?.('save')
       const voice = await saveQwenVoice(name || sample.name.replace(/\.[^.]+$/, ''), wav.dataUrl, refText ?? '', sample.name)
-      return { ok: true, voiceId: voice.voiceId }
+      return { ok: true, voiceId: voice.voiceId, audioDataUrl: previewAudio }
     } catch (e) {
       const msg = `Qwen3-TTS 本地克隆失败：${describeQwenCloneFailure((e as Error)?.message ?? String(e))}`
       return { ok: false, error: msg.length > 200 ? msg.slice(0, 200) + '…' : msg }

@@ -122,10 +122,37 @@ export async function qwenTtsSynthesize(refAudioDataUrl: string, refText: string
 }
 
 /**
+ * 取消一次正在进行的 Qwen 合成（v0.1.428）：前端「取消」按钮调用，Rust 端丢弃请求。
+ * 调用失败也不抛错（服务已停/无请求时本就无事可做）。
+ */
+export async function qwenTtsCancelSynthesize(): Promise<void> {
+  const invoke = getInvoke()
+  if (!invoke) return
+  try { await invoke('qwentts_cancel_synthesize') } catch { /* 忽略 */ }
+}
+
+/** 用户取消合成的哨兵（speakAsync 内部用，调用方无需匹配字符串） */
+export const QWEN_SYNTH_CANCELLED = '__acm_qwen_cancelled__'
+
+/**
+ * 合成失败是否因为服务没在跑（连接被拒/连不上/连接被重置）。
+ * 与超时区分开：超时是服务在、只是慢；连接不上才是服务没开。
+ */
+export function isQwenServiceOffError(raw: string): boolean {
+  return /connection refused|failed to connect|connection reset|ECONNREFUSED|network error|合成请求失败/i.test(raw)
+    && !/timed?\s*out|timeout/i.test(raw)
+}
+
+/**
  * Qwen 服务端报错翻译成中文指引（v0.1.414 兜底：正常流程下参考音频已在本地转成 WAV，
  * 这条错只会在旧版存量非 WAV 参考音频、或转换被绕过时出现）。
+ * v0.1.428：超时也给明确原因（此前只在克隆路径 describeQwenCloneFailure 里处理，
+ * 试听/朗读路径走这里会直接透出英文原错）。
  */
 export function friendlyQwenError(raw: string): string {
+  if (/timed?\s*out|timeout/i.test(raw)) {
+    return `合成超时（等待超过 ${QWENTTS_SYNTH_TIMEOUT_S / 60} 分钟仍未完成）：模型首次加载较慢或服务卡住。请确认服务仍在运行，稍后重试`
+  }
   if (/ffmpeg/i.test(raw) || /ref_audio is not WAV/i.test(raw)) {
     return '参考音频不是 WAV 且本机未装 ffmpeg，请改用 WAV 音频或安装 ffmpeg（终端运行 brew install ffmpeg）'
   }

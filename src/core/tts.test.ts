@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { cleanForSpeech, cleanForAutoSpeech, resolveCloneVoiceId } from './tts'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { cleanForSpeech, cleanForAutoSpeech, resolveCloneVoiceId, speakAsync } from './tts'
+import { buildSilentWavDataUrl } from './qwenTts'
 
 describe('cleanForAutoSpeech 自动朗读清洗（只读文字）', () => {
   it('去掉标点符号与表情，只保留文字', () => {
@@ -75,5 +76,114 @@ describe('cleanForSpeech 朗读文本清洗', () => {
   it('保留正常中文标点与句子', () => {
     const s = '这个方案不错。你觉得呢？'
     expect(cleanForSpeech(s)).toBe(s)
+  })
+})
+
+// Qwen 试听/朗读链路（v0.1.428）：服务没开不回落系统音色、合成有进度、可取消。
+// Tauri invoke 与 IndexedDB 都在模块 mock 里桩掉；node 环境没有 AudioContext，
+// 合成成功后的播放环节会按预期失败，进度/取消断言不受影响。
+const qwenMocks = vi.hoisted(() => ({
+  qwenStatus: vi.fn(),
+  qwenSynthesize: vi.fn(),
+  qwenCancel: vi.fn(),
+  loadRef: vi.fn(),
+  ensureWav: vi.fn(),
+}))
+
+vi.mock('./qwenTts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./qwenTts')>()
+  return {
+    ...orig,
+    qwenTtsStatus: (...args: unknown[]) => qwenMocks.qwenStatus(...args),
+    qwenTtsSynthesize: (...args: unknown[]) => qwenMocks.qwenSynthesize(...args),
+    qwenTtsCancelSynthesize: (...args: unknown[]) => qwenMocks.qwenCancel(...args),
+    loadQwenVoiceRef: (...args: unknown[]) => qwenMocks.loadRef(...args),
+  }
+})
+
+vi.mock('./voiceClone', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./voiceClone')>()
+  return {
+    ...orig,
+    getClonedVoiceId: () => 'qwen-local:qw_test',
+    listClonedVoices: () => [{ id: 'cv-1', voiceId: 'qwen-local:qw_test' }],
+    ensureWavDataUrl: (...args: unknown[]) => qwenMocks.ensureWav(...args),
+  }
+})
+
+vi.mock('./edgeTts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./edgeTts')>()
+  return { ...orig, getSpeakPref: () => '' }
+})
+
+vi.mock('./voice-download', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./voice-download')>()
+  return { ...orig, getTtsConfig: () => ({ provider: 'qwentts', endpoint: '', mode: 'direct' }) }
+})
+
+vi.mock('./openExternal', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./openExternal')>()
+  return { ...orig, isNativeApp: () => false, isDesktopApp: () => true }
+})
+
+describe('speakAsync Qwen 分支（v0.1.428）', () => {
+  const WAV = buildSilentWavDataUrl(0.5)
+  const RUNNING = { installed: true, running: true, url: 'http://127.0.0.1:18123', python: '3.12', pythonOk: true, modelCached: true, lastLog: '' }
+  const STOPPED = { ...RUNNING, running: false, url: null }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    qwenMocks.qwenStatus.mockResolvedValue(RUNNING)
+    qwenMocks.loadRef.mockResolvedValue({ voiceId: 'qwen-local:qw_test', name: 't', dataUrl: WAV, refText: '你好', createdAt: 1 })
+    qwenMocks.ensureWav.mockResolvedValue({ ok: true, dataUrl: WAV, converted: false })
+    qwenMocks.qwenSynthesize.mockResolvedValue(WAV)
+  })
+
+  it('服务没开：不调合成、不回落系统音色，onQwenServiceOff 收到「服务没开」', async () => {
+    qwenMocks.qwenStatus.mockResolvedValue(STOPPED)
+    const onQwenServiceOff = vi.fn()
+    const onFallback = vi.fn()
+    const ok = await speakAsync('你好', null, undefined, onFallback, { onQwenServiceOff })
+    expect(ok).toBe(false)
+    expect(onQwenServiceOff).toHaveBeenCalledTimes(1)
+    expect(onQwenServiceOff.mock.calls[0][0]).toContain('服务没开')
+    expect(onFallback).not.toHaveBeenCalled()
+    expect(qwenMocks.qwenSynthesize).not.toHaveBeenCalled()
+    expect(qwenMocks.ensureWav).not.toHaveBeenCalled()
+  })
+
+  it('服务没开且调用方没给 onQwenServiceOff：走 onFallback 提示，同样不合成', async () => {
+    qwenMocks.qwenStatus.mockResolvedValue(STOPPED)
+    const onFallback = vi.fn()
+    const ok = await speakAsync('你好', null, undefined, onFallback)
+    expect(ok).toBe(false)
+    expect(onFallback).toHaveBeenCalledTimes(1)
+    expect(onFallback.mock.calls[0][0]).toContain('服务没开')
+    expect(qwenMocks.qwenSynthesize).not.toHaveBeenCalled()
+  })
+
+  it('合成进行中：onSynthProgress 每秒上报已等待秒数（0/1/2…）', async () => {
+    qwenMocks.qwenSynthesize.mockImplementation(() => new Promise(res => setTimeout(() => res(WAV), 2500)))
+    const progress: number[] = []
+    // 注意：文本不能是光秃秃的「你好」，cleanForSpeech 会把问候开头去掉变空串
+    await speakAsync('这是克隆音色的试听。', null, undefined, vi.fn(), { onSynthProgress: (el) => progress.push(el) })
+    expect(qwenMocks.qwenSynthesize).toHaveBeenCalledTimes(1)
+    expect(progress).toContain(0)
+    expect(progress).toContain(1)
+    expect(progress).toContain(2)
+    expect(progress[0]).toBe(0)
+  })
+
+  it('合成卡住时取消：调 qwentts_cancel_synthesize、静默结束，不弹回落提示', async () => {
+    qwenMocks.qwenSynthesize.mockImplementation(() => new Promise(() => {}))
+    const token = { cancelled: false }
+    const onFallback = vi.fn()
+    const p = speakAsync('这是克隆音色的试听。', null, undefined, onFallback, { cancelToken: token })
+    await new Promise(r => setTimeout(r, 1200))
+    token.cancelled = true
+    const ok = await p
+    expect(ok).toBe(false)
+    expect(qwenMocks.qwenCancel).toHaveBeenCalled()
+    expect(onFallback).not.toHaveBeenCalled()
   })
 })

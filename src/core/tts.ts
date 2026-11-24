@@ -3,7 +3,7 @@
 // - Web / 桌面 WebView：用 Web Speech API（speechSynthesis）
 // 方言音色（粤语/四川话等）需第三方 TTS，由 voice-download.ts 管理。
 
-import { isNativeApp } from './openExternal'
+import { isNativeApp, isDesktopApp } from './openExternal'
 
 export interface VoiceOption {
   uri: string
@@ -216,7 +216,7 @@ import { getTtsConfig } from './voice-download'
 import { getClonedVoiceId, listClonedVoices, ensureWavDataUrl } from './voiceClone'
 import { isDirectMode, ttsSynthesizeDirect, voicestudioSynthesize } from './ttsDirect'
 import { getSpeakPref, getEdgeVoiceId, synthesizeEdgeMp3 } from './edgeTts'
-import { isQwenVoiceId, loadQwenVoiceRef, qwenTtsSynthesize, friendlyQwenError } from './qwenTts'
+import { isQwenVoiceId, loadQwenVoiceRef, qwenTtsSynthesize, qwenTtsStatus, qwenTtsCancelSynthesize, isQwenServiceOffError, QWEN_SYNTH_CANCELLED, friendlyQwenError } from './qwenTts'
 
 /** 是否使用本机 VoiceStudio 作为语音服务 */
 function isVoiceStudio(cfg: ReturnType<typeof getTtsConfig>): boolean {
@@ -301,15 +301,35 @@ export function resolveCloneVoiceId(
   return globalCloneId
 }
 
+/** 播放一段已合成好的音频 data URI（克隆成功后直接播试听音频，不再重新合成）。 */
+export async function playAudioDataUrl(dataUrl: string, onState?: (s: 'start' | 'end' | 'error') => void): Promise<void> {
+  const b64 = dataUrl.split(',')[1] ?? ''
+  if (!b64) throw new Error('合成音频为空')
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  await playMp3Buffer(bytes.buffer, onState)
+}
+
 /**
  * 异步朗读：若已克隆声音且配置了第三方代理，优先走代理合成；失败回退系统 TTS。
  * 克隆声音只有代理端实现 /synthesize 后才会真正生效，系统音色不应伪装成克隆效果。
  */
+export interface SpeakOptions {
+  /** Qwen 合成进行中回调：每秒上报已等待秒数（界面据此显示「合成中…已等待 X 秒」） */
+  onSynthProgress?: (elapsedS: number) => void
+  /** 取消令牌：调用方把 cancelled 置 true 后，本次 Qwen 合成会被中断（桌面端 Rust 侧丢弃请求） */
+  cancelToken?: { cancelled: boolean }
+  /** 本次需要 Qwen 服务、但服务没在跑时调用（不再悄悄回落系统音色）；收到提示文本 */
+  onQwenServiceOff?: (message: string) => void
+}
+
 export async function speakAsync(
   text: string,
   voiceURI: string | null,
   onState?: (s: 'start' | 'end' | 'error') => void,
   onFallback?: (reason: string) => void,
+  opts?: SpeakOptions,
 ): Promise<boolean> {
   // Edge 免费音色优先：用户在语音配置里选了 Edge 音色时，全局朗读走微软云端合成
   if (getSpeakPref() === 'edge') {
@@ -334,8 +354,37 @@ export async function speakAsync(
     voiceURI, clonedVoices, getSpeakSource() === 'clone' ? getClonedVoiceId() : null,
   )
   // Qwen3-TTS 本地克隆音色：参考音频存本机，每次合成随请求带上；无需第三方配置。
-  // 服务未运行、参考音频丢失、合成失败时明确告知并回退系统音色。
+  // v0.1.428：服务没开时不再悄悄回落系统音色——先查状态，没开就明确告知并交给
+  // 调用方处理（语音页给一键开启入口）；合成进行中有进度回调、可取消。
   if (cloned && isQwenVoiceId(cloned)) {
+    const serviceOffMessage = isDesktopApp()
+      ? 'Qwen3-TTS 服务没开：请先在语音配置页打开 Qwen3-TTS 服务开关'
+      : 'Qwen3-TTS 本地服务仅桌面端支持，手机上无法使用克隆音色朗读'
+    const reportServiceOff = () => {
+      if (opts?.onQwenServiceOff) opts.onQwenServiceOff(serviceOffMessage)
+      else onFallback?.(serviceOffMessage)
+    }
+    // 先查状态：服务没在跑就直接告知，不调合成、不播系统音色
+    const st = await qwenTtsStatus().catch(() => null)
+    if (!st?.running) {
+      reportServiceOff()
+      return false
+    }
+    const t0 = Date.now()
+    const progressTimer = (opts?.onSynthProgress || opts?.cancelToken)
+      ? setInterval(() => { opts?.onSynthProgress?.(Math.floor((Date.now() - t0) / 1000)) }, 1000)
+      : null
+    if (progressTimer) opts?.onSynthProgress?.(0)
+    let cancelWatcher: ReturnType<typeof setInterval> | null = null
+    const cancelPromise = opts?.cancelToken ? new Promise<never>((_, reject) => {
+      cancelWatcher = setInterval(() => {
+        if (opts.cancelToken?.cancelled) {
+          if (cancelWatcher) clearInterval(cancelWatcher)
+          void qwenTtsCancelSynthesize()
+          reject(new Error(QWEN_SYNTH_CANCELLED))
+        }
+      }, 200)
+    }) : null
     try {
       stopSpeak()
       const speakText = cleanForSpeech(text)
@@ -346,7 +395,9 @@ export async function speakAsync(
       // 没装 ffmpeg 会报 400；朗读前同样在浏览器内转成 WAV 再传。
       const wav = await ensureWavDataUrl(ref.dataUrl)
       if (!wav.ok) throw new Error(wav.error)
-      const dataUri = await qwenTtsSynthesize(wav.dataUrl, ref.refText, speakText)
+      const dataUri = cancelPromise
+        ? await Promise.race([qwenTtsSynthesize(wav.dataUrl, ref.refText, speakText), cancelPromise])
+        : await qwenTtsSynthesize(wav.dataUrl, ref.refText, speakText)
       const b64 = dataUri.split(',')[1] ?? ''
       if (!b64) throw new Error('合成音频为空')
       const bin = atob(b64)
@@ -355,10 +406,21 @@ export async function speakAsync(
       await playMp3Buffer(bytes.buffer, onState)
       return true
     } catch (e) {
-      const lastErr = friendlyQwenError((e as Error)?.message ?? String(e))
+      const raw = (e as Error)?.message ?? String(e)
+      // 用户主动取消：静默结束，不弹回落提示、不播系统音色
+      if (raw === QWEN_SYNTH_CANCELLED) return false
+      // 合成中途服务挂了：按服务没开处理，同样不回落系统音色
+      if (isQwenServiceOffError(raw)) {
+        reportServiceOff()
+        return false
+      }
+      const lastErr = friendlyQwenError(raw)
       onFallback?.(`Qwen3-TTS 本地克隆音色播放失败（${lastErr.slice(0, 60)}），已临时改用系统音色`)
+      return speak(text, voiceURI, onState)
+    } finally {
+      if (progressTimer) clearInterval(progressTimer)
+      if (cancelWatcher) clearInterval(cancelWatcher)
     }
-    return speak(text, voiceURI, onState)
   }
   const cfg = getTtsConfig()
   const direct = isDirectMode(cfg)
@@ -431,8 +493,10 @@ export async function speakAsync(
 export function stopSpeak(): void {
   activeCallback = null
   // 停止正在播放的克隆音（AudioContext），避免与新朗读重叠
-  try { (window as any).__acmCloneSrc?.stop() } catch { /* ignore */ }
-  if ((window as any).__acmCloneSrc) (window as any).__acmCloneSrc = null
+  if (typeof window !== 'undefined') {
+    try { (window as unknown as { __acmCloneSrc?: { stop?: () => void } }).__acmCloneSrc?.stop?.() } catch { /* ignore */ }
+    try { if ((window as unknown as { __acmCloneSrc?: unknown }).__acmCloneSrc) (window as unknown as { __acmCloneSrc?: unknown }).__acmCloneSrc = null } catch { /* ignore */ }
+  }
   if (isNativeApp()) {
     nativeSpeaking = false
     void import('@capacitor-community/text-to-speech').then(({ TextToSpeech }) => TextToSpeech.stop()).catch(() => {})

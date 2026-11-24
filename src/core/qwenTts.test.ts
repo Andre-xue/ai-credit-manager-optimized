@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   isQwenVoiceId, newQwenVoiceId, QWENTTS_PORT, QWENTTS_URL, QWENTTS_MODEL_ID, QWEN_VOICE_PREFIX,
   friendlyQwenError, buildSilentWavDataUrl, formatCloneElapsed, describeQwenCloneFailure,
-  shouldRetryQwenWarmup, getQwenWarmupState, resetQwenWarmup,
+  shouldRetryQwenWarmup, getQwenWarmupState, resetQwenWarmup, isQwenServiceOffError,
   QWENTTS_SYNTH_TIMEOUT_S, QWEN_CLONE_SLOW_HINT_S,
 } from './qwenTts'
 
@@ -95,5 +95,26 @@ describe('Qwen 克隆进度可视化（v0.1.415）', () => {
   it('预热状态初始 idle、复位回 idle', () => {
     resetQwenWarmup()
     expect(getQwenWarmupState()).toBe('idle')
+  })
+})
+
+describe('Qwen 试听/朗读链路（v0.1.428）', () => {
+  it('friendlyQwenError：超时给明确原因（试听/朗读路径也走这里，不再透英文原错）', () => {
+    const msg = friendlyQwenError('合成请求失败（请确认 Qwen3-TTS 服务已启动）：error sending request for url (http://127.0.0.1:18123/v1/audio/clone): operation timed out')
+    expect(msg).toContain('合成超时')
+    expect(msg).toContain('10 分钟')
+    expect(msg).toContain('服务仍在运行')
+  })
+  it('friendlyQwenError：克隆路径的超时文案不受影响（describeQwenCloneFailure 优先）', () => {
+    expect(describeQwenCloneFailure('operation timed out')).toContain('克隆超时')
+  })
+  it('isQwenServiceOffError：连接被拒/连不上算服务没开，超时与业务错不算', () => {
+    expect(isQwenServiceOffError('合成请求失败（请确认 Qwen3-TTS 服务已启动）：error sending request: Connection refused (os error 61)')).toBe(true)
+    expect(isQwenServiceOffError('connection refused')).toBe(true)
+    expect(isQwenServiceOffError('failed to connect')).toBe(true)
+    expect(isQwenServiceOffError('operation timed out')).toBe(false)
+    expect(isQwenServiceOffError('合成请求失败：operation timed out')).toBe(false)
+    expect(isQwenServiceOffError('合成失败（HTTP 400）：ref_audio is not WAV')).toBe(false)
+    expect(isQwenServiceOffError('合成失败（HTTP 500）：内部错误')).toBe(false)
   })
 })

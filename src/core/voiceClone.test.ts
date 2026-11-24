@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   isWavDataUrl, dataUrlToBlob, encodePcm16Wav, ensureWavDataUrl,
+  trimAudioBlob, MAX_REF_AUDIO_SECONDS,
 } from './voiceClone'
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -78,5 +79,57 @@ describe('Qwen 参考音频 WAV 归一化（v0.1.414）', () => {
     }
     const bad = await ensureWavDataUrl('garbage-not-a-data-url')
     expect(bad.ok).toBe(false)
+  })
+})
+
+describe('参考音频限时长（v0.1.428）', () => {
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  function installFakeAudioContext(durationS: number) {
+    const ch = new Float32Array(Math.floor(16000 * durationS)).fill(0.25)
+    class FakeCtx {
+      async decodeAudioData() {
+        return { duration: durationS, sampleRate: 16000, numberOfChannels: 1, getChannelData: () => ch }
+      }
+      close() { /* ignore */ }
+    }
+    ;(globalThis as unknown as { window: unknown }).window = { AudioContext: FakeCtx }
+  }
+
+  it('MAX_REF_AUDIO_SECONDS 为 15 秒', () => {
+    expect(MAX_REF_AUDIO_SECONDS).toBe(15)
+  })
+
+  it('node 环境无 Audio/AudioContext 时 fail-open：返回原 blob、不阻断导入', async () => {
+    const blob = new Blob(['fake-audio-bytes'], { type: 'audio/mpeg' })
+    const r = await trimAudioBlob(blob)
+    expect(r.trimmed).toBe(false)
+    expect(r.blob).toBe(blob)
+  })
+
+  it('30 秒音频只取前 15 秒、重编码为 WAV', async () => {
+    installFakeAudioContext(30)
+    const blob = new Blob(['fake-audio-bytes'], { type: 'audio/mpeg' })
+    const r = await trimAudioBlob(blob)
+    expect(r.trimmed).toBe(true)
+    expect(r.originalDurationS).toBe(30)
+    expect(r.durationS).toBe(15)
+    expect(r.blob.type).toBe('audio/wav')
+    expect(r.blob.size).toBe(44 + 15 * 16000 * 2)
+    const buf = new DataView(await r.blob.arrayBuffer())
+    expect(String.fromCharCode(...new Uint8Array(buf.buffer.slice(0, 4)))).toBe('RIFF')
+    expect(buf.getInt16(44, true)).toBe(0x1fff) // 0.25 → 8191，取的是开头
+  })
+
+  it('10 秒音频不截取、返回原 blob', async () => {
+    installFakeAudioContext(10)
+    const blob = new Blob(['fake-audio-bytes'], { type: 'audio/mpeg' })
+    const r = await trimAudioBlob(blob)
+    expect(r.trimmed).toBe(false)
+    expect(r.blob).toBe(blob)
+    expect(r.originalDurationS).toBe(10)
+    expect(r.durationS).toBe(10)
   })
 })

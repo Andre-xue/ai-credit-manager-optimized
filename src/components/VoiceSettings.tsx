@@ -6,12 +6,12 @@ import { useEffect, useState, useRef } from 'react'
 import { Volume2, Play, Square, Trash2, Loader2, Info, Mic, Check, Pencil } from 'lucide-react'
 import { HoldToConfirm } from './HoldToConfirm'
 import {
-  getRate, saveRate, stopSpeak, getSpeakSource, speakAsync,
+  getRate, saveRate, stopSpeak, getSpeakSource, speakAsync, playAudioDataUrl,
 } from '../core/tts'
 import {
   loadVoiceSample, saveVoiceSample, deleteVoiceSample, recordVoiceSample,
   cloneVoiceFromSample, getClonedVoiceId, listClonedVoices, removeClonedVoice, addClonedVoice,
-  setActiveClonedVoice, renameClonedVoice, blobToWav, type VoiceSample, type ClonedVoice,
+  setActiveClonedVoice, renameClonedVoice, blobToWav, trimAudioBlob, MAX_REF_AUDIO_SECONDS, type VoiceSample, type ClonedVoice,
   type CloneStage,
 } from '../core/voiceClone'
 import { isDesktopApp } from '../core/openExternal'
@@ -34,6 +34,7 @@ import type { Account } from '../core/types'
 import { ServiceSwitch } from './ServiceSwitch'
 import type { ServiceController } from '../core/useServiceController'
 import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
+import { startLocalService } from '../core/localServices'
 
 export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceController }: {
   notify: (m: string) => void
@@ -66,6 +67,14 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
     } finally { setVoiceUnlocking(false) }
   }
   const [previewing, setPreviewing] = useState(false)
+  // 试听合成进度（v0.1.428）：Qwen 合成进行中显示「合成中…已等待 X 秒」+可取消
+  const [previewSynth, setPreviewSynth] = useState<number | null>(null)
+  const previewCancelRef = useRef<{ cancelled: boolean } | null>(null)
+  // 服务没开时试听横条（v0.1.428）：明确提示 + 一键开启入口
+  const [qwenOff, setQwenOff] = useState(false)
+  const previewHandledRef = useRef(false)
+  // 克隆成功后播放试合成音频（v0.1.428）
+  const [clonePreviewPlaying, setClonePreviewPlaying] = useState(false)
   const [sample, setSample] = useState<VoiceSample | null>(null)
   const [clonedId, setClonedId] = useState<string | null>(() => getClonedVoiceId())
   const [edgeVoice, setEdgeVoiceState] = useState<string>(() => getEdgeVoiceId())
@@ -120,18 +129,79 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
   // 卸载时停掉克隆秒表
   useEffect(() => () => { if (cloneTimerRef.current) window.clearInterval(cloneTimerRef.current) }, [])
 
-  const tryPreview = () => {
-    if (previewing) { stopSpeak(); setPreviewing(false); return }
+  const tryPreview = async () => {
+    // 正在试听/合成中：再点一次即取消（v0.1.428：合成卡住时可取消，不干等）
+    if (previewing) {
+      if (previewCancelRef.current) previewCancelRef.current.cancelled = true
+      stopSpeak()
+      setPreviewing(false)
+      setPreviewSynth(null)
+      return
+    }
     if (getSpeakSource() !== 'clone') {
       notify(t('当前没有可用的克隆音色，请先在下方导入声音样本并克隆'))
       return
     }
+    // Qwen 音色：服务没开时先提示、不调合成、不播系统音色（v0.1.428）
+    const activeId = getClonedVoiceId()
+    if (activeId && isQwenVoiceId(activeId)) {
+      const st = await qwenTtsStatus()
+      setQwenStatus(st)
+      if (!st.running) {
+        if (!desktop) { notify('Qwen3-TTS 本地服务仅桌面端支持，手机上无法试听克隆音色'); return }
+        setQwenOff(true)
+        notify('Qwen3-TTS 服务没开：请先打开服务开关再试听')
+        return
+      }
+    }
     setPreviewing(true)
+    setQwenOff(false)
+    previewHandledRef.current = false
+    const token = { cancelled: false }
+    previewCancelRef.current = token
     void speakAsync(t('你好，这是当前克隆音色的试听。'), null, (s) => {
-      if (s === 'end' || s === 'error') setPreviewing(false)
-    }, (reason) => { notify(reason); setPreviewing(false) }).then(ok => {
-      if (!ok) { notify(t('克隆音色试听失败')); setPreviewing(false) }
+      if (s === 'start') setPreviewSynth(null)
+      if (s === 'end' || s === 'error') { setPreviewing(false); setPreviewSynth(null) }
+    }, (reason) => { notify(reason); setPreviewing(false); setPreviewSynth(null) }, {
+      onSynthProgress: (el) => setPreviewSynth(el),
+      cancelToken: token,
+      onQwenServiceOff: (msg) => {
+        previewHandledRef.current = true
+        setQwenOff(true)
+        setPreviewing(false)
+        setPreviewSynth(null)
+        notify(msg)
+      },
+    }).then(ok => {
+      if (!ok) {
+        setPreviewing(false)
+        setPreviewSynth(null)
+        // 服务没开/用户取消已有专门提示，不再补一句笼统的「试听失败」
+        if (!previewHandledRef.current && !token.cancelled) notify(t('克隆音色试听失败'))
+      }
     })
+  }
+
+  /** 服务没开横条上的一键开启（v0.1.428）：开关没开就打开开关；开关开着但进程没跑就直接拉起 */
+  const startQwenForPreview = async () => {
+    if (!serviceController) {
+      notify('请到「设置 → 本地模型服务」打开 Qwen3-TTS 开关')
+      return
+    }
+    if (!serviceController.enabled('qwentts')) {
+      await serviceController.toggle('qwentts')
+    } else {
+      const r = await startLocalService('qwentts')
+      notify(r.message)
+    }
+    // 等服务真正监听上再收起横条（模型加载约 5~30 秒，轮询最多 60 秒）
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000))
+      const st = await qwenTtsStatus()
+      setQwenStatus(st)
+      if (st.running) { setQwenOff(false); return }
+    }
+    await refreshQwenStatus()
   }
 
   const changeRate = (r: number) => { setRate(r); saveRate(r) }
@@ -143,7 +213,12 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
   /** 刷新 Qwen3-TTS 本地服务状态（安装/Python/模型/运行）+ 同步预热状态 */
   const refreshQwenStatus = async () => {
     setQwenLoading(true)
-    try { setQwenStatus(await qwenTtsStatus()); setQwenWarmup(getQwenWarmupState()) } finally { setQwenLoading(false) }
+    try {
+      const st = await qwenTtsStatus()
+      setQwenStatus(st)
+      if (st.running) setQwenOff(false)
+      setQwenWarmup(getQwenWarmupState())
+    } finally { setQwenLoading(false) }
   }
 
   // 服务开关在别处（设置页）切换时，同步刷新本页的 Qwen 状态徽标（v0.1.427）
@@ -282,8 +357,15 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
       const ext = picked.split('.').pop()?.toLowerCase() ?? ''
       const mime = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : ext === 'm4a' ? 'audio/mp4' : `audio/${ext}`
       const blob = new Blob([bytes], { type: mime })
-      setSample(await saveVoiceSample(blob, picked.split('/').pop() ?? picked))
-      notify(t('音频样本已导入，可点击「克隆为 AI 发音」'))
+      // v0.1.428：参考音频过长会让服务端合成卡住，导入时只取前 15 秒；
+      // 截取提示并进最后一条 toast（立即再 notify 会把这条顶掉）
+      const trimmed = await trimAudioBlob(blob)
+      const finalBlob = trimmed.blob
+      const finalName = (trimmed.trimmed ? (picked.split('/').pop() ?? picked).replace(/\.[^.]+$/, '') + '.wav' : picked.split('/').pop() ?? picked)
+      setSample(await saveVoiceSample(finalBlob, finalName))
+      notify(trimmed.trimmed
+        ? `音频样本已导入（原 ${Math.round(trimmed.originalDurationS)} 秒，已只取前 ${MAX_REF_AUDIO_SECONDS} 秒），可点击「克隆为 AI 发音」`
+        : t('音频样本已导入，可点击「克隆为 AI 发音」'))
     } catch (e) { notify((e as Error)?.message ?? t('读取音频文件失败')) }
   }
 
@@ -309,13 +391,21 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
         notify(t('格式转换未成功，将按原格式尝试克隆'))
       }
     }
+    // v0.1.428：参考音频过长会让服务端合成卡住，导入时只取前 15 秒；
+    // 截取提示并进最后一条 toast（立即再 notify 会把这条顶掉）
+    const trimmed = await trimAudioBlob(blob)
+    let trimNote = ''
+    if (trimmed.trimmed) {
+      blob = trimmed.blob
+      trimNote = `（原 ${Math.round(trimmed.originalDurationS)} 秒，已只取前 ${MAX_REF_AUDIO_SECONDS} 秒）`
+    }
     const mime = blob.type || file.type || 'audio/wav'
     const finalExt = mime.includes('wav') ? 'wav' : mime.includes('mpeg') || mime.includes('mp3') ? 'mp3'
       : mime.includes('mp4') ? 'm4a' : ext || 'm4a'
     const name = file.name.replace(/\.[^.]+$/, '') + '.' + finalExt
     setSample(await saveVoiceSample(blob, name))
     setCloneError('')
-    notify(t('音频样本已保存，可点击「克隆为 AI 发音」'))
+    notify(trimNote ? `音频样本已保存${trimNote}，可点击「克隆为 AI 发音」` : t('音频样本已保存，可点击「克隆为 AI 发音」'))
   }
 
   /** 克隆音色增删改后：刷新本页列表 + 通知 AI 助手设置弹窗同步音色下拉 */
@@ -355,9 +445,20 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
         return
       }
       if (isQwenTts) setCloneStage('done')
+      // v0.1.428 ⑥：克隆成功后立即把新音色写成当前使用中（显式激活；saveQwenVoice→
+      // addClonedVoice 内部也会激活，这里再写一次是双保险，且保证 syncClonedVoices
+      // 读到的就是新音色，不会被旧值覆盖）
+      if (r.voiceId) setActiveClonedVoice(r.voiceId)
       setClonedId(r.voiceId ?? null)
       syncClonedVoices()
       notify(t('克隆成功，AI 回复将优先使用该音色'))
+      // v0.1.428 ④：克隆成功后把试合成的那段音频真正放出来（不再验证完就丢弃）
+      if (isQwenTts && r.audioDataUrl) {
+        setClonePreviewPlaying(true)
+        void playAudioDataUrl(r.audioDataUrl, (s) => {
+          if (s === 'end' || s === 'error') setClonePreviewPlaying(false)
+        }).catch(() => setClonePreviewPlaying(false))
+      }
     } finally {
       if (cloneTimerRef.current) { window.clearInterval(cloneTimerRef.current); cloneTimerRef.current = null }
       setCloning(false)
@@ -440,8 +541,19 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceC
         <input type="range" min="0.5" max="2" step="0.1" value={rate} onChange={e => changeRate(Number(e.target.value))} className="voice-range" />
       </div>
       <button className="voice-preview" onClick={tryPreview}>
-        {previewing ? <Square size={14} /> : <Play size={14} />} {previewing ? t('停止试听') : t('试听克隆音色')}
+        {previewing ? <Square size={14} /> : <Play size={14} />} {previewSynth !== null ? `合成中…已等待 ${previewSynth} 秒（点此取消）` : previewing ? t('停止试听') : t('试听克隆音色')}
       </button>
+      {qwenOff && (
+        <div className="voice-clone-error">
+          <Info size={14} />
+          <span>Qwen3-TTS 服务没开，试听需要先启动服务</span>
+          <button className="btn sm primary" onClick={() => void startQwenForPreview()}>立即开启服务</button>
+          <button className="icon-btn" onClick={() => setQwenOff(false)}>×</button>
+        </div>
+      )}
+      {clonePreviewPlaying && (
+        <div className="voice-hint">正在播放克隆试听…</div>
+      )}
 
       {/* 横向标题页签（v0.1.401，同看剧 394：标题栏吸顶、数量标在标题上、手机端自动换行） */}
       <div className="wt-tabs" role="tablist">

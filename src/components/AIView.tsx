@@ -151,6 +151,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 联网搜索进行中（驱动流式气泡里的旋转地球动画，v0.1.323 Ethan 要求）
   const [searching, setSearching] = useState(false)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
+  // 朗读合成进度（v0.1.428）：Qwen 合成进行中按钮显示「合成中…X 秒」，再点取消
+  const [synthId, setSynthId] = useState<string | null>(null)
+  const [synthElapsed, setSynthElapsed] = useState(0)
+  const synthCancelRef = useRef<{ cancelled: boolean } | null>(null)
   // 自动朗读：AI 回复完成后自动朗读（只读文字，去表情/标点），开关持久化
   const [autoSpeak, setAutoSpeak] = useState(() => {
     try { return localStorage.getItem('acm.ai.autoSpeak') === '1' } catch { return false }
@@ -838,6 +842,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         if (spoken) {
           void speakAsync(spoken, botProfile.voiceURI ?? getSavedVoice(), (s) => {
             setSpeakingId(s === 'start' ? 'auto' : null)
+          }, (reason) => notify(reason), {
+            // v0.1.428：自动朗读失败也不再静默（服务没开时明确提示，不回落系统音色）
+            onQwenServiceOff: (msg) => notify(msg),
           })
         }
       }
@@ -875,11 +882,33 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const stop = () => { abortRef.current?.abort(); setGenerating(false) }
 
   const toggleSpeak = (m: ChatMessage) => {
+    // 正在合成：再点一次即取消（v0.1.428）
+    if (synthId === m.id) {
+      if (synthCancelRef.current) synthCancelRef.current.cancelled = true
+      stopSpeak()
+      setSynthId(null)
+      return
+    }
     if (speakingId === m.id) { stopSpeak(); setSpeakingId(null); return }
+    const token = { cancelled: false }
+    synthCancelRef.current = token
+    let handled = false
+    setSynthId(m.id)
+    setSynthElapsed(0)
     void speakAsync(m.content, botProfile.voiceURI ?? getSavedVoice(), (state) => {
-      if (state === 'end' || state === 'error') setSpeakingId(null)
-    }, (reason) => notify(reason)).then(ok => {
-      if (!ok) { notify(t('当前环境不支持语音朗读')); return }
+      if (state === 'start') setSynthId(null)
+      if (state === 'end' || state === 'error') { setSpeakingId(null); setSynthId(null) }
+    }, (reason) => { notify(reason); setSynthId(null) }, {
+      onSynthProgress: (el) => setSynthElapsed(el),
+      cancelToken: token,
+      onQwenServiceOff: (msg) => { handled = true; setSynthId(null); notify(msg) },
+    }).then(ok => {
+      if (!ok) {
+        setSynthId(null)
+        // 服务没开/用户取消已有专门提示，不再补一句笼统的「不支持朗读」
+        if (!handled && !token.cancelled) notify(t('当前环境不支持语音朗读'))
+        return
+      }
       setSpeakingId(m.id)
     })
   }
@@ -1475,10 +1504,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                     {m.content && (
                       <div className="ai-msg-tools">
                         {m.role === 'assistant' && (
-                          <button className={`ai-speak ${speakingId === m.id ? 'active' : ''}`}
-                            onClick={() => toggleSpeak(m)} title={speakingId === m.id ? t('停止朗读') : t('朗读此回复')}>
-                            {speakingId === m.id ? <VolumeX size={14} /> : <Volume2 size={14} />}
-                            <span>{speakingId === m.id ? t('停止') : t('朗读')}</span>
+                          <button className={`ai-speak ${speakingId === m.id || synthId === m.id ? 'active' : ''}`}
+                            onClick={() => toggleSpeak(m)} title={synthId === m.id ? '取消合成' : speakingId === m.id ? t('停止朗读') : t('朗读此回复')}>
+                            {synthId === m.id || speakingId === m.id ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                            <span>{synthId === m.id ? `合成中…${synthElapsed} 秒` : speakingId === m.id ? t('停止') : t('朗读')}</span>
                           </button>
                         )}
                         <button className="ai-copy" onClick={() => void copyMessage(m.content)} title={t('复制对话内容')}><Copy size={13} /></button>

@@ -2483,10 +2483,23 @@ async fn qwentts_test() -> Result<String, String> {
     Ok(format!("连接成功，Qwen3-TTS 服务可用（模型 {}）", model))
 }
 
+/// Qwen3-TTS 合成取消标志：前端「取消」按钮调用 qwentts_cancel_synthesize 置位，
+/// 进行中的 qwentts_synthesize 在 select! 里感知后丢弃请求、立刻返回；下一次合成开始时自动复位。
+/// 注意：一次只能取消当前正在跑的那次合成；界面上不会并发起两次合成。
+static QWENTTS_SYNTH_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 取消一次正在进行的 Qwen3-TTS 合成（v0.1.428：试听/朗读卡住时可取消）。
+#[tauri::command]
+fn qwentts_cancel_synthesize() {
+    QWENTTS_SYNTH_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Qwen3-TTS 本地克隆合成：POST /v1/audio/clone（multipart：input 文本 + ref_audio 参考音频 + ref_text 原文）。
 /// language=auto 由服务端按文本自动识别（传 english 会强制英文）。返回 wav 音频 data URI。
 #[tauri::command]
 async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: String) -> Result<String, String> {
+    // 新一次合成开始时复位取消标志（上一次取消后残留的 true 不应误杀下一次）
+    QWENTTS_SYNTH_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     let (mime, bytes) = parse_data_uri(&audio_data_url)?;
     if text.trim().is_empty() {
         return Err("朗读内容为空".to_string());
@@ -2509,21 +2522,34 @@ async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: Stri
     // 掐断请求（须与前端 QWENTTS_SYNTH_TIMEOUT_S 保持一致）
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    let resp = client.post(format!("{}/v1/audio/clone", QWENTTS_URL))
-        .header("Content-Type", format!("multipart/form-data; boundary={}", boundary))
-        .body(body).send().await.map_err(|e| format!("合成请求失败（请确认 Qwen3-TTS 服务已启动）：{}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let t = resp.text().await.unwrap_or_default();
-        return Err(format!("合成失败（HTTP {}）：{}", status.as_u16(), t.chars().take(200).collect::<String>()));
+    // 合成请求与取消标志二选一（v0.1.428）：取消分支胜出时丢弃进行中的请求 future，
+    // reqwest 随即中断连接，单线程服务端不再被占住；前端不再干等 600 秒超时。
+    let work = async {
+        let resp = client.post(format!("{}/v1/audio/clone", QWENTTS_URL))
+            .header("Content-Type", format!("multipart/form-data; boundary={}", boundary))
+            .body(body).send().await.map_err(|e| format!("合成请求失败（请确认 Qwen3-TTS 服务已启动）：{}", e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let t = resp.text().await.unwrap_or_default();
+            return Err(format!("合成失败（HTTP {}）：{}", status.as_u16(), t.chars().take(200).collect::<String>()));
+        }
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败：{}", e))?;
+        // 防止误把 JSON 错误当成音频
+        if content_type.contains("application/json") || bytes.starts_with(b"{\"") {
+            return Err(format!("合成返回非音频：{}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()));
+        }
+        Ok::<String, String>(format!("data:audio/wav;base64,{}", base64_encode(&bytes)))
+    };
+    tokio::select! {
+        r = work => r,
+        _ = async {
+            loop {
+                if QWENTTS_SYNTH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        } => Err("合成已取消".to_string()),
     }
-    let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败：{}", e))?;
-    // 防止误把 JSON 错误当成音频
-    if content_type.contains("application/json") || bytes.starts_with(b"{\"") {
-        return Err(format!("合成返回非音频：{}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()));
-    }
-    Ok(format!("data:audio/wav;base64,{}", base64_encode(&bytes)))
 }
 
 // ==================== 阿里云百炼 TTS 直连 ====================
@@ -4324,7 +4350,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

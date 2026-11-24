@@ -29,7 +29,7 @@ import { saveTtsConfig } from './core/voice-download'
 import { detectModelCapability, shouldHideFromChat, isMotionModule } from './core/modelCapability'
 import { VOICE_PROVIDERS } from './core/voiceProviders'
 import {
-  LOCAL_SERVICE_KEYS, memoryToTier, tierAdvice, maxServicesForTier,
+  LOCAL_SERVICE_KEYS, LOCAL_SERVICE_CHANGED_EVENT, memoryToTier, tierAdvice, maxServicesForTier,
   isServiceEnabled, planServiceToggle, notifyLocalServiceChanged, initServicesForTier,
 } from './core/localServicesSettings'
 import type { LocalServiceKey, MemoryTier } from './core/types'
@@ -1777,8 +1777,10 @@ function App() {
             await serviceController.toggle(key)
             return { ok: true, message: '' }
           }
-          // 开关已开但进程没跑（状态脱节）：直接拉起进程
-          return startLocalService(key)
+          // 开关已开但进程没跑（状态脱节）：直接拉起进程，成功后派发事件让设置页徽标同步（v0.1.428 ⑤）
+          const r = await startLocalService(key)
+          if (r.ok) notifyLocalServiceChanged(key, true)
+          return r
         }}
         onClose={() => { setFormProviderId(null); setAddOpen(true) }}
         onSave={(account, pwd) => {
@@ -5331,11 +5333,48 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const refreshServiceStatus = useCallback(() => {
     void Promise.all(LOCAL_SERVICE_KEYS.map(async k => [k, await checkLocalService(k), await isServiceAppManaged(k)] as const))
       .then(rows => {
-        setServiceStatus(Object.fromEntries(rows.map(r => [r[0], r[1]])))
+        // 查过但没在跑记 ''（徽标显示「未运行」）；null 只留给「还没查过」（显示「未检测」）
+        setServiceStatus(Object.fromEntries(rows.map(r => [r[0], r[1] ?? ''])))
         setManagedKeys(Object.fromEntries(rows.map(r => [r[0], r[2]])))
       })
   }, [])
   useEffect(() => { refreshServiceStatus() }, [refreshServiceStatus])
+
+  /** 单个服务的状态同步刷新（v0.1.428 ⑤）：别处（语音页开关、添加账户弹窗）启停服务后，
+   *  已打开的设置页徽标跟着刷新，不再卡「未检测」；开着但还没监听上时轮询等它起来。 */
+  const refreshOneServiceStatus = useCallback((key: LocalServiceKey, enabled?: boolean) => {
+    void (async () => {
+      const addr = await checkLocalService(key).catch(() => null)
+      const managed = await isServiceAppManaged(key).catch(() => false)
+      setServiceStatus(prev => ({ ...prev, [key]: addr ?? '' }))
+      setManagedKeys(prev => ({ ...prev, [key]: managed }))
+      if (enabled && !addr) {
+        let tries = 0
+        const poll = window.setInterval(() => {
+          void checkLocalService(key).then(a => {
+            if (a) {
+              setServiceStatus(prev => ({ ...prev, [key]: a }))
+              setManagedKeys(prev => ({ ...prev, [key]: true }))
+              window.clearInterval(poll)
+            } else if (++tries >= (key === 'qwentts' ? 30 : 15)) {
+              window.clearInterval(poll)
+              setServiceStatus(prev => ({ ...prev, [key]: '' }))
+            }
+          })
+        }, 2000)
+      }
+    })()
+  }, [])
+  useEffect(() => {
+    const onSvc = (e: Event) => {
+      const detail = (e as CustomEvent<{ key?: string; enabled?: boolean }>).detail
+      const key = detail?.key as LocalServiceKey | undefined
+      if (!key || !LOCAL_SERVICE_KEYS.includes(key)) return
+      refreshOneServiceStatus(key, detail?.enabled)
+    }
+    window.addEventListener(LOCAL_SERVICE_CHANGED_EVENT, onSvc)
+    return () => window.removeEventListener(LOCAL_SERVICE_CHANGED_EVENT, onSvc)
+  }, [refreshOneServiceStatus])
 
   /** 启动服务后台进程（不打开 GUI 窗口）；启动后轮询状态 */
   const onStartService = async (key: LocalServiceKey) => {
@@ -5344,6 +5383,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       const r = await startLocalService(key)
       notify(r.message)
       if (r.ok) {
+        // 让语音页等其他监听处同步刷新徽标（v0.1.428 ⑤）
+        notifyLocalServiceChanged(key, true)
         let tries = 0
         const poll = window.setInterval(() => {
           void checkLocalService(key).then(addr => {
