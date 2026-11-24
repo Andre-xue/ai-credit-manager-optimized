@@ -1,4 +1,4 @@
-// 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 短剧专区 + 直播 + 追剧日历 + 片单。
+// 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 直播 + 点播 + 追剧日历 + 片单。
 // 直播只用合法公开源：iptv-org（公开免费频道目录）与 Free-TV；绝不内置
 // vbskycn/lilei6900s/fanmingming/Guovin 等聚合央视/卫视的第三方转播源。
 // 自定义源由用户自己粘贴 m3u 订阅链接（像 VLC 里粘地址），输入框留空不预填。
@@ -273,6 +273,118 @@ export function mergeChannels(lists: LiveChannel[][]): LiveChannel[] {
   return [...map.values()]
 }
 
+// ---------------- 视频点播（v0.1.390） ----------------
+// m3u 里的点播条目与直播分开：电影/剧集文件（mp4/mkv/mov/avi/webm/flv），
+// 或内容为电影/剧集（group-title Movies/Series）且地址不是直播流的条目。
+// m3u8 与 .ts 永远算直播（哪怕 group-title 是 Movies，如 CCTV-6 电影频道）；
+// 无后缀的电影/剧集地址按点播算（直播流一般都带 m3u8/.ts 后缀）。
+
+export interface VodEpisode {
+  /** 集标签：电影为“正片”，剧集为“第 N 集” */
+  label: string
+  /** 同一集的多套源（播不了自动换下一个，与直播同款） */
+  urls: string[]
+  /** 集号（0 = 无明确集号，如电影正片） */
+  episodeNo: number
+  unofficial: boolean
+}
+
+export interface VodTitle {
+  key: string
+  title: string
+  kind: 'movie' | 'series'
+  episodes: VodEpisode[]
+  logo?: string
+  sourceIds: string[]
+  /** 任一集是第三方转播 */
+  unofficial: boolean
+}
+
+const VOD_FILE_RE = /\.(mp4|mkv|mov|avi|webm|flv)(\?.*)?$/i
+
+/** 某条流地址是否为点播：文件后缀是点播格式，或内容为电影/剧集且不是直播流 */
+export function isVodUrl(url: string, content?: string): boolean {
+  const path = url.split('?')[0]
+  if (/\.m3u8$/i.test(path)) return false
+  if (VOD_FILE_RE.test(path)) return true
+  if ((content === 'movies' || content === 'series') && !/\.ts$/i.test(path)) return true
+  return false
+}
+
+/** 某频道是否含点播地址（合并后的频道可能同时含直播与点播地址） */
+export function isVodChannel(ch: LiveChannel): boolean {
+  return ch.urls.some(u => isVodUrl(u, ch.content))
+}
+
+/** 从条目名拆出（去集数标记后的干净标题，集号|null）：只认明确标记
+ * （第N集 / S01E03 / 末尾 E05），末尾孤数字不认——“流浪地球 2”是电影不是第 2 集。 */
+export function splitEpisode(name: string): { title: string; episodeNo: number | null } {
+  const clean = (t: string): string => t
+    .replace(/\s*\((?:720p|1080p|4k|2160p|sd|hd|fhd|uhd)\)\s*/gi, '')
+    .replace(/[\s\-_·•]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const t = name.replace(/\s+/g, ' ').trim()
+  let m = /第\s*(\d+)\s*[集话回]/.exec(t)
+  if (m) return { title: clean(t.replace(m[0], '')), episodeNo: parseInt(m[1], 10) }
+  m = /[Ss]\d+[Ee](\d+)/.exec(t)
+  if (m) return { title: clean(t.replace(m[0], '')), episodeNo: parseInt(m[1], 10) }
+  m = /(?:^|[\s\-_])(?:[Ee][Pp]?|第)(\d+)\s*$/.exec(t)
+  if (m) return { title: clean(t.slice(0, m.index).trim()), episodeNo: parseInt(m[1], 10) }
+  return { title: clean(t), episodeNo: null }
+}
+
+/** 从频道列表抽点播：同名剧集多条合并为一部带选集；单条无集号的为电影。 */
+export function channelsToVod(channels: LiveChannel[]): VodTitle[] {
+  interface Group { title: string; logo?: string; sourceIds: string[]; eps: VodEpisode[]; hasStrongEp: boolean }
+  const groups = new Map<string, Group>()
+  for (const ch of channels) {
+    const vodUrls = ch.urls.filter(u => isVodUrl(u, ch.content))
+    if (!vodUrls.length) continue
+    const { title, episodeNo } = splitEpisode(ch.name)
+    const key = title.toLowerCase()
+    const g = groups.get(key) ?? { title, logo: ch.logo, sourceIds: [], eps: [], hasStrongEp: false }
+    if (!g.logo && ch.logo) g.logo = ch.logo
+    for (const s of ch.sourceIds) if (!g.sourceIds.includes(s)) g.sourceIds.push(s)
+    // 同一集多套源合并到同一集；无集号的（电影正片）同样合并，不拆成多集
+    const epNo = episodeNo ?? 0
+    let ep = g.eps.find(e => e.episodeNo === epNo)
+    if (!ep) { ep = { label: '', urls: [], episodeNo: epNo, unofficial: false }; g.eps.push(ep) }
+    for (const u of vodUrls) if (!ep.urls.includes(u)) ep.urls.push(u)
+    ep.unofficial = ep.urls.some(u => isUnofficialStreamUrl(u))
+    if (episodeNo !== null) g.hasStrongEp = true
+    groups.set(key, g)
+  }
+  const out: VodTitle[] = []
+  for (const g of groups.values()) {
+    const eps = [...g.eps].sort((a, b) => {
+      if (a.episodeNo && b.episodeNo) return a.episodeNo - b.episodeNo
+      if (a.episodeNo) return -1
+      if (b.episodeNo) return 1
+      return 0
+    })
+    const isSeries = g.hasStrongEp || eps.length > 1
+    eps.forEach((e, i) => { e.label = isSeries ? `第 ${e.episodeNo || i + 1} 集` : '正片' })
+    out.push({
+      key: g.title.toLowerCase(), title: g.title, kind: isSeries ? 'series' : 'movie',
+      episodes: eps, logo: g.logo, sourceIds: g.sourceIds,
+      unofficial: eps.some(e => e.unofficial),
+    })
+  }
+  return out.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'))
+}
+
+/** 点播继续观看 id：vod:<标题 key>:<集下标>（标题 key 含冒号时按最后一个冒号切） */
+export function vodContinueId(vodKey: string, episodeIndex: number): string {
+  return `vod:${vodKey}:${episodeIndex}`
+}
+
+export function parseVodContinueId(id: string): { vodKey: string; episodeIndex: number } | null {
+  const m = /^vod:(.+):(\d+)$/.exec(id)
+  if (!m) return null
+  return { vodKey: m[1], episodeIndex: parseInt(m[2], 10) }
+}
+
 async function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<string> {
   const ctrl = new AbortController()
   const t = globalThis.setTimeout(() => ctrl.abort(), timeoutMs)
@@ -376,11 +488,12 @@ function customSourcesAsSets(): SourceSet[] {
 
 /**
  * 拉取某国家（或 WORLD 全部）的频道：多套源并行拉，单套失败自动由其他套顶上；
- * 同名频道合并播放地址（一个播不了播另一个）。返回频道与每套源的状态。
+ * 同名频道合并播放地址（一个播不了播另一个）。返回直播频道、点播与每套源的状态。
+ * 直播与点播按地址拆分：同一频道既有直播地址又有 mp4 点播地址时，两边各留各的。
  * 性能：默认只拉该国家切片 + Free-TV（按国家过滤后缓存），绝不拉总表；
  * 24 小时内读缓存不重新拉；force=true 时强制重新拉（「重新加载」按钮）。
  */
-export async function loadCountryChannels(country: string, opts: { force?: boolean } = {}): Promise<{ channels: LiveChannel[]; sets: SourceSetResult[] }> {
+export async function loadCountryChannels(country: string, opts: { force?: boolean } = {}): Promise<{ channels: LiveChannel[]; vod: VodTitle[]; sets: SourceSetResult[] }> {
   const sets: SourceSet[] = []
   const countrySet = BUILTIN_SETS.find(s => s.country === country && s.id.startsWith('iptv-'))
   if (countrySet) sets.push(countrySet)
@@ -393,11 +506,20 @@ export async function loadCountryChannels(country: string, opts: { force?: boole
     return { channels: r.channels, result: r.result }
   }))
   const lists = settled.map(s => s.channels)
-  const channels = mergeChannels(lists)
+  const merged = mergeChannels(lists)
     // 未标国家的自定义源条目（country WORLD）归入当前国家（用户自己粘的源，没写 tvg-country 也要能看）
     .filter(c => country === 'WORLD' || c.country === country || (c.country === 'WORLD' && c.sourceIds.some(id => id.startsWith('custom-'))))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-  return { channels, sets: settled.map(s => s.result) }
+  // 直播与点播按地址拆分：点播地址进点播区，不留在直播列表里（否则直播播放器播 mp4 会失败）
+  const live: LiveChannel[] = []
+  const vodChannels: LiveChannel[] = []
+  for (const ch of merged) {
+    const liveUrls = ch.urls.filter(u => !isVodUrl(u, ch.content))
+    const vodUrls = ch.urls.filter(u => isVodUrl(u, ch.content))
+    if (liveUrls.length) live.push({ ...ch, urls: liveUrls, unofficial: isUnofficialStreamUrl(liveUrls[0]) })
+    if (vodUrls.length) vodChannels.push({ ...ch, urls: vodUrls, unofficial: isUnofficialStreamUrl(vodUrls[0]) })
+  }
+  return { channels: live, vod: channelsToVod(vodChannels), sets: settled.map(s => s.result) }
 }
 
 // ---------------- 分组 ----------------
@@ -448,10 +570,10 @@ export interface ContinueItem {
   id: string
   title: string
   platform: string
-  kind: 'hls' | 'iframe'
+  kind: 'hls' | 'iframe' | 'vod'
   url: string
   episode?: string
-  /** 0–1 播放进度（HLS 才有；iframe 记 0） */
+  /** 0–1 播放进度（HLS/点播才有；iframe 记 0） */
   progress: number
   updatedAt: number
 }

@@ -3,6 +3,7 @@ import {
   parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
   mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
   isUnofficialStreamUrl, isChannelUnofficial,
+  splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   PLAYLIST_CACHE_KEY, CUSTOM_SOURCES_KEY,
   type LiveChannel, type SourceSet,
 } from './watch'
@@ -254,5 +255,127 @@ describe('watch.fetchSourceSet 缓存', () => {
     expect(calls).toBe(2)
     await fetchSourceSet(SET, { force: true })
     expect(calls).toBe(3)
+  })
+})
+
+// 视频点播（v0.1.390）：m3u 点播条目单独成区，同名剧集多条合并带选集，看到一半记进度续播
+describe('watch.splitEpisode', () => {
+  it('第N集 / S01E03 / 末尾 E05 都能拆出集号与干净标题', () => {
+    expect(splitEpisode('庆余年 第01集')).toEqual({ title: '庆余年', episodeNo: 1 })
+    expect(splitEpisode('庆余年 第12集 (1080p)')).toEqual({ title: '庆余年', episodeNo: 12 })
+    expect(splitEpisode('庆余年 S01E03')).toEqual({ title: '庆余年', episodeNo: 3 })
+    expect(splitEpisode('Show Name E05')).toEqual({ title: 'Show Name', episodeNo: 5 })
+  })
+  it('无集号标记 → episodeNo null；末尾孤数字不认（“流浪地球 2”是电影不是第 2 集）', () => {
+    expect(splitEpisode('流浪地球2')).toEqual({ title: '流浪地球2', episodeNo: null })
+    expect(splitEpisode('流浪地球 2')).toEqual({ title: '流浪地球 2', episodeNo: null })
+    expect(splitEpisode('速度与激情 9')).toEqual({ title: '速度与激情 9', episodeNo: null })
+  })
+})
+
+const VOD_FIXTURE = `#EXTM3U
+#EXTINF:-1 group-title="Movies",流浪地球2
+https://cdn.example.com/movies/liulang2.mp4
+#EXTINF:-1 group-title="Series",庆余年 第01集
+https://cdn.example.com/series/qyn01.mp4
+#EXTINF:-1 group-title="Series",庆余年 第02集
+https://cdn.example.com/series/qyn02.mp4
+#EXTINF:-1 group-title="Series",庆余年 S01E03
+https://cdn.example.com/series/qyn03.mkv
+#EXTINF:-1 group-title="Movies",CCTV-6 电影
+http://example.com/cctv6.m3u8
+#EXTINF:-1 group-title="Movies",盗版电影
+http://74.91.26.218:82/vod/pirate.mp4
+#EXTINF:-1 group-title="News",新闻台
+http://example.com/news.m3u8
+`
+
+describe('watch.channelsToVod（v0.1.390 点播识别/选集）', () => {
+  it('mp4/mkv 按点播算；同名剧集多条合并、集号排序；单条无集号为电影', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => VOD_FIXTURE }))
+    const set: SourceSet = { id: 'custom-vod', label: '测试点播源', url: 'https://example.com/vod.m3u', country: 'WORLD' }
+    const { channels } = await fetchSourceSet(set)
+    const vod = channelsToVod(channels)
+    expect(vod.map(v => v.title)).toEqual(['盗版电影', '流浪地球2', '庆余年'])
+    const qyn = vod.find(v => v.title === '庆余年')!
+    expect(qyn.kind).toBe('series')
+    expect(qyn.episodes.map(e => e.label)).toEqual(['第 1 集', '第 2 集', '第 3 集'])
+    expect(qyn.episodes.map(e => e.episodeNo)).toEqual([1, 2, 3])
+    const movie = vod.find(v => v.title === '流浪地球2')!
+    expect(movie.kind).toBe('movie')
+    expect(movie.episodes).toHaveLength(1)
+    expect(movie.episodes[0].label).toBe('正片')
+  })
+  it('m3u8 永远算直播：CCTV-6 电影（group-title Movies + m3u8）不进点播；新闻台不进点播', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => VOD_FIXTURE }))
+    const set: SourceSet = { id: 'custom-vod', label: '测试点播源', url: 'https://example.com/vod.m3u', country: 'WORLD' }
+    const { channels } = await fetchSourceSet(set)
+    const vod = channelsToVod(channels)
+    expect(vod.find(v => v.title.includes('CCTV-6'))).toBeUndefined()
+    expect(vod.find(v => v.title === '新闻台')).toBeUndefined()
+  })
+  it('点播同样打「未授权转播」标记：裸 IP 的 mp4 标 unofficial，域名不标', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => VOD_FIXTURE }))
+    const set: SourceSet = { id: 'custom-vod', label: '测试点播源', url: 'https://example.com/vod.m3u', country: 'WORLD' }
+    const { channels } = await fetchSourceSet(set)
+    const vod = channelsToVod(channels)
+    expect(vod.find(v => v.title === '盗版电影')?.unofficial).toBe(true)
+    expect(vod.find(v => v.title === '流浪地球2')?.unofficial).toBe(false)
+  })
+})
+
+describe('watch.loadCountryChannels 点播与直播拆分', () => {
+  it('自定义源里的点播进 vod、直播列表里不再出现；内置直播台不受影响', async () => {
+    ls().setItem(CUSTOM_SOURCES_KEY, JSON.stringify([{ id: 'vod1', label: '测试点播源', url: 'https://example.com/vod.m3u', addedAt: 1 }]))
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('countries/cn.m3u')) return { ok: true, text: async () => CN_FIXTURE }
+      if (u.includes('Free-TV')) return { ok: true, text: async () => FREETV_FIXTURE }
+      if (u.includes('vod.m3u')) return { ok: true, text: async () => VOD_FIXTURE }
+      return { ok: false, status: 404, text: async () => '' }
+    })
+    const { channels, vod } = await loadCountryChannels('CN')
+    expect(vod.map(v => v.title)).toEqual(['盗版电影', '流浪地球2', '庆余年'])
+    // 点播条目不留在直播列表里（否则直播播放器播 mp4 会失败）
+    expect(channels.find(c => c.name === '流浪地球2')).toBeUndefined()
+    expect(channels.find(c => c.name.startsWith('庆余年'))).toBeUndefined()
+    // CCTV-6 电影是 m3u8 直播，留在直播列表
+    expect(channels.find(c => c.name === 'CCTV-6 电影')).toBeDefined()
+    // 内置直播台照常
+    expect(channels.find(c => c.key === 'cctv-1')).toBeDefined()
+  })
+  it('无点播源时 vod 为空数组', async () => {
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('countries/cn.m3u')) return { ok: true, text: async () => CN_FIXTURE }
+      if (u.includes('Free-TV')) return { ok: true, text: async () => FREETV_FIXTURE }
+      return { ok: false, status: 404, text: async () => '' }
+    })
+    const { vod } = await loadCountryChannels('CN')
+    expect(vod).toEqual([])
+  })
+})
+
+describe('watch 点播续播 id（v0.1.390）', () => {
+  it('vodContinueId / parseVodContinueId 往返；标题 key 含冒号时按最后一个冒号切', () => {
+    expect(vodContinueId('庆余年', 1)).toBe('vod:庆余年:1')
+    expect(parseVodContinueId('vod:庆余年:1')).toEqual({ vodKey: '庆余年', episodeIndex: 1 })
+    expect(parseVodContinueId('vod:star wars: episode i:0')).toEqual({ vodKey: 'star wars: episode i', episodeIndex: 0 })
+    expect(parseVodContinueId('live:cctv-1')).toBeNull()
+    expect(parseVodContinueId('vod:bad')).toBeNull()
+  })
+})
+
+describe('watch 短剧专区已移除（v0.1.390）', () => {
+  it('WatchTool.tsx 里不再有 SHORT_PLATFORMS 与“短剧专区”', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    expect(src).not.toContain('SHORT_PLATFORMS')
+    expect(src).not.toContain('短剧专区')
+    expect(src).not.toContain('hongguoduanju.com')
+    expect(src).not.toContain('microsite/wetheater')
+    // 删的是专区不是全部短剧：AI 找剧仍可搜短剧、片单仍有短剧类型、央视 iframe 入口还在
+    expect(src).toContain('tv.cctv.com/live/')
+    expect(src).toContain("option value=\"short\"")
   })
 })

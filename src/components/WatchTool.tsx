@@ -1,8 +1,9 @@
-// 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 短剧专区 + 直播 + 追剧日历 + 片单。
-// 播放：App 内嵌播放器（官方播放页 iframe；直播走 HLS/m3u8，hls.js 兜底）。
+// 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 直播 + 点播 + 追剧日历 + 片单。
+// 播放：App 内嵌播放器（官方播放页 iframe；直播走 HLS/m3u8，hls.js 兜底；点播走 <video>，mp4 直出、点播 m3u8 用 hls.js）。
 // 直播只用 iptv-org 与 Free-TV 内置源 + 用户自定义源；绝不内置第三方转播源。
+// 点播（v0.1.390）：m3u 里的点播条目（电影/剧集文件）单独成区，同名剧集多条合并带选集，看到一半记进度可续播。
 // 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
-// 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」。
+// 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」；点播条目同样打标记。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -20,12 +21,13 @@ import {
   COUNTRIES, CONTENT_LABELS, ORIGIN_LABELS,
   loadCountryChannels, groupChannels,
   isUnofficialStreamUrl, isChannelUnofficial,
+  channelsToVod, vodContinueId, parseVodContinueId,
   loadWatchlist, saveWatchlist, loadContinue, upsertContinue, saveContinue,
   loadClosedGroups, saveClosedGroups,
   loadCustomSources, saveCustomSources, fetchSourceSet,
   hasTmdbKey, loadTmdbKey, saveTmdbKey, clearTmdbKey,
   fetchTmdbTrending, fetchTmdbProviders,
-  type LiveChannel, type WatchItem, type WatchType, type ContinueItem,
+  type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin,
 } from '../core/watch'
 import { pageSlice, pageCount } from '../core/freeGames'
@@ -42,6 +44,7 @@ function cacheAgeText(at?: number): string {
 
 type PlayerState =
   | { kind: 'hls'; title: string; channelKey: string; urls: string[] }
+  | { kind: 'vod'; title: string; vodKey: string; episodes: VodEpisode[]; episodeIndex: number; startAt?: number }
   | { kind: 'iframe'; title: string; url: string }
   | { kind: 'blocked'; title: string; url: string; reason: string }
   | null
@@ -149,6 +152,141 @@ function HlsPlayer({ title, urls, onOpened }: {
               <Play size={26} /> 点一下开始播放
             </button>
           )}
+        </div>
+      )}
+      {curUnofficial && (
+        <div className="wt-unofficial-note"><CircleAlert size={13} /> 当前源为第三方转播 · 未经授权，可能随时失效</div>
+      )}
+    </div>
+  )
+}
+
+function VodPlayer({ title, episodes, episodeIndex, startAt, onLeave, onClose }: {
+  title: string
+  episodes: VodEpisode[]
+  episodeIndex: number
+  /** 续播起点（0–1 进度），只对打开时那集有效 */
+  startAt?: number
+  /** 离开某集时回传（关闭 / 切集时都调）：父组件据此写继续观看 */
+  onLeave: (episodeIndex: number, progress: number) => void
+  onClose: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [epIdx, setEpIdx] = useState(episodeIndex)
+  const [urlIdx, setUrlIdx] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const [needTap, setNeedTap] = useState(false)
+  const playedRef = useRef(false)
+  const soughtRef = useRef(false)
+  const ep = episodes[epIdx] ?? episodes[0]
+  const url = ep?.urls[urlIdx]
+  const isHlsUrl = !!url && /\.m3u8(\?.*)?$/i.test(url.split('?')[0])
+
+  const progressNow = () => {
+    const v = videoRef.current
+    if (v && Number.isFinite(v.duration) && v.duration > 0) return Math.min(1, v.currentTime / v.duration)
+    return 0
+  }
+
+  const switchEpisode = (i: number) => {
+    if (i === epIdx || !episodes[i]) return
+    onLeave(epIdx, progressNow())
+    setEpIdx(i); setUrlIdx(0); setFailed(false)
+  }
+
+  const advanceUrl = () => {
+    if (!ep) { setFailed(true); return }
+    if (urlIdx + 1 >= ep.urls.length) { setFailed(true); return }
+    setUrlIdx(i => i + 1)
+  }
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || failed || !url) { if (!url) setFailed(true); return }
+    playedRef.current = false
+    setNeedTap(false)
+    let hls: Hls | null = null
+    let dead = false
+    const onPlaying = () => { playedRef.current = true }
+    const onVideoError = () => { if (!dead) advanceUrl() }
+    const onMeta = () => {
+      // 续播：只对打开时那集、只 seek 一次
+      if (!soughtRef.current && epIdx === episodeIndex && startAt && startAt > 0 && startAt < 0.98
+        && Number.isFinite(video.duration) && video.duration > 0) {
+        soughtRef.current = true
+        video.currentTime = startAt * video.duration
+      }
+    }
+    video.addEventListener('playing', onPlaying)
+    video.addEventListener('error', onVideoError)
+    video.addEventListener('loadedmetadata', onMeta)
+    // 15 秒还没出声出画面，判定该源不可用，自动换同一集的下一个源
+    const stallTimer = window.setTimeout(() => { if (!dead && !playedRef.current) advanceUrl() }, 15000)
+    if (isHlsUrl && Hls.isSupported()) {
+      hls = new Hls({ maxBufferLength: 30 })
+      hls.loadSource(url)
+      hls.attachMedia(video)
+      hls.on(Hls.Events.ERROR, (_e, data) => { if (!dead && data.fatal) advanceUrl() })
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => { if (!dead) setNeedTap(true) })
+      })
+    } else if (isHlsUrl && video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url
+      video.play().catch(() => { if (!dead) setNeedTap(true) })
+    } else if (!isHlsUrl) {
+      // mp4/mkv 直链：原生播放
+      video.src = url
+      video.play().catch(() => { if (!dead) setNeedTap(true) })
+    } else {
+      setFailed(true)
+    }
+    return () => {
+      dead = true
+      window.clearTimeout(stallTimer)
+      video.removeEventListener('playing', onPlaying)
+      video.removeEventListener('error', onVideoError)
+      video.removeEventListener('loadedmetadata', onMeta)
+      hls?.destroy()
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epIdx, urlIdx, failed])
+
+  const close = () => { onLeave(epIdx, progressNow()); onClose() }
+  const curUnofficial = ep?.unofficial ?? false
+
+  return (
+    <div className="wt-player">
+      <div className="wt-player-head">
+        <span className="wt-player-title"><Film size={15} /> {title}{episodes.length > 1 && ep ? ` · ${ep.label}` : ''}</span>
+        {ep && ep.urls.length > 1 && <span className="fg-muted">正在用第 {Math.min(urlIdx + 1, ep.urls.length)} / {ep.urls.length} 个源{ep.urls.length > 1 ? '（播不了自动换）' : ''}</span>}
+        <button className="btn sm ghost" onClick={close}><X size={14} /> 关闭</button>
+      </div>
+      {failed ? (
+        <div className="wt-player-fail">
+          <CircleAlert size={18} />
+          <div>这集试了 {ep?.urls.length ?? 0} 个源都播不了：源可能已失效，或被网络拦截。</div>
+          <div className="fg-muted">可以换一集试试，或换个网络节点后重播。</div>
+          <button className="btn sm" onClick={() => { setFailed(false); setUrlIdx(0) }}>再试一次</button>
+        </div>
+      ) : (
+        <div className="wt-video-wrap">
+          <video ref={videoRef} className="wt-video" controls playsInline />
+          {needTap && (
+            <button className="wt-bigplay" onClick={() => { videoRef.current?.play().catch(() => {}); setNeedTap(false) }}>
+              <Play size={26} /> 点一下开始播放
+            </button>
+          )}
+        </div>
+      )}
+      {episodes.length > 1 && (
+        <div className="wt-chips">
+          <span className="fg-muted">选集：</span>
+          {episodes.map((e, i) => (
+            <button key={i} className={`wt-chip${i === epIdx ? ' on' : ''}`} onClick={() => switchEpisode(i)}>{e.label}</button>
+          ))}
         </div>
       )}
       {curUnofficial && (
@@ -270,8 +408,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     setPlayer({ kind: 'hls', title: ch.name, channelKey: ch.key, urls: ch.urls })
     setPlayerKey(k => k + 1)
   }
-  const recordContinue = (id: string, title: string, platform: string, kind: 'hls' | 'iframe', url: string, progress: number) => {
-    setContinueList(upsertContinue({ id, title, platform, kind, url, progress, updatedAt: Date.now() }))
+  const recordContinue = (id: string, title: string, platform: string, kind: 'hls' | 'iframe' | 'vod', url: string, progress: number, episode?: string) => {
+    setContinueList(upsertContinue({ id, title, platform, kind, url, progress, episode, updatedAt: Date.now() }))
   }
   const openIframe = (title: string, url: string) => {
     if (isBlockedEmbed(url)) {
@@ -281,6 +419,32 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       try { recordContinue(`iframe:${url}`, title, new URL(url).hostname, 'iframe', url, 0) } catch { /* 忽略 */ }
     }
     setPlayerKey(k => k + 1)
+  }
+
+  // ---- 点播 ----
+  const openVod = (v: VodTitle, episodeIndex = 0, startAt = 0) => {
+    setPlayer({ kind: 'vod', title: v.title, vodKey: v.key, episodes: v.episodes, episodeIndex: Math.min(episodeIndex, v.episodes.length - 1), startAt })
+    setPlayerKey(k => k + 1)
+  }
+  const openVodWithResume = (v: VodTitle) => {
+    const prev = continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === v.key)
+    const parsed = prev ? parseVodContinueId(prev.id) : null
+    openVod(v, parsed?.episodeIndex ?? 0, prev?.progress ?? 0)
+  }
+  const recordVodLeave = (episodeIndex: number, progress: number) => {
+    if (player?.kind !== 'vod') return
+    const ep = player.episodes[episodeIndex]
+    if (!ep) return
+    const id = vodContinueId(player.vodKey, episodeIndex)
+    // 没播出进度（刚打开就切集/关闭，或流还没加载出来）时不覆盖已存的续播点，
+    // 否则打开一次就把上次看到一半的进度抹成 0
+    if (progress <= 0 && continueList.some(c => c.id === id && c.progress > 0)) return
+    const isSeries = player.episodes.length > 1
+    recordContinue(
+      id,
+      isSeries ? `${player.title} ${ep.label}` : player.title,
+      '点播', 'vod', ep.urls[0], progress, ep.label,
+    )
   }
 
   const closePlayer = (progress = 0) => {
@@ -363,17 +527,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 
   const trendingFiltered = trending.filter(t => trendingTab === 'all' || t.mediaType === trendingTab)
 
-  // ---- 短剧专区（官方页；已验证地址） ----
-  const SHORT_PLATFORMS = [
-    { name: '红果短剧', url: 'https://hongguoduanju.com/', desc: '免费短剧' },
-    { name: '腾讯视频 · 微剧场', url: 'https://v.qq.com/microsite/wetheater/index.html', desc: '微短剧' },
-    { name: '爱奇艺 · 短剧', url: 'https://www.iqiyi.com/minidrama/', desc: '该平台不支持内嵌播放' },
-    { name: '芒果TV · 短剧', url: 'https://www.mgtv.com/', desc: '该平台不支持内嵌播放' },
-    { name: '抖音', url: 'https://www.douyin.com/', desc: '短视频 / 短剧' },
-    { name: '快手', url: 'https://www.kuaishou.com/', desc: '短视频 / 短剧' },
-    { name: '优酷', url: 'https://www.youku.com/', desc: '短剧 / 剧集' },
-  ]
-
   // ---- 直播 ----
   const [liveCountry, setLiveCountry] = useState('CN')
   const [liveLoading, setLiveLoading] = useState(false)
@@ -382,6 +535,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [liveLoaded, setLiveLoaded] = useState(false)
   const [contentFilter, setContentFilter] = useState('all')
   const [livePages, setLivePages] = useState<Record<string, number>>({})
+  // ---- 点播（与直播同一批源里拆出来） ----
+  const [vodTitles, setVodTitles] = useState<VodTitle[]>([])
+  const [vodKind, setVodKind] = useState<'all' | 'movie' | 'series'>('all')
+  const [vodPage, setVodPage] = useState(1)
   const [customLabel, setCustomLabel] = useState('')
   const [customUrl, setCustomUrl] = useState('')
   const [customSources, setCustomSources] = useState<CustomSource[]>(loadCustomSources)
@@ -391,11 +548,11 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const loadLive = async (country: string, force = false) => {
     setLiveLoading(true); setLiveLoaded(false)
     try {
-      const { channels, sets } = await loadCountryChannels(country, { force })
-      setLiveChannels(channels); setLiveSets(sets); setLiveLoaded(true)
-      setContentFilter('all')
-      if (!channels.length) notify('该国家/地区的源都没拉到，请检查网络后重试', 'err')
-      else notify(`已加载 ${channels.length} 个台`)
+      const { channels, vod, sets } = await loadCountryChannels(country, { force })
+      setLiveChannels(channels); setVodTitles(vod); setLiveSets(sets); setLiveLoaded(true)
+      setContentFilter('all'); setVodKind('all'); setVodPage(1)
+      if (!channels.length && !vod.length) notify('该国家/地区的源都没拉到，请检查网络后重试', 'err')
+      else notify(`已加载 ${channels.length} 个台${vod.length ? `、${vod.length} 部点播` : ''}`)
     } catch (e) { notify(e instanceof Error ? e.message : '加载失败', 'err') } finally { setLiveLoading(false) }
   }
 
@@ -412,9 +569,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     setCustomLabel(''); setCustomUrl('')
     setCustomTesting(src.id)
     try {
-      const { result } = await fetchSourceSet({ id: `custom-${src.id}`, label: src.label, url, country: 'WORLD' })
+      const { channels, result } = await fetchSourceSet({ id: `custom-${src.id}`, label: src.label, url, country: 'WORLD' })
       if (result.ok) {
-        setCustomTestResult(`「${src.label}」拉到 ${result.count} 个台，已并入直播列表`)
+        const vodCount = channelsToVod(channels).length
+        setCustomTestResult(`「${src.label}」拉到 ${result.count} 个台${vodCount ? `、${vodCount} 部点播` : ''}，已并入列表`)
         void loadLive(liveCountry)
       } else {
         setCustomTestResult(`「${src.label}」拉取失败：${result.error ?? '未知错误'}`)
@@ -496,7 +654,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>
       </div>
       <h3 className="ws-tool-title">看剧</h3>
-      <p className="ws-tool-desc">AI 找剧、热门推荐、短剧、直播、追剧日历与片单；播放都在 App 内嵌播放器里，不跳浏览器。片单与排期只存本机。</p>
+      <p className="ws-tool-desc">AI 找剧、热门推荐、直播、点播、追剧日历与片单；直播与点播都在 App 内播放器里播，不跳浏览器。片单与排期只存本机。</p>
 
       {!sessionPwd && (
         <div className="fg-unlock">
@@ -510,6 +668,11 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {player?.kind === 'hls' && (
         <HlsPlayer key={playerKey} title={player.title} urls={player.urls}
           onOpened={p => closePlayer(p)} />
+      )}
+      {player?.kind === 'vod' && (
+        <VodPlayer key={playerKey} title={player.title} episodes={player.episodes}
+          episodeIndex={player.episodeIndex} startAt={player.startAt}
+          onLeave={(i, p) => recordVodLeave(i, p)} onClose={() => setPlayer(null)} />
       )}
       {player?.kind === 'iframe' && (
         <IframePlayer key={playerKey} title={player.title} url={player.url} onClose={() => setPlayer(null)} />
@@ -627,7 +790,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {/* 继续观看 */}
       <Section id="continue" title="继续观看" sub="上次看到一半的" count={continueList.length ? `${continueList.length} 条` : undefined}>
         {continueList.length === 0 ? (
-          <div className="fg-empty">还没看过：直播台或短剧点开后，这里会出现继续观看的入口（带进度）。</div>
+          <div className="fg-empty">还没看过：直播台或点播看过后，这里会出现继续观看的入口（带进度）。</div>
         ) : (
           <>
             <div className="fg-grid">
@@ -641,6 +804,19 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn sm primary" onClick={() => {
                       if (c.kind === 'hls') setPlayer({ kind: 'hls', title: c.title, channelKey: c.id.replace(/^live:/, ''), urls: [c.url] })
+                      else if (c.kind === 'vod') {
+                        const parsed = parseVodContinueId(c.id)
+                        const v = parsed ? vodTitles.find(t => t.key === parsed.vodKey) : undefined
+                        if (v) openVod(v, parsed!.episodeIndex, c.progress)
+                        else {
+                          setPlayer({
+                            kind: 'vod', title: c.title, vodKey: parsed?.vodKey ?? c.id,
+                            episodes: [{ label: c.episode ?? '正片', urls: [c.url], episodeNo: 1, unofficial: isUnofficialStreamUrl(c.url) }],
+                            episodeIndex: 0, startAt: c.progress,
+                          })
+                          setPlayerKey(k => k + 1)
+                        }
+                      }
                       else openIframe(c.title, c.url)
                     }}><Play size={13} /> 继续看</button>
                     <button className="btn sm ghost" onClick={() => { const next = continueList.filter(x => x.id !== c.id); setContinueList(next); saveContinue(next) }}>
@@ -654,23 +830,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               onPage={setContinuePage} />
           </>
         )}
-      </Section>
-
-      {/* 短剧专区 */}
-      <Section id="shorts" title="短剧专区" sub="官方页内嵌播放" count={`${SHORT_PLATFORMS.length} 个平台`}>
-        <div className="fg-grid">
-          {SHORT_PLATFORMS.map(p => (
-            <button key={p.name} className="fg-card wt-plat-card" onClick={() => openIframe(p.name, p.url)}>
-              <div className="fg-card-title"><Clapperboard size={15} /> {p.name}</div>
-              <div className="fg-muted">{p.desc}</div>
-              <span className="fg-muted">点开即播 <ExternalLink size={11} /></span>
-            </button>
-          ))}
-        </div>
-        <div className="wt-chips">
-          <span className="fg-muted">想找短剧？</span>
-          <button className="wt-chip" onClick={() => { setAiQuery('好看的短剧'); void runAi('好看的短剧', '只推荐短剧') }}>AI 找短剧</button>
-        </div>
       </Section>
 
       {/* 直播 */}
@@ -729,6 +888,42 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             ) : (
               <ChannelList channels={liveChannels} pageKey={`${liveCountry}-${contentFilter}`} />
             )}
+          </>
+        )}
+      </Section>
+
+      {/* 点播 */}
+      <Section id="vod" title="点播" sub="电影 / 剧集 · 从 m3u 认出单放" count={vodTitles.length ? `${vodTitles.length} 部` : undefined}>
+        {!liveLoaded && liveLoading ? (
+          <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取…</div>
+        ) : vodTitles.length === 0 ? (
+          <div className="fg-empty">当前源里没有点播条目：自定义源粘一个含 mp4 电影或剧集的 m3u，点播会自动出现在这里（直播台不受影响）。</div>
+        ) : (
+          <>
+            <div className="wt-chips">
+              {(['all', 'movie', 'series'] as const).map(k => (
+                <button key={k} className={`wt-chip${vodKind === k ? ' on' : ''}`}
+                  onClick={() => { setVodKind(k); setVodPage(1) }}>
+                  {k === 'all' ? '全部' : k === 'movie' ? '电影' : '剧集'}
+                </button>
+              ))}
+            </div>
+            <div className="fg-grid">
+              {pageSlice(vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind), vodPage).map(v => {
+                const prev = continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === v.key)
+                return (
+                  <button key={v.key} className="fg-card wt-plat-card" onClick={() => openVodWithResume(v)} title={`${v.title} · 点一下开始播放`}>
+                    <div className="fg-card-title"><Film size={15} /> {v.title}</div>
+                    <div className="fg-muted">{v.kind === 'movie' ? '电影' : `剧集 · ${v.episodes.length} 集`}{prev?.episode ? ` · 看到${prev.episode}` : ''}</div>
+                    {v.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
+                    <span className="fg-muted">点开即播 <Play size={11} /></span>
+                  </button>
+                )
+              })}
+            </div>
+            <Pager page={vodPage} pageCount={pageCount(vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind).length)}
+              total={vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind).length} unit="部"
+              onPage={setVodPage} />
           </>
         )}
       </Section>
@@ -809,7 +1004,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       </Section>
 
       {/* 设置：TMDB Key 与自定义源 */}
-      <Section id="settings" title="设置" sub="TMDB Key · 自定义直播源">
+      <Section id="settings" title="设置" sub="TMDB Key · 自定义源">
         <div className="wt-set-row">
           <span>TMDB API Key</span>
           {tmdbKeySet
@@ -818,8 +1013,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             : <span className="fg-muted">未设置：热门推荐无海报、纯文字展示（见上方热门推荐区）。</span>}
         </div>
         <div className="wt-set-row">
-          <span>自定义直播源（m3u 订阅链接）</span>
-          <span className="fg-muted">自己粘贴，像 VLC 里粘地址；留空不预填任何地址。自定义源优先于内置源。</span>
+          <span>自定义源（m3u 订阅链接）</span>
+          <span className="fg-muted">自己粘贴，像 VLC 里粘地址；留空不预填任何地址。自定义源优先于内置源；直播台进直播区，点播条目进点播区。</span>
         </div>
         <div className="wt-ai-row">
           <input className="input" placeholder="名称，如：我的收藏" value={customLabel} onChange={e => setCustomLabel(e.target.value)} />
