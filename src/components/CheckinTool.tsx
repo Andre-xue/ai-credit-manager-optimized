@@ -16,7 +16,7 @@ import {
   migrateLegacyMinimaxCred, listMmMeta, addMmAccount, removeMmAccount,
   mmAccountStatuses, mmClaimOne, type MmAccountStatus,
 } from '../core/mmPool'
-import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
+import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, clearLastCheckinRun, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
 import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
 import { CHECKIN_TAB_LABELS, checkinTabCategories, visibleCheckinTabs, readSavedCheckinTab, saveCheckinTab, resolveCheckinTab, type CheckinRegionFilter } from '../core/checkinTabs'
 import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, exportTokenCredentials, importTokenCredentials, type TokenAccountMeta } from '../core/tokenPool'
@@ -260,6 +260,23 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [runOpen, setRunOpen] = useState(false)
   const [runGroups, setRunGroups] = useState<Record<string, boolean>>({})
   useEffect(() => { setRunGroups({}) }, [lastRun?.at])
+  // 清空留痕二次确认（v0.1.426）：点一次变「确认清空？」，5 秒内不点第二下自动撤回
+  const [confirmClear, setConfirmClear] = useState(false)
+  useEffect(() => {
+    if (!confirmClear) return
+    const t = window.setTimeout(() => setConfirmClear(false), 5000)
+    return () => window.clearTimeout(t)
+  }, [confirmClear])
+  const doClearLastRun = () => {
+    if (!confirmClear) { setConfirmClear(true); return }
+    setConfirmClear(false)
+    clearLastCheckinRun()
+    setLastRun(null)
+    setRunOpen(false)
+    notify(getAutoCheckinEnabled()
+      ? '签到记录已清空（自动签到开着，今天会再跑一次，各平台会显示已领）'
+      : '签到记录已清空')
+  }
   const [wbEnabled, setWbEnabled] = useState(() => getPlatformEnabled('workbuddy'))
   const [mmEnabled, setMmEnabled] = useState(() => getPlatformEnabled('minimax'))
   const [busy, setBusy] = useState('')
@@ -461,6 +478,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
               最近一次签到：{new Date(lastRun.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {summarizeCheckinRun(lastRun)}
             </span>
             <button className="btn sm ghost" style={{ flexShrink: 0 }} onClick={() => setRunOpen(!runOpen)}>{runOpen ? '收起' : '看明细'}</button>
+            <button className="btn sm ghost" style={{ flexShrink: 0, color: confirmClear ? 'var(--danger, #d33)' : undefined }} onClick={doClearLastRun}>{confirmClear ? '确认清空？' : '清空'}</button>
           </div>
           {runOpen && (() => {
             // 与菜单栏迷你窗同一套分组：失败组置顶展开，组头/组尾带本平台今日总积分
@@ -517,6 +535,12 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
               </div>
             )
           })()}
+        </div>
+      )}
+
+      {!lastRun && (
+        <div style={{ marginBottom: 12, border: '1px dashed var(--border)', borderRadius: 12, padding: '10px 14px', background: 'var(--panel)', fontSize: 12.5, color: 'var(--text-3)' }}>
+          还没有签到记录，签到后会在这里显示明细。
         </div>
       )}
 

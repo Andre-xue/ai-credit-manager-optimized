@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { webcrypto } from 'node:crypto'
 import {
   resolveAutoCheckinPassword, autoCheckinTick, setAutoCheckinEnabled,
-  readLastCheckinRun, checkinRunIsToday,
+  getAutoCheckinEnabled, readLastCheckinRun, checkinRunIsToday, clearLastCheckinRun,
 } from './checkinRun'
 import { initVault, saveBiometricPassword, clearBiometricPassword } from './crypto'
 import { addPoolAccount } from './wbPool'
@@ -151,5 +151,37 @@ describe('checkinRun.autoCheckinTick (v0.1.421)', () => {
     saveBiometricPassword('wrong-pwd')
     await expect(autoCheckinTick('')).rejects.toThrow(/主密码不正确/)
     expect(checkinRunIsToday(readLastCheckinRun())).toBe(false)
+  })
+})
+
+describe('checkinRun.clearLastCheckinRun (v0.1.426)', () => {
+  beforeEach(() => { localStorage.clear(); clearBiometricPassword() })
+
+  it('清掉留痕：readLastCheckinRun 读不到，今日守卫随之失效（下一 tick 会重跑当天签到）', () => {
+    seedLastRun(Date.now())
+    expect(readLastCheckinRun()).not.toBeNull()
+    expect(checkinRunIsToday(readLastCheckinRun())).toBe(true)
+    clearLastCheckinRun()
+    expect(readLastCheckinRun()).toBeNull()
+    expect(checkinRunIsToday(readLastCheckinRun())).toBe(false)
+  })
+
+  it('没有留痕时清空也不报错', () => {
+    expect(() => clearLastCheckinRun()).not.toThrow()
+    expect(readLastCheckinRun()).toBeNull()
+  })
+
+  it('只清留痕键：自动签到开关等其他键不受影响', () => {
+    seedLastRun(Date.now())
+    setAutoCheckinEnabled(true)
+    clearLastCheckinRun()
+    expect(getAutoCheckinEnabled()).toBe(true)
+  })
+
+  it('清掉后重新签到能再写一条新留痕（不影响后续签到）', () => {
+    seedLastRun(Date.now())
+    clearLastCheckinRun()
+    seedLastRun(Date.now())
+    expect(checkinRunIsToday(readLastCheckinRun())).toBe(true)
   })
 })

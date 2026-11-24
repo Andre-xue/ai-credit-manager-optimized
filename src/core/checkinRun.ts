@@ -35,6 +35,19 @@ export function readLastCheckinRun(): CheckinRun | null {
   } catch { return null }
 }
 
+/**
+ * 清空本机签到留痕（v0.1.426）：只清 acm.checkin.lastRun.v1 这一条显示记录，
+ * 不碰任何凭据与账号。两处（签到页 / 迷你窗）同读同一份记录：跨窗靠
+ * localStorage 的 storage 事件，同窗靠 'acm-checkin-done'，清一处两处都空。
+ * 注意：清空后今日守卫 checkinRunIsToday 读不到记录，自动签到下一 tick 会
+ * 重新跑一次当天签到——各平台只会返回「已领」，不会重复领积分，留痕会以
+ * 「已签到」的形式重新出现。这是清留痕的固有后果，不是 bug。
+ */
+export function clearLastCheckinRun(): void {
+  try { localStorage.removeItem(RUN_KEY) } catch { /* 忽略 */ }
+  try { window.dispatchEvent(new CustomEvent('acm-checkin-done')) } catch { /* 忽略 */ }
+}
+
 export function checkinRunIsToday(run: CheckinRun | null): boolean {
   if (!run) return false
   const d = new Date(run.at)

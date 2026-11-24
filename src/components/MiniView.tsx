@@ -5,7 +5,7 @@ import { PROVIDER_MAP } from '../data/providers'
 import { getBiometricPassword } from '../core/crypto'
 import {
   readLastCheckinRun, runAllCheckins, summarizeCheckinRun, checkinRunIsToday,
-  getAutoCheckinEnabled, setAutoCheckinEnabled, hasCheckinSources, type CheckinRun,
+  getAutoCheckinEnabled, setAutoCheckinEnabled, hasCheckinSources, clearLastCheckinRun, type CheckinRun,
 } from '../core/checkinRun'
 import type { AppState } from '../core/types'
 import { t } from '../core/i18n'
@@ -54,6 +54,23 @@ export function MiniView() {
   const [pwdInput, setPwdInput] = useState('')
   const [needPwd, setNeedPwd] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
+  // 清空留痕二次确认（v0.1.426）：点一次变「确认清空？」，5 秒内不点第二下自动撤回
+  const [confirmClear, setConfirmClear] = useState(false)
+  useEffect(() => {
+    if (!confirmClear) return
+    const t = window.setTimeout(() => setConfirmClear(false), 5000)
+    return () => window.clearTimeout(t)
+  }, [confirmClear])
+  const doClearLastRun = () => {
+    if (!confirmClear) { setConfirmClear(true); return }
+    setConfirmClear(false)
+    clearLastCheckinRun()
+    setLastRun(null)
+    setDetailOpen(false)
+    setCheckMsg(getAutoCheckinEnabled()
+      ? '签到记录已清空（自动签到开着，今天会再跑一次，各平台会显示已领）'
+      : '签到记录已清空')
+  }
   const collapseRef = useRef<number | null>(null)
   const [updatedAt, setUpdatedAt] = useState(() => new Date())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -165,6 +182,11 @@ export function MiniView() {
           <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>
             {lastRun ? `${checkinRunIsToday(lastRun) ? '今天' : new Date(lastRun.at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${new Date(lastRun.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '还没签过'}
           </span>
+          {lastRun && (
+            <button onClick={doClearLastRun} style={{ ...btn, padding: '2px 8px', fontSize: 11, color: confirmClear ? '#dc2626' : c.sub }}>
+              {confirmClear ? '确认清空？' : '清空'}
+            </button>
+          )}
         </div>
         {lastRun && lastRun.items.length > 0 && !detailOpen && (
           <div onClick={() => setDetailOpen(true)} style={{ marginTop: 6, fontSize: 12, color: c.sub, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
