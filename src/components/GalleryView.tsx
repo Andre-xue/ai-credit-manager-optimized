@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Play, Heart, FolderPlus, X, ChevronLeft, ChevronRight, ExternalLink, Copy, Loader2, Image as ImageIcon, Film,
-  Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square, Cloud,
+  Play, Heart, FolderPlus, X, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ExternalLink, Copy, Loader2, Image as ImageIcon, Film,
+  Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square, Cloud, SlidersHorizontal,
 } from 'lucide-react'
 import { loadStoragePrefs, storageDir } from '../core/storagePrefs'
+import { loadFilterCollapsed, saveFilterCollapsed } from '../core/galleryFilter'
 import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExternal'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
@@ -115,6 +116,11 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const [query, setQuery] = useState('')
   const [photosDbFailed, setPhotosDbFailed] = useState(false)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  // 横向筛选条折叠（v0.1.388）：收起后只剩开关 + 类型 chips，本机记忆
+  const [filterCollapsed, setFilterCollapsed] = useState(() => loadFilterCollapsed())
+  const toggleFilterCollapsed = () => {
+    setFilterCollapsed(prev => { const next = !prev; saveFilterCollapsed(next); return next })
+  }
 
   const scan = useCallback(async () => {
     const invoke = getInvoke()
@@ -412,58 +418,6 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   return (
     <ToolShell title="AI 图库" desc="苹果照片式图库：默认看 AI 生成的图和视频，也能把任意本地文件夹加进来一起看；建好 AI 索引后能按画面内容搜。" onBack={onBack}>
       <div className="gal-wrap">
-        <aside className="gal-side">
-          {([
-            { id: 'ai' as GalView, label: 'AI 生成', n: counts.ai, icon: <Sparkles size={16} /> },
-            { id: 'all' as GalView, label: '全部媒体', n: counts.all, icon: <Images size={16} /> },
-            { id: 'video' as GalView, label: '视频', n: counts.video, icon: <Clapperboard size={16} /> },
-            { id: 'fav' as GalView, label: '收藏', n: counts.fav, icon: <Heart size={16} /> },
-          ]).map(v => (
-            <button key={v.id} className={`gal-side-it ${view === v.id && !searching ? 'on' : ''}`} onClick={() => { setView(v.id); setQuery('') }}>
-              <span className="gal-side-ico">{v.icon}</span>
-              <span className="gal-side-label">{v.label}</span>
-              <span className="gal-side-n">{v.n}</span>
-            </button>
-          ))}
-
-          <div className="gal-side-title">来源文件夹</div>
-          {mediaDir
-            ? (
-              <div className="gal-src2">
-                <span className="gal-side-ico sm"><FolderOpen size={14} /></span>
-                <span className="gal-src-main">生成保存目录<span className="gal-src-path2">{mediaDir}</span></span>
-              </div>
-            )
-            : <div className="gal-src-none">未设置生成保存目录（设置 → 数据存储），AI 生成视图暂为空</div>}
-          {photosDir ? (
-            <div className="gal-src2">
-              <span className="gal-side-ico sm"><Images size={14} /></span>
-              <span className="gal-src-main">Mac 照片图库<span className="gal-src-path2">{photosDir}</span></span>
-              <button className={`gal-switch ${photosOn ? 'on' : ''}`} title={photosOn ? '点击关闭这个来源' : '点击启用这个来源'}
-                onClick={() => { const next = !photosOn; setPhotosOn(next); try { localStorage.setItem(PHOTOS_ON_KEY, next ? '1' : '0') } catch { /* 忽略 */ } }}>
-                <span className="gal-switch-dot" />
-              </button>
-            </div>
-          ) : (
-            <div className="gal-src-none">未找到 Mac 照片图库（图片文件夹下没有 .photoslibrary）</div>
-          )}
-          {folders.filter(f => f !== mediaDir && f !== photosDir).map(f => (
-            <div key={f} className="gal-src2">
-              <span className="gal-side-ico sm"><Folder size={14} /></span>
-              <span className="gal-src-main">{baseName(f)}<span className="gal-src-path2">{f}</span></span>
-              <button className="gal-src-x" title="移除这个来源" onClick={() => removeFolder(f)}><X size={12} /></button>
-            </div>
-          ))}
-          <button className="btn sm ghost" style={{ alignSelf: 'flex-start', marginTop: 4 }} onClick={() => void addFolder()}>
-            <FolderPlus size={13} /> 添加文件夹
-          </button>
-
-          <button className="gal-ai-card" onClick={() => setAiPanelOpen(o => !o)}>
-            <span className="gal-ai-card-t"><Sparkles size={13} /> AI 索引 <ChevronRight size={13} className="gal-ai-card-chev" /></span>
-            <span className="gal-ai-card-s">{indexing ? `正在索引 ${indexing.done} / ${indexing.total}` : `已索引 ${indexedCount} / ${items.length}`}</span>
-            <span className="gal-prog"><i style={{ width: `${indexing && indexing.total ? (indexing.done / indexing.total) * 100 : items.length ? (indexedCount / items.length) * 100 : 0}%` }} /></span>
-          </button>
-        </aside>
 
         <div className="gal-main" ref={galMainRef}>
           <div className="gal-bar">
@@ -486,6 +440,75 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               <Sparkles size={13} /> AI 索引{indexing ? ` · ${indexing.done}/${indexing.total}` : ''}
             </button>
           </div>
+          <div className="gal-filter">
+            <div className="gal-filter-scroll">
+              <button className="gal-filter-toggle" onClick={toggleFilterCollapsed} title={filterCollapsed ? '展开筛选条' : '收起筛选条'}>
+                <SlidersHorizontal size={13} /> 筛选 {filterCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+              </button>
+              <div className="gal-filter-seg">
+                {([
+                  { id: 'ai' as GalView, label: 'AI 生成', n: counts.ai, icon: <Sparkles size={14} /> },
+                  { id: 'all' as GalView, label: '全部媒体', n: counts.all, icon: <Images size={14} /> },
+                  { id: 'video' as GalView, label: '视频', n: counts.video, icon: <Clapperboard size={14} /> },
+                  { id: 'fav' as GalView, label: '收藏', n: counts.fav, icon: <Heart size={14} /> },
+                ]).map(v => (
+                  <button key={v.id} className={`gal-chip ${view === v.id && !searching ? 'on' : ''}`} onClick={() => { setView(v.id); setQuery('') }}>
+                    {v.icon}<span>{v.label}</span><span className="gal-chip-n">{v.n}</span>
+                  </button>
+                ))}
+              </div>
+              {!filterCollapsed && (
+                <>
+                  <span className="gal-filter-sep" />
+                  <div className="gal-filter-seg">
+                    <span className="gal-filter-seg-t">来源</span>
+                    {mediaDir
+                      ? (
+                        <span className="gal-src2">
+                          <span className="gal-side-ico sm"><FolderOpen size={14} /></span>
+                          <span className="gal-src-main">生成保存目录<span className="gal-src-path2">{mediaDir}</span></span>
+                        </span>
+                      )
+                      : <span className="gal-src-none">未设置生成保存目录</span>}
+                    {photosDir ? (
+                      <span className="gal-src2">
+                        <span className="gal-side-ico sm"><Images size={14} /></span>
+                        <span className="gal-src-main">Mac 照片图库<span className="gal-src-path2">{photosDir}</span></span>
+                        <button className={`gal-switch ${photosOn ? 'on' : ''}`} title={photosOn ? '点击关闭这个来源' : '点击启用这个来源'}
+                          onClick={() => { const next = !photosOn; setPhotosOn(next); try { localStorage.setItem(PHOTOS_ON_KEY, next ? '1' : '0') } catch { /* 忽略 */ } }}>
+                          <span className="gal-switch-dot" />
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="gal-src-none">未找到 Mac 照片图库</span>
+                    )}
+                    {folders.filter(f => f !== mediaDir && f !== photosDir).map(f => (
+                      <span key={f} className="gal-src2">
+                        <span className="gal-side-ico sm"><Folder size={14} /></span>
+                        <span className="gal-src-main">{baseName(f)}<span className="gal-src-path2">{f}</span></span>
+                        <button className="gal-src-x" title="移除这个来源" onClick={() => removeFolder(f)}><X size={12} /></button>
+                      </span>
+                    ))}
+                    <button className="btn sm ghost" onClick={() => void addFolder()}>
+                      <FolderPlus size={13} /> 添加文件夹
+                    </button>
+                  </div>
+                  <span className="gal-filter-sep" />
+                  <div className="gal-ai-mini" onClick={() => setAiPanelOpen(o => !o)} role="button" tabIndex={0}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAiPanelOpen(o => !o) } }}>
+                    <span className="gal-ai-mini-main">
+                      <span className="gal-ai-mini-t"><Sparkles size={13} /> AI 索引</span>
+                      <span className="gal-ai-mini-s">{indexing ? `正在索引 ${indexing.done} / ${indexing.total}` : `已索引 ${indexedCount} / ${items.length}`}</span>
+                      <span className="gal-prog"><i style={{ width: `${indexing && indexing.total ? (indexing.done / indexing.total) * 100 : items.length ? (indexedCount / items.length) * 100 : 0}%` }} /></span>
+                    </span>
+                    <button className="btn sm" disabled={items.length === 0 || (!indexing && !tagRoute)}
+                      onClick={e => { e.stopPropagation(); if (indexing) cancelRef.current = true; else void runIndex(false) }}>
+                      {indexing ? '停止' : '更新 AI 索引'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           {aiPanelOpen && (
             <div className="gal-ai-pop">
               <div className="gal-ai-pop-t">
@@ -537,6 +560,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               <div className="gal-idx-hint">用看图模型给每张图/视频首帧写描述和标签，之后搜「海边」「猫」就能按画面内容找。普通更新每次 60 个；「索引全部」自动一批接一批，3 个同时进行，模型限流时自动等 20 秒再继续。云端项需先下载到本机。</div>
             </div>
           )}
+          </div>
           {photosDbFailed && (
             <div className="gal-search-hint">
               没读到照片数据库（多半是还没给 AI 魔方照片权限），现在只显示本地已下载的文件。
@@ -555,7 +579,7 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                 : view === 'ai'
                   ? '还没有 AI 生成保存下来的文件。生图/生视频后会自动存到生成保存目录，这里就会出现。'
                   : view === 'fav' ? '还没有收藏。点开任意图片/视频，点爱心就能收进来。'
-                    : '这个视图暂时是空的。点左侧「添加文件夹」把有照片视频的文件夹加进来。'}
+                    : '这个视图暂时是空的。点上方筛选条里的「添加文件夹」把有照片视频的文件夹加进来。'}
             </div>
           )}
 
