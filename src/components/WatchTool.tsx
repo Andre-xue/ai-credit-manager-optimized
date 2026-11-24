@@ -10,6 +10,9 @@
 // 点播体检（v0.1.407）：与直播体检同款探针，逐部测点播线路通不通、快不快。
 // 播放器失败态（v0.1.407）：流死了也不只剩一条黑条——16:9 视频区始终保留，
 // 失败时区内显示原因 + 再试一次；加载中显示“正在加载…”；打开播放器时滚到视野内。
+// TVBox 点播源（v0.1.408）：设置里粘 .json 配置，只接 type 0/1 资源站
+// （api.php/provide/vod），爬虫站跳过并说明；成人站按站名归入 18+ 页签，
+// 设置开关控制显隐（默认关，只存本机）。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -41,11 +44,15 @@ import {
   loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
   probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead,
+  isTvboxConfigText, isAdultTvboxSite,
+  loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig, fetchCmsVodList, mergeVodTitles,
+  loadShowAdult, saveShowAdult,
   isFlvUrl,
   type HealthMap,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
   type TmdbGenreMap, type VodEnrichEntry, type VodWallItem, type VodWallSort, type VodWallStatusFilter,
+  type TvboxSite, type TvboxConfig,
 } from '../core/watch'
 import { pageSlice, pageCount } from '../core/freeGames'
 import type { Account } from '../core/types'
@@ -426,7 +433,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 }) {
   const { data, route, routeKey, setRouteKey } = useRouteData(accounts)
   // v0.1.394：横向页签导航（默认热门推荐）+ AI 找剧收进标题栏右端搜索图标
-  type WatchTab = 'trending' | 'continue' | 'live' | 'vod' | 'calendar' | 'watchlist' | 'settings'
+  type WatchTab = 'trending' | 'continue' | 'live' | 'vod' | 'adult' | 'calendar' | 'watchlist' | 'settings'
   const [activeTab, setActiveTab] = useState<WatchTab>('trending')
   const [aiSearchOpen, setAiSearchOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -635,9 +642,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [vodDetailEp, setVodDetailEp] = useState(0)
   const [vodDetailLine, setVodDetailLine] = useState(0)
 
+  // v0.1.408：TVBox 资源站的片单并进点播墙（与 m3u 点播同名时合并选集与线路）
+  const [tvboxTitles, setTvboxTitles] = useState<VodTitle[]>([])
+  const allVodTitles = useMemo(() => mergeVodTitles([vodTitles, tvboxTitles]), [vodTitles, tvboxTitles])
+
   const wallItems = useMemo(
-    () => buildVodWallItems(vodTitles, trending, vodEnrich, vodGenreMap),
-    [vodTitles, trending, vodEnrich, vodGenreMap],
+    () => buildVodWallItems(allVodTitles, trending, vodEnrich, vodGenreMap),
+    [allVodTitles, trending, vodEnrich, vodGenreMap],
   )
   const wallFiltered = useMemo(
     () => sortVodWall(filterVodWall(wallItems, { genre: vodGenre, year: vodYear, region: vodRegion, status: vodStatus }), vodSort),
@@ -649,7 +660,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   // 还在补全信息的影片数（有 TMDB 但没拉过详情，或点播标题还没搜过 TMDB；
   // 搜不到/拉失败的也算完成，不常驻提示）
   const wallEnrichPending = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried).length
-    + vodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched).length
+    + allVodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched).length
 
   // v0.1.406：点播墙自己拉 TMDB 热门榜单——以前墙拼热门依赖热门推荐页签已加载
   // 的榜单数据，先开点播时 trending 为空，墙上 0 部仅展示；切去热门再回来才有。
@@ -667,7 +678,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   useEffect(() => {
     if (activeTab !== 'vod' || !tmdbKeySet) return
     if (vodEnrichRunRef.current) return
-    const needSearch = vodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched)
+    const needSearch = allVodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched)
     const needDetails = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried)
     if (!needSearch.length && !needDetails.length) return
     let dead = false
@@ -690,7 +701,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           mergeEnrich(normalizeTitleKey(v.title), { tmdb: found ?? undefined, searched: true })
         }
         // 详情按当前墙重新算（搜索刚补上的也算上），4 路并行、每路起步间隔 200ms
-        const queue = buildVodWallItems(vodTitles, trending, vodEnrichRef.current, vodGenreMap)
+        const queue = buildVodWallItems(allVodTitles, trending, vodEnrichRef.current, vodGenreMap)
           .filter(i => i.tmdb && !i.details)
           .slice(0, 60)
         let idx = 0
@@ -712,7 +723,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     void run()
     return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, tmdbKeySet, vodTitles, trending, wallItems.length])
+  }, [activeTab, tmdbKeySet, allVodTitles, trending, wallItems.length])
 
   // ---- 点播详情弹层（海报墙点卡片进详情：选集/选线路/加入片单/播放） ----
   const openVodDetail = (item: VodWallItem) => {
@@ -869,6 +880,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const addCustomSource = async (label: string, urlRaw: string, which: 'live' | 'vod') => {
     const url = urlRaw.trim()
     if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 m3u 订阅链接', 'err'); return }
+    // .json 地址很可能是 TVBox 配置：先拉下来看一眼，确认是就提示去 TVBox 区，
+    // 别当 m3u 存了又拉不到（m3u 解析器读 JSON 得 0 条，还以为是源死了）
+    if (/\.json(\?|#|$)/i.test(url)) {
+      try {
+        const ctrl = new AbortController()
+        const t = globalThis.setTimeout(() => ctrl.abort(), 20000)
+        const res = await fetch(url, { signal: ctrl.signal })
+        globalThis.clearTimeout(t)
+        const text = await res.text()
+        if (isTvboxConfigText(text)) { notify('这是 TVBox 的 .json 配置，不是 m3u：请粘到「设置」页签的「TVBox 点播源」里', 'err'); return }
+      } catch { /* 拉不到就按 m3u 继续走，后面会报拉取失败 */ }
+    }
     const src: CustomSource = { id: `${Date.now()}`, label: label.trim() || '自定义源', url, addedAt: Date.now() }
     const next = [...customSources, src]
     setCustomSources(next); saveCustomSources(next)
@@ -891,6 +914,115 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     const next = customSources.filter(s => s.id !== id)
     setCustomSources(next); saveCustomSources(next)
     notify('已删除自定义源')
+  }
+
+  // ---- TVBox 点播源（v0.1.408） ----
+  // 配置（.json）里是站点接口列表：只接 type 0/1 资源站（api.php/provide/vod），
+  // 爬虫站（type 3，JS / Python 规则）与聚合站（type 4）没有爬虫引擎、接不了，
+  // 解析时跳过并在设置里写清跳了多少个。选中的站拉第 1 页片单进点播墙，
+  // 可点「加载更多」逐页追加；同名片与 m3u 点播合并选集与线路。
+  const [tvboxConfigs, setTvboxConfigs] = useState<TvboxConfig[]>(loadTvboxConfigs)
+  const [tvboxLabel, setTvboxLabel] = useState('')
+  const [tvboxUrl, setTvboxUrl] = useState('')
+  const [tvboxBusy, setTvboxBusy] = useState(false)
+  const [tvboxResult, setTvboxResult] = useState('')
+  // 18+ 专区开关（默认关，只存本机）：关着时 18+ 页签整个隐藏；正在看 18+ 时
+  // 关掉，落回点播页签。
+  const [showAdult, setShowAdult] = useState(() => loadShowAdult())
+  const toggleShowAdult = () => {
+    setShowAdult(v => {
+      const next = !v
+      saveShowAdult(next)
+      if (!next && activeTab === 'adult') setActiveTab('vod')
+      return next
+    })
+  }
+  // 各配置里可接的资源站（key 前加配置 id，防两个配置里同名站撞 key）；
+  // 成人站（按站名判断）只进 18+，普通区不列。
+  const tvboxSites = useMemo(() => {
+    const seen = new Set<string>()
+    const out: TvboxSite[] = []
+    for (const c of tvboxConfigs) {
+      for (const s of c.sites) {
+        if (seen.has(s.api)) continue
+        seen.add(s.api)
+        out.push({ ...s, key: `${c.id}:${s.key}` })
+      }
+    }
+    return out
+  }, [tvboxConfigs])
+  const normalTvboxSites = useMemo(() => tvboxSites.filter(s => !isAdultTvboxSite(s)), [tvboxSites])
+  const adultTvboxSites = useMemo(() => tvboxSites.filter(s => isAdultTvboxSite(s)), [tvboxSites])
+  const tvboxSkipped = useMemo(
+    () => tvboxConfigs.reduce((a, c) => ({ spider: a.spider + c.skippedSpider, other: a.other + c.skippedOther }), { spider: 0, other: 0 }),
+    [tvboxConfigs],
+  )
+  // 点播区选中的资源站与 18+ 区选中的站（各一个，片单互不干扰）
+  const [tvboxSite, setTvboxSite] = useState<TvboxSite | null>(null)
+  const [tvboxLoading, setTvboxLoading] = useState(false)
+  const [tvboxError, setTvboxError] = useState('')
+  const [tvboxPage, setTvboxPage] = useState(1)
+  const [tvboxPageCount, setTvboxPageCount] = useState(1)
+  const [tvboxTotal, setTvboxTotal] = useState(0)
+  const [adultSite, setAdultSite] = useState<TvboxSite | null>(null)
+  const [adultTitles, setAdultTitles] = useState<VodTitle[]>([])
+  const [adultLoading, setAdultLoading] = useState(false)
+  const [adultError, setAdultError] = useState('')
+  const [adultPage, setAdultPage] = useState(1)
+  const [adultPageCount, setAdultPageCount] = useState(1)
+  const [adultTotal, setAdultTotal] = useState(0)
+  const [adultWallPage, setAdultWallPage] = useState(1)
+  const adultWallItems = useMemo(
+    () => buildVodWallItems(adultTitles, [], {}, null),
+    [adultTitles],
+  )
+  const loadSiteTitles = async (site: TvboxSite, page: number, target: 'vod' | 'adult') => {
+    const setLoading = target === 'vod' ? setTvboxLoading : setAdultLoading
+    const setError = target === 'vod' ? setTvboxError : setAdultError
+    const setTitles = target === 'vod' ? setTvboxTitles : setAdultTitles
+    const setPage = target === 'vod' ? setTvboxPage : setAdultPage
+    const setPageCount = target === 'vod' ? setTvboxPageCount : setAdultPageCount
+    const setTotal = target === 'vod' ? setTvboxTotal : setAdultTotal
+    setLoading(true); setError('')
+    try {
+      const r = await fetchCmsVodList(site, page)
+      if (r.error) { setError(r.error); return }
+      setPageCount(r.pageCount || 1); setTotal(r.total); setPage(page)
+      setTitles(prev => (page === 1 ? r.titles : mergeVodTitles([prev, r.titles])))
+    } catch (e) { setError(e instanceof Error ? e.message : '加载失败') } finally { setLoading(false) }
+  }
+  const selectSite = (site: TvboxSite, target: 'vod' | 'adult') => {
+    if (target === 'vod') {
+      setTvboxSite(site); setTvboxTitles([]); setTvboxPage(1); setTvboxPageCount(1); setTvboxTotal(0)
+    } else {
+      setAdultSite(site); setAdultTitles([]); setAdultPage(1); setAdultPageCount(1); setAdultTotal(0); setAdultWallPage(1)
+    }
+    void loadSiteTitles(site, 1, target)
+  }
+  const addTvboxConfig = async (label: string, urlRaw: string) => {
+    const url = urlRaw.trim()
+    if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 TVBox 配置地址', 'err'); return }
+    setTvboxBusy(true)
+    try {
+      const r = await fetchTvboxConfig(url)
+      if (r.error) { setTvboxResult(`「${label.trim() || 'TVBox 源'}」解析失败：${r.error}`); return }
+      const cfg: TvboxConfig = {
+        id: `${Date.now()}`, label: label.trim() || 'TVBox 源', url, addedAt: Date.now(),
+        total: r.total, usable: r.usable, skippedSpider: r.skippedSpider, skippedOther: r.skippedOther,
+        adultCount: r.adultCount, sites: r.sites,
+      }
+      const next = [...tvboxConfigs, cfg]
+      setTvboxConfigs(next); saveTvboxConfigs(next)
+      setTvboxLabel(''); setTvboxUrl('')
+      setTvboxResult(`「${cfg.label}」解析到 ${r.total} 个站：${r.usable} 个资源站可用（其中成人站 ${r.adultCount} 个归入 18+），跳过爬虫站 ${r.skippedSpider} 个、其他类型 ${r.skippedOther} 个`)
+    } catch (e) { setTvboxResult(`解析失败：${e instanceof Error ? e.message : '未知错误'}`) } finally { setTvboxBusy(false) }
+  }
+  const removeTvboxConfig = (id: string) => {
+    const next = tvboxConfigs.filter(c => c.id !== id)
+    setTvboxConfigs(next); saveTvboxConfigs(next)
+    if (tvboxSite && tvboxSite.key.startsWith(`${id}:`)) { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }
+    if (adultSite && adultSite.key.startsWith(`${id}:`)) { setAdultSite(null); setAdultTitles([]); setAdultError('') }
+    notify('已删除 TVBox 源')
   }
 
   // ---- 追剧日历（由片单的 nextDate 派生） ----
@@ -1023,6 +1155,40 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     )
   }
 
+  // 海报墙卡片网格 + 分页（点播页签与 18+ 页签共用；卡片点开进同一详情弹层）
+  const WallGrid = ({ items, page, onPage }: { items: VodWallItem[]; page: number; onPage: (n: number) => void }) => (
+    <>
+      <div className="wt-wall">
+        {pageSlice(items, page, 12).map(item => {
+          const badge = vodWallBadge(item)
+          const prev = item.vod ? continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === item.vod!.key) : undefined
+          const vh = item.vod ? vodHealthOf(health, item.vod) : undefined
+          return (
+            <button key={item.id} type="button" className={`wt-wall-card${vh && !vh.ok ? ' wt-wall-card-dead' : ''}`} onClick={() => openVodDetail(item)} aria-label={`查看《${item.title}》详情`}>
+              <span className="wt-wall-poster">
+                {item.poster
+                  ? <img src={item.poster} alt={`${item.title} 海报`} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                  : <span className="wt-wall-ph"><Film size={22} /></span>}
+                {badge && <span className={`wt-wall-badge ${badge.cls}`}>{badge.text}</span>}
+                {typeof item.vote === 'number' && <span className="wt-wall-rate">★ {item.vote.toFixed(1)}</span>}
+                {!item.playable && <span className="wt-wall-veil">暂无片源 · 仅展示</span>}
+              </span>
+              <span className="wt-wall-title">{item.title}</span>
+              <span className="wt-wall-meta">
+                {[item.year, item.region, item.genres.join('/')].filter(Boolean).join(' · ') || (item.kind === 'movie' ? '电影' : `剧集 · ${item.vod?.episodes.length ?? ''} 集`)}
+              </span>
+              {item.playable
+                ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}{vh ? (vh.ok ? <span className="wt-health-ok"> ✓ {vh.ms}ms</span> : <span className="wt-health-bad"> ✗ 不通</span>) : null}</span>
+                : <span className="wt-wall-src none"><span className="dot" />仅展示 · 未匹配到片源</span>}
+              {item.vod?.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
+            </button>
+          )
+        })}
+      </div>
+      <Pager page={page} pageCount={pageCount(items.length, 12)} total={items.length} unit="部" onPage={onPage} />
+    </>
+  )
+
   return (
     <div className="ws-tool fg-tool">
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -1066,6 +1232,9 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         <button role="tab" aria-selected={activeTab === 'continue'} className={`wt-tab${activeTab === 'continue' ? ' on' : ''}`} onClick={() => setActiveTab('continue')}>继续观看{continueList.length ? <span className="wt-tab-count">{continueList.length} 条</span> : null}</button>
         <button role="tab" aria-selected={activeTab === 'live'} className={`wt-tab${activeTab === 'live' ? ' on' : ''}`} onClick={() => setActiveTab('live')}>直播{liveLoaded ? <span className="wt-tab-count">{liveChannels.length} 个台</span> : null}</button>
         <button role="tab" aria-selected={activeTab === 'vod'} className={`wt-tab${activeTab === 'vod' ? ' on' : ''}`} onClick={() => setActiveTab('vod')}>点播{vodTitles.length ? <span className="wt-tab-count">{vodTitles.length} 部</span> : null}</button>
+        {showAdult && (
+          <button role="tab" aria-selected={activeTab === 'adult'} className={`wt-tab${activeTab === 'adult' ? ' on' : ''}`} onClick={() => setActiveTab('adult')}>18+{adultTvboxSites.length ? <span className="wt-tab-count">{adultTvboxSites.length} 个站</span> : null}</button>
+        )}
         <button role="tab" aria-selected={activeTab === 'calendar'} className={`wt-tab${activeTab === 'calendar' ? ' on' : ''}`} onClick={() => setActiveTab('calendar')}>追剧日历{dated.length ? <span className="wt-tab-count">{dated.length} 条</span> : null}</button>
         <button role="tab" aria-selected={activeTab === 'watchlist'} className={`wt-tab${activeTab === 'watchlist' ? ' on' : ''}`} onClick={() => setActiveTab('watchlist')}>我的片单<span className="wt-tab-count">{watchlist.length} 部</span></button>
         <button role="tab" aria-selected={activeTab === 'settings'} className={`wt-tab${activeTab === 'settings' ? ' on' : ''}`} onClick={() => setActiveTab('settings')}>设置</button>
@@ -1335,8 +1504,32 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       {activeTab === 'vod' && (
         <div className="wt-tab-body">
           <div className="wt-tab-sub">电影 / 剧集 · 海报墙 · 有源可播，没源的只展示</div>
-          {vodTitles.length === 0 && (
-            <div className="fg-muted">在「设置」页签的「自定义点播源」里粘含 mp4 / mkv 条目的 m3u，电影和剧集会自动认出来放到这里；同一个地址里的直播流仍留在直播区。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          {vodTitles.length === 0 && tvboxTitles.length === 0 && (
+            <div className="fg-muted">在「设置」页签的「TVBox 点播源」里粘 .json 配置地址，或在「自定义点播源」里粘含 mp4 / mkv 条目的 m3u，电影和剧集会自动认出来放到这里；同一个地址里的直播流仍留在直播区。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          )}
+          {tvboxConfigs.length > 0 && (
+            <>
+              <div className="wt-chips">
+                <span className="fg-muted">TVBox 资源站：</span>
+                <button className={`wt-chip${!tvboxSite ? ' on' : ''}`} aria-pressed={!tvboxSite}
+                  onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
+                {normalTvboxSites.map(s => (
+                  <button key={s.key} className={`wt-chip${tvboxSite?.key === s.key ? ' on' : ''}`} aria-pressed={tvboxSite?.key === s.key}
+                    onClick={() => selectSite(s, 'vod')}>{s.name}</button>
+                ))}
+              </div>
+              {tvboxSite && (
+                <div className="fg-muted">
+                  {tvboxLoading ? '正在拉取片单…' : tvboxError ? `「${tvboxSite.name}」拉取失败：${tvboxError}` : `「${tvboxSite.name}」站内共 ${tvboxTotal} 部 · 已加载 ${tvboxTitles.length} 部（第 ${tvboxPage}/${tvboxPageCount} 页）`}
+                  {!tvboxLoading && !tvboxError && tvboxPage < tvboxPageCount && (
+                    <button className="btn sm ghost" onClick={() => void loadSiteTitles(tvboxSite, tvboxPage + 1, 'vod')}>加载更多</button>
+                  )}
+                </div>
+              )}
+              {(tvboxSkipped.spider > 0 || tvboxSkipped.other > 0) && (
+                <div className="fg-muted">已跳过爬虫站 {tvboxSkipped.spider} 个（JS / Python 规则，暂不支持）、其他类型 {tvboxSkipped.other} 个。</div>
+              )}
+            </>
           )}
           {!tmdbKeySet && wallItems.length > 0 && (
             <div className="fg-muted">没填 TMDB Key：只有片名列表，没有海报、评分与类型/年份/地区筛选；去「设置」页签填 Key 后再看。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
@@ -1379,7 +1572,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         {!liveLoaded && liveLoading ? (
           <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取…</div>
         ) : wallItems.length === 0 ? (
-          <div className="fg-empty">当前源里没有点播条目：自定义源粘一个含 mp4 电影或剧集的 m3u，点播会自动出现在这里（直播台不受影响）。</div>
+          <div className="fg-empty">当前源里没有点播条目：在「设置」里粘一个 TVBox 的 .json 配置并选一个资源站，或粘一个含 mp4 电影或剧集的 m3u，点播会自动出现在这里（直播台不受影响）。</div>
         ) : (
           <>
             {tmdbKeySet && (
@@ -1437,40 +1630,49 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 <div className="fg-muted">换个类型、年份或地区试试；没匹配到 TMDB 的影片没有类型、年份信息，筛选时只按「全部」显示。</div>
               </div>
             ) : (
-              <div className="wt-wall">
-                {pageSlice(wallShown, vodPage, 12).map(item => {
-                  const badge = vodWallBadge(item)
-                  const prev = item.vod ? continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === item.vod!.key) : undefined
-                  const vh = item.vod ? vodHealthOf(health, item.vod) : undefined
-                  return (
-                    <button key={item.id} type="button" className={`wt-wall-card${vh && !vh.ok ? ' wt-wall-card-dead' : ''}`} onClick={() => openVodDetail(item)} aria-label={`查看《${item.title}》详情`}>
-                      <span className="wt-wall-poster">
-                        {item.poster
-                          ? <img src={item.poster} alt={`${item.title} 海报`} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                          : <span className="wt-wall-ph"><Film size={22} /></span>}
-                        {badge && <span className={`wt-wall-badge ${badge.cls}`}>{badge.text}</span>}
-                        {typeof item.vote === 'number' && <span className="wt-wall-rate">★ {item.vote.toFixed(1)}</span>}
-                        {!item.playable && <span className="wt-wall-veil">暂无片源 · 仅展示</span>}
-                      </span>
-                      <span className="wt-wall-title">{item.title}</span>
-                      <span className="wt-wall-meta">
-                        {[item.year, item.region, item.genres.join('/')].filter(Boolean).join(' · ') || (item.kind === 'movie' ? '电影' : `剧集 · ${item.vod?.episodes.length ?? ''} 集`)}
-                      </span>
-                      {item.playable
-                        ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}{vh ? (vh.ok ? <span className="wt-health-ok"> ✓ {vh.ms}ms</span> : <span className="wt-health-bad"> ✗ 不通</span>) : null}</span>
-                        : <span className="wt-wall-src none"><span className="dot" />仅展示 · 未匹配到片源</span>}
-                      {item.vod?.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
-                    </button>
-                  )
-                })}
-              </div>
+              <WallGrid items={wallShown} page={vodPage} onPage={setVodPage} />
             )}
-            <Pager page={vodPage} pageCount={pageCount(wallShown.length, 12)}
-              total={wallShown.length} unit="部"
-              onPage={setVodPage} />
           </>
         )}
-        {vodDetail && <VodDetailSheet item={vodDetail} />}
+        </div>
+      )}
+
+      {/* 18+ 专区（v0.1.408）：成人站单独归到这里，按站名判断归类；
+          不隐藏、不设年龄验证；开关关了整个页签隐藏（见设置页签） */}
+      {activeTab === 'adult' && showAdult && (
+        <div className="wt-tab-body">
+          <div className="wt-tab-sub">18+ · 成人资源站 · 按站名归类（名字起得隐晦的可能漏进普通区）</div>
+          {adultTvboxSites.length === 0 ? (
+            <div className="fg-empty">还没有成人资源站：先在「设置」页签的「TVBox 点播源」里粘一个 .json 配置地址，里面的成人站会自动归到这里。</div>
+          ) : (
+            <>
+              <div className="wt-chips">
+                {adultTvboxSites.map(s => (
+                  <button key={s.key} className={`wt-chip${adultSite?.key === s.key ? ' on' : ''}`} aria-pressed={adultSite?.key === s.key}
+                    onClick={() => selectSite(s, 'adult')}>{s.name}</button>
+                ))}
+              </div>
+              {!adultSite ? (
+                <div className="fg-muted">点一个站，加载它的片单。</div>
+              ) : adultLoading ? (
+                <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取「{adultSite.name}」的片单…</div>
+              ) : adultError ? (
+                <div className="fg-muted">「{adultSite.name}」拉取失败：{adultError}</div>
+              ) : adultWallItems.length === 0 ? (
+                <div className="fg-empty">「{adultSite.name}」这个站没有拉到片子：可能站内是空的，或该站已失效。</div>
+              ) : (
+                <>
+                  <div className="wt-countbar">
+                    <span className="wt-count-text">「{adultSite.name}」共 <b>{adultWallItems.length}</b> 部 · 站内共 {adultTotal} 部（第 {adultPage}/{adultPageCount} 页）</span>
+                    {adultPage < adultPageCount && (
+                      <button className="btn sm ghost" onClick={() => void loadSiteTitles(adultSite, adultPage + 1, 'adult')}>加载更多</button>
+                    )}
+                  </div>
+                  <WallGrid items={adultWallItems} page={adultWallPage} onPage={setAdultWallPage} />
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -1572,7 +1774,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>自定义点播源</h4>
-            <div className="wt-set-note">粘贴含电影、剧集条目（mp4 / mkv / 点播 m3u8）的 m3u 地址，保存后会自动认出电影和剧集，放进「点播」页签；同一个地址里的直播流仍进直播区。</div>
+            <div className="wt-set-note">粘贴含电影、剧集条目（mp4 / mkv / 点播 m3u8）的 m3u 地址，保存后会自动认出电影和剧集，放进「点播」页签；同一个地址里的直播流仍进直播区。TVBox 的 .json 配置不要粘这里，去下面「TVBox 点播源」。</div>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：我的点播源" value={vodLabel} onChange={e => setVodLabel(e.target.value)} />
               <input className="input" placeholder="粘贴 m3u 点播源地址（http(s)://…）" value={vodUrl} onChange={e => setVodUrl(e.target.value)} />
@@ -1581,6 +1783,32 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               </button>
             </div>
           </div>
+          <div className="wt-set-block">
+            <h4>TVBox 点播源（JSON）</h4>
+            <div className="wt-set-note">粘 TVBox 配置地址（影视仓 / OK影视用的 .json，里面是站点接口不是 m3u）。只接 type 0/1 资源站（api.php/provide/vod）；爬虫站（JS / Python 规则）没有爬虫引擎、接不了，解析时会跳过并写清跳了多少个；这类源本身不稳定易失效，拉不到会写清原因。</div>
+            <div className="wt-ai-row">
+              <input className="input" placeholder="名称，如：test1" value={tvboxLabel} onChange={e => setTvboxLabel(e.target.value)} />
+              <input className="input" placeholder="粘贴 TVBox 配置地址（.json）" value={tvboxUrl} onChange={e => setTvboxUrl(e.target.value)} />
+              <button className="btn sm primary" disabled={tvboxBusy || !tvboxUrl.trim()} onClick={() => void addTvboxConfig(tvboxLabel, tvboxUrl)}>
+                {tvboxBusy ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 保存
+              </button>
+            </div>
+          </div>
+          {tvboxResult && <div className="fg-muted">{tvboxResult}</div>}
+          {tvboxConfigs.length > 0 && (
+            <div className="wt-watchlist">
+              {tvboxConfigs.map(c => (
+                <div key={c.id} className="wt-wl-row">
+                  <div className="wt-wl-main">
+                    <div className="fg-card-title">{c.label}</div>
+                    <div className="fg-muted">{c.url}</div>
+                    <div className="fg-muted">{c.total} 个站 · {c.usable} 个资源站可用 · 跳过爬虫站 {c.skippedSpider} 个、其他类型 {c.skippedOther} 个 · 成人站 {c.adultCount} 个归入 18+</div>
+                  </div>
+                  <button className="btn sm ghost" onClick={() => removeTvboxConfig(c.id)} title="删除"><Trash2 size={13} /></button>
+                </div>
+              ))}
+            </div>
+          )}
           {customTestResult && <div className="fg-muted">{customTestResult}</div>}
           {customSources.length > 0 && (
             <div className="wt-watchlist">
@@ -1650,9 +1878,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <span>显示已测不通的台</span>
             </label>
           </div>
+          <div className="wt-set-block">
+            <h4>18+ 专区</h4>
+            <div className="wt-set-note">成人站（按站名判断，名字起得隐晦的会漏进普通区）单独归到「18+」页签；开关开着才显示这个页签，关了就整个隐藏。默认关，只存本机。</div>
+            <label className="wt-set-row" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={showAdult} onChange={toggleShowAdult} />
+              <span>显示 18+ 页签</span>
+            </label>
+          </div>
           <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
         </div>
       )}
+      {vodDetail && <VodDetailSheet item={vodDetail} />}
     </div>
   )
 }

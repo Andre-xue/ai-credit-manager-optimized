@@ -1387,3 +1387,353 @@ export function vodWallBadge(item: VodWallItem): { cls: 'hd' | 'up' | 'done' | '
   if (item.totalEps) return { cls: 'plain', text: `共${item.totalEps}集` }
   return null
 }
+
+// ---------------- TVBox 点播源（v0.1.408） ----------------
+// TVBox 配置（影视仓 / OK影视用的 .json）里是站点接口列表，不是 m3u：
+// 自定义源框按 m3u 解析读不到任何条目（Ethan 从 ngo5/IPTV 仓库拿的点播
+// 源就是这种，粘进去墙里只剩热门推荐）。408 解析它：
+//   type 0/1 = 苹果 CMS 资源站（api.php/provide/vod），直接接，拉
+//     ?ac=videolist&pg=N 的片单进点播墙；
+//   type 3 = 爬虫站（drpy JS / Python 规则）：要跑代码，App 没有爬虫
+//     引擎，接不了——解析时跳过，并告诉用户跳了多少个及原因；
+//   type 4 = 聚合站（api 是自定义聚合接口，不是 CMS）：同样接不了，跳过。
+// 这类源本身不稳定易失效：拉不到/解析失败都明确写中文原因，不静默兜底。
+// parses（解析接口）与 lives（直播源）不在 408 范围内，不动。
+
+export interface TvboxSite {
+  key: string
+  name: string
+  /** 0 = XML CMS，1 = JSON CMS，3 = 爬虫站，4 = 聚合站 */
+  type: number
+  api: string
+  ext?: string
+}
+
+export interface TvboxParseResult {
+  /** 去重后的站点总数 */
+  total: number
+  /** 可直接接的资源站（type 0/1 且 api 为 http(s)） */
+  usable: TvboxSite[]
+  /** 跳过的爬虫站（type 3）数 */
+  skippedSpider: number
+  /** 跳过的其他类型（type 4、缺 api、未知 type 等）数 */
+  skippedOther: number
+  error?: string
+}
+
+const TVBOX_MAX_SITES = 1000
+
+/** 解析 TVBox 配置文本：接受 { sites: [...] } 或裸数组；按 key 去重 */
+export function parseTvboxConfig(text: string): TvboxParseResult {
+  const empty: TvboxParseResult = { total: 0, usable: [], skippedSpider: 0, skippedOther: 0 }
+  const t = (text ?? '').trim()
+  if (!t) return { ...empty, error: '配置是空的' }
+  let data: unknown
+  try { data = JSON.parse(t) } catch { return { ...empty, error: '这不是 TVBox 配置：JSON 解析失败' } }
+  const rawSites = Array.isArray(data) ? data : (data as { sites?: unknown })?.sites
+  if (!Array.isArray(rawSites)) return { ...empty, error: '这不是 TVBox 配置：里面没有 sites 站点列表' }
+  const seen = new Set<string>()
+  const usable: TvboxSite[] = []
+  let skippedSpider = 0
+  let skippedOther = 0
+  for (const raw of rawSites) {
+    if (!raw || typeof raw !== 'object') { skippedOther++; continue }
+    const r = raw as Record<string, unknown>
+    const key = String(r.key ?? r.name ?? '').trim()
+    const name = String(r.name ?? r.key ?? '').trim() || key || '未命名'
+    const type = Number(r.type)
+    const api = String(r.api ?? '').trim()
+    if (!key || seen.has(key)) { if (!key) skippedOther++; continue } // 重复 key 静默去重，不算跳过
+    seen.add(key)
+    if (type === 3) { skippedSpider++; continue }
+    if ((type !== 0 && type !== 1) || !/^https?:\/\//.test(api)) { skippedOther++; continue }
+    if (usable.length >= TVBOX_MAX_SITES) { skippedOther++; continue }
+    usable.push({ key, name, type, api, ext: typeof r.ext === 'string' && r.ext ? r.ext : undefined })
+  }
+  return { total: seen.size, usable, skippedSpider, skippedOther }
+}
+
+/** 一段文本是不是 TVBox 配置（供 m3u 输入框守门：粘了 .json 配置时提示
+ * 去 TVBox 区，别当 m3u 存了又拉不到） */
+export function isTvboxConfigText(text: string): boolean {
+  try {
+    const data = JSON.parse((text ?? '').trim())
+    const sites = Array.isArray(data) ? data : (data as { sites?: unknown })?.sites
+    return Array.isArray(sites) && sites.length > 0
+  } catch { return false }
+}
+
+// ---------------- 18+ 专区：成人站按站名归类（v0.1.408） ----------------
+// TVBox JSON 本身没有 isAdult 标记，只能按站名关键词判断：名字起得隐晦
+// 的会漏进普通区（Ethan 已知，先按这个做法）。不做成人过滤——不隐藏
+// 单个成人站，成人站只是单独归到「18+」页签；页签显隐另由开关控制。
+export const ADULT_SITE_KEYWORDS = [
+  'porn', 'missav', 'madou', 'sex', 'avjoy', 'fourkav', 'korean', 'effedup',
+  '成人', '禁果', '精仙', '绅士', '茄子', 'av', 'bj', '18', '2048', 'ko4',
+  '93合1', '九合一', 'avbebe',
+]
+
+/** 站名是否像成人站：关键词按小写子串匹配（'av' 会命中 91AV、搜AV资源；
+ * 名字里带 '18' 的（如 Korean18x）也算——这份名单里带 18 的站都是成人站） */
+export function isAdultTvboxSite(site: TvboxSite): boolean {
+  const name = (site.name ?? '').toLowerCase()
+  return ADULT_SITE_KEYWORDS.some(k => name.includes(k.toLowerCase()))
+}
+
+// ---------------- TVBox 配置存储（只存本机） ----------------
+
+export interface TvboxConfig {
+  id: string
+  label: string
+  url: string
+  addedAt: number
+  /** 去重后的站点总数 */
+  total: number
+  /** 可直接接的资源站数 */
+  usable: number
+  skippedSpider: number
+  skippedOther: number
+  /** 可接资源站里的成人站数（归入 18+） */
+  adultCount: number
+  /** 可直接接的资源站列表（type 0/1） */
+  sites: TvboxSite[]
+}
+export const TVBOX_CONFIGS_KEY = 'acm.watch.tvboxConfigs.v1'
+
+export function loadTvboxConfigs(): TvboxConfig[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(TVBOX_CONFIGS_KEY) ?? '[]')
+    return Array.isArray(v) ? (v as TvboxConfig[]).filter(c => c?.url && Array.isArray(c.sites)) : []
+  } catch { return [] }
+}
+
+export function saveTvboxConfigs(list: TvboxConfig[]): void {
+  try { localStorage.setItem(TVBOX_CONFIGS_KEY, JSON.stringify(list)) } catch { /* 忽略 */ }
+}
+
+export interface TvboxConfigFetch {
+  sites: TvboxSite[]
+  total: number
+  usable: number
+  skippedSpider: number
+  skippedOther: number
+  adultCount: number
+  error?: string
+}
+
+/** 拉一个 TVBox 配置地址并解析：只返回可接的资源站列表与统计 */
+export async function fetchTvboxConfig(url: string): Promise<TvboxConfigFetch> {
+  const fail = (error: string): TvboxConfigFetch => ({ sites: [], total: 0, usable: 0, skippedSpider: 0, skippedOther: 0, adultCount: 0, error })
+  try {
+    const text = await fetchTextWithTimeout(url, 20000)
+    const r = parseTvboxConfig(text)
+    if (r.error) return fail(r.error)
+    return {
+      sites: r.usable,
+      total: r.total,
+      usable: r.usable.length,
+      skippedSpider: r.skippedSpider,
+      skippedOther: r.skippedOther,
+      adultCount: r.usable.filter(isAdultTvboxSite).length,
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/abort|timeout|timed out/i.test(msg)) return fail('拉取超时（20 秒无响应）')
+    if (/load failed|failed to fetch|networkerror/i.test(msg)) return fail('网络请求失败，可能被代理/网络拦截，请换个节点再试')
+    if (/^HTTP \d+/.test(msg)) return fail(`配置地址返回 ${msg}（地址可能已失效）`)
+    return fail(`拉取失败（${msg.slice(0, 60)}）`)
+  }
+}
+
+// ---------------- 18+ 页签显隐开关（v0.1.408）：默认关，只存本机 ----------------
+export const SHOW_ADULT_KEY = 'acm.watch.showAdult.v1'
+
+/** 默认关：18+ 页签整个隐藏 */
+export function loadShowAdult(): boolean {
+  try { return localStorage.getItem(SHOW_ADULT_KEY) === '1' } catch { return false }
+}
+
+export function saveShowAdult(v: boolean): void {
+  try { localStorage.setItem(SHOW_ADULT_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+// ---------------- 苹果 CMS 资源站（type 0/1） ----------------
+// 协议：?ac=videolist&pg=N，type 1 返回 JSON，type 0 返回 XML（RSS）。
+// vod_play_url 格式：多源用 $$$ 分隔，每源内多集用 # 分隔，每集
+// "标签$地址"（电影常为"正片$地址"或"HD$地址"）；标签无 $ 时整段即地址。
+
+export interface CmsVodItem {
+  vod_name?: string
+  vod_pic?: string
+  vod_play_from?: string
+  vod_play_url?: string
+  vod_year?: string | number
+  vod_area?: string
+  vod_class?: string
+}
+
+/** 资源站片单地址：去掉原有查询串，补 ac=videolist&pg=N。
+ * api 以 .php 结尾时直接拼 ?ac=…，否则先补 /（如 …/provide/vod/）。 */
+export function cmsListUrl(api: string, page: number): string {
+  const stripped = api.trim().split('?')[0]
+  const base = /\.php$/i.test(stripped) ? stripped : `${stripped.replace(/\/+$/, '')}/`
+  return `${base}?ac=videolist&pg=${page}`
+}
+
+/** play_url → 选集：多源用 $$$ 分隔，每源内多集用 # 分隔，每集
+ * "标签$地址"（电影常为"正片$地址"或"HD$地址"）；标签无 $ 时整段即地址。
+ * 同集多源合并；标签"第N集"认集号，"HD"/"BD"/"正片"/无标签都算正片
+ * （episodeNo 0）。play_from 的源名不参与合并——同一集在不同源的标签
+ * 写法可能不同（"第01集" vs "HD"），按集号合并更稳。 */
+export function cmsPlayUrlToEpisodes(playUrl: string): VodEpisode[] {
+  const groups = (playUrl || '').split('$$$')
+  const byNo = new Map<number, VodEpisode>()
+  for (const g of groups) {
+    if (!g) continue
+    for (const part of g.split('#')) {
+      if (!part) continue
+      const dollar = part.indexOf('$')
+      const label = dollar >= 0 ? part.slice(0, dollar).trim() : ''
+      const url = (dollar >= 0 ? part.slice(dollar + 1) : part).trim()
+      if (!/^https?:\/\//.test(url)) continue
+      const epNo = splitEpisode(label).episodeNo ?? 0
+      const ep = byNo.get(epNo) ?? { label: '', urls: [], episodeNo: epNo, unofficial: false }
+      if (!ep.urls.includes(url)) ep.urls.push(url)
+      byNo.set(epNo, ep)
+    }
+  }
+  const eps = [...byNo.values()]
+  eps.sort((a, b) => {
+    if (a.episodeNo && b.episodeNo) return a.episodeNo - b.episodeNo
+    if (a.episodeNo) return -1
+    if (b.episodeNo) return 1
+    return 0
+  })
+  for (const e of eps) e.unofficial = e.urls.some(u => isUnofficialStreamUrl(u))
+  return eps
+}
+
+/** 一条 CMS 影片 → 点播标题：无片名或无可用线路时返回 null；
+ * 多集或带集号的算剧集，否则算电影。 */
+export function cmsItemToVodTitle(item: CmsVodItem, sourceId: string): VodTitle | null {
+  const title = (item.vod_name ?? '').trim()
+  if (!title) return null
+  const episodes = cmsPlayUrlToEpisodes(item.vod_play_url ?? '')
+  if (!episodes.length) return null
+  const isSeries = episodes.length > 1 || episodes.some(e => e.episodeNo > 0)
+  episodes.forEach((e, i) => { e.label = isSeries ? `第 ${e.episodeNo || i + 1} 集` : '正片' })
+  return {
+    key: title.toLowerCase(), title, kind: isSeries ? 'series' : 'movie',
+    episodes, logo: item.vod_pic || undefined, sourceIds: [sourceId],
+    unofficial: episodes.some(e => e.unofficial),
+  }
+}
+
+export interface CmsListResult { titles: VodTitle[]; total: number; pageCount: number; error?: string }
+
+/** 解析 CMS JSON 片单：code 非 1 时按资源站拒绝处理；list 缺失时报格式错 */
+export function parseCmsJsonList(data: unknown, sourceId: string): CmsListResult {
+  const d = (data ?? {}) as { code?: number; msg?: string; total?: number; pagecount?: number; list?: unknown[] }
+  if (typeof d.code === 'number' && d.code !== 1) {
+    return { titles: [], total: 0, pageCount: 0, error: `资源站拒绝了请求${d.msg ? `（${d.msg}）` : ''}` }
+  }
+  if (!Array.isArray(d.list)) {
+    return { titles: [], total: 0, pageCount: 0, error: '资源站返回的不是标准苹果 CMS 数据' }
+  }
+  const titles = (d.list as CmsVodItem[])
+    .map(it => cmsItemToVodTitle(it, sourceId))
+    .filter((t): t is VodTitle => !!t)
+  return {
+    titles,
+    total: typeof d.total === 'number' ? d.total : titles.length,
+    pageCount: typeof d.pagecount === 'number' && d.pagecount > 0 ? d.pagecount : 1,
+  }
+}
+
+function xmlTag(block: string, tag: string): string {
+  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i').exec(block)
+  if (!m) return ''
+  return m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').trim()
+}
+
+/** 解析 CMS XML 片单（RSS）：<video> 块 + <dd> 线路；CDATA 照常剥掉。
+ * 没有 <video> 块时报格式错（空列表的合法 XML 里 list 标签还在，只是无 video）。 */
+export function parseCmsXmlList(xml: string, sourceId: string): CmsListResult {
+  const listM = /<list[^>]*>/i.exec(xml ?? '')
+  const pageCount = listM ? parseInt(/pagecount="(\d+)"/i.exec(listM[0])?.[1] ?? '1', 10) : 1
+  const totalAttr = listM ? parseInt(/recordcount="(\d+)"/i.exec(listM[0])?.[1] ?? '', 10) : NaN
+  const blocks = [...(xml ?? '').matchAll(/<video>([\s\S]*?)<\/video>/gi)]
+  if (!blocks.length && !listM) {
+    return { titles: [], total: 0, pageCount: 0, error: '资源站返回的不是标准苹果 CMS 数据' }
+  }
+  const titles: VodTitle[] = []
+  for (const b of blocks) {
+    const block = b[1]
+    const dds = [...block.matchAll(/<dd[^>]*>([\s\S]*?)<\/dd>/gi)]
+      .map(m => m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').trim())
+      .filter(Boolean)
+    const flags = [...block.matchAll(/<dd[^>]*flag="([^"]*)"[^>]*>/gi)].map(m => m[1])
+    const item: CmsVodItem = {
+      vod_name: xmlTag(block, 'name'),
+      vod_pic: xmlTag(block, 'pic'),
+      vod_play_from: flags.join('$$$'),
+      vod_play_url: dds.join('$$$'),
+    }
+    const t = cmsItemToVodTitle(item, sourceId)
+    if (t) titles.push(t)
+  }
+  return { titles, total: Number.isFinite(totalAttr) ? totalAttr : titles.length, pageCount: pageCount > 0 ? pageCount : 1 }
+}
+
+/** 拉一个资源站的第 N 页片单：type 0 走 XML，type 1 走 JSON */
+export async function fetchCmsVodList(site: TvboxSite, page = 1): Promise<CmsListResult> {
+  const sourceId = `tvbox:${site.key}`
+  const fail = (error: string): CmsListResult => ({ titles: [], total: 0, pageCount: 0, error })
+  try {
+    const text = await fetchTextWithTimeout(cmsListUrl(site.api, page), 20000)
+    if (site.type === 0) return parseCmsXmlList(text, sourceId)
+    let data: unknown
+    try { data = JSON.parse(text) } catch { return fail('资源站返回的不是标准苹果 CMS 数据') }
+    return parseCmsJsonList(data, sourceId)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/abort|timeout|timed out/i.test(msg)) return fail('拉取超时（20 秒无响应）')
+    if (/load failed|failed to fetch|networkerror/i.test(msg)) return fail('网络请求失败，可能被代理/网络拦截，请换个节点再试')
+    if (/^HTTP (\d+)/.test(msg)) return fail(`资源站返回 HTTP ${/^HTTP (\d+)/.exec(msg)?.[1]}（该站可能已失效）`)
+    return fail(`拉取失败（${msg.slice(0, 60)}）`)
+  }
+}
+
+/** 合并多来源的点播标题：同名（key）合并选集与线路，与 m3u 的
+ * channelsToVod 同款口径；多集或带集号的算剧集，否则算电影。 */
+export function mergeVodTitles(lists: VodTitle[][]): VodTitle[] {
+  const map = new Map<string, VodTitle>()
+  for (const list of lists) {
+    for (const v of list) {
+      const prev = map.get(v.key)
+      if (!prev) {
+        map.set(v.key, { ...v, episodes: v.episodes.map(e => ({ ...e, urls: [...e.urls] })), sourceIds: [...v.sourceIds] })
+        continue
+      }
+      for (const s of v.sourceIds) if (!prev.sourceIds.includes(s)) prev.sourceIds.push(s)
+      if (!prev.logo && v.logo) prev.logo = v.logo
+      for (const ep of v.episodes) {
+        let target = prev.episodes.find(e => e.episodeNo === ep.episodeNo)
+        if (!target) { target = { ...ep, urls: [] }; prev.episodes.push(target) }
+        for (const u of ep.urls) if (!target.urls.includes(u)) target.urls.push(u)
+        target.unofficial = target.urls.some(u => isUnofficialStreamUrl(u))
+      }
+      prev.episodes.sort((a, b) => {
+        if (a.episodeNo && b.episodeNo) return a.episodeNo - b.episodeNo
+        if (a.episodeNo) return -1
+        if (b.episodeNo) return 1
+        return 0
+      })
+      const isSeries = prev.episodes.length > 1 || prev.episodes.some(e => e.episodeNo > 0)
+      prev.episodes.forEach((e, i) => { e.label = isSeries ? `第 ${e.episodeNo || i + 1} 集` : '正片' })
+      prev.kind = isSeries ? 'series' : 'movie'
+      prev.unofficial = prev.episodes.some(e => e.unofficial)
+    }
+  }
+  return [...map.values()].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'))
+}

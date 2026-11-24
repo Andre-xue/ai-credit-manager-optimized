@@ -10,6 +10,12 @@ import {
   healthOf, healthCounts, applyHealthView,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead,
+  parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
+  loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig,
+  loadShowAdult, saveShowAdult, SHOW_ADULT_KEY,
+  cmsListUrl, cmsPlayUrlToEpisodes, cmsItemToVodTitle,
+  parseCmsJsonList, parseCmsXmlList, fetchCmsVodList, mergeVodTitles,
+  type TvboxSite, type TvboxConfig,
   type HealthMap,
   normalizeTitleKey, regionLabelOfCountry, mapGenreNames,
   fetchTmdbGenres, searchTmdbTitle, fetchTmdbDetails,
@@ -711,8 +717,11 @@ describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () 
     for (const s of ['wt-wall-filters', 'wt-wall', 'wt-countbar', 'wt-sortbox', 'WALL_GENRES', 'WALL_YEARS', 'WALL_REGIONS', 'WALL_STATUS_FILTERS']) {
       expect(src).toContain(s)
     }
-    expect(src).toContain('pageSlice(wallShown, vodPage, 12)')
-    expect(src).toContain('pageCount(wallShown.length, 12)')
+    // v0.1.408：墙网格抽成 WallGrid（点播与 18+ 共用），12 部一页的行为不变
+    expect(src).toContain('pageSlice(items, page, 12)')
+    expect(src).toContain('pageCount(items.length, 12)')
+    expect(src).toContain('<WallGrid items={wallShown} page={vodPage} onPage={setVodPage} />')
+    expect(src).toContain('<WallGrid items={adultWallItems} page={adultWallPage} onPage={setAdultWallPage} />')
     for (const s of ['VodDetailSheet', 'wt-sheet-backdrop', 'wt-eps', 'wt-src-chips', 'wt-playbar', '暂无片源 · 仅展示', '＋ 加入片单']) {
       expect(src).toContain(s)
     }
@@ -1063,5 +1072,253 @@ describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
     // 视频区定高在 wrap 上（16:9），video 本身绝对定位铺满，不再靠自身撑高
     expect(css).toContain('.wt-video-wrap { position: relative; background: #000; aspect-ratio: 16 / 9; }')
     expect(css).toContain('.wt-video { position: absolute; inset: 0; width: 100%; height: 100%;')
+  })
+})
+
+describe('watch TVBox 配置解析（v0.1.408：parseTvboxConfig）', () => {
+  // test1.json 的缩小版：type 0/1 各 1 个、type 3 两个、type 4 一个、重复 key 一个、api 带前导空格一个
+  const TVBOX_FIXTURE = JSON.stringify({
+    wallpaper: 'https://example.com/wallpaper',
+    spider: 'https://example.com/jar.jpg;md5;abc',
+    sites: [
+      { key: '官源蓝光', name: '💥官源蓝光💥', type: 1, api: 'http://154.219.117.232:9981/jacloudapi.php/provide/vod/from/qq/?ac=list' },
+      { key: '大地资源', name: '💞大地资源💞', type: 0, api: 'https://dadiapi.com/api.php' },
+      { key: '91AV', name: '👭91AV👭', type: 1, api: 'https://91av.cyou/api.php/provide/vod/' },
+      { key: '豆瓣', name: '💥豆瓣💥', type: 3, api: 'https://example.com/drpy2.min.js', ext: 'https://example.com/douban.js' },
+      { key: 'pornhub163', name: '💥pornhub163💥', type: 3, api: 'https://example.com/pornhub163.py' },
+      { key: 'py聚合', name: '👭py聚合👭', type: 4, api: 'http://example.com/py.php' },
+      { key: '龙马', name: '💞龙马💞', type: 1, api: ' http://jhysj.jiaheyy.top/api.php/provide/vod/?ac=list' },
+      { key: '龙马', name: '💞龙马（重复）💞', type: 1, api: 'http://jhysj.jiaheyy.top/api.php/provide/vod/' },
+    ],
+    parses: [{ name: '解析1', type: 1, url: 'https://example.com/jx/?url=' }],
+    lives: [{ name: '直播合集', type: 0, url: 'https://example.com/live.txt' }],
+  })
+
+  it('解析：type 0/1 可接、type 3 爬虫站与 type 4 聚合跳过、重复 key 去重', () => {
+    const r = parseTvboxConfig(TVBOX_FIXTURE)
+    expect(r.error).toBeUndefined()
+    expect(r.total).toBe(7)
+    expect(r.usable.map(s => s.key)).toEqual(['官源蓝光', '大地资源', '91AV', '龙马'])
+    expect(r.usable.find(s => s.key === '龙马')?.api).toBe('http://jhysj.jiaheyy.top/api.php/provide/vod/?ac=list')
+    expect(r.skippedSpider).toBe(2)
+    expect(r.skippedOther).toBe(1)
+  })
+  it('裸数组也能解析；空串 / 非 JSON / 无 sites 时报错写清原因', () => {
+    expect(parseTvboxConfig('[{"key":"a","name":"a","type":1,"api":"https://example.com/api.php"}]').usable).toHaveLength(1)
+    expect(parseTvboxConfig('').error).toContain('空')
+    expect(parseTvboxConfig('not json').error).toContain('JSON 解析失败')
+    expect(parseTvboxConfig('{"foo":1}').error).toContain('没有 sites')
+    expect(parseTvboxConfig('#EXTM3U\n#EXTINF:-1,台\nhttp://example.com/x.m3u8').error).toContain('JSON 解析失败')
+  })
+  it('isTvboxConfigText：JSON 配置认得，m3u 不认', () => {
+    expect(isTvboxConfigText(TVBOX_FIXTURE)).toBe(true)
+    expect(isTvboxConfigText('#EXTM3U\n#EXTINF:-1,台\nhttp://example.com/x.m3u8')).toBe(false)
+    expect(isTvboxConfigText('')).toBe(false)
+  })
+})
+
+describe('watch 18+ 站名判断（v0.1.408：isAdultTvboxSite）', () => {
+  const site = (name: string, type = 1): TvboxSite => ({ key: name, name, type, api: 'https://example.com/api.php' })
+  it('成人站：91AV、pornhub163、missav、madou、成人短剧、18x 都认', () => {
+    for (const n of ['👭91AV👭', '💥pornhub163💥', '💥missav免翻全分类版💥', '💥madou8💥', '💥2048成人短剧💥', '💥Korean18x💥', '💥SexKBJ💥', '💥禁果短剧💥', '💥精仙阁💥', '💥绅士影视💥', '💥茄子精品💥', '💥搜AV资源💥']) {
+      expect(isAdultTvboxSite(site(n))).toBe(true)
+    }
+  })
+  it('普通站：官源蓝光、爱蛋影视、豆瓣、片库、龙马不认', () => {
+    for (const n of ['💥官源蓝光💥', '💞爱蛋影视💞', '💥豆瓣💥', '💥片库💥', '💞龙马💞', '💥88影视💥']) {
+      expect(isAdultTvboxSite(site(n))).toBe(false)
+    }
+  })
+})
+
+describe('watch 苹果 CMS（v0.1.408：cmsListUrl / cmsPlayUrlToEpisodes / cmsItemToVodTitle）', () => {
+  it('片单地址：去掉原有查询串，.php 结尾直接拼、目录结尾先补 /', () => {
+    expect(cmsListUrl('https://lovedan.net/api.php/provide/vod/', 2)).toBe('https://lovedan.net/api.php/provide/vod/?ac=videolist&pg=2')
+    expect(cmsListUrl('http://154.219.117.232:9981/jacloudapi.php/provide/vod/from/qq/?ac=list', 1)).toBe('http://154.219.117.232:9981/jacloudapi.php/provide/vod/from/qq/?ac=videolist&pg=1')
+    expect(cmsListUrl('https://dadiapi.com/api.php', 1)).toBe('https://dadiapi.com/api.php?ac=videolist&pg=1')
+  })
+  it('选集：电影正片单源多线路合并；剧集按集号分集、同集多源合并；无标签整段即地址', () => {
+    const eps = cmsPlayUrlToEpisodes('正片$https://cdn/a.mp4$$$正片$https://cdn/b.mp4')
+    expect(eps).toHaveLength(1)
+    expect(eps[0].label).toBe('')
+    expect(eps[0].episodeNo).toBe(0)
+    expect(eps[0].urls).toEqual(['https://cdn/a.mp4', 'https://cdn/b.mp4'])
+    const eps2 = cmsPlayUrlToEpisodes('第01集$https://cdn/q1.mp4#第02集$https://cdn/q2.mp4#第02集$https://cdn/q2b.mp4')
+    expect(eps2).toHaveLength(2)
+    expect(eps2[0].episodeNo).toBe(1)
+    expect(eps2[1].episodeNo).toBe(2)
+    expect(eps2[1].urls).toEqual(['https://cdn/q2.mp4', 'https://cdn/q2b.mp4'])
+    const eps3 = cmsPlayUrlToEpisodes('https://cdn/only.mp4')
+    expect(eps3).toHaveLength(1)
+    expect(eps3[0].episodeNo).toBe(0)
+    expect(eps3[0].urls).toEqual(['https://cdn/only.mp4'])
+    const eps4 = cmsPlayUrlToEpisodes('HD$https://cdn/hd.mp4#BD$https://cdn/bd.mp4')
+    expect(eps4).toHaveLength(1)
+    expect(eps4[0].episodeNo).toBe(0)
+  })
+  it('影片：多集算剧集、单集算电影；无片名或无可用线路返回 null', () => {
+    const series = cmsItemToVodTitle({ vod_name: '庆余年', vod_play_from: '线路1', vod_play_url: '第01集$https://cdn/q1.mp4#第02集$https://cdn/q2.mp4' }, 'tvbox:x')
+    expect(series?.kind).toBe('series')
+    expect(series?.episodes.map(e => e.label)).toEqual(['第 1 集', '第 2 集'])
+    const movie = cmsItemToVodTitle({ vod_name: '流浪地球2', vod_play_url: '正片$https://cdn/a.mp4' }, 'tvbox:x')
+    expect(movie?.kind).toBe('movie')
+    expect(movie?.episodes[0].label).toBe('正片')
+    expect(cmsItemToVodTitle({ vod_name: '', vod_play_url: '正片$https://cdn/a.mp4' }, 'tvbox:x')).toBeNull()
+    expect(cmsItemToVodTitle({ vod_name: '空片', vod_play_url: '' }, 'tvbox:x')).toBeNull()
+    expect(cmsItemToVodTitle({ vod_name: '坏片', vod_play_url: '正片$not-a-url' }, 'tvbox:x')).toBeNull()
+  })
+})
+
+describe('watch 苹果 CMS 片单解析（v0.1.408：parseCmsJsonList / parseCmsXmlList）', () => {
+  const JSON_FIXTURE = {
+    code: 1, page: 1, pagecount: 2, total: 3,
+    list: [
+      { vod_name: '流浪地球2', vod_pic: 'https://x/p.jpg', vod_play_from: '线路1$$$线路2', vod_play_url: '正片$https://cdn/a.mp4$$$正片$https://cdn/b.mp4' },
+      { vod_name: '庆余年', vod_play_from: '线路1', vod_play_url: '第01集$https://cdn/q1.mp4#第02集$https://cdn/q2.mp4' },
+      { vod_name: '空片', vod_play_url: '' },
+    ],
+  }
+  it('JSON：片单转点播标题、总数与页数照搬；无线路的片跳过', () => {
+    const r = parseCmsJsonList(JSON_FIXTURE, 'tvbox:官源蓝光')
+    expect(r.error).toBeUndefined()
+    expect(r.titles).toHaveLength(2)
+    expect(r.total).toBe(3)
+    expect(r.pageCount).toBe(2)
+    expect(r.titles[0].title).toBe('流浪地球2')
+    expect(r.titles[0].episodes[0].urls).toHaveLength(2)
+    expect(r.titles[1].kind).toBe('series')
+  })
+  it('JSON：code 非 1 按资源站拒绝处理；list 缺失报格式错', () => {
+    expect(parseCmsJsonList({ code: 0, msg: 'key error' }, 'tvbox:x').error).toContain('资源站拒绝了请求')
+    expect(parseCmsJsonList({ code: 1 }, 'tvbox:x').error).toContain('不是标准苹果 CMS 数据')
+  })
+  const XML_FIXTURE = `<rss><list page="1" pagecount="3" recordcount="2"><video><id>1</id><name><![CDATA[流浪地球2]]></name><pic>https://x/p.jpg</pic><dl><dd flag="线路1">正片$https://cdn/a.mp4</dd><dd flag="线路2">正片$https://cdn/b.mp4</dd></dl></video><video><id>2</id><name>庆余年</name><dl><dd flag="线路1">第01集$https://cdn/q1.mp4#第02集$https://cdn/q2.mp4</dd></dl></video></list></rss>`
+  it('XML：CDATA 与多 dd 线路都认，总数与页数从 list 属性读', () => {
+    const r = parseCmsXmlList(XML_FIXTURE, 'tvbox:大地资源')
+    expect(r.error).toBeUndefined()
+    expect(r.titles).toHaveLength(2)
+    expect(r.total).toBe(2)
+    expect(r.pageCount).toBe(3)
+    expect(r.titles[0].title).toBe('流浪地球2')
+    expect(r.titles[0].episodes[0].urls).toEqual(['https://cdn/a.mp4', 'https://cdn/b.mp4'])
+    expect(r.titles[1].kind).toBe('series')
+  })
+  it('XML：既无 video 又无 list 时报格式错；合法空列表不报错', () => {
+    expect(parseCmsXmlList('<html>not xml</html>', 'tvbox:x').error).toContain('不是标准苹果 CMS 数据')
+    expect(parseCmsXmlList('<rss><list page="1" pagecount="0" recordcount="0"></list></rss>', 'tvbox:x').titles).toHaveLength(0)
+  })
+})
+
+describe('watch 苹果 CMS 拉取（v0.1.408：fetchCmsVodList）', () => {
+  const jsonSite: TvboxSite = { key: '官源蓝光', name: '官源蓝光', type: 1, api: 'https://example.com/api.php/provide/vod/' }
+  const xmlSite: TvboxSite = { key: '大地资源', name: '大地资源', type: 0, api: 'https://dadiapi.com/api.php' }
+  const JSON_BODY = JSON.stringify({ code: 1, page: 1, pagecount: 1, total: 1, list: [{ vod_name: '流浪地球2', vod_play_url: '正片$https://cdn/a.mp4' }] })
+  const XML_BODY = '<rss><list page="1" pagecount="1" recordcount="1"><video><name>流浪地球2</name><dl><dd flag="线路1">正片$https://cdn/a.mp4</dd></dl></video></list></rss>'
+  it('JSON 站与 XML 站都按各自格式解析；请求地址带 ac=videolist&pg=1', async () => {
+    const seen: string[] = []
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      seen.push(String(url))
+      return { ok: true, text: async () => (String(url).includes('dadiapi') ? XML_BODY : JSON_BODY) }
+    })
+    const j = await fetchCmsVodList(jsonSite, 1)
+    expect(j.titles).toHaveLength(1)
+    expect(j.titles[0].title).toBe('流浪地球2')
+    const x = await fetchCmsVodList(xmlSite, 1)
+    expect(x.titles).toHaveLength(1)
+    expect(seen.every(u => u.includes('ac=videolist&pg=1'))).toBe(true)
+  })
+  it('HTTP 404、网络失败、非 CMS 文本都报中文原因，不抛错', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 404, text: async () => '' }))
+    expect((await fetchCmsVodList(jsonSite)).error).toContain('HTTP 404')
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    expect((await fetchCmsVodList(jsonSite)).error).toContain('网络请求失败')
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => '<html>hello</html>' }))
+    expect((await fetchCmsVodList(jsonSite)).error).toContain('不是标准苹果 CMS 数据')
+  })
+})
+
+describe('watch TVBox 配置拉取（v0.1.408：fetchTvboxConfig）', () => {
+  const FIXTURE = JSON.stringify({
+    sites: [
+      { key: '官源蓝光', name: '官源蓝光', type: 1, api: 'https://a.example.com/api.php' },
+      { key: '91AV', name: '91AV', type: 1, api: 'https://91av.cyou/api.php' },
+      { key: '豆瓣', name: '豆瓣', type: 3, api: 'https://example.com/drpy.js' },
+      { key: 'py聚合', name: 'py聚合', type: 4, api: 'http://example.com/py.php' },
+    ],
+  })
+  it('拉取并解析：统计与成人站数都对', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => FIXTURE }))
+    const r = await fetchTvboxConfig('https://example.com/test1.json')
+    expect(r.error).toBeUndefined()
+    expect(r.total).toBe(4)
+    expect(r.usable).toBe(2)
+    expect(r.skippedSpider).toBe(1)
+    expect(r.skippedOther).toBe(1)
+    expect(r.adultCount).toBe(1)
+    expect(r.sites.map(s => s.key)).toEqual(['官源蓝光', '91AV'])
+  })
+  it('HTTP 500 与非 JSON 都报中文原因，不抛错', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 500, text: async () => '' }))
+    expect((await fetchTvboxConfig('https://example.com/x.json')).error).toContain('HTTP 500')
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => 'not json' }))
+    expect((await fetchTvboxConfig('https://example.com/x.json')).error).toContain('JSON 解析失败')
+  })
+})
+
+describe('watch 点播标题合并（v0.1.408：mergeVodTitles）', () => {
+  const mk = (title: string, epNo: number, urls: string[], sourceId: string): VodTitle => ({
+    key: title.toLowerCase(), title, kind: epNo > 0 ? 'series' : 'movie',
+    episodes: [{ label: epNo > 0 ? `第 ${epNo} 集` : '正片', urls, episodeNo: epNo, unofficial: false }],
+    sourceIds: [sourceId], unofficial: false,
+  })
+  it('同名合并选集与线路、去重；不同名各自保留；合并后按标题排序', () => {
+    const out = mergeVodTitles([
+      [mk('庆余年', 1, ['https://a/q1.mp4'], 'tvbox:A'), mk('流浪地球2', 0, ['https://a/l.mp4'], 'tvbox:A')],
+      [mk('庆余年', 1, ['https://b/q1.mp4'], 'tvbox:B'), mk('庆余年', 2, ['https://b/q2.mp4'], 'tvbox:B')],
+    ])
+    expect(out).toHaveLength(2)
+    const qyn = out.find(v => v.title === '庆余年')!
+    expect(qyn.kind).toBe('series')
+    expect(qyn.episodes).toHaveLength(2)
+    expect(qyn.episodes[0].urls).toEqual(['https://a/q1.mp4', 'https://b/q1.mp4'])
+    expect(qyn.sourceIds).toEqual(['tvbox:A', 'tvbox:B'])
+    expect(out[0].title).toBe('流浪地球2') // 按标题拼音排序：流（liu）在庆（qing）前
+  })
+})
+
+describe('watch TVBox 配置与 18+ 开关存储（v0.1.408）', () => {
+  it('配置存取往返；18+ 开关默认关', () => {
+    const cfg: TvboxConfig = {
+      id: 'c1', label: 'test1', url: 'https://example.com/test1.json', addedAt: 1,
+      total: 4, usable: 2, skippedSpider: 1, skippedOther: 1, adultCount: 1,
+      sites: [{ key: '官源蓝光', name: '官源蓝光', type: 1, api: 'https://a.example.com/api.php' }],
+    }
+    saveTvboxConfigs([cfg])
+    expect(loadTvboxConfigs()).toEqual([cfg])
+    expect(loadShowAdult()).toBe(false)
+    saveShowAdult(true)
+    expect(loadShowAdult()).toBe(true)
+    expect(ls().getItem(SHOW_ADULT_KEY)).toBe('1')
+    saveShowAdult(false)
+    expect(loadShowAdult()).toBe(false)
+  })
+})
+
+describe('watch v0.1.408 结构（WatchTool.tsx）', () => {
+  it('TVBox 输入、18+ 页签与开关、爬虫站跳过说明都在', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of [
+      'TVBox 点播源', 'fetchTvboxConfig', 'isTvboxConfigText', 'fetchCmsVodList', 'mergeVodTitles',
+      'isAdultTvboxSite', 'loadTvboxConfigs', 'saveTvboxConfigs',
+      "'adult'", '18+', 'loadShowAdult', 'saveShowAdult', '显示 18+ 页签',
+      '爬虫站', '跳过', 'TVBox 资源站',
+      'WallGrid', 'adultTitles', 'adultWallItems',
+    ]) {
+      expect(src).toContain(s)
+    }
+    // 18+ 页签只在开关开着时出现；关了正在看的 18+ 页签要落回点播
+    expect(src).toContain("showAdult &&")
+    expect(src).toContain("setActiveTab('vod')")
   })
 })
