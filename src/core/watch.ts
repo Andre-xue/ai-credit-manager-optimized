@@ -4,6 +4,10 @@
 // 自定义源由用户自己粘贴 m3u 订阅链接（像 VLC 里粘地址），输入框留空不预填。
 // 分组口径（Ethan 定）：外国只按国家 + 内容两维；中国按央视/卫视/其他 + 内容
 // 两维；General/Undefined 统一归“其他”。全部数据只存本机，不进云同步/备份。
+// 来源标注（v0.1.387，Ethan 2026-11-24 拍板：保持现状、界面标注）：实测
+// iptv-org/Free-TV 的中国切片并不干净——央视流大量指向第三方转播服务器
+// （裸 IP 直连，如 74.91.26.218）。这些流不拦截、不过滤，只打「未授权转播」
+// 标记：频道卡片角标 + 播放器内提示 + 直播分区顶部说明。
 
 import { encryptSecret, decryptSecret } from './crypto'
 
@@ -20,6 +24,40 @@ export interface LiveChannel {
   urls: string[]
   /** 出现过的源集合 id */
   sourceIds: string[]
+  /** 主源（urls[0]）是否为第三方转播（未授权）：解析时按 URL 打标记 */
+  unofficial?: boolean
+}
+
+// ---------------- 来源标记：第三方转播（未授权） ----------------
+// 实测坐实（v0.1.386）：iptv-org cn.m3u 与 Free-TV 中国组里央视流大量指向
+// 裸 IP 直连的第三方转播服务器，与被拒仓库同一批源。正版来源（如 CCTV+
+// 走 cctvplus.com、省台官方 CDN）是域名，不标记。判断只看 URL 本身，与
+// 内置源/自定义源无关——用户自己粘的源同样按此规则打标记。
+
+/** 实测见过的第三方转播 host（均为裸 IP；通用 IPv4 规则已覆盖，此处留作显式记录、可扩展域名） */
+export const UNOFFICIAL_STREAM_HOSTS = new Set([
+  '74.91.26.218',
+  '69.30.245.50',
+  '38.75.136.137',
+])
+
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+/** 某条流地址是否为第三方转播（未授权）：host 是裸 IP 字面量（v4/v6，含端口）或已知转播 host */
+export function isUnofficialStreamUrl(url: string): boolean {
+  let host = ''
+  try { host = new URL(url).hostname } catch { return false }
+  if (!host) return false
+  if (UNOFFICIAL_STREAM_HOSTS.has(host)) return true
+  if (IPV4_RE.test(host)) return true
+  if (host.includes(':')) return true // IPv6 字面量（new URL 去掉方括号后含冒号）
+  return false
+}
+
+/** 某频道当前主源（urls[0]）是否为第三方转播；旧缓存缺 unofficial 字段时同样适用 */
+export function isChannelUnofficial(ch: LiveChannel): boolean {
+  if (ch.unofficial === true) return true
+  return ch.urls.length > 0 && isUnofficialStreamUrl(ch.urls[0])
 }
 
 export interface SourceSetResult {
@@ -212,6 +250,7 @@ function entriesToChannels(entries: M3uEntry[], setCountry: string, setId: strin
       country: countryOfEntry(e, setCountry),
       urls: [e.url],
       sourceIds: [setId],
+      unofficial: isUnofficialStreamUrl(e.url),
     }
   })
 }
@@ -229,6 +268,8 @@ export function mergeChannels(lists: LiveChannel[][]): LiveChannel[] {
       if (prev.content === 'other' && ch.content !== 'other') prev.content = ch.content
     }
   }
+  // 合并后主源可能变化：按合并后的 urls[0] 重新打标记
+  for (const ch of map.values()) ch.unofficial = isUnofficialStreamUrl(ch.urls[0] ?? '')
   return [...map.values()]
 }
 

@@ -1,6 +1,8 @@
 // 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 短剧专区 + 直播 + 追剧日历 + 片单。
 // 播放：App 内嵌播放器（官方播放页 iframe；直播走 HLS/m3u8，hls.js 兜底）。
 // 直播只用 iptv-org 与 Free-TV 内置源 + 用户自定义源；绝不内置第三方转播源。
+// 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
+// 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -17,6 +19,7 @@ import { getBiometricPassword } from '../core/crypto'
 import {
   COUNTRIES, CONTENT_LABELS, ORIGIN_LABELS,
   loadCountryChannels, groupChannels,
+  isUnofficialStreamUrl, isChannelUnofficial,
   loadWatchlist, saveWatchlist, loadContinue, upsertContinue, saveContinue,
   loadClosedGroups, saveClosedGroups,
   loadCustomSources, saveCustomSources, fetchSourceSet,
@@ -121,6 +124,9 @@ function HlsPlayer({ title, urls, onOpened }: {
     else onOpened(0)
   }
 
+  // 当前正在播的源是第三方转播（未授权）时提示；自动换到官方源后提示消失
+  const curUnofficial = isUnofficialStreamUrl(urls[idx] ?? '')
+
   return (
     <div className="wt-player">
       <div className="wt-player-head">
@@ -144,6 +150,9 @@ function HlsPlayer({ title, urls, onOpened }: {
             </button>
           )}
         </div>
+      )}
+      {curUnofficial && (
+        <div className="wt-unofficial-note"><CircleAlert size={13} /> 当前源为第三方转播 · 未经授权，可能随时失效</div>
       )}
     </div>
   )
@@ -468,6 +477,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <button key={ch.key} className="wt-channel" onClick={() => openHls(ch)} title={`${ch.name} · 点一下开始播放`}>
               {ch.logo && <img className="wt-channel-logo" src={ch.logo} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />}
               <span className="wt-channel-name">{ch.name}</span>
+              {isChannelUnofficial(ch) && <span className="wt-unofficial-badge">未授权转播</span>}
               <span className="wt-channel-meta">{CONTENT_LABELS[ch.content] ?? '其他'}{ch.urls.length > 1 ? ` · ${ch.urls.length} 个源` : ''}</span>
             </button>
           ))}
@@ -677,6 +687,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <ExternalLink size={13} /> 央视官网直播间
           </button>
         </div>
+        <div className="wt-unofficial-note"><CircleAlert size={13} /> 部分频道为第三方转播、未经授权，随时可能失效；带「未授权转播」角标的即是，官方源不受影响。</div>
         {liveLoaded && (
           <div className="wt-set-status">
             {liveSets.map(s => (

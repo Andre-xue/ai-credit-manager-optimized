@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
   parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
   mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
+  isUnofficialStreamUrl, isChannelUnofficial,
   PLAYLIST_CACHE_KEY, CUSTOM_SOURCES_KEY,
   type LiveChannel, type SourceSet,
 } from './watch'
@@ -71,6 +72,63 @@ describe('watch.contentKeyOf', () => {
     expect(contentKeyOf('Animation;Kids')).toBe('animation')
     expect(contentKeyOf('Movies')).toBe('movies')
     expect(contentKeyOf('WhateverWeird')).toBe('other')
+  })
+})
+
+describe('watch.isUnofficialStreamUrl（v0.1.387 来源标注）', () => {
+  it('裸 IP 直连（http/https、带端口）→ 未授权转播', () => {
+    expect(isUnofficialStreamUrl('http://74.91.26.218:82/live/cctv1hd.m3u8')).toBe(true)
+    expect(isUnofficialStreamUrl('https://69.30.245.50/live/x.m3u8')).toBe(true)
+    expect(isUnofficialStreamUrl('http://38.75.136.137:98/live/cctv.m3u8')).toBe(true)
+    expect(isUnofficialStreamUrl('http://1.2.3.4/a.m3u8')).toBe(true)
+  })
+  it('官方域名 → 不是未授权转播', () => {
+    expect(isUnofficialStreamUrl('https://cd-live-stream.news.cctvplus.com/live/cctv.m3u8')).toBe(false)
+    expect(isUnofficialStreamUrl('http://example.com/cctv1.m3u8')).toBe(false)
+    expect(isUnofficialStreamUrl('https://live.jxgdw.com/hd.m3u8')).toBe(false)
+  })
+  it('IPv6 字面量 → 未授权转播；非法地址/空串 → false', () => {
+    expect(isUnofficialStreamUrl('https://[2001:db8::1]/x.m3u8')).toBe(true)
+    expect(isUnofficialStreamUrl('not-a-url')).toBe(false)
+    expect(isUnofficialStreamUrl('')).toBe(false)
+  })
+})
+
+describe('watch 来源标记：解析与合并时按主源打标记', () => {
+  const IP_FIXTURE = `#EXTM3U
+#EXTINF:-1 tvg-id="CCTV1" group-title="General",CCTV-1
+http://74.91.26.218:82/live/cctv1hd.m3u8
+#EXTINF:-1 tvg-id="CCTVPlus" group-title="News",CCTV+
+https://cd-live-stream.news.cctvplus.com/live/cctvplus.m3u8
+`
+  it('解析时：IP 流打标记，官方域名不打', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => IP_FIXTURE }))
+    const set: SourceSet = { id: 'iptv-cn', label: 'iptv-org · 中国', url: 'https://example.com/cn.m3u', country: 'CN' }
+    const { channels } = await fetchSourceSet(set)
+    const cctv1 = channels.find(c => c.key === 'cctv-1')
+    const plus = channels.find(c => c.key === 'cctv+')
+    expect(cctv1?.unofficial).toBe(true)
+    expect(plus?.unofficial).toBe(false)
+  })
+  it('合并后：标记跟合并后的主源走；自定义源同样按规则打标记', async () => {
+    ls().setItem(CUSTOM_SOURCES_KEY, JSON.stringify([{ id: 'my1', label: '我的源', url: 'https://example.com/my.m3u', addedAt: 1 }]))
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('countries/cn.m3u')) return { ok: true, text: async () => IP_FIXTURE }
+      if (u.includes('Free-TV')) return { ok: true, text: async () => FREETV_FIXTURE }
+      if (u.includes('my.m3u')) return { ok: true, text: async () => '#EXTM3U\n#EXTINF:-1 group-title="News",我的收藏台\nhttp://69.30.245.50/live/my.m3u8\n' }
+      return { ok: false, status: 404, text: async () => '' }
+    })
+    const { channels } = await loadCountryChannels('CN')
+    // CCTV-1：iptv-org 给 IP 地址、Free-TV 给域名——主源是 iptv-org 的 IP，仍标记
+    expect(channels.find(c => c.key === 'cctv-1')?.unofficial).toBe(true)
+    expect(isChannelUnofficial(channels.find(c => c.key === 'cctv-1')!)).toBe(true)
+    // 自定义源粘的 IP 流同样标记
+    const mine = channels.find(c => c.name === '我的收藏台')
+    expect(mine?.unofficial).toBe(true)
+    // 旧缓存缺 unofficial 字段时按 urls[0] 兜底判定
+    expect(isChannelUnofficial({ key: 'x', name: 'X', content: 'other', country: 'CN', urls: ['http://74.91.26.218:82/live/x.m3u8'], sourceIds: ['iptv-cn'] })).toBe(true)
+    expect(isChannelUnofficial({ key: 'y', name: 'Y', content: 'other', country: 'CN', urls: ['https://cd-live-stream.news.cctvplus.com/live/y.m3u8'], sourceIds: ['iptv-cn'] })).toBe(false)
   })
 })
 

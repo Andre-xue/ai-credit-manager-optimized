@@ -413,6 +413,11 @@ async function postForm(url: string, params: Record<string, string>, bearer?: st
   try { data = JSON.parse(text) as JsonObj } catch { /* 非 JSON */ }
   if (!res.ok) {
     const code = pickStr(data, 'errorCode') || pickStr(data, 'error') || `HTTP ${res.status}`
+    // 授权码失效（Ethan 2026-11-24 实证：Epic 返回 authorization_code_not_found，
+    // HTTP 400）：授权码只能用一次、有效期很短，原文错误码用户看不懂，换成中文
+    if (code.includes('authorization_code_not_found') || code.includes('invalid_grant')) {
+      throw new Error('授权码已失效或已被使用（授权码只能用一次、有效期很短），请重新登录获取新码再绑定')
+    }
     throw new Error(`Epic 登录失败：${code}`)
   }
   return data

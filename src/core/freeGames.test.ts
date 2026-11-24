@@ -274,6 +274,31 @@ describe('freeGames bindEpicWithAuthCode 网络失败', () => {
   })
 })
 
+describe('freeGames bindEpicWithAuthCode 授权码失效映射（v0.1.387）', () => {
+  it('authorization_code_not_found / invalid_grant 映射成中文，不吐错误码原文；其他错误码保持原样', async () => {
+    const origFetch = globalThis.fetch
+    const stubToken400 = (code: string) => {
+      globalThis.fetch = (async () => ({
+        ok: false, status: 400,
+        text: async () => JSON.stringify({ errorCode: code }),
+        json: async () => ({ errorCode: code }),
+      })) as unknown as typeof fetch
+    }
+    try {
+      stubToken400('errors.com.epicgames.account.oauth.authorization_code_not_found')
+      await expect(bindEpicWithAuthCode('OLDCODE', 'testpwd8')).rejects.toThrow(/授权码已失效或已被使用/)
+      await expect(bindEpicWithAuthCode('OLDCODE', 'testpwd8')).rejects.toThrow(/重新登录获取新码再绑定/)
+      await expect(bindEpicWithAuthCode('OLDCODE', 'testpwd8')).rejects.not.toThrow(/authorization_code_not_found/)
+      stubToken400('invalid_grant')
+      await expect(bindEpicWithAuthCode('OLDCODE', 'testpwd8')).rejects.toThrow(/授权码已失效或已被使用/)
+      stubToken400('errors.com.epicgames.account.invalid_client')
+      await expect(bindEpicWithAuthCode('OLDCODE', 'testpwd8')).rejects.toThrow(/Epic 登录失败：errors\.com\.epicgames\.account\.invalid_client/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
 describe('freeGames claimEpicGame 网络失败', () => {
   it('quickPurchase 请求被拦（Load failed）要报中文下单失败，不含英文', async () => {
     const origFetch = globalThis.fetch
