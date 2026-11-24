@@ -2343,7 +2343,6 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-unofficial-note { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; line-height: 1.6; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--border); border-left: 3px solid #d97706; border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
 .wt-unofficial-note svg { flex-shrink: 0; margin-top: 2px; color: #d97706; }
 .wt-player .wt-unofficial-note { margin: 0; border: 0; border-left: 3px solid #d97706; border-radius: 0; }
-.wt-origin { margin-top: 6px; }
 .wt-set-status { display: flex; flex-direction: column; gap: 2px; }
 .wt-progress { height: 6px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
 .wt-progress-fill { height: 100%; background: var(--accent); }

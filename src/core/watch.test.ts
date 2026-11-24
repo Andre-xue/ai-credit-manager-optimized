@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
   parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
-  mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
+  mergeChannels, groupChannels, filterOriginChannels, fetchSourceSet, loadCountryChannels,
   isUnofficialStreamUrl, isChannelUnofficial, isVodUrl, isFlvUrl,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
@@ -193,6 +193,34 @@ describe('watch.groupChannels', () => {
     const us = groupChannels(channels, 'US')
     expect(us.origins).toHaveLength(1)
     expect(us.origins[0].key).toBe('other')
+  })
+})
+
+// v0.1.420：直播分组改横向 chips——按分组取台（与 groupChannels 同一套 stationOrigin 判定）
+describe('watch.filterOriginChannels', () => {
+  const channels: LiveChannel[] = [
+    { key: 'cctv-1', name: 'CCTV-1', content: 'news', country: 'CN', urls: ['http://a'], sourceIds: ['iptv-cn'] },
+    { key: 'cctv-2', name: 'CCTV-2', content: 'news', country: 'CN', urls: ['http://a2'], sourceIds: ['iptv-cn'] },
+    { key: '湖南卫视', name: '湖南卫视', content: 'entertainment', country: 'CN', urls: ['http://b'], sourceIds: ['iptv-cn'] },
+    { key: 'test', name: 'Test News', content: 'news', country: 'CN', urls: ['http://c'], sourceIds: ['iptv-cn'] },
+  ]
+  it('all 不筛选、原顺序返回', () => {
+    expect(filterOriginChannels(channels, 'all')).toEqual(channels)
+  })
+  it('cctv 只返回 CCTV 开头的台', () => {
+    expect(filterOriginChannels(channels, 'cctv').map(c => c.name)).toEqual(['CCTV-1', 'CCTV-2'])
+  })
+  it('satellite 只返回卫视', () => {
+    expect(filterOriginChannels(channels, 'satellite').map(c => c.name)).toEqual(['湖南卫视'])
+  })
+  it('other 只返回其余台', () => {
+    expect(filterOriginChannels(channels, 'other').map(c => c.name)).toEqual(['Test News'])
+  })
+  it('与 groupChannels 的分组计数一致', () => {
+    const groups = groupChannels(channels, 'CN')
+    for (const g of groups.origins) {
+      expect(filterOriginChannels(channels, g.key)).toHaveLength(g.channels.length)
+    }
   })
 })
 

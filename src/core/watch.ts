@@ -1131,7 +1131,13 @@ export function groupChannels(channels: LiveChannel[], country: string): LiveGro
   return { origins: [{ key: 'other', label: '全部', channels }], contents }
 }
 
-// ---------------- 本机存储：片单 / 继续观看 / 分组折叠 ----------------
+/** v0.1.420：直播分组改横向 chips——按分组取台；'all' 不筛选、原顺序返回 */
+export function filterOriginChannels(channels: LiveChannel[], key: 'all' | StationOrigin): LiveChannel[] {
+  if (key === 'all') return channels
+  return channels.filter(c => stationOrigin(c.name) === key)
+}
+
+// ---------------- 本机存储：片单 / 继续观看 ----------------
 
 export type WatchType = 'tv' | 'movie' | 'short'
 export interface WatchItem {
@@ -1165,7 +1171,6 @@ export interface ContinueItem {
 
 export const WATCHLIST_KEY = 'acm.watch.watchlist.v1'
 export const CONTINUE_KEY = 'acm.watch.continue.v1'
-export const GROUPS_KEY = 'acm.watch.groups.v1'
 export const TMDB_KEY = 'acm.watch.tmdb.v1'
 
 export function loadWatchlist(): WatchItem[] {
@@ -1195,17 +1200,6 @@ export function upsertContinue(item: ContinueItem): ContinueItem[] {
   const next = [item, ...list].slice(0, 100)
   saveContinue(next)
   return next
-}
-
-export function loadClosedGroups(): string[] {
-  try {
-    const v = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? '[]')
-    return Array.isArray(v) ? (v as string[]) : []
-  } catch { return [] }
-}
-
-export function saveClosedGroups(ids: string[]): void {
-  try { localStorage.setItem(GROUPS_KEY, JSON.stringify(ids)) } catch { /* 忽略 */ }
 }
 
 // ---------------- TMDB（热门推荐）：Key 免费注册，加密存本机 ----------------

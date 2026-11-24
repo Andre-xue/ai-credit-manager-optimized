@@ -34,11 +34,10 @@ import { useDanmaku, useCast, DanmakuLayer, PlayerToolsBar } from './PlayerTools
 import { loadDanmuApiBase, saveDanmuApiBase, testDanmuApi } from '../core/danmaku'
 import {
   COUNTRIES, CONTENT_LABELS, ORIGIN_LABELS,
-  loadCountryChannels, groupChannels,
+  loadCountryChannels, groupChannels, filterOriginChannels,
   isUnofficialStreamUrl, isChannelUnofficial,
   channelsToVod, vodContinueId, parseVodContinueId,
   loadWatchlist, saveWatchlist, loadContinue, upsertContinue, saveContinue,
-  loadClosedGroups, saveClosedGroups,
   loadCustomSources, saveCustomSources, fetchSourceSet,
   hasTmdbKey, loadTmdbKey, saveTmdbKey, clearTmdbKey,
   fetchTmdbTrending, fetchTmdbProviders, loadRecPrefs, saveRecPrefs,
@@ -472,7 +471,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     searchInputRef.current?.focus()
     return () => window.removeEventListener('keydown', onKey)
   }, [aiSearchOpen])
-  const [closedGroups, setClosedGroups] = useState<string[]>(loadClosedGroups)
   const [pwdInput, setPwdInput] = useState('')
   const [player, setPlayer] = useState<PlayerState>(null)
   const [playerKey, setPlayerKey] = useState(0)
@@ -568,12 +566,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     if (inner instanceof HTMLButtonElement) { inner.click(); return }
     setPlayer(null)
   }
-
-  const toggleGroup = (id: string) => setClosedGroups(prev => {
-    const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    saveClosedGroups(next)
-    return next
-  })
 
   const [watchlist, setWatchlist] = useState<WatchItem[]>(loadWatchlist)
   const [continueList, setContinueList] = useState<ContinueItem[]>(loadContinue)
@@ -732,6 +724,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [liveSets, setLiveSets] = useState<SourceSetResult[]>([])
   const [liveLoaded, setLiveLoaded] = useState(false)
   const [contentFilter, setContentFilter] = useState('all')
+  // v0.1.420：直播中国分组改横向 chips——选中的分组（默认全部，不存本机）
+  const [originFilter, setOriginFilter] = useState<'all' | StationOrigin>('all')
   const [livePages, setLivePages] = useState<Record<string, number>>({})
   // ---- 点播海报墙（v0.1.395：点播区改片库式海报墙） ----
   // 墙 = 点播源里的片名（有源可播）+ TMDB 热门里没匹配上片源的影片（仅展示）；
@@ -1019,6 +1013,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   )
   const liveGroups = groupChannels(liveDisplay, liveCountry)
   const liveContents = ['all', ...liveGroups.contents]
+  // v0.1.420：选中的分组不存在时（如体检隐藏后该组空了）回落到全部
+  const liveOrigin: 'all' | StationOrigin = originFilter === 'all' || liveGroups.origins.some(g => g.key === originFilter) ? originFilter : 'all'
+  const originChannels = useMemo(
+    () => filterOriginChannels(liveDisplay, liveOrigin),
+    [liveDisplay, liveOrigin],
+  )
 
   const addCustomSource = async (label: string, urlRaw: string, which: 'live' | 'vod') => {
     const url = urlRaw.trim()
@@ -1709,21 +1709,22 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               </div>
             )}
             {liveCountry === 'CN' ? (
-              liveGroups.origins.map(g => {
-                const gid = `live-cn-${g.key}`
-                const closed = closedGroups.includes(gid)
-                return (
-                  <div key={g.key} className="wt-origin">
-                    <div className="fg-group-head" role="button" tabIndex={0} style={{ cursor: 'pointer', userSelect: 'none' }}
-                      onClick={() => toggleGroup(gid)}>
-                      <ChevronDown size={14} style={{ transform: closed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
-                      <span>{ORIGIN_LABELS[g.key as StationOrigin]}</span>
-                      <span className="fg-group-count">{g.channels.length} 个台</span>
-                    </div>
-                    {!closed && <ChannelList channels={g.channels} pageKey={`cn-${g.key}-${contentFilter}`} />}
-                  </div>
-                )
-              })
+              <>
+                <div className="wt-chips">
+                  <span className="fg-muted">分组：</span>
+                  <button key="all" className={`wt-chip${liveOrigin === 'all' ? ' on' : ''}`}
+                    onClick={() => { setOriginFilter('all'); setLivePages({}) }}>
+                    全部 {liveDisplay.length} 个台
+                  </button>
+                  {liveGroups.origins.map(g => (
+                    <button key={g.key} className={`wt-chip${liveOrigin === g.key ? ' on' : ''}`}
+                      onClick={() => { setOriginFilter(g.key); setLivePages({}) }}>
+                      {ORIGIN_LABELS[g.key as StationOrigin]} {g.channels.length} 个台
+                    </button>
+                  ))}
+                </div>
+                <ChannelList channels={originChannels} pageKey={`cn-${liveOrigin}-${contentFilter}`} />
+              </>
             ) : (
               <ChannelList channels={liveDisplay} pageKey={`${liveCountry}-${contentFilter}`} />
             )}
