@@ -21,6 +21,7 @@ import {
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
 } from '../core/freeGames'
 import { openExternal, isDesktopApp, isNativeApp } from '../core/openExternal'
+import { epicLauncherUrlOfCheckoutUrl, openViaClient } from '../core/clientLinks'
 import {
   openEpicBrowser, listenEpicBrowserClaim, isEpicBrowserSupported, claimFailureFallback,
   epicBrowserOutcomeText, recordEpicBrowserOutcome,
@@ -247,6 +248,28 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       saveEpicBrowserStatus(text)
       notifySafe(e instanceof Error ? e.message : '打开内嵌浏览器失败', 'err')
       void openExternal(checkoutUrl)
+    }
+  }
+
+  // v0.1.413：直达 Epic 客户端（com.epicgames.launcher://store/purchase?...，
+  // 浏览器结账页只换 origin）。直达失败或没装客户端时回落浏览器并报真实原因，
+  // 「去浏览器领」按钮保留。内嵌浏览器自动领（397/404）逻辑不动。
+  // 注意：open 成功只代表系统把链接交给了客户端，客户端内是否真落到结账页
+  // 要真机实测——落不到时请反馈，改走客户端内商店页直达。
+  const openEpicClient = async (checkoutUrl: string, title: string) => {
+    const launcherUrl = epicLauncherUrlOfCheckoutUrl(checkoutUrl)
+    if (!launcherUrl) {
+      notifySafe('这条记录的结账链接直达不了客户端，已在浏览器打开', 'err')
+      void openExternal(checkoutUrl)
+      return
+    }
+    const res = await openViaClient(launcherUrl, checkoutUrl)
+    if (res.via === 'client') {
+      notifySafe(`已在 Epic 客户端打开「${title}」的结账页`)
+    } else {
+      notifySafe(res.browserOpened === false
+        ? `Epic 客户端直达失败（${res.reason}），浏览器也没打开，请手动打开结账页`
+        : `Epic 客户端直达失败（${res.reason}），已改走浏览器打开结账页`, 'err')
     }
   }
 
@@ -581,6 +604,9 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                   <>
                     {isDesktopApp() && (
                       <button className="btn sm" onClick={() => void openInAppBrowser(r.checkoutUrl!, r.title)}>在 App 内领</button>
+                    )}
+                    {isDesktopApp() && (
+                      <button className="btn sm" onClick={() => void openEpicClient(r.checkoutUrl!, r.title)}>直达客户端</button>
                     )}
                     <button className="btn sm primary" onClick={() => void openExternal(r.checkoutUrl!)}>去浏览器领</button>
                   </>

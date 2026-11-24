@@ -10,7 +10,8 @@ import {
   sortSteamDeals, enrichSteamPackages, dealKey,
   type SteamDeal, type SteamDealsCache, type SteamSort,
 } from '../core/steamDeals'
-import { openExternal } from '../core/openExternal'
+import { openExternal, isDesktopApp } from '../core/openExternal'
+import { steamClientUrlOfDeal, openViaClient } from '../core/clientLinks'
 
 const PAGE_SIZE = 12
 
@@ -26,12 +27,12 @@ function fmtTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function DealCard({ deal }: { deal: SteamDeal }) {
+function DealCard({ deal, onOpen }: { deal: SteamDeal; onOpen: (d: SteamDeal) => void }) {
   const [imgOk, setImgOk] = useState(true)
   return (
-    <div className="sd-card" role="button" tabIndex={0} title="点击直达 Steam 商店页面"
-      onClick={() => void openExternal(deal.url)}
-      onKeyDown={e => { if (e.key === 'Enter') void openExternal(deal.url) }}>
+    <div className="sd-card" role="button" tabIndex={0} title="点击在 Steam 客户端打开商店页（没装客户端时走浏览器）"
+      onClick={() => onOpen(deal)}
+      onKeyDown={e => { if (e.key === 'Enter') onOpen(deal) }}>
       <div className="sd-cover">
         {deal.imageUrl && imgOk
           ? <img src={deal.imageUrl} alt={deal.title} loading="lazy" onError={() => setImgOk(false)} />
@@ -75,6 +76,20 @@ export function SteamDealsTool({ notify, onBack }: {
   const [enriching, setEnriching] = useState(false)
   const [enrichFailed, setEnrichFailed] = useState(false)
   const enrichRunning = useRef(false)
+
+  // v0.1.413：卡片直达 Steam 客户端（steam://store/<appid>，合集包走
+  // steam://openurl/<sub 页>）；没装客户端或打不开时回落浏览器并报真实原因，
+  // 网页/安卓本来就走浏览器，不弹失败提示。
+  const openDeal = async (deal: SteamDeal) => {
+    const clientUrl = steamClientUrlOfDeal(deal)
+    if (!clientUrl) { void openExternal(deal.url); return }
+    const res = await openViaClient(clientUrl, deal.url)
+    if (res.via === 'web' && isDesktopApp()) {
+      notify(res.browserOpened === false
+        ? `Steam 客户端直达失败（${res.reason}），浏览器也没打开，请手动打开 Steam 商店`
+        : `Steam 客户端直达失败（${res.reason}），已在浏览器打开商店页`, 'err')
+    }
+  }
 
   const refresh = async (force = false) => {
     setLoading(true)
@@ -214,7 +229,7 @@ export function SteamDealsTool({ notify, onBack }: {
 
       {pageItems.length > 0 && (
         <div className="sd-grid">
-          {pageItems.map(d => <DealCard key={dealKey(d)} deal={d} />)}
+          {pageItems.map(d => <DealCard key={dealKey(d)} deal={d} onOpen={openDeal} />)}
         </div>
       )}
 

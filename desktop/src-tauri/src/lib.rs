@@ -1493,6 +1493,46 @@ async fn open_url(url: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| format!("打开浏览器失败：{}", e))
 }
 
+/// 打开客户端协议链接（v0.1.413：游戏链接直达桌面客户端）。
+/// 只放行 steam:// 与 com.epicgames.launcher:// 两个 scheme，其余一律拒绝；
+/// 校验不含空白与控制字符，杜绝 cmd/shell 元字符注入面。
+/// 返回是否成功发起：macOS 下 `open <url>` 在没有应用注册该 scheme 时返回非 0，
+/// 调用方据此回落浏览器；Windows 的 rundll32 退出码不可靠，基本总返回 true，
+/// 属尽力而为（Ethan 在 Mac 上，macOS 路径是实测主线）。
+#[tauri::command]
+async fn open_protocol_url(url: String) -> Result<bool, String> {
+    if !url.starts_with("steam://") && !url.starts_with("com.epicgames.launcher://") {
+        return Err("仅允许 steam:// 与 com.epicgames.launcher:// 链接".into())
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("链接含非法字符".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("open").arg(&url).output()
+            .map_err(|e| format!("打开客户端失败：{}", e))?;
+        Ok(out.status.success())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let st = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url]).status()
+            .map_err(|e| format!("打开客户端失败：{}", e))?;
+        Ok(st.success())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let st = std::process::Command::new("xdg-open").arg(&url).status()
+            .map_err(|e| format!("打开客户端失败：{}", e))?;
+        Ok(st.success())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = &url;
+        Ok(false)
+    }
+}
+
 /// 打开系统「麦克风隐私设置」面板。目标地址固定，不接受前端传参，避免命令注入。
 #[tauri::command]
 async fn open_mic_settings() -> Result<(), String> {
@@ -4282,7 +4322,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
