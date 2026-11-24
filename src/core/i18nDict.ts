@@ -1156,6 +1156,7 @@ Object.assign(D, {
   '从 URL 安装失败': { 'zh-TW': '從 URL 安裝失敗', en: 'Install from URL failed', ja: 'URLからのインストールに失敗しました', ko: 'URL에서 설치 실패' },
   '插件已保存：{name}': { 'zh-TW': '插件已儲存：{name}', en: 'Plugin saved: {name}', ja: 'プラグインを保存しました：{name}', ko: '플러그인이 저장되었습니다: {name}' },
   '第三方插件仅保存在本设备，不云同步': { 'zh-TW': '第三方插件僅儲存在本裝置，不雲端同步', en: 'Third-party plugins are stored only on this device and are not cloud-synced', ja: 'サードパーティ製プラグインはこのデバイスにのみ保存され、クラウド同期されません', ko: '타사 플러그인은 이 기기에만 저장되며 클라우드 동기화되지 않습니다' },
+  '第三方插件': { 'zh-TW': '第三方插件', en: 'Third-party plugins', ja: 'サードパーティ製プラグイン', ko: '타사 플러그인' },
   '从文件安装': { 'zh-TW': '從檔案安裝', en: 'Install from file', ja: 'ファイルからインストール', ko: '파일에서 설치' },
   '新建插件': { 'zh-TW': '新增插件', en: 'New plugin', ja: 'プラグインを新規作成', ko: '새 플러그인' },
   '插件在沙箱中运行，碰不到保险箱与你的密钥；网络请求只能发往插件清单声明的域名。余额适配器由宿主在解锁后传入单个账户的 Key 查询官方接口。进程插件仅桌面端可运行。': { 'zh-TW': '插件在沙箱中運行，接觸不到保險箱與你的金鑰；網路請求只能發往插件清單宣告的網域。餘額適配器由宿主在解鎖後傳入單一帳戶的 Key 查詢官方介面。行程插件僅桌面端可運行。', en: 'Plugins run in a sandbox and cannot access your vault or keys; network requests can only go to domains declared in the plugin manifest. For balance adapters, the host passes a single account key after unlock to query the official API. Process plugins run on desktop only.', ja: 'プラグインはサンドボックス内で動作し、保管庫やキーにはアクセスできません。ネットワークリクエストはプラグインのマニフェストで宣言されたドメインにのみ送信できます。残高アダプターは、ロック解除後にホストが単一アカウントのキーを渡して公式APIに問い合わせます。プロセスプラグインはデスクトップでのみ動作します。', ko: '플러그인은 샌드박스에서 실행되며 금고와 키에 접근할 수 없습니다. 네트워크 요청은 플러그인 매니페스트에 선언된 도메인으로만 보낼 수 있습니다. 잔액 어댑터는 잠금 해제 후 호스트가 단일 계정의 키를 전달해 공식 API를 조회합니다. 프로세스 플러그인은 데스크톱에서만 실행됩니다.' },

@@ -124,6 +124,22 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const panelBoxRef = useRef<HTMLDivElement>(null)
   const desktop = isDesktopShell()
+  // 横向标题页签（v0.1.402，同看剧 394 样式），切换状态记本机
+  type PluginTab = 'plugins' | 'mcp'
+  const [activeTab, setActiveTab] = useState<PluginTab>(() => {
+    try { return localStorage.getItem('acm.plugins.tab') === 'mcp' ? 'mcp' : 'plugins' } catch { return 'plugins' }
+  })
+  const switchTab = (tab: PluginTab) => {
+    setActiveTab(tab)
+    try { localStorage.setItem('acm.plugins.tab', tab) } catch { /* ignore */ }
+  }
+  // MCP 服务器数量（页签计数用，与 McpSection 共用 MCP_EVENT）
+  const [mcpCount, setMcpCount] = useState(() => loadMcpServers().length)
+  useEffect(() => {
+    const onMcp = () => setMcpCount(loadMcpServers().length)
+    window.addEventListener(MCP_EVENT, onMcp)
+    return () => window.removeEventListener(MCP_EVENT, onMcp)
+  }, [])
   // 分区分页与「全部折叠」（v0.1.332 Ethan 要求：不要每卡一个折叠图标，一个按钮管全区；两区都分页）
   const [pluginsFolded, setPluginsFolded] = useState(() => loadFoldAll('acm.plugins.foldAll'))
   const [pluginPage, setPluginPage] = useState(1)
@@ -202,11 +218,15 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
 
   return (
     <div className="plugins-view">
-      <div className="plugins-head">
-        <div>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('插件')}</h2>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{t('第三方插件仅保存在本设备，不云同步')}</div>
-        </div>
+      {/* 横向标题页签（v0.1.402，同看剧 394：标题栏吸顶、数量标在标题上、手机端自动换行） */}
+      <div className="wt-tabs" role="tablist">
+        <button role="tab" aria-selected={activeTab === 'plugins'} className={`wt-tab${activeTab === 'plugins' ? ' on' : ''}`} onClick={() => switchTab('plugins')}>{t('第三方插件')}<span className="wt-tab-count">{plugins.length} 个</span></button>
+        <button role="tab" aria-selected={activeTab === 'mcp'} className={`wt-tab${activeTab === 'mcp' ? ' on' : ''}`} onClick={() => switchTab('mcp')}>{t('MCP 服务器')}<span className="wt-tab-count">{mcpCount} 个</span></button>
+      </div>
+
+      {activeTab === 'plugins' && <>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div className="wt-tab-sub" style={{ margin: 0 }}>{t('第三方插件仅保存在本设备，不云同步')}</div>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
           <button className="btn sm" onClick={() => fileRef.current?.click()}><Upload size={14} /> {t('从文件安装')}</button>
           <button className="btn sm" onClick={() => { setDraftErr(''); setDraft(emptyDraft()) }}><Plus size={14} /> {t('新建插件')}</button>
@@ -271,12 +291,13 @@ export function PluginsView({ notify }: { notify: (msg: string) => void }) {
           <div ref={panelBoxRef} className="plugin-panel-box" />
         </div>
       )}
+      </>}
+
+      {activeTab === 'mcp' && <McpSection notify={notify} desktop={desktop} />}
 
       {settingsTarget && (
         <PluginSettingsModal plugin={settingsTarget} notify={notify} onClose={() => setSettingsTarget(null)} />
       )}
-
-      <McpSection notify={notify} desktop={desktop} />
 
       {pendingInstall && (
         <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setPendingInstall(null) }}>
@@ -550,11 +571,8 @@ function McpSection({ notify, desktop }: { notify: (msg: string) => void; deskto
 
   return (
     <div className="mcp-section">
-      <div className="plugins-head" style={{ marginTop: 26 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}><Server size={16} /> {t('MCP 服务器')}</h3>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{t('接入 MCP 生态的第三方工具服务：本地命令（桌面端）或远程 HTTP，连接后可直接调用它的工具')}</div>
-        </div>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div className="wt-tab-sub" style={{ margin: 0 }}>{t('接入 MCP 生态的第三方工具服务：本地命令（桌面端）或远程 HTTP，连接后可直接调用它的工具')}</div>
         <button className="btn sm" onClick={() => setForm({ name: '', transport: desktop ? 'stdio' : 'http', command: '', args: '', url: '' })}><Plus size={14} /> {t('添加服务器')}</button>
       </div>
 
