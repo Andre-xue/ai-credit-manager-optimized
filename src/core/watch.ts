@@ -4,6 +4,8 @@
 // 自定义源由用户自己粘贴 m3u 订阅链接（像 VLC 里粘地址），输入框留空不预填。
 // 源体检（v0.1.391）：直播页手动「开始体检」，逐台测连通性（通/不通、耗时），
 // 死台标出、可过滤，快的排前面；结果缓存 30 分钟。
+// v0.1.411 真验流：391 探针只测连通性（响应头一到就算通），404 的播放列表、
+// 空文件、坏流都会算通；升级后拉播放列表验分片才算通（见 probeStreamUrl）。
 // 分组口径（Ethan 定）：外国只按国家 + 内容两维；中国按央视/卫视/其他 + 内容
 // 两维；General/Undefined 统一归“其他”。全部数据只存本机，不进云同步/备份。
 // 来源标注（v0.1.387，Ethan 2026-11-24 拍板：保持现状、界面标注）：实测
@@ -12,6 +14,7 @@
 // 标记：频道卡片角标 + 播放器内提示 + 直播分区顶部说明。
 
 import { encryptSecret, decryptSecret } from './crypto'
+import { isNativeApp } from './openExternal'
 
 export interface LiveChannel {
   /** 归一化台名（去分辨率后缀、小写） */
@@ -532,19 +535,23 @@ export async function loadCountryChannels(country: string, opts: { force?: boole
   return { channels: live, vod: channelsToVod(vodChannels), sets: settled.map(s => s.result) }
 }
 
-// ---------------- 源体检（v0.1.391） ----------------
-// iptv-checker 思路的轻量版：只测每个台的服务器是否能连通（轻量探测，
-// 不是完整播流）。测法：fetch(mode: 'no-cors') 发一个 GET，响应头一到
-// 就算通（立刻 abort 断开，不等正文下完——流地址正文可能很大），
-// 耗时 = 发出请求到收到响应头；超时 / 网络错误 / 中止 = 不通。
-// no-cors 下读不到状态码，所以 404 的播放列表也会算通——这只是连通性
-// 探测，真播不了点开播放器仍会报错并自动换源，界面上如实写“测连通”。
-// 手动入口（不自动跑、不在启动时全量测）；结果缓存 30 分钟，重复打开
-// 直接读缓存；8 路并行、单地址 4 秒超时，后台跑、不堵列表渲染。
+// ---------------- 源体检（v0.1.391 测连通性 → v0.1.411 真验流） ----------------
+// 真验流：拉取 m3u8 播放列表并验证其中有有效分片才算通——404、空列表、
+// 无有效分片、坏流、分片拉不到都不再算通。主播放列表（#EXT-X-STREAM-INF）
+// 再拉一层变体列表验证；直链文件（mp4/flv/ts 等）用 Range 取头 1KB 验
+// 状态与非空。取正文的通道：桌面走 Rust plugin_http_media（公网 http(s)
+// 都放行，302 由本侧手动跟、每跳重新过 SSRF 校验）、安卓走 CapacitorHttp、
+// 网页走 CORS fetch；正文封顶 256KB。网页上 CORS 读不到正文时才退回旧的
+// 连通性探测（响应头一到就算通），并标记 verified: false、原因写清
+// 「仅测连通（浏览器跨域限制，未验流）」，不冒充验过。失败原因如实存进
+// reason，界面角标直接显示，不静默兜底。
+// 限速：真验流每台要拉 1–3 次请求，并行从 8 路降到 4 路；单次请求 6 秒
+// 超时，变体/分片 4 秒；手动入口（不自动跑、不在启动时全量测），结果
+// 缓存 30 分钟，后台跑、不堵列表渲染，进度 done/total 实时回推。
 
 export interface ChannelHealth {
   ok: boolean
-  /** 通时的耗时（毫秒，发出请求 → 收到响应头） */
+  /** 通时的耗时（毫秒，发出请求 → 验完） */
   ms?: number
   /** 测得的时间戳 */
   at: number
@@ -552,14 +559,29 @@ export interface ChannelHealth {
   url: string
   /** 点播体检专用：测通的那一集标签（直播没有） */
   episode?: string
+  /** 失败原因（中文短句，如 HTTP 404 / 空列表 / 无有效分片 / 分片拉不到）；通时为空 */
+  reason?: string
+  /** 是否真验过流：false = 网页 CORS 读不到正文、只测了连通性；旧缓存条目无此字段，按 false 计 */
+  verified?: boolean
 }
 
 export type HealthMap = Record<string, ChannelHealth>
 
 export const HEALTH_CACHE_KEY = 'acm.watch.health.v1'
 export const HEALTH_CACHE_TTL_MS = 30 * 60_000
-export const HEALTH_PROBE_TIMEOUT_MS = 4000
-export const HEALTH_PROBE_CONCURRENCY = 8
+export const HEALTH_PROBE_TIMEOUT_MS = 6000
+export const HEALTH_PROBE_SUB_TIMEOUT_MS = 4000
+export const HEALTH_PROBE_CONCURRENCY = 4
+/** 取正文封顶：播放列表很小，256KB 足够；防误指大文件 */
+export const HEALTH_PROBE_BODY_CAP = 256 * 1024
+/** 直链文件/分片只验头：读到 1KB 即够 */
+export const HEALTH_PROBE_HEAD_BYTES = 1024
+/** 手动跟重定向最多跳数（桌面原生通道不自动跟 302） */
+export const HEALTH_PROBE_MAX_REDIRECTS = 3
+
+/** 探针请求头：浏览器 UA（部分流服务器会拦非浏览器 UA）；浏览器 fetch
+ * 设置 User-Agent 会被静默忽略，无害。 */
+const PROBE_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
 export function loadHealthCache(): HealthMap {
   try {
@@ -581,10 +603,125 @@ export function saveHealthCache(map: HealthMap): void {
   } catch { /* 忽略 */ }
 }
 
-/** 测一条流地址：响应头到了就算通，立刻断开不等正文 */
-export async function probeStreamUrl(url: string, timeoutMs = HEALTH_PROBE_TIMEOUT_MS, signal?: AbortSignal): Promise<{ ok: boolean; ms: number }> {
-  if (!/^https?:\/\//.test(url)) return { ok: false, ms: 0 }
-  if (signal?.aborted) return { ok: false, ms: 0 }
+interface ProbeBody { status: number; text: string; contentType: string }
+
+function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<string>) | undefined {
+  if (typeof window === 'undefined') return undefined
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<string> } }
+  return w.__TAURI_INTERNALS__?.invoke
+}
+
+interface FetchProbeBodyOptions { timeoutMs: number; signal?: AbortSignal; range?: string; maxBytes?: number }
+
+/** 取一条地址的正文（带状态码与 Content-Type），读不到返回 null。
+ * 桌面：Rust plugin_http_media（invoke 不可 abort，超时竞速后忽略迟到结果）；
+ * 安卓：CapacitorHttp（原生栈，无 CORS 限制）；网页：CORS fetch，正文分块
+ * 读、到 maxBytes 即取消，防大文件拖垮。302 由本侧手动跟（原生通道不自动
+ * 跟重定向），最多 HEALTH_PROBE_MAX_REDIRECTS 跳，每跳重新过服务端校验。 */
+export async function fetchProbeBody(url: string, opts: FetchProbeBodyOptions): Promise<ProbeBody | null> {
+  const headers: Record<string, string> = { Accept: '*/*', 'User-Agent': PROBE_UA }
+  if (opts.range) headers['Range'] = opts.range
+  let current = url
+  for (let hop = 0; hop <= HEALTH_PROBE_MAX_REDIRECTS; hop++) {
+    const r = await fetchProbeBodyOnce(current, { ...opts, headers })
+    if (!r) return null
+    if (r.status >= 300 && r.status < 400) {
+      const loc = r.location
+      if (loc && hop < HEALTH_PROBE_MAX_REDIRECTS) {
+        try { current = new URL(loc, current).toString() } catch { return r }
+        continue
+      }
+    }
+    return r
+  }
+  return null
+}
+
+async function fetchProbeBodyOnce(url: string, opts: FetchProbeBodyOptions & { headers: Record<string, string> }): Promise<(ProbeBody & { location?: string }) | null> {
+  const invoke = tauriInvoke()
+  if (invoke) {
+    try {
+      const raw = await Promise.race([
+        invoke('plugin_http_media', { url, headersJson: JSON.stringify(opts.headers) }),
+        new Promise<null>(res => globalThis.setTimeout(() => res(null), opts.timeoutMs)),
+      ])
+      if (raw != null) {
+        const parsed = JSON.parse(raw) as { status: number; body: string; headers?: Record<string, string> }
+        const headers = parsed.headers ?? {}
+        const locKey = Object.keys(headers).find(k => k.toLowerCase() === 'location')
+        return { status: parsed.status, text: parsed.body ?? '', contentType: headers['content-type'] ?? headers['Content-Type'] ?? '', location: locKey ? headers[locKey] : undefined }
+      }
+      // 原生通道超时：往下走 CORS fetch（原生请求可能仍在后台跑，忽略迟到结果）
+    } catch { /* 原生通道失败 → 往下走 CORS fetch */ }
+  }
+  if (isNativeApp()) {
+    try {
+      const { CapacitorHttp } = await import('@capacitor/core')
+      const res = await CapacitorHttp.request({ url, method: 'GET', headers: opts.headers, responseType: 'text' })
+      const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '')
+      const headers = (res.headers ?? {}) as Record<string, string>
+      const locKey = Object.keys(headers).find(k => k.toLowerCase() === 'location')
+      return { status: res.status, text: text.slice(0, HEALTH_PROBE_BODY_CAP), contentType: headers['content-type'] ?? headers['Content-Type'] ?? '', location: locKey ? headers[locKey] : undefined }
+    } catch { /* 往下走 CORS fetch */ }
+  }
+  try {
+    return await fetchProbeBodyWeb(url, opts)
+  } catch {
+    return null
+  }
+}
+
+async function fetchProbeBodyWeb(url: string, opts: FetchProbeBodyOptions & { headers: Record<string, string> }): Promise<(ProbeBody & { location?: string }) | null> {
+  const ctrl = new AbortController()
+  const timer = globalThis.setTimeout(() => ctrl.abort(), opts.timeoutMs)
+  const onAbort = () => ctrl.abort()
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    // 网页 fetch 不发 Range（会触发 CORS 预分配预检、多数流服务器不放行）：
+    // 直链文件改用分块读、读到 maxBytes 即取消，同样只验头。
+    const res = await fetch(url, { headers: { Accept: '*/*' }, signal: ctrl.signal })
+    if (typeof res.status !== 'number') throw new TypeError('响应异常')
+    const contentType = res.headers?.get?.('content-type') ?? ''
+    const maxBytes = opts.maxBytes ?? HEALTH_PROBE_BODY_CAP
+    if (typeof res.text === 'function' && !res.body) {
+      return { status: res.status, text: (await res.text()).slice(0, maxBytes), contentType }
+    }
+    const reader = res.body?.getReader()
+    if (!reader) return { status: res.status, text: '', contentType }
+    const chunks: Uint8Array[] = []
+    let received = 0
+    try {
+      for (;;) {
+        if (received >= maxBytes) break
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) { chunks.push(value); received += value.length }
+      }
+    } finally {
+      try { await reader.cancel() } catch { /* 忽略 */ }
+    }
+    let total = 0
+    for (const c of chunks) total += c.length
+    const buf = new Uint8Array(Math.min(total, maxBytes))
+    let off = 0
+    for (const c of chunks) {
+      const take = Math.min(c.length, buf.length - off)
+      if (take <= 0) break
+      buf.set(c.subarray(0, take), off)
+      off += take
+    }
+    return { status: res.status, text: new TextDecoder().decode(buf), contentType }
+  } finally {
+    globalThis.clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/** 旧连通性探测（v0.1.391 原样保留，只作网页 CORS 读不到正文时的退路）：
+ * fetch(mode: 'no-cors') 发一个 GET，响应头一到就算通，不等正文。 */
+export async function probeConnectivity(url: string, timeoutMs = HEALTH_PROBE_TIMEOUT_MS, signal?: AbortSignal): Promise<{ ok: boolean; ms: number; reason?: string }> {
+  if (!/^https?:\/\//.test(url)) return { ok: false, ms: 0, reason: '地址不是 http(s)' }
+  if (signal?.aborted) return { ok: false, ms: 0, reason: '已取消' }
   const ctrl = new AbortController()
   const timer = globalThis.setTimeout(() => ctrl.abort(), timeoutMs)
   const onAbort = () => ctrl.abort()
@@ -593,8 +730,9 @@ export async function probeStreamUrl(url: string, timeoutMs = HEALTH_PROBE_TIMEO
   try {
     await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal })
     return { ok: true, ms: Math.max(1, Date.now() - t0) }
-  } catch {
-    return { ok: false, ms: Date.now() - t0 }
+  } catch (e) {
+    if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) return { ok: false, ms: Date.now() - t0, reason: '超时' }
+    return { ok: false, ms: Date.now() - t0, reason: '网络错误' }
   } finally {
     globalThis.clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
@@ -602,14 +740,133 @@ export async function probeStreamUrl(url: string, timeoutMs = HEALTH_PROBE_TIMEO
   }
 }
 
-/** 测一个台：按播放顺序逐条试地址，第一条通的即算通（播放器也是这个顺序换源） */
+function resolveUrl(rel: string, base: string): string {
+  try { return new URL(rel, base).toString() } catch { return rel }
+}
+
+/** 解析 m3u8 文本：主列表（#EXT-X-STREAM-INF → 变体地址）与分片（非 # 的裸行） */
+export function parseM3u8Segments(text: string): { isMaster: boolean; variants: string[]; segments: string[] } {
+  const lines = text.split(/\r?\n/).map(l => l.trim())
+  let isMaster = false
+  const variants: string[] = []
+  const segments: string[] = []
+  const variantLines = new Set<number>()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line) continue
+    if (line.startsWith('#EXT-X-STREAM-INF')) {
+      isMaster = true
+      for (let j = i + 1; j < lines.length; j++) {
+        if (!lines[j]) continue
+        if (!lines[j].startsWith('#')) { variants.push(lines[j]); variantLines.add(j) }
+        break
+      }
+    } else if (!line.startsWith('#') && !variantLines.has(i)) {
+      segments.push(line)
+    }
+  }
+  return { isMaster, variants, segments }
+}
+
+/** 验第一个分片：Range 取头 1KB，200/206 且非空即算通；个别服务器拒 Range
+ * （403/405/416）时不带 Range 重试一次；正文读不到（跨域）时不判死，
+ * 只记“仅验到播放列表”，由调用方标 verified: false。 */
+async function verifyFirstSegment(segUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<{ ok: boolean; reason?: string; unverified?: boolean }> {
+  const rangeBody = await fetchProbeBody(segUrl, { timeoutMs, signal, range: 'bytes=0-1023', maxBytes: HEALTH_PROBE_HEAD_BYTES })
+  if (!rangeBody) return { ok: true, unverified: true }
+  if (rangeBody.status === 403 || rangeBody.status === 405 || rangeBody.status === 416) {
+    const plain = await fetchProbeBody(segUrl, { timeoutMs, signal, maxBytes: HEALTH_PROBE_HEAD_BYTES })
+    if (!plain) return { ok: true, unverified: true }
+    if (plain.status >= 200 && plain.status < 300 && plain.text.length > 0) return { ok: true }
+    return { ok: false, reason: `分片拉不到（HTTP ${plain.status}）` }
+  }
+  if (rangeBody.status < 200 || rangeBody.status >= 300) return { ok: false, reason: `分片拉不到（HTTP ${rangeBody.status}）` }
+  if (rangeBody.text.length === 0) return { ok: false, reason: '分片是空的' }
+  return { ok: true }
+}
+
+/** 验一段已取到的播放列表正文：主列表先拉变体；媒体列表须有分片且第一分片拉得到 */
+async function verifyPlaylist(url: string, text: string, signal?: AbortSignal): Promise<{ ok: boolean; reason?: string; unverified?: boolean }> {
+  const parsed = parseM3u8Segments(text)
+  let playlistText = text
+  let baseUrl = url
+  if (parsed.isMaster) {
+    if (!parsed.variants.length) return { ok: false, reason: '无有效分片' }
+    const variantUrl = resolveUrl(parsed.variants[0], url)
+    const vb = await fetchProbeBody(variantUrl, { timeoutMs: HEALTH_PROBE_SUB_TIMEOUT_MS, signal, maxBytes: HEALTH_PROBE_BODY_CAP })
+    if (!vb) return { ok: true, unverified: true }
+    if (vb.status < 200 || vb.status >= 300) return { ok: false, reason: `子播放列表拉不到（HTTP ${vb.status}）` }
+    if (!vb.text.includes('#EXTM3U')) return { ok: false, reason: '子播放列表不是播放列表' }
+    playlistText = vb.text
+    baseUrl = variantUrl
+  }
+  const segs = parseM3u8Segments(playlistText).segments
+  if (!segs.length) return { ok: false, reason: '无有效分片' }
+  const first = segs[0]
+  if (/\.m3u8?(\?|#|$)/i.test(first)) {
+    // 嵌套子列表：再拉一层（只一层）
+    const subUrl = resolveUrl(first, baseUrl)
+    const sb = await fetchProbeBody(subUrl, { timeoutMs: HEALTH_PROBE_SUB_TIMEOUT_MS, signal, maxBytes: HEALTH_PROBE_BODY_CAP })
+    if (!sb) return { ok: true, unverified: true }
+    if (sb.status < 200 || sb.status >= 300 || !sb.text.includes('#EXTM3U') || !parseM3u8Segments(sb.text).segments.length) {
+      return { ok: false, reason: '分片拉不到' }
+    }
+    return { ok: true }
+  }
+  return verifyFirstSegment(resolveUrl(first, baseUrl), HEALTH_PROBE_SUB_TIMEOUT_MS, signal)
+}
+
+export interface ProbeResult { ok: boolean; ms: number; reason?: string; verified?: boolean }
+
+/** 真验流探针（v0.1.411）：拉取播放列表并验证其中有有效分片才算通。
+ * 直链文件用 Range 取头验状态与非空。网页 CORS 读不到正文时退回连通性
+ * 探测并标记 verified: false，不冒充验过。 */
+export async function probeStreamUrl(url: string, timeoutMs = HEALTH_PROBE_TIMEOUT_MS, signal?: AbortSignal): Promise<ProbeResult> {
+  if (!/^https?:\/\//.test(url)) return { ok: false, ms: 0, reason: '地址不是 http(s)', verified: true }
+  if (signal?.aborted) return { ok: false, ms: 0, reason: '已取消', verified: false }
+  const t0 = Date.now()
+  const ms = () => Math.max(1, Date.now() - t0)
+  const isFile = /\.(mp4|mkv|webm|mov|avi|flv|ts)(\?|#|$)/i.test(url)
+  const body = await fetchProbeBody(url, {
+    timeoutMs, signal,
+    range: isFile ? 'bytes=0-1023' : undefined,
+    maxBytes: isFile ? HEALTH_PROBE_HEAD_BYTES : HEALTH_PROBE_BODY_CAP,
+  })
+  if (!body) {
+    // 读不到正文（浏览器跨域限制）：退回连通性探测，如实标记未验流
+    const conn = await probeConnectivity(url, timeoutMs, signal)
+    if (conn.ok) return { ok: true, ms: conn.ms, verified: false, reason: '仅测连通（浏览器跨域限制，未验流）' }
+    return { ok: false, ms: conn.ms, verified: false, reason: conn.reason ?? '网络错误' }
+  }
+  if (body.status < 200 || body.status >= 300) return { ok: false, ms: ms(), verified: true, reason: `HTTP ${body.status}` }
+  const ct = (body.contentType ?? '').toLowerCase()
+  if (ct.includes('text/html')) return { ok: false, ms: ms(), verified: true, reason: '不是播放列表（返回了网页）' }
+  const playlistLike = /\.m3u8?(\?|#|$)/i.test(url) || ct.includes('mpegurl')
+  const text = body.text
+  if (playlistLike || text.includes('#EXTM3U')) {
+    if (text.trim().length === 0) return { ok: false, ms: ms(), verified: true, reason: '空列表' }
+    if (!text.includes('#EXTM3U')) return { ok: false, ms: ms(), verified: true, reason: '不是播放列表' }
+    const v = await verifyPlaylist(url, text, signal)
+    if (!v.ok) return { ok: false, ms: ms(), verified: true, reason: v.reason ?? '无有效分片' }
+    return { ok: true, ms: ms(), verified: !v.unverified, reason: v.unverified ? '仅验到播放列表' : undefined }
+  }
+  if (text.length === 0) return { ok: false, ms: ms(), verified: true, reason: '空文件' }
+  return { ok: true, ms: ms(), verified: true }
+}
+
+/** 测一个台：按播放顺序逐条试地址，第一条通的即算通（播放器也是这个顺序换源）；
+ * 全不通时 reason 记最后一条的失败原因 */
 export async function probeChannel(ch: LiveChannel, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ChannelHealth> {
+  let lastReason: string | undefined
+  let lastVerified = false
   for (const u of ch.urls) {
     if (opts.signal?.aborted) break
     const r = await probeStreamUrl(u, opts.timeoutMs, opts.signal)
-    if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u }
+    if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u, verified: r.verified, reason: r.reason }
+    lastReason = r.reason
+    lastVerified = r.verified ?? false
   }
-  return { ok: false, at: Date.now(), url: ch.urls[0] ?? '' }
+  return { ok: false, at: Date.now(), url: ch.urls[0] ?? '', reason: lastReason, verified: lastVerified }
 }
 
 export interface ProbeChannelsOptions {
@@ -650,16 +907,18 @@ export function healthOf(health: HealthMap, ch: LiveChannel): ChannelHealth | un
   return h
 }
 
-export function healthCounts(channels: LiveChannel[], health: HealthMap): { tested: number; ok: number; bad: number } {
+export function healthCounts(channels: LiveChannel[], health: HealthMap): { tested: number; ok: number; bad: number; unverified: number } {
   let tested = 0
   let ok = 0
+  let unverified = 0
   for (const ch of channels) {
     const h = healthOf(health, ch)
     if (!h) continue
     tested++
     if (h.ok) ok++
+    if (h.verified !== true) unverified++
   }
-  return { tested, ok, bad: tested - ok }
+  return { tested, ok, bad: tested - ok, unverified }
 }
 
 /** 体检视图：只看已测通的（过滤）+ 快的排前面（通的按耗时升序，未测的
@@ -687,7 +946,7 @@ export function applyHealthView(channels: LiveChannel[], health: HealthMap, opts
   return list
 }
 
-// ---------------- 点播体检（v0.1.407）：与 391 直播体检同款探针 ----------------
+// ---------------- 点播体检（v0.1.407）：与直播体检同款探针（v0.1.411 起真验流） ----------------
 // 一部点播可能多集、每集多线路：按集顺序、每集按线路顺序逐条试，第一条通的即算通
 // （播放器也是这个顺序换源）。结果与直播共用同一缓存 acm.watch.health.v1，
 // 键加 `vod:` 前缀，与直播台的键（归一化台名）不冲突。
@@ -695,17 +954,21 @@ export function vodHealthKey(v: VodTitle): string {
   return `vod:${v.key}`
 }
 
-/** 测一部点播：第一条通的线路即算通，记通的地址 */
+/** 测一部点播：第一条通的线路即算通，记通的地址；全不通时 reason 记最后一条的失败原因 */
 export async function probeVodTitle(v: VodTitle, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ChannelHealth> {
+  let lastReason: string | undefined
+  let lastVerified = false
   for (const ep of v.episodes) {
     for (const u of ep.urls) {
       if (opts.signal?.aborted) break
       const r = await probeStreamUrl(u, opts.timeoutMs, opts.signal)
-      if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u, episode: ep.label }
+      if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u, episode: ep.label, verified: r.verified, reason: r.reason }
+      lastReason = r.reason
+      lastVerified = r.verified ?? false
     }
     if (opts.signal?.aborted) break
   }
-  return { ok: false, at: Date.now(), url: v.episodes[0]?.urls[0] ?? '' }
+  return { ok: false, at: Date.now(), url: v.episodes[0]?.urls[0] ?? '', reason: lastReason, verified: lastVerified }
 }
 
 export interface ProbeVodTitlesOptions {
@@ -746,16 +1009,18 @@ export function vodHealthOf(health: HealthMap, v: VodTitle): ChannelHealth | und
   return h
 }
 
-export function vodHealthCounts(titles: VodTitle[], health: HealthMap): { tested: number; ok: number; bad: number } {
+export function vodHealthCounts(titles: VodTitle[], health: HealthMap): { tested: number; ok: number; bad: number; unverified: number } {
   let tested = 0
   let ok = 0
+  let unverified = 0
   for (const v of titles) {
     const h = vodHealthOf(health, v)
     if (!h) continue
     tested++
     if (h.ok) ok++
+    if (h.verified !== true) unverified++
   }
-  return { tested, ok, bad: tested - ok }
+  return { tested, ok, bad: tested - ok, unverified }
 }
 
 /** 点播体检视图：只看能播的（过滤）+ 快的排前面（通的按耗时升序，未测的

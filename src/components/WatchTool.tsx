@@ -6,6 +6,7 @@
 // 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
 // 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」；点播条目同样打标记。
 // 源体检（v0.1.391）：直播页手动「开始体检」，逐台测连通性（通/不通、耗时），
+// v0.1.411 真验流：拉播放列表验分片才算通，404/空列表/坏流都判不通，失败原因写在角标上。
 // 死台标出、可过滤，快的排前面；结果缓存 30 分钟，后台跑不堵列表。
 // 点播体检（v0.1.407）：与直播体检同款探针，逐部测点播线路通不通、快不快。
 // 播放器失败态（v0.1.407）：流死了也不只剩一条黑条——16:9 视频区始终保留，
@@ -888,7 +889,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 
   useEffect(() => { void loadLive(liveCountry) }, [liveCountry])
 
-  // ---- 源体检（v0.1.391）：手动入口，后台逐台测连通性；结果缓存 30 分钟 ----
+  // ---- 源体检（v0.1.391 测连通性 → v0.1.411 真验流）：手动入口，后台逐台拉播放列表验分片；结果缓存 30 分钟 ----
   const [health, setHealth] = useState<HealthMap>(() => loadHealthCache())
   const [healthRunning, setHealthRunning] = useState(false)
   const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null)
@@ -1195,8 +1196,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               {ch.logo && <img className="wt-channel-logo" src={ch.logo} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />}
               <span className="wt-channel-name">{ch.name}</span>
               {h && (h.ok
-                ? <span className="wt-health-ok">✓ {h.ms}ms</span>
-                : <span className="wt-health-bad">✗ 不通</span>)}
+                ? <span className="wt-health-ok" title={h.verified === false ? '仅测连通，未验流（浏览器跨域限制）' : undefined}>✓ {h.ms}ms</span>
+                : <span className="wt-health-bad" title={h.reason}>✗ 不通{h.reason ? ` · ${h.reason}` : ''}</span>)}
               {isChannelUnofficial(ch) && <span className="wt-unofficial-badge">未授权转播</span>}
               <span className="wt-channel-meta">{CONTENT_LABELS[ch.content] ?? '其他'}{ch.urls.length > 1 ? ` · ${ch.urls.length} 个源` : ''}</span>
             </button>
@@ -1316,7 +1317,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 {[item.year, item.region, item.genres.join('/')].filter(Boolean).join(' · ') || (item.kind === 'movie' ? '电影' : `剧集 · ${item.vod?.episodes.length ?? ''} 集`)}
               </span>
               {item.playable
-                ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}{vh ? (vh.ok ? <span className="wt-health-ok"> ✓ {vh.ms}ms</span> : <span className="wt-health-bad"> ✗ 不通</span>) : null}</span>
+                ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}{vh ? (vh.ok ? <span className="wt-health-ok" title={vh.verified === false ? '仅测连通，未验流（浏览器跨域限制）' : undefined}> ✓ {vh.ms}ms</span> : <span className="wt-health-bad" title={vh.reason}> ✗ 不通{vh.reason ? ` · ${vh.reason}` : ''}</span>) : null}</span>
                 : <span className="wt-wall-src none"><span className="dot" />仅展示 · 未匹配到片源</span>}
               {item.vod?.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
             </button>
@@ -1574,7 +1575,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           <button className="btn sm ghost" disabled={liveLoading} onClick={() => void loadLive(liveCountry, true)}>
             <RefreshCw size={13} /> {liveLoading ? '加载中…' : '重新加载'}
           </button>
-          <button className="btn sm ghost" disabled={liveLoading || healthRunning || !liveLoaded || !liveChannels.length} onClick={() => void startHealth()} title="逐个测每个台的服务器通不通、快不快（后台进行，不堵列表）">
+          <button className="btn sm ghost" disabled={liveLoading || healthRunning || !liveLoaded || !liveChannels.length} onClick={() => void startHealth()} title="逐个拉播放列表验分片、测快慢（后台进行，不堵列表）">
             <Activity size={13} /> {healthRunning ? '体检中…' : '开始体检'}
           </button>
           {healthRunning && (
@@ -1601,13 +1602,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {healthProgress.done}/{healthProgress.total} 个台…（后台进行，不影响看列表；可点「停止」）</span>
             ) : healthCountsNow.tested > 0 ? (
               <>
-                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）{healthCountsNow.bad > 0 && !showDead ? ' · 不通的台已默认隐藏（设置里可打开显示）' : ''}</span>
+                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{healthCountsNow.unverified > 0 ? `；其中 ${healthCountsNow.unverified} 个仅测连通（浏览器跨域限制）` : ''}）{healthCountsNow.bad > 0 && !showDead ? ' · 不通的台已默认隐藏（设置里可打开显示）' : ''}</span>
                 <button className="btn sm ghost" disabled={healthRunning} onClick={() => void startHealth()}>
                   <RefreshCw size={13} /> 重新体检
                 </button>
               </>
             ) : (
-              <span className="fg-muted">还没体检过：点「开始体检」逐个测每个台通不通、快不快，死的标出来、快的排前面。</span>
+              <span className="fg-muted">还没体检过：点「开始体检」逐个拉播放列表验分片、测快慢，死的标出来、快的排前面（404/空列表/坏流都判不通）。</span>
             )}
           </div>
         )}
@@ -1692,7 +1693,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           {vodTitles.length > 0 && (
             <>
               <div className="wt-chips">
-                <button className="btn sm ghost" disabled={vodHealthRunning || !vodTitles.length} onClick={() => void startVodHealth()} title="逐部测点播线路通不通、快不快（后台进行，不堵墙）">
+                <button className="btn sm ghost" disabled={vodHealthRunning || !vodTitles.length} onClick={() => void startVodHealth()} title="逐部拉播放列表验分片、测快慢（后台进行，不堵墙）">
                   <Activity size={13} /> {vodHealthRunning ? '体检中…' : '开始体检'}
                 </button>
                 {vodHealthRunning && (
@@ -1704,13 +1705,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                   <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…（后台进行，不影响看墙；可点「停止」）</span>
                 ) : vodHealthCountsNow.tested > 0 ? (
                   <>
-                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）</span>
+                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；真验流：拉播放列表验分片，404/空列表/坏流都判不通{vodHealthCountsNow.unverified > 0 ? `；其中 ${vodHealthCountsNow.unverified} 部仅测连通（浏览器跨域限制）` : ''}）</span>
                     <button className="btn sm ghost" disabled={vodHealthRunning} onClick={() => void startVodHealth()}>
                       <RefreshCw size={13} /> 重新体检
                     </button>
                   </>
                 ) : (
-                  <span className="fg-muted">还没体检过：点「开始体检」逐部测线路通不通、快不快，死的标出来、快的排前面。</span>
+                  <span className="fg-muted">还没体检过：点「开始体检」逐部拉播放列表验分片、测快慢，死的标出来、快的排前面（404/空列表/坏流都判不通）。</span>
                 )}
               </div>
               {vodHealthCountsNow.tested > 0 && (
@@ -2027,7 +2028,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           </div>
           <div className="wt-set-block">
             <h4>直播体检</h4>
-            <div className="wt-set-note">体检后不通的台默认从直播列表隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的台一直显示。</div>
+            <div className="wt-set-note">真验流：拉播放列表验分片才算通，404/空列表/坏流都判不通；4 路并行、结果保留 30 分钟。体检后不通的台默认从直播列表隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的台一直显示。</div>
             <label className="wt-set-row" style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={showDead} onChange={toggleShowDead} />
               <span>显示已测不通的台</span>

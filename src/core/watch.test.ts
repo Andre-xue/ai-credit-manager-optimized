@@ -7,7 +7,7 @@ import {
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
   shouldAutoLoadTrending,
   probeStreamUrl, probeChannel, probeChannels, loadHealthCache, saveHealthCache,
-  healthOf, healthCounts, applyHealthView,
+  healthOf, healthCounts, applyHealthView, parseM3u8Segments, probeConnectivity,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead,
   parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
@@ -739,21 +739,157 @@ describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () 
   })
 })
 
-// 源体检（v0.1.391）：逐台测连通性——通/不通、耗时；死台标出、可过滤，快的排前面；结果缓存 30 分钟
-describe('watch.probeStreamUrl（v0.1.391 源体检探针）', () => {
-  it('fetch  resolve（响应头到了）→ 通，耗时 ≥ 1ms', async () => {
-    vi.stubGlobal('fetch', async () => ({}))
+const VALID_PLAYLIST = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:6.000000,\nhttp://example.com/seg0.ts\n#EXT-X-ENDLIST\n'
+const MASTER_PLAYLIST = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\nvar.m3u8\n'
+
+/** fetch 桩：返回带 body.getReader() 的 Response 形对象（探针走分块读、到上限取消） */
+function mockResp(status: number, body: string, contentType = 'application/vnd.apple.mpegurl') {
+  const bytes = new TextEncoder().encode(body)
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? contentType : null) },
+    body: {
+      getReader: () => {
+        let done = false
+        return {
+          read: async () => {
+            if (done) return { done: true, value: undefined }
+            done = true
+            return { done: false, value: bytes }
+          },
+          cancel: async () => {},
+        }
+      },
+    },
+    text: async () => body,
+  }
+}
+
+/** 按 URL 分流的探针桩：dead → 两路都抛错；.ts 分片 → 206；主列表/变体/普通列表 → 200 有效列表 */
+function probeFetchStub() {
+  return vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+    const s = String(u)
+    if (s.includes('dead')) throw new TypeError('Load failed')
+    if (init?.mode === 'no-cors') return {}
+    if (s.endsWith('.ts')) return mockResp(206, 'x'.repeat(188), 'video/mp2t')
+    if (s.includes('master')) return mockResp(200, MASTER_PLAYLIST)
+    if (s.includes('var.m3u8')) return mockResp(200, VALID_PLAYLIST)
+    return mockResp(200, VALID_PLAYLIST)
+  })
+}
+
+// 源体检（v0.1.391 测连通性 → v0.1.411 真验流）：拉播放列表验分片才算通；
+// 404/空列表/无有效分片/坏流/分片拉不到都判不通，失败原因如实返回
+describe('watch.probeStreamUrl（v0.1.411 真验流探针）', () => {
+  it('正常 m3u8（列表含分片、分片 206）→ 通，verified: true', async () => {
+    probeFetchStub()
     const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
     expect(r.ok).toBe(true)
+    expect(r.verified).toBe(true)
     expect(r.ms).toBeGreaterThanOrEqual(1)
   })
-  it('fetch 抛错 → 不通；非 http(s) 地址直接不通，不发请求', async () => {
+  it('404 → 不通，原因 HTTP 404', async () => {
+    vi.stubGlobal('fetch', async (_u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      return mockResp(404, 'not found', 'text/plain')
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe('HTTP 404')
+    expect(r.verified).toBe(true)
+  })
+  it('空列表 → 不通，原因 空列表；返回网页 → 不通，原因含“网页”', async () => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      if (String(u).includes('empty')) return mockResp(200, '')
+      return mockResp(200, '<!DOCTYPE html><html><body>oops</body></html>', 'text/html')
+    })
+    expect((await probeStreamUrl('http://example.com/empty.m3u8', 1000)).reason).toBe('空列表')
+    const page = await probeStreamUrl('http://example.com/page.m3u8', 1000)
+    expect(page.ok).toBe(false)
+    expect(page.reason).toContain('网页')
+  })
+  it('列表无分片 → 不通，原因 无有效分片', async () => {
+    vi.stubGlobal('fetch', async (_u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      return mockResp(200, '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n')
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe('无有效分片')
+  })
+  it('主列表 + 好变体 → 通；主列表 + 死变体（404）→ 不通，原因含“子播放列表”', async () => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      const s = String(u)
+      if (init?.mode === 'no-cors') return {}
+      if (s.includes('deadvar')) return mockResp(404, 'not found', 'text/plain')
+      if (s.endsWith('.ts')) return mockResp(206, 'x'.repeat(188), 'video/mp2t')
+      if (s.includes('var.m3u8')) return mockResp(200, VALID_PLAYLIST)
+      return mockResp(200, MASTER_PLAYLIST)
+    })
+    // 桩按 URL 含 master 分流：master.m3u8 → 主列表；masterdead.m3u8 的变体是 deadvar
+    const good = await probeStreamUrl('http://example.com/master.m3u8', 1000)
+    expect(good.ok).toBe(true)
+    expect(good.verified).toBe(true)
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      const s = String(u)
+      if (init?.mode === 'no-cors') return {}
+      if (s.includes('deadvar')) return mockResp(404, 'not found', 'text/plain')
+      if (s.endsWith('.ts')) return mockResp(206, 'x'.repeat(188), 'video/mp2t')
+      return mockResp(200, '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\ndeadvar.m3u8\n')
+    })
+    const bad = await probeStreamUrl('http://example.com/masterdead.m3u8', 1000)
+    expect(bad.ok).toBe(false)
+    expect(bad.reason).toContain('子播放列表')
+  })
+  it('分片 404 → 不通，原因含“分片拉不到”', async () => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      const s = String(u)
+      if (init?.mode === 'no-cors') return {}
+      if (s.endsWith('.ts')) return mockResp(404, 'not found', 'text/plain')
+      return mockResp(200, VALID_PLAYLIST)
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('分片拉不到')
+  })
+  it('直链 mp4：Range 206 且非空 → 通；404 → 不通，原因 HTTP 404', async () => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      if (String(u).includes('dead')) return mockResp(404, 'not found', 'text/plain')
+      return mockResp(206, 'x'.repeat(1024), 'video/mp4')
+    })
+    const good = await probeStreamUrl('http://example.com/a.mp4', 1000)
+    expect(good.ok).toBe(true)
+    expect(good.verified).toBe(true)
+    const bad = await probeStreamUrl('http://example.com/dead.mp4', 1000)
+    expect(bad.ok).toBe(false)
+    expect(bad.reason).toBe('HTTP 404')
+  })
+  it('CORS 读不到正文（抛错）→ 退回连通性探测：通但 verified: false、原因含“仅测连通”；连通性也失败 → 不通', async () => {
+    vi.stubGlobal('fetch', async (_u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      throw new TypeError('Load failed')
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(true)
+    expect(r.verified).toBe(false)
+    expect(r.reason).toContain('仅测连通')
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    const r2 = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r2.ok).toBe(false)
+    expect(r2.verified).toBe(false)
+  })
+  it('非 http(s) 地址直接不通，不发请求；已取消的 signal 直接不通', async () => {
     let calls = 0
-    vi.stubGlobal('fetch', async () => { calls++; throw new TypeError('Load failed') })
-    expect((await probeStreamUrl('http://example.com/a.m3u8', 1000)).ok).toBe(false)
+    vi.stubGlobal('fetch', async () => { calls++; return mockResp(200, VALID_PLAYLIST) })
     expect((await probeStreamUrl('not-a-url', 1000)).ok).toBe(false)
     expect((await probeStreamUrl('ftp://example.com/a.m3u8', 1000)).ok).toBe(false)
-    expect(calls).toBe(1)
+    const ctrl = new AbortController()
+    ctrl.abort()
+    expect((await probeStreamUrl('http://example.com/a.m3u8', 1000, ctrl.signal)).ok).toBe(false)
+    expect(calls).toBe(0)
   })
   it('超时无响应 → 不通（不等无限久）', async () => {
     // 桩要像真 fetch 一样响应 abort 信号，否则超时后 await 永远不返回
@@ -765,45 +901,104 @@ describe('watch.probeStreamUrl（v0.1.391 源体检探针）', () => {
     expect(r.ok).toBe(false)
     expect(Date.now() - t0).toBeLessThan(2000)
   })
-  it('已取消的 signal → 直接不通，不发请求', async () => {
-    let calls = 0
-    vi.stubGlobal('fetch', async () => { calls++; return {} })
-    const ctrl = new AbortController()
-    ctrl.abort()
-    expect((await probeStreamUrl('http://example.com/a.m3u8', 1000, ctrl.signal)).ok).toBe(false)
-    expect(calls).toBe(0)
+  it('parseM3u8Segments：主列表提变体、媒体列表提分片，#EXT-X-KEY 的 URI 不算分片', () => {
+    const p = parseM3u8Segments('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvar.m3u8\n')
+    expect(p.isMaster).toBe(true)
+    expect(p.variants).toEqual(['var.m3u8'])
+    expect(p.segments).toEqual([])
+    const m = parseM3u8Segments('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key"\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n')
+    expect(m.isMaster).toBe(false)
+    expect(m.segments).toEqual(['seg0.ts', 'seg1.ts'])
+  })
+  it('probeConnectivity：no-cors 响应头到了 → 通；抛错 → 不通', async () => {
+    vi.stubGlobal('fetch', async () => ({}))
+    expect((await probeConnectivity('http://example.com/a.m3u8', 1000)).ok).toBe(true)
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    expect((await probeConnectivity('http://example.com/a.m3u8', 1000)).ok).toBe(false)
+  })
+})
+
+describe('watch.probeStreamUrl 桌面通道（v0.1.411：plugin_http_media）', () => {
+  const envelope = (status: number, body: string, headers: Record<string, string> = { 'content-type': 'application/vnd.apple.mpegurl' }) =>
+    JSON.stringify({ status, body, headers })
+  it('桌面走 plugin_http_media 取正文，fetch 不被调用；分片也走同一通道', async () => {
+    let fetchCalls = 0
+    vi.stubGlobal('fetch', async () => { fetchCalls++; return mockResp(200, VALID_PLAYLIST) })
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    vi.stubGlobal('window', {
+      __TAURI_INTERNALS__: {
+        invoke: async (cmd: string, args: Record<string, unknown>) => {
+          calls.push({ cmd, args })
+          const url = String(args['url'] ?? '')
+          if (url.endsWith('.ts')) return envelope(206, 'x'.repeat(188), { 'content-type': 'video/mp2t' })
+          return envelope(200, VALID_PLAYLIST)
+        },
+      },
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(true)
+    expect(r.verified).toBe(true)
+    expect(fetchCalls).toBe(0)
+    expect(calls.length).toBe(2)
+    expect(calls[0].cmd).toBe('plugin_http_media')
+    expect(calls[1].cmd).toBe('plugin_http_media')
+    vi.unstubAllGlobals()
+  })
+  it('302 手动跟跳转：先 302 到变体地址，再 200 验通；超过 3 跳判不通', async () => {
+    vi.stubGlobal('fetch', async () => { throw new TypeError('no fetch') })
+    let n = 0
+    vi.stubGlobal('window', {
+      __TAURI_INTERNALS__: {
+        invoke: async (_cmd: string, args: Record<string, unknown>) => {
+          n++
+          const url = String(args['url'] ?? '')
+          if (url.endsWith('.ts')) return envelope(206, 'x'.repeat(188), { 'content-type': 'video/mp2t' })
+          if (n === 1) return envelope(302, '', { location: 'http://example.com/real.m3u8' })
+          return envelope(200, VALID_PLAYLIST)
+        },
+      },
+    })
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(true)
+    expect(n).toBe(3) // 列表 302 → 列表 200 → 分片 206
+    vi.unstubAllGlobals()
   })
 })
 
 const HEALTH_CH = (key: string, urls: string[]): LiveChannel => ({ key, name: key, content: 'other', country: 'CN', urls, sourceIds: ['iptv-cn'] })
 
-describe('watch.probeChannel / probeChannels（v0.1.391）', () => {
-  it('第一条不通自动试下一条：通的那条即算通，记通的地址', async () => {
-    vi.stubGlobal('fetch', async (u: unknown) => {
-      if (String(u).includes('dead')) throw new TypeError('Load failed')
-      return {}
-    })
+describe('watch.probeChannel / probeChannels（v0.1.411）', () => {
+  it('第一条不通自动试下一条：通的那条即算通，记通的地址；失败带原因', async () => {
+    probeFetchStub()
     const r = await probeChannel(HEALTH_CH('备用台', ['http://example.com/dead/a.m3u8', 'http://example.com/fast/b.m3u8']))
     expect(r.ok).toBe(true)
     expect(r.url).toBe('http://example.com/fast/b.m3u8')
+    expect(r.verified).toBe(true)
     expect(typeof r.ms).toBe('number')
   })
-  it('全部地址都不通 → 不通，url 记第一条', async () => {
-    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+  it('全部地址都不通 → 不通，url 记第一条，reason 记最后一条的失败原因', async () => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') throw new TypeError('Load failed')
+      if (String(u).includes('a.m3u8')) return mockResp(404, 'not found', 'text/plain')
+      throw new TypeError('Load failed')
+    })
     const r = await probeChannel(HEALTH_CH('死台', ['http://example.com/dead/a.m3u8', 'http://example.com/dead/b.m3u8']))
     expect(r.ok).toBe(false)
     expect(r.url).toBe('http://example.com/dead/a.m3u8')
+    expect(r.reason).toBe('网络错误')
     expect(r.ms).toBeUndefined()
   })
   it('并行跑：onProgress 按完成数递增；并发数不超过上限', async () => {
     let live = 0
     let maxLive = 0
-    vi.stubGlobal('fetch', async (u: unknown) => {
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      if (init?.mode === 'no-cors') return {}
       live++; maxLive = Math.max(maxLive, live)
       await new Promise(r => setTimeout(r, 15))
       live--
-      if (String(u).includes('dead')) throw new TypeError('Load failed')
-      return {}
+      if (String(u).endsWith('.ts')) return mockResp(206, 'x'.repeat(188), 'video/mp2t')
+      return mockResp(200, VALID_PLAYLIST)
     })
     const chans = [
       HEALTH_CH('a', ['http://example.com/fast/a.m3u8']),
@@ -822,8 +1017,14 @@ describe('watch.probeChannel / probeChannels（v0.1.391）', () => {
     expect(maxLive).toBeLessThanOrEqual(2)
   })
   it('取消后停在已测的部分：返回部分结果，不再测剩下的', async () => {
-    let calls = 0
-    vi.stubGlobal('fetch', async () => { calls++; await new Promise(r => setTimeout(r, 10)); return {} })
+    let playlistCalls = 0
+    vi.stubGlobal('fetch', async (u: unknown, init?: { mode?: string }) => {
+      if (init?.mode === 'no-cors') return {}
+      if (String(u).endsWith('.m3u8')) playlistCalls++
+      await new Promise(r => setTimeout(r, 10))
+      if (String(u).endsWith('.ts')) return mockResp(206, 'x'.repeat(188), 'video/mp2t')
+      return mockResp(200, VALID_PLAYLIST)
+    })
     const ctrl = new AbortController()
     const chans = [1, 2, 3, 4, 5, 6].map(i => HEALTH_CH(`ch${i}`, [`http://example.com/fast/${i}.m3u8`]))
     const out = await probeChannels(chans, {
@@ -831,7 +1032,7 @@ describe('watch.probeChannel / probeChannels（v0.1.391）', () => {
       onProgress: (done) => { if (done === 2) ctrl.abort() },
     })
     expect(Object.keys(out).length).toBeLessThanOrEqual(2)
-    expect(calls).toBeLessThanOrEqual(2)
+    expect(playlistCalls).toBeLessThanOrEqual(2)
   })
 })
 
@@ -868,9 +1069,15 @@ describe('watch.applyHealthView / healthCounts（v0.1.391 过滤排序）', () =
     'slow': { ok: true, ms: 900, at: Date.now(), url: 'http://example.com/slow.m3u8' },
     'dead': { ok: false, at: Date.now(), url: 'http://example.com/dead.m3u8' },
   }
-  it('healthCounts：已测 3 · 通 2 · 不通 1', () => {
-    expect(healthCounts(chans, health)).toEqual({ tested: 3, ok: 2, bad: 1 })
-    expect(healthCounts(chans, {})).toEqual({ tested: 0, ok: 0, bad: 0 })
+  it('healthCounts：已测 3 · 通 2 · 不通 1；未验流的计入 unverified', () => {
+    expect(healthCounts(chans, health)).toEqual({ tested: 3, ok: 2, bad: 1, unverified: 3 })
+    expect(healthCounts(chans, {})).toEqual({ tested: 0, ok: 0, bad: 0, unverified: 0 })
+    const verifiedHealth: HealthMap = {
+      'fast': { ok: true, ms: 80, at: Date.now(), url: 'http://example.com/fast.m3u8', verified: true },
+      'slow': { ok: true, ms: 900, at: Date.now(), url: 'http://example.com/slow.m3u8', verified: false, reason: '仅测连通（浏览器跨域限制，未验流）' },
+      'dead': { ok: false, at: Date.now(), url: 'http://example.com/dead.m3u8', verified: true, reason: 'HTTP 404' },
+    }
+    expect(healthCounts(chans, verifiedHealth)).toEqual({ tested: 3, ok: 2, bad: 1, unverified: 1 })
   })
   it('只看已测通的：只剩通的台', () => {
     expect(applyHealthView(chans, health, { onlyHealthy: true }).map(c => c.key)).toEqual(['fast', 'slow'])
@@ -893,7 +1100,7 @@ describe('watch 源体检结构（v0.1.391：WatchTool.tsx + styles.css）', () 
   it('直播页签有体检入口、状态行、过滤/排序开关；频道卡片按结果打角标', async () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
-    for (const s of ['开始体检', '体检中', '停止', '上次体检', '显示已测不通的台', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead']) {
+    for (const s of ['开始体检', '体检中', '停止', '上次体检', '显示已测不通的台', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead', '真验流', '仅测连通']) {
       expect(src).toContain(s)
     }
     // 死台变淡、不通角标；通的角标带耗时
@@ -962,31 +1169,32 @@ const VOD_DEAD: VodTitle = {
 }
 
 describe('watch 点播体检（v0.1.407：probeVodTitle / vodHealthOf / vodHealthCounts / applyVodHealthView）', () => {
+  // 点播 mp4 桩：dead → 两路都抛错；其余 → Range 206 非空
+  const vodFetchStub = () => vi.stubGlobal('fetch', async (u: unknown) => {
+    if (String(u).includes('dead')) throw new TypeError('Load failed')
+    return mockResp(206, 'x'.repeat(1024), 'video/mp4')
+  })
   it('按集顺序、每集按线路顺序逐条试：第一条通的即算通，记通的地址与集', async () => {
-    vi.stubGlobal('fetch', async (u: unknown) => {
-      if (String(u).includes('dead')) throw new TypeError('Load failed')
-      return {}
-    })
+    vodFetchStub()
     const r = await probeVodTitle(VOD_A)
     expect(r.ok).toBe(true)
     expect(r.url).toBe('http://example.com/fast/a.mp4')
     expect(r.episode).toBe('正片')
+    expect(r.verified).toBe(true)
     expect(typeof r.ms).toBe('number')
   })
   it('第一集死、第二集通 → 整部算通，记第二集', async () => {
-    vi.stubGlobal('fetch', async (u: unknown) => {
-      if (String(u).includes('dead')) throw new TypeError('Load failed')
-      return {}
-    })
+    vodFetchStub()
     const r = await probeVodTitle(VOD_B)
     expect(r.ok).toBe(true)
     expect(r.episode).toBe('第 2 集')
   })
-  it('全部线路都不通 → 不通，url 记第一集第一条', async () => {
+  it('全部线路都不通 → 不通，url 记第一集第一条，reason 有值', async () => {
     vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
     const r = await probeVodTitle(VOD_DEAD)
     expect(r.ok).toBe(false)
     expect(r.url).toBe('http://example.com/dead/d.mp4')
+    expect(r.reason).toBe('网络错误')
   })
   it('vodHealthOf：键带 vod: 前缀，缓存条目须是该片某条地址；直播键不串进来', () => {
     const health: HealthMap = {
@@ -1004,7 +1212,7 @@ describe('watch 点播体检（v0.1.407：probeVodTitle / vodHealthOf / vodHealt
       'vod:movie-dead': { ok: false, at: Date.now(), url: 'http://example.com/dead/d.mp4' },
     }
     const titles = [VOD_DEAD, VOD_A, VOD_B]
-    expect(vodHealthCounts(titles, health)).toEqual({ tested: 2, ok: 1, bad: 1 })
+    expect(vodHealthCounts(titles, health)).toEqual({ tested: 2, ok: 1, bad: 1, unverified: 2 })
     // 墙条目形（{ vod }）：点播体检视图作用在墙条目上
     const wall = [{ vod: VOD_DEAD }, { vod: VOD_A }, { vod: VOD_B }]
     expect(applyVodHealthView(wall, health, { onlyHealthy: true }).map(i => i.vod!.key)).toEqual(['movie-a'])
@@ -1013,13 +1221,12 @@ describe('watch 点播体检（v0.1.407：probeVodTitle / vodHealthOf / vodHealt
     expect(applyVodHealthView(wall, health)).toEqual(wall)
   })
   it('probeVodTitles：批量跑，键带 vod: 前缀', async () => {
-    vi.stubGlobal('fetch', async (u: unknown) => {
-      if (String(u).includes('dead')) throw new TypeError('Load failed')
-      return {}
-    })
+    vodFetchStub()
     const out = await probeVodTitles([VOD_A, VOD_DEAD])
     expect(out['vod:movie-a'].ok).toBe(true)
+    expect(out['vod:movie-a'].verified).toBe(true)
     expect(out['vod:movie-dead'].ok).toBe(false)
+    expect(out['vod:movie-dead'].reason).toBe('网络错误')
   })
 })
 

@@ -341,6 +341,48 @@ async fn plugin_http(url: String, method: String, headers_json: Option<String>, 
     Ok(serde_json::json!({ "status": status, "body": text, "headers": headers_map }).to_string())
 }
 
+/// 媒体探测取正文（v0.1.411）：供看剧源体检真验流用——拉 m3u8 播放列表验分片。
+/// 与 plugin_http 的区别：校验用 validate_media_url（公网 http(s) 都放行，
+/// 只拦本机/内网/保留字面地址），因为直播流地址大多是 http；plugin_http 的
+/// 「http 仅限本机」会把七成流地址直接拒掉（iptv-org cn.m3u 里 108/151 是 http）。
+/// 同样过 validate_resolved_public（DNS 解析到内网即拒）、同样禁用重定向
+/// （302 跳转由 TS 侧手动跟，每跳重新过校验）；正文分块读、封顶 256KB
+/// （播放列表很小），防误指大文件拖垮内存。
+#[tauri::command]
+async fn plugin_http_media(url: String, headers_json: Option<String>) -> Result<String, String> {
+    let parsed = validate_media_url(&url)?;
+    validate_resolved_public(&parsed).await?;
+    let url = parsed.to_string();
+    let client = shared_provider_client();
+    let mut req = client.request(reqwest::Method::GET, &url);
+    if let Some(hj) = headers_json.as_deref() {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(hj) {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() { req = req.header(k, s); }
+            }
+        }
+    }
+    let mut resp = req.send().await.map_err(|e| format!("请求失败：{}", e))?;
+    let status = resp.status().as_u16();
+    let mut headers_map = serde_json::Map::new();
+    for (k, v) in resp.headers().iter() {
+        if let Ok(s) = v.to_str() { headers_map.insert(k.as_str().to_string(), serde_json::Value::String(s.to_string())); }
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                buf.extend_from_slice(&chunk);
+                if buf.len() >= 256 * 1024 { buf.truncate(256 * 1024); break; }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(format!("读取响应失败：{}", e)),
+        }
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Ok(serde_json::json!({ "status": status, "body": text, "headers": headers_map }).to_string())
+}
+
 // ---------------- 插件面板文档服务（v0.1.284） ----------------
 // 真因记录：主窗口 CSP 是 script-src 'self'，srcdoc 子文档按规范继承嵌入方 CSP，
 // 插件面板的内联脚本（桥 + 插件代码）在桌面端全被拦截——面板 HTML 能显示、点击毫无反应（v0.1.264 起）。
@@ -4240,7 +4282,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
