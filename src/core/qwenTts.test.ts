@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   isQwenVoiceId, newQwenVoiceId, QWENTTS_PORT, QWENTTS_URL, QWENTTS_MODEL_ID, QWEN_VOICE_PREFIX,
+  friendlyQwenError,
 } from './qwenTts'
 
 describe('Qwen3-TTS 本地服务常量（v0.1.400）', () => {
@@ -23,5 +24,19 @@ describe('Qwen3-TTS 本地服务常量（v0.1.400）', () => {
     expect(a.startsWith(QWEN_VOICE_PREFIX)).toBe(true)
     expect(a).not.toBe(b)
     expect(isQwenVoiceId(a)).toBe(true)
+  })
+})
+
+describe('Qwen 服务端 ffmpeg 报错翻译（v0.1.414 兜底）', () => {
+  it('服务端报 ffmpeg 缺失时换成中文指引', () => {
+    const raw = '合成失败（HTTP 400）：{"detail":"ref_audio is not WAV and ffmpeg conversion failed: [Errno 2] No such file or directory: \'ffmpeg\'. Install ffmpeg: brew install ffmpeg"}'
+    expect(friendlyQwenError(raw)).toBe('参考音频不是 WAV 且本机未装 ffmpeg，请改用 WAV 音频或安装 ffmpeg（终端运行 brew install ffmpeg）')
+  })
+  it('只有 ref_audio is not WAV 也翻译', () => {
+    expect(friendlyQwenError('ref_audio is not WAV')).toContain('请改用 WAV 音频')
+  })
+  it('其他错误原样返回', () => {
+    expect(friendlyQwenError('合成失败（HTTP 500）：内部错误')).toBe('合成失败（HTTP 500）：内部错误')
+    expect(friendlyQwenError('服务未运行')).toBe('服务未运行')
   })
 })

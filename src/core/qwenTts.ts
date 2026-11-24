@@ -93,6 +93,8 @@ export async function qwenTtsTest(): Promise<{ ok: boolean; message: string }> {
 /**
  * 用参考音频克隆合成一段语音（走本机 /v1/audio/clone，language=auto 由服务端按文本自动识别）。
  * 返回音频 data URI（wav）。服务未运行、参考音频无效、合成失败时抛错，调用方显示原因。
+ * 调用前请先用 ensureWavDataUrl 把参考音频归一化成 WAV：服务端只认 WAV，
+ * 非 WAV 会走 ffmpeg 转格式，本机没装 ffmpeg 就报 HTTP 400（v0.1.414 实机 bug）。
  */
 export async function qwenTtsSynthesize(refAudioDataUrl: string, refText: string, text: string): Promise<string> {
   const invoke = getInvoke()
@@ -102,6 +104,17 @@ export async function qwenTtsSynthesize(refAudioDataUrl: string, refText: string
     refText: refText ?? '',
     text,
   })) as string
+}
+
+/**
+ * Qwen 服务端报错翻译成中文指引（v0.1.414 兜底：正常流程下参考音频已在本地转成 WAV，
+ * 这条错只会在旧版存量非 WAV 参考音频、或转换被绕过时出现）。
+ */
+export function friendlyQwenError(raw: string): string {
+  if (/ffmpeg/i.test(raw) || /ref_audio is not WAV/i.test(raw)) {
+    return '参考音频不是 WAV 且本机未装 ffmpeg，请改用 WAV 音频或安装 ffmpeg（终端运行 brew install ffmpeg）'
+  }
+  return raw
 }
 
 // ==================== 已保存 Qwen 音色的参考音频（本机 IndexedDB） ====================

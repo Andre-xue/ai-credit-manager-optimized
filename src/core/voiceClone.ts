@@ -8,7 +8,7 @@
 import { getTtsConfig } from './voice-download'
 import { isDirectMode, ttsCloneDirect, voicestudioClone } from './ttsDirect'
 import { isNativeApp } from './openExternal'
-import { qwenTtsSynthesize, saveQwenVoice } from './qwenTts'
+import { qwenTtsSynthesize, saveQwenVoice, friendlyQwenError } from './qwenTts'
 
 const DB_NAME = 'acm-voice-sample-db'
 const STORE = 'samples'
@@ -188,21 +188,7 @@ export async function blobToWav(blob: Blob): Promise<Blob | null> {
     src.connect(off.destination)
     src.start(0)
     const rendered = await off.startRendering()
-    const data = rendered.getChannelData(0)
-    const pcm = new Int16Array(len)
-    for (let i = 0; i < len; i++) {
-      const s = Math.max(-1, Math.min(1, data[i]))
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff
-    }
-    const header = new ArrayBuffer(44)
-    const dv = new DataView(header)
-    const w = (o: number, str: string) => { for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i)) }
-    w(0, 'RIFF'); dv.setUint32(4, 36 + pcm.byteLength, true); w(8, 'WAVE')
-    w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true)
-    dv.setUint16(22, ch, true); dv.setUint32(24, targetRate, true)
-    dv.setUint32(28, targetRate * ch * 2, true); dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true)
-    w(36, 'data'); dv.setUint32(40, pcm.byteLength, true)
-    return new Blob([header, pcm], { type: 'audio/wav' })
+    return encodePcm16Wav([rendered.getChannelData(0)], targetRate)
   } catch { return null }
   finally {
     // 释放 AudioContext，避免反复转换后累积（浏览器有同时存活数量上限）。
@@ -210,6 +196,103 @@ export async function blobToWav(blob: Blob): Promise<Blob | null> {
     try { void ctx?.close() } catch { /* ignore */ }
     off = null
   }
+}
+
+/** 多声道 Float32 音频帧 → 16-bit PCM WAV（交错声道，原采样率，原声道数，至多 2 声道）。 */
+export function encodePcm16Wav(channels: Float32Array[], sampleRate: number): Blob {
+  const ch = Math.max(1, Math.min(2, channels.length))
+  const len = channels[0]?.length ?? 0
+  const pcm = new Int16Array(len * ch)
+  for (let i = 0; i < len; i++) {
+    for (let c = 0; c < ch; c++) {
+      const s = Math.max(-1, Math.min(1, channels[c]?.[i] ?? 0))
+      pcm[i * ch + c] = s < 0 ? s * 0x8000 : s * 0x7fff
+    }
+  }
+  const header = new ArrayBuffer(44)
+  const dv = new DataView(header)
+  const w = (o: number, str: string) => { for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i)) }
+  w(0, 'RIFF'); dv.setUint32(4, 36 + pcm.byteLength, true); w(8, 'WAVE')
+  w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true)
+  dv.setUint16(22, ch, true); dv.setUint32(24, sampleRate, true)
+  dv.setUint32(28, sampleRate * ch * 2, true); dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true)
+  w(36, 'data'); dv.setUint32(40, pcm.byteLength, true)
+  return new Blob([header, pcm], { type: 'audio/wav' })
+}
+
+/**
+ * 把任意浏览器可解码的音频 Blob 转成 16-bit PCM WAV，但保留原采样率与声道数
+ * （不像 blobToWav 那样重采样到 16k 单声道）。Qwen3-TTS 本地克隆专用：
+ * 服务端只认 WAV 容器，采样率/声道由它自己处理，本地不降质。
+ */
+export async function blobToWavNative(blob: Blob): Promise<Blob | null> {
+  let ctx: AudioContext | null = null
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext
+    if (!Ctx) return null
+    ctx = new Ctx()
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer())
+    if (!decoded || !decoded.numberOfChannels || !decoded.sampleRate) return null
+    const channels: Float32Array[] = []
+    const n = Math.min(2, decoded.numberOfChannels)
+    for (let c = 0; c < n; c++) channels.push(decoded.getChannelData(c))
+    return encodePcm16Wav(channels, decoded.sampleRate)
+  } catch { return null }
+  finally {
+    try { void ctx?.close() } catch { /* ignore */ }
+  }
+}
+
+/** data URL 的 MIME 是否为 WAV（再验 RIFF 头，防止 mime 与内容不符的假 WAV）。 */
+export function isWavDataUrl(dataUrl: string): boolean {
+  const m = /^data:([^;,]+)?(;base64)?,/i.exec(dataUrl)
+  const mime = (m?.[1] || '').toLowerCase()
+  if (mime !== 'audio/wav' && mime !== 'audio/x-wav' && mime !== 'audio/wave') return false
+  const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+  try {
+    return atob(b64.slice(0, 8)).slice(0, 4) === 'RIFF'
+  } catch { return false }
+}
+
+/** base64 data URL → Blob（仅支持 App 内 FileReader 产出的 base64 形式）。 */
+export function dataUrlToBlob(dataUrl: string): Blob | null {
+  const m = /^data:([^;,]+)?;base64,(.*)$/s.exec(dataUrl)
+  if (!m) return null
+  try {
+    const bin = atob(m[2])
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new Blob([bytes], { type: m[1] || 'application/octet-stream' })
+  } catch { return null }
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => resolve(String(fr.result))
+    fr.onerror = () => reject(fr.error)
+    fr.readAsDataURL(blob)
+  })
+}
+
+export type WavDataUrlResult =
+  | { ok: true; dataUrl: string; converted: boolean }
+  | { ok: false; error: string }
+
+/**
+ * Qwen3-TTS 参考音频归一化：保证交给服务端的一定是 WAV（v0.1.414）。
+ * 旧版把 MP3/M4A 原样传给本机 mlx-tts-server，服务端要拿 ffmpeg 转格式，
+ * 而 Ethan 的 Mac 没装 ffmpeg → HTTP 400（2026-11-24 实机）。现在浏览器内
+ * 先转成 WAV 再上传，全程本地、不依赖本机 ffmpeg；已是 WAV 的直接放行；
+ * 浏览器解不开的格式在这里就明确报错，不等合成失败才报英文原错。
+ */
+export async function ensureWavDataUrl(dataUrl: string): Promise<WavDataUrlResult> {
+  if (isWavDataUrl(dataUrl)) return { ok: true, dataUrl, converted: false }
+  const blob = dataUrlToBlob(dataUrl)
+  if (!blob) return { ok: false, error: '该音频无法转换为 WAV：音频数据损坏或格式未知，请导入 WAV / MP3 / M4A 音频文件' }
+  const wav = await blobToWavNative(blob)
+  if (!wav) return { ok: false, error: '该音频无法转换为 WAV：浏览器解不开此格式，请导入 WAV / MP3 / M4A 音频文件' }
+  return { ok: true, dataUrl: await blobToDataUrl(wav), converted: true }
 }
 
 /** 挑选 MediaRecorder 支持的音频 MIME。
@@ -316,13 +399,17 @@ export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, r
   }
   // Qwen3-TTS 本地克隆：桌面端直连本机 :18123，无需官方 Key；先用样本试合成一句验证链路，
   // 成功后再保存音色（参考音频存本机 IndexedDB）。参考音频原文可空，写上效果更好。
+  // v0.1.414：服务端只认 WAV，先在浏览器内把样本转成 WAV 再上传（不依赖本机 ffmpeg）；
+  // 存进 IndexedDB 的也是转好的 WAV，下次朗读直接用，不用再转。
   if (cfg.provider === 'qwentts') {
     try {
-      await qwenTtsSynthesize(sample.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
-      const voice = await saveQwenVoice(name || sample.name.replace(/\.[^.]+$/, ''), sample.dataUrl, refText ?? '', sample.name)
+      const wav = await ensureWavDataUrl(sample.dataUrl)
+      if (!wav.ok) return { ok: false, error: wav.error }
+      await qwenTtsSynthesize(wav.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
+      const voice = await saveQwenVoice(name || sample.name.replace(/\.[^.]+$/, ''), wav.dataUrl, refText ?? '', sample.name)
       return { ok: true, voiceId: voice.voiceId }
     } catch (e) {
-      const msg = `Qwen3-TTS 本地克隆失败：${(e as Error)?.message ?? String(e)}`
+      const msg = `Qwen3-TTS 本地克隆失败：${friendlyQwenError((e as Error)?.message ?? String(e))}`
       return { ok: false, error: msg.length > 200 ? msg.slice(0, 200) + '…' : msg }
     }
   }

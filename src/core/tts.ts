@@ -213,10 +213,10 @@ export function unlockTts(): void {
 }
 
 import { getTtsConfig } from './voice-download'
-import { getClonedVoiceId, listClonedVoices } from './voiceClone'
+import { getClonedVoiceId, listClonedVoices, ensureWavDataUrl } from './voiceClone'
 import { isDirectMode, ttsSynthesizeDirect, voicestudioSynthesize } from './ttsDirect'
 import { getSpeakPref, getEdgeVoiceId, synthesizeEdgeMp3 } from './edgeTts'
-import { isQwenVoiceId, loadQwenVoiceRef, qwenTtsSynthesize } from './qwenTts'
+import { isQwenVoiceId, loadQwenVoiceRef, qwenTtsSynthesize, friendlyQwenError } from './qwenTts'
 
 /** 是否使用本机 VoiceStudio 作为语音服务 */
 function isVoiceStudio(cfg: ReturnType<typeof getTtsConfig>): boolean {
@@ -342,7 +342,11 @@ export async function speakAsync(
       if (!speakText) throw new Error('朗读内容为空')
       const ref = await loadQwenVoiceRef(cloned)
       if (!ref) throw new Error('找不到该音色的参考音频，请在语音配置里重新克隆')
-      const dataUri = await qwenTtsSynthesize(ref.dataUrl, ref.refText, speakText)
+      // v0.1.414：400 版存的参考音频可能是 MP3/M4A 原样，服务端只认 WAV 且本机
+      // 没装 ffmpeg 会报 400；朗读前同样在浏览器内转成 WAV 再传。
+      const wav = await ensureWavDataUrl(ref.dataUrl)
+      if (!wav.ok) throw new Error(wav.error)
+      const dataUri = await qwenTtsSynthesize(wav.dataUrl, ref.refText, speakText)
       const b64 = dataUri.split(',')[1] ?? ''
       if (!b64) throw new Error('合成音频为空')
       const bin = atob(b64)
@@ -351,7 +355,7 @@ export async function speakAsync(
       await playMp3Buffer(bytes.buffer, onState)
       return true
     } catch (e) {
-      const lastErr = (e as Error)?.message ?? String(e)
+      const lastErr = friendlyQwenError((e as Error)?.message ?? String(e))
       onFallback?.(`Qwen3-TTS 本地克隆音色播放失败（${lastErr.slice(0, 60)}），已临时改用系统音色`)
     }
     return speak(text, voiceURI, onState)
