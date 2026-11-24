@@ -9,16 +9,18 @@
 // 死台标出、可过滤，快的排前面；结果缓存 30 分钟，后台跑不堵列表。
 // 点播体检（v0.1.407）：与直播体检同款探针，逐部测点播线路通不通、快不快。
 // 播放器失败态（v0.1.407）：流死了也不只剩一条黑条——16:9 视频区始终保留，
-// 失败时区内显示原因 + 再试一次；加载中显示“正在加载…”；打开播放器时滚到视野内。
+// 失败时区内显示原因 + 再试一次；加载中显示“正在加载…”；
+// v0.1.410：播放器改悬浮固定在视口内，407 的“打开时滚到视野内”已无用、删掉。
 // TVBox 点播源（v0.1.408）：设置里粘 .json 配置，只接 type 0/1 资源站
 // （api.php/provide/vod），爬虫站跳过并说明；成人站按站名归入 18+ 页签，
 // 设置开关控制显隐（默认关，只存本机）。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, ChevronDown, CircleAlert, Clapperboard, ExternalLink,
   Film, Loader2, Lock, Play, Plus, RefreshCw, Search, Trash2, Tv, X,
   CalendarDays, BookmarkPlus, Minus, Check, Activity,
+  GripVertical, Minimize2, Maximize2,
 } from 'lucide-react'
 import Hls from 'hls.js'
 import FlvJs from 'flv.js'
@@ -47,6 +49,7 @@ import {
   probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead,
   isTvboxConfigText, isAdultTvboxSite,
+  loadPlayerFloat, savePlayerFloat, clampPlayerFloat,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig, fetchCmsVodList, mergeVodTitles,
   loadShowAdult, saveShowAdult,
   isFlvUrl, splitEpisode,
@@ -469,12 +472,98 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [pwdInput, setPwdInput] = useState('')
   const [player, setPlayer] = useState<PlayerState>(null)
   const [playerKey, setPlayerKey] = useState(0)
-  const playerWrapRef = useRef<HTMLDivElement>(null)
-  // v0.1.407：打开播放器时滚到视野内——播放器挂在页签上方，从列表/墙下方点开时不滚就看不到
+  // v0.1.410：播放器改可拖动悬浮——fixed 定位挂在视口里，切页签/滚动都不动，
+  // video 元素始终不卸载，播放不中断；位置与最小化只存本机。
+  const [floatPos, setFloatPos] = useState<{ x: number; y: number } | null>(() => {
+    const s = loadPlayerFloat()
+    return s.x != null && s.y != null ? { x: s.x, y: s.y } : null
+  })
+  const [floatMin, setFloatMin] = useState(() => loadPlayerFloat().minimized)
+  const floatRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null)
+  const floatPosRef = useRef(floatPos)
+  const floatMinRef = useRef(floatMin)
+  useEffect(() => { floatPosRef.current = floatPos }, [floatPos])
+  useEffect(() => { floatMinRef.current = floatMin }, [floatMin])
+  // 打开播放器时把存过的位置按当前视口限位一次（换了小屏也不会飞出视口）
   useEffect(() => {
-    if (player) playerWrapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (!player || !floatPosRef.current) return
+    const el = floatRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const next = clampPlayerFloat(floatPosRef.current.x, floatPosRef.current.y, window.innerWidth, window.innerHeight, r.width)
+    if (next.x !== floatPosRef.current.x || next.y !== floatPosRef.current.y) setFloatPos(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playerKey])
+  // 窗口改尺寸时同样限位，避免面板被甩出视口收不回来
+  useEffect(() => {
+    const onResize = () => {
+      const p = floatPosRef.current
+      const el = floatRef.current
+      if (!p || !el || !player) return
+      const r = el.getBoundingClientRect()
+      const next = clampPlayerFloat(p.x, p.y, window.innerWidth, window.innerHeight, r.width)
+      if (next.x !== p.x || next.y !== p.y) setFloatPos(next)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player])
+  // 拖动手柄：鼠标与触摸共用 Pointer Events；点到按钮（最小化/关闭）不启动拖动。
+  // 拖动期间在 window 上监听 move/up（不用 setPointerCapture：headless-shell 里
+  // 捕获后会吞掉后续事件，且窗口级监听本来就更稳——指针拖出条外仍跟手）。
+  const onFloatWindowMove = useCallback((e: PointerEvent) => {
+    const d = dragRef.current
+    const el = floatRef.current
+    if (!d || !el) return
+    const r = el.getBoundingClientRect()
+    const next = clampPlayerFloat(e.clientX - d.dx, e.clientY - d.dy, window.innerWidth, window.innerHeight, r.width)
+    // 同步写 ref：松手存位置时不依赖 React 已刷新（连续事件可能还在批处理里）
+    floatPosRef.current = next
+    setFloatPos(next)
+  }, [])
+  const onFloatWindowUp = useCallback(() => {
+    window.removeEventListener('pointermove', onFloatWindowMove)
+    window.removeEventListener('pointerup', onFloatWindowUp)
+    window.removeEventListener('pointercancel', onFloatWindowUp)
+    window.removeEventListener('blur', onFloatWindowUp)
+    if (!dragRef.current) return
+    dragRef.current = null
+    const p = floatPosRef.current
+    if (p) savePlayerFloat({ x: p.x, y: p.y, minimized: floatMinRef.current })
+  }, [onFloatWindowMove])
+  // 拖动中途卸载也不留监听
+  useEffect(() => () => {
+    window.removeEventListener('pointermove', onFloatWindowMove)
+    window.removeEventListener('pointerup', onFloatWindowUp)
+    window.removeEventListener('pointercancel', onFloatWindowUp)
+    window.removeEventListener('blur', onFloatWindowUp)
+  }, [onFloatWindowMove, onFloatWindowUp])
+  const onFloatPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    const el = floatRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    dragRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top }
+    // 默认右下角（right/bottom 定位）时先换算成 left/top，拖动中不跳位
+    if (!floatPosRef.current) setFloatPos({ x: r.left, y: r.top })
+    window.addEventListener('pointermove', onFloatWindowMove)
+    window.addEventListener('pointerup', onFloatWindowUp)
+    window.addEventListener('pointercancel', onFloatWindowUp)
+    window.addEventListener('blur', onFloatWindowUp)
+  }
+  const toggleFloatMin = () => {
+    const next = !floatMin
+    setFloatMin(next)
+    const p = floatPosRef.current
+    savePlayerFloat({ x: p?.x ?? null, y: p?.y ?? null, minimized: next })
+  }
+  // 悬浮条上的关闭：转点播放器自己的关闭按钮，续播进度照常记录（直播/点播都走原逻辑）
+  const closeFloat = () => {
+    const inner = floatRef.current?.querySelector('.wt-player-head button')
+    if (inner instanceof HTMLButtonElement) { inner.click(); return }
+    setPlayer(null)
+  }
 
   const toggleGroup = (id: string) => setClosedGroups(prev => {
     const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -1255,25 +1344,42 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         </div>
       )}
 
-      <div ref={playerWrapRef}>
-      {player?.kind === 'hls' && (
-        <HlsPlayer key={playerKey} title={player.title} urls={player.urls}
-          onOpened={p => closePlayer(p)} />
-      )}
-      {player?.kind === 'vod' && (
-        <VodPlayer key={playerKey} title={player.title} episodes={player.episodes}
-          episodeIndex={player.episodeIndex} startAt={player.startAt} startUrlIdx={player.startUrlIdx}
-          onLeave={(i, p) => recordVodLeave(i, p)} onClose={() => setPlayer(null)} />
-      )}
-      {player?.kind === 'iframe' && (
-        <IframePlayer key={playerKey} title={player.title} url={player.url} onClose={() => setPlayer(null)} />
-      )}
-      {player?.kind === 'blocked' && (
-        <BlockedPlayer key={playerKey} title={player.title} url={player.url} reason={player.reason}
-          onClose={() => setPlayer(null)}
-          onAddCalendar={() => { addToWatchlist({ title: player.title, type: 'tv', platform: '官方 App', platformUrl: player.url }); setPlayer(null) }} />
-      )}
+      {/* v0.1.410：悬浮播放器——fixed 定位 + 拖动手柄；切页签时它在页签栏之外，
+          本来就不卸载；最小化只藏 body，video 元素留在 DOM 里继续播 */}
+      {player && (
+      <div ref={floatRef} className={`wt-float${floatMin ? ' min' : ''}`}
+        style={floatPos ? { left: floatPos.x, top: floatPos.y } : undefined}
+        role="dialog" aria-label={`正在播放：${player.title}`}>
+        <div className="wt-float-bar" title="按住拖动移动播放器"
+          onPointerDown={onFloatPointerDown}>
+          <span className="wt-float-grip"><GripVertical size={14} /> 拖动移动</span>
+          <span className="wt-float-title">{player.title}</span>
+          <button className="btn sm ghost" type="button" aria-label={floatMin ? '展开播放器' : '最小化播放器（继续播）'} onClick={toggleFloatMin}>
+            {floatMin ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+          </button>
+          <button className="btn sm ghost" type="button" aria-label="关闭播放器" onClick={closeFloat}><X size={14} /></button>
+        </div>
+        <div className="wt-float-body">
+        {player.kind === 'hls' && (
+          <HlsPlayer key={playerKey} title={player.title} urls={player.urls}
+            onOpened={p => closePlayer(p)} />
+        )}
+        {player.kind === 'vod' && (
+          <VodPlayer key={playerKey} title={player.title} episodes={player.episodes}
+            episodeIndex={player.episodeIndex} startAt={player.startAt} startUrlIdx={player.startUrlIdx}
+            onLeave={(i, p) => recordVodLeave(i, p)} onClose={() => setPlayer(null)} />
+        )}
+        {player.kind === 'iframe' && (
+          <IframePlayer key={playerKey} title={player.title} url={player.url} onClose={() => setPlayer(null)} />
+        )}
+        {player.kind === 'blocked' && (
+          <BlockedPlayer key={playerKey} title={player.title} url={player.url} reason={player.reason}
+            onClose={() => setPlayer(null)}
+            onAddCalendar={() => { addToWatchlist({ title: player.title, type: 'tv', platform: '官方 App', platformUrl: player.url }); setPlayer(null) }} />
+        )}
+        </div>
       </div>
+      )}
 
       {/* v0.1.394：横向页签（吸顶）+ AI 找剧收进标题栏右端搜索图标 */}
       <div className="wt-tabs" role="tablist">

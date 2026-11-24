@@ -1557,6 +1557,42 @@ export function saveShowAdult(v: boolean): void {
   try { localStorage.setItem(SHOW_ADULT_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
 }
 
+// ---------------- 悬浮播放器位置（v0.1.410）：拖动位置与最小化只存本机 ----------------
+export const PLAYER_FLOAT_KEY = 'acm.watch.playerFloat.v1'
+
+export interface PlayerFloatState {
+  /** 视口相对的 left/top（px）；null = 没存过位置，用默认右下角 */
+  x: number | null
+  y: number | null
+  minimized: boolean
+}
+
+export function loadPlayerFloat(): PlayerFloatState {
+  try {
+    const raw = localStorage.getItem(PLAYER_FLOAT_KEY)
+    if (!raw) return { x: null, y: null, minimized: false }
+    const o = JSON.parse(raw) as Partial<PlayerFloatState>
+    return {
+      x: typeof o.x === 'number' && Number.isFinite(o.x) ? o.x : null,
+      y: typeof o.y === 'number' && Number.isFinite(o.y) ? o.y : null,
+      minimized: o.minimized === true,
+    }
+  } catch { return { x: null, y: null, minimized: false } }
+}
+
+export function savePlayerFloat(s: PlayerFloatState): void {
+  try { localStorage.setItem(PLAYER_FLOAT_KEY, JSON.stringify(s)) } catch { /* 忽略 */ }
+}
+
+/** 悬浮播放器限位：至少留 120px 宽与 48px 高的标题栏在视口内，拖不出去、也收不回来 */
+export function clampPlayerFloat(x: number, y: number, vw: number, vh: number, w: number): { x: number; y: number } {
+  const minX = -Math.max(0, w - 120)
+  const maxX = Math.max(minX, vw - 120)
+  const minY = 0
+  const maxY = Math.max(0, vh - 48)
+  return { x: Math.min(Math.max(x, minX), maxX), y: Math.min(Math.max(y, minY), maxY) }
+}
+
 // ---------------- 苹果 CMS 资源站（type 0/1） ----------------
 // 协议：?ac=videolist&pg=N，type 1 返回 JSON，type 0 返回 XML（RSS）。
 // vod_play_url 格式：多源用 $$$ 分隔，每源内多集用 # 分隔，每集

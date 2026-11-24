@@ -13,6 +13,7 @@ import {
   parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig,
   loadShowAdult, saveShowAdult, SHOW_ADULT_KEY,
+  loadPlayerFloat, savePlayerFloat, clampPlayerFloat, PLAYER_FLOAT_KEY,
   cmsListUrl, cmsPlayUrlToEpisodes, cmsItemToVodTitle,
   parseCmsJsonList, parseCmsXmlList, fetchCmsVodList, mergeVodTitles,
   type TvboxSite, type TvboxConfig,
@@ -1053,7 +1054,7 @@ describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
     for (const s of [
-      'wt-vload', 'wt-vfail', '正在加载…', '再试一次', 'scrollIntoView', 'playerWrapRef',
+      'wt-vload', 'wt-vfail', '正在加载…', '再试一次',
       'FlvJs', 'isFlvUrl', 'flv.js',
       'startVodHealth', 'stopVodHealth', 'vodHealthCountsNow', '只看能播的',
       '显示已测不通的台', 'loadShowDead', 'saveShowDead', 'hideDead',
@@ -1061,7 +1062,9 @@ describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
     ]) {
       expect(src).toContain(s)
     }
-    // 直播与点播两个播放器都改成区内覆盖层：失败文案仍在，但不再用替换视频区的旧盒子
+    // v0.1.410：播放器改悬浮后 407 的 scrollIntoView 已无用——fixed 面板本来就在视口内
+    expect(src).not.toContain('scrollIntoView')
+    expect(src).not.toContain('playerWrapRef')
     // （BlockedPlayer 的有意提示仍用 wt-player-fail，不算在内）
     expect(src).not.toContain('<div className="wt-player-fail">\n          <CircleAlert size={18} />\n          <div>这个台试了')
     expect(src).not.toContain('<div className="wt-player-fail">\n          <CircleAlert size={18} />\n          <div>这集试了')
@@ -1320,5 +1323,54 @@ describe('watch v0.1.408 结构（WatchTool.tsx）', () => {
     // 18+ 页签只在开关开着时出现；关了正在看的 18+ 页签要落回点播
     expect(src).toContain("showAdult &&")
     expect(src).toContain("setActiveTab('vod')")
+  })
+})
+
+describe('watch 悬浮播放器位置（v0.1.410）', () => {
+  it('clampPlayerFloat：视口内不动，超出四边都限位', () => {
+    // 桌面 1400x1000，面板 560x460
+    expect(clampPlayerFloat(100, 100, 1400, 1000, 560)).toEqual({ x: 100, y: 100 })
+    // 左/上出界：至少留 120px 宽、标题栏不顶出
+    expect(clampPlayerFloat(-500, -50, 1400, 1000, 560)).toEqual({ x: -440, y: 0 })
+    // 右/下出界：至少留 120px 宽、48px 高在视口内
+    expect(clampPlayerFloat(1400, 1000, 1400, 1000, 560)).toEqual({ x: 1280, y: 952 })
+    // 手机窄屏（390x844，面板宽 366）：左右仍有可拖范围，不会算出空区间
+    const m = clampPlayerFloat(500, 900, 390, 844, 366)
+    expect(m.x).toBeLessThanOrEqual(270)
+    expect(m.x).toBeGreaterThanOrEqual(-246)
+    expect(m.y).toBe(796)
+  })
+
+  it('load/save 往返：位置与最小化都存本机；坏数据回默认值', () => {
+    expect(loadPlayerFloat()).toEqual({ x: null, y: null, minimized: false })
+    savePlayerFloat({ x: 120, y: 80, minimized: true })
+    expect(loadPlayerFloat()).toEqual({ x: 120, y: 80, minimized: true })
+    expect(ls().getItem(PLAYER_FLOAT_KEY)).toBe(JSON.stringify({ x: 120, y: 80, minimized: true }))
+    ls().setItem(PLAYER_FLOAT_KEY, 'not-json{')
+    expect(loadPlayerFloat()).toEqual({ x: null, y: null, minimized: false })
+    ls().setItem(PLAYER_FLOAT_KEY, JSON.stringify({ x: 'a', y: NaN }))
+    expect(loadPlayerFloat()).toEqual({ x: null, y: null, minimized: false })
+  })
+})
+
+describe('watch v0.1.410 结构（WatchTool.tsx）', () => {
+  it('悬浮容器、拖动手柄、最小化/关闭、切页签不卸载都在', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of [
+      'wt-float', 'wt-float-bar', 'wt-float-body', 'onFloatPointerDown', 'onFloatWindowMove', 'onFloatWindowUp',
+      'loadPlayerFloat', 'savePlayerFloat', 'clampPlayerFloat', 'toggleFloatMin', 'closeFloat',
+      '拖动移动',
+    ]) {
+      expect(src).toContain(s)
+    }
+    // 播放器仍挂在页签栏之外（切页签不卸载）；最小化只藏 body，video 元素不卸载
+    expect(src).toContain("floatMin ? ' min' : ''")
+    expect(src).toContain('role="dialog"')
+    // CSS：fixed 挂视口、默认右下角、最小化藏 body
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    expect(css).toContain('.wt-float { position: fixed;')
+    expect(css).toContain('right: 16px; bottom: 16px;')
+    expect(css).toContain('.wt-float.min .wt-float-body { display: none; }')
   })
 })

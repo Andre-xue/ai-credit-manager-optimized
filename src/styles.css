@@ -2375,6 +2375,19 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-player-head .btn { margin-left: auto; }
 .wt-player-head .fg-muted { margin-left: auto; }
 .wt-player-head .btn + .fg-muted { margin-left: 0; }
+
+/* ---------- 悬浮播放器（v0.1.410）：fixed 挂在视口里，可拖动；默认右下角，
+   不遮顶部的页签栏与搜索框；最小化只藏 body，video 元素留在 DOM 里继续播 ---------- */
+.wt-float { position: fixed; z-index: 60; right: 16px; bottom: 16px; width: min(560px, calc(100vw - 24px)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); box-shadow: 0 12px 32px rgba(0,0,0,.35); }
+.wt-float-bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: var(--bg-2); border-bottom: 1px solid var(--border); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.wt-float-bar:active { cursor: grabbing; }
+.wt-float-grip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); white-space: nowrap; flex: none; }
+.wt-float-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+.wt-float-bar .btn { flex: none; }
+.wt-float-body { min-width: 0; }
+.wt-float .wt-player { margin: 0; border: 0; border-radius: 0; }
+.wt-float.min .wt-float-body { display: none; }
+.wt-float.min .wt-float-bar { border-bottom: 0; }
 .wt-video-wrap { position: relative; background: #000; aspect-ratio: 16 / 9; }
 .wt-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000; }
 .wt-vload { position: absolute; inset: 0; display: flex; gap: 8px; align-items: center; justify-content: center; color: #fff; font-size: 13px; background: rgba(0,0,0,.55); pointer-events: none; z-index: 2; }
