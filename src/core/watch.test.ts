@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
-  parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
+  parseM3u, parseM3uAsync, parseTxt, parseTxtAsync, parsePlaylistFormat, parsePlaylistAsync,
+  normalizeChannelName, contentKeyOf, stationOrigin,
   mergeChannels, groupChannels, filterOriginChannels, fetchSourceSet, loadCountryChannels,
   isUnofficialStreamUrl, isChannelUnofficial, isVodUrl, isFlvUrl,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
@@ -74,6 +75,93 @@ describe('watch.parseM3u', () => {
   })
   it('parseM3uAsync（分片解析）与同步版结果一致', async () => {
     expect(await parseM3uAsync(CN_FIXTURE)).toEqual(parseM3u(CN_FIXTURE))
+  })
+})
+
+// txt 直播源（v0.1.425）：VMA 样本同款格式——`分组名,#genre#` 分组、
+// 「频道名,地址」每行一条；另含源文件里的脏行（名字被换行截断、空地址、
+// 缺字母的 ttp://、mitv:// 专有协议），解析时一律跳过不猜不断行。
+const TXT_FIXTURE = `网友提供频道
+央视,#genre#
+CCTV1,http://example.com/cctv1.m3u8
+CCTV2,https://example.com/cctv2.m3u8
+电影01,#genre#
+异形浩劫1971上（美国恐怖片）,https://example.com/movie1.m3u8
+异形浩劫1971下（美国恐
+怖片）,https://example.com/movie2.m3u8
+CCTV15,
+吉林卫视,
+凤凰中文,ttp://example.com/bad.m3u8
+民视,mitv://example.com/tv
+卫视,#genre#
+浙江卫视,http://example.com/zj.m3u8
+湖南卫视,http://example.com/hn.m3u8
+`
+
+describe('watch.parseTxt（v0.1.425 txt 直播源）', () => {
+  it('按行认“频道名,地址”，#genre# 当分组', () => {
+    const entries = parseTxt(TXT_FIXTURE)
+    expect(entries).toHaveLength(6)
+    expect(entries.map(e => e.name)).toEqual([
+      'CCTV1', 'CCTV2', '异形浩劫1971上（美国恐怖片）', '怖片）', '浙江卫视', '湖南卫视',
+    ])
+    expect(entries[0].groupTitle).toBe('央视')
+    expect(entries[1].groupTitle).toBe('央视')
+    expect(entries[2].groupTitle).toBe('电影01')
+    expect(entries[4].groupTitle).toBe('卫视')
+    expect(entries[0].url).toBe('http://example.com/cctv1.m3u8')
+  })
+  it('跳过裸标题行、空地址、非 http(s) 地址', () => {
+    const names = parseTxt(TXT_FIXTURE).map(e => e.name)
+    expect(names).not.toContain('网友提供频道')
+    expect(names).not.toContain('CCTV15')
+    expect(names).not.toContain('吉林卫视')
+    expect(names).not.toContain('凤凰中文')
+    expect(names).not.toContain('民视')
+  })
+  it('parseTxtAsync（分片解析）与同步版结果一致', async () => {
+    expect(await parseTxtAsync(TXT_FIXTURE)).toEqual(parseTxt(TXT_FIXTURE))
+  })
+  it('parsePlaylistFormat 按内容自动识别：含 #EXTINF 走 m3u，否则按 txt 试', () => {
+    expect(parsePlaylistFormat(CN_FIXTURE)).toBe('m3u')
+    expect(parsePlaylistFormat(TXT_FIXTURE)).toBe('txt')
+    expect(parsePlaylistFormat('#EXTM3U\n')).toBe('txt')
+  })
+  it('parsePlaylistAsync：m3u 与 txt 同一入口', async () => {
+    expect(await parsePlaylistAsync(CN_FIXTURE)).toEqual(parseM3u(CN_FIXTURE))
+    expect(await parsePlaylistAsync(TXT_FIXTURE)).toEqual(parseTxt(TXT_FIXTURE))
+  })
+  it('fetchSourceSet：txt 源拉到台，ok:true；解析不到台报中文原因，不静默 0 台', async () => {
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('my.txt')) return { ok: true, text: async () => TXT_FIXTURE }
+      return { ok: true, text: async () => '这不是直播源\nhello world\n' }
+    })
+    const txt = await fetchSourceSet({ id: 'custom-txt', label: '自定义 · txt 源', url: 'https://example.com/my.txt', country: 'WORLD' })
+    expect(txt.result.ok).toBe(true)
+    expect(txt.result.count).toBe(6)
+    expect(txt.channels.some(c => c.name === 'CCTV1')).toBe(true)
+    const bad = await fetchSourceSet({ id: 'custom-bad', label: '自定义 · 垃圾源', url: 'https://example.com/bad.txt', country: 'WORLD' })
+    expect(bad.channels).toEqual([])
+    expect(bad.result.ok).toBe(false)
+    expect(bad.result.error ?? '').toContain('没有解析到任何频道')
+    expect(bad.result.error ?? '').toContain('m3u')
+  })
+  it('loadCountryChannels：txt 自定义源的台与 m3u 内置源合并进直播列表', async () => {
+    ls().setItem(CUSTOM_SOURCES_KEY, JSON.stringify([{ id: 'txt1', label: 'VMA', url: 'https://example.com/vma.txt', addedAt: 1 }]))
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const u = String(url)
+      if (u.includes('countries/cn.m3u')) return { ok: true, text: async () => CN_FIXTURE }
+      if (u.includes('Free-TV')) return { ok: true, text: async () => FREETV_FIXTURE }
+      if (u.includes('vma.txt')) return { ok: true, text: async () => TXT_FIXTURE }
+      return { ok: false, status: 404, text: async () => '' }
+    })
+    const { channels, sets } = await loadCountryChannels('CN')
+    expect(channels.some(c => c.name === 'CCTV1')).toBe(true)
+    expect(channels.some(c => c.name === '浙江卫视')).toBe(true)
+    expect(channels.some(c => c.name === 'CCTV-1')).toBe(true)
+    expect(sets.find(s => s.setId === 'custom-txt1')?.ok).toBe(true)
+    expect(sets.find(s => s.setId === 'custom-txt1')?.count).toBe(6)
   })
 })
 

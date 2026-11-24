@@ -237,6 +237,70 @@ export async function parseM3uAsync(text: string): Promise<M3uEntry[]> {
   return out
 }
 
+/** 解析 txt 直播源（v0.1.425）：每行「频道名,地址」，`分组名,#genre#` 当分组。
+ * 与 m3u 共用 M3uEntry：groupTitle 取当前分组（无分组时为空），后续走同一套
+ * 国家/内容归一、频道合并与直播点播拆分。跳过：空行、裸标题行（无逗号）、
+ * 地址为空、地址不是 http(s) 开头（mitv:// 等专有协议播不了）；源文件里
+ * 偶有名字被换行截断的脏行，只认「逗号 + http(s) 地址」的行，不猜不断行。 */
+export function parseTxt(text: string): M3uEntry[] {
+  const lines = text.split(/\r?\n/)
+  const out: M3uEntry[] = []
+  let group = ''
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.includes('#genre#')) {
+      // 分组行：`分组名,#genre#`；裸 `#genre#` 没有名字，沿用上一个分组
+      const name = line.split(',')[0]?.trim() ?? ''
+      if (name && name !== '#genre#') group = name
+      continue
+    }
+    if (line.startsWith('#')) continue
+    const idx = line.indexOf(',')
+    if (idx < 0) continue
+    const name = line.slice(0, idx).trim()
+    const url = line.slice(idx + 1).trim()
+    if (!name || !url || !/^https?:\/\//.test(url)) continue
+    out.push({ name, groupTitle: group, url })
+  }
+  return out
+}
+
+/** 分片解析 txt：每 500 行让出一次主线程，大列表解析不卡界面 */
+export async function parseTxtAsync(text: string): Promise<M3uEntry[]> {
+  const lines = text.split(/\r?\n/)
+  const out: M3uEntry[] = []
+  let group = ''
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && i % 500 === 0) await new Promise(r => globalThis.setTimeout(r, 0))
+    const line = lines[i].trim()
+    if (!line) continue
+    if (line.includes('#genre#')) {
+      const name = line.split(',')[0]?.trim() ?? ''
+      if (name && name !== '#genre#') group = name
+      continue
+    }
+    if (line.startsWith('#')) continue
+    const idx = line.indexOf(',')
+    if (idx < 0) continue
+    const name = line.slice(0, idx).trim()
+    const url = line.slice(idx + 1).trim()
+    if (!name || !url || !/^https?:\/\//.test(url)) continue
+    out.push({ name, groupTitle: group, url })
+  }
+  return out
+}
+
+/** 按内容自动识别播放列表格式：含 #EXTINF 走 m3u，否则按 txt 试（频道名,地址） */
+export function parsePlaylistFormat(text: string): 'm3u' | 'txt' {
+  return text.includes('#EXTINF') ? 'm3u' : 'txt'
+}
+
+/** 按内容自动识别并分片解析播放列表：m3u 与 txt 同一入口 */
+export async function parsePlaylistAsync(text: string): Promise<M3uEntry[]> {
+  return parsePlaylistFormat(text) === 'm3u' ? parseM3uAsync(text) : parseTxtAsync(text)
+}
+
 function countryOfEntry(e: M3uEntry, setCountry: string): string {
   if (e.tvgCountry) return e.tvgCountry.toUpperCase()
   if (setCountry !== 'WORLD') return setCountry
@@ -461,7 +525,12 @@ export async function fetchSourceSet(set: SourceSet, opts: FetchSourceSetOptions
   }
   try {
     const text = await fetchTextWithTimeout(set.url, 20000)
-    const entries = await parseM3uAsync(text)
+    // v0.1.425：按内容自动识别 m3u / txt；一个台都解析不到时报中文原因，
+    // 不要静默 0 个台（之前 ok:true count:0，源坏了也看不出来）
+    const entries = await parsePlaylistAsync(text)
+    if (!entries.length) {
+      return { channels: [], result: { setId: set.id, label: set.label, ok: false, count: 0, error: '没有解析到任何频道：不是有效的 m3u 或 txt 直播源' } }
+    }
     let channels = entriesToChannels(entries, set.country, set.id)
     if (opts.countryFilter) channels = channels.filter(c => c.country === opts.countryFilter)
     const cache = loadPlaylistCache()

@@ -1014,7 +1014,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 
   const addCustomSource = async (label: string, urlRaw: string, which: 'live' | 'vod') => {
     const url = urlRaw.trim()
-    if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 m3u 订阅链接', 'err'); return }
+    if (!/^https?:\/\//.test(url)) { notify('请输入 http(s) 开头的 m3u 或 txt 订阅链接', 'err'); return }
     // .json 地址很可能是 TVBox 配置：先拉下来看一眼，确认是就提示去 TVBox 区，
     // 别当 m3u 存了又拉不到（m3u 解析器读 JSON 得 0 条，还以为是源死了）
     if (/\.json(\?|#|$)/i.test(url)) {
@@ -2052,7 +2052,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <h4>自定义直播源</h4>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：我的直播源" value={liveLabel} onChange={e => setLiveLabel(e.target.value)} />
-              <input className="input" placeholder="粘贴 m3u 直播源地址（http(s)://…）" value={liveUrl} onChange={e => setLiveUrl(e.target.value)} />
+              <input className="input" placeholder="粘贴 m3u / txt 直播源地址（http(s)://…）" value={liveUrl} onChange={e => setLiveUrl(e.target.value)} />
               <button className="btn sm primary" disabled={customTesting !== null || !liveUrl.trim()} onClick={() => void addCustomSource(liveLabel, liveUrl, 'live')}>
                 {customTesting ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 保存
               </button>
@@ -2062,7 +2062,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <h4>自定义点播源</h4>
             <div className="wt-ai-row">
               <input className="input" placeholder="名称，如：我的点播源" value={vodLabel} onChange={e => setVodLabel(e.target.value)} />
-              <input className="input" placeholder="粘贴 m3u 点播源地址（http(s)://…）" value={vodUrl} onChange={e => setVodUrl(e.target.value)} />
+              <input className="input" placeholder="粘贴 m3u / txt 点播源地址（http(s)://…）" value={vodUrl} onChange={e => setVodUrl(e.target.value)} />
               <button className="btn sm primary" disabled={customTesting !== null || !vodUrl.trim()} onClick={() => void addCustomSource(vodLabel, vodUrl, 'vod')}>
                 {customTesting ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} 保存
               </button>
