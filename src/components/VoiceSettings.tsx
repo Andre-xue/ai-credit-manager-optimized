@@ -31,12 +31,16 @@ import { t } from '../core/i18n'
 import { verifyVault, getBiometricPassword } from '../core/crypto'
 import { voiceNeedsUnlock, setVoiceSessionPwd, hasVoiceCredential } from '../core/voiceKey'
 import type { Account } from '../core/types'
+import { ServiceSwitch } from './ServiceSwitch'
+import type { ServiceController } from '../core/useServiceController'
+import { LOCAL_SERVICE_CHANGED_EVENT } from '../core/localServicesSettings'
 
-export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
+export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock, serviceController }: {
   notify: (m: string) => void
   accounts: Account[]
   sessionPwd: string
   onUnlock: (pwd: string) => void
+  serviceController?: ServiceController
 }) {
   const [rate, setRate] = useState(getRate())
   const [ttsConfigured, setTtsConfigured] = useState(hasTtsConfig() || accounts.some(a => a.providerId === 'voice-config'))
@@ -141,6 +145,16 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     setQwenLoading(true)
     try { setQwenStatus(await qwenTtsStatus()); setQwenWarmup(getQwenWarmupState()) } finally { setQwenLoading(false) }
   }
+
+  // 服务开关在别处（设置页）切换时，同步刷新本页的 Qwen 状态徽标（v0.1.427）
+  useEffect(() => {
+    const onSvc = (e: Event) => {
+      if ((e as CustomEvent<{ key?: string }>).detail?.key === 'qwentts') void refreshQwenStatus()
+    }
+    window.addEventListener(LOCAL_SERVICE_CHANGED_EVENT, onSvc)
+    return () => window.removeEventListener(LOCAL_SERVICE_CHANGED_EVENT, onSvc)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /** Qwen3-TTS 首次安装（几分钟：建 venv → pip 装 mlx-tts-server → 预下载约 1GB 模型） */
   const doQwenSetup = async () => {
@@ -318,7 +332,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     if (isQwenTts) {
       const st = await qwenTtsStatus()
       setQwenStatus(st)
-      if (!st.running) { notify(t('Qwen3-TTS 服务未运行：请先到「设置 → 本地模型服务」打开 Qwen3-TTS 开关（首次使用需先在上方完成安装）')); return }
+      if (!st.running) { notify(t('Qwen3-TTS 服务未运行：请先打开上方 Qwen3-TTS 服务开关（首次使用需先在上方完成安装）')); return }
     }
     setCloning(true)
     setCloneError('')
@@ -458,10 +472,13 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       <div className="wt-tab-sub">{t('Qwen3-TTS 本地克隆（免费 · 本机）')}</div>
       <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('阿里 Qwen3-TTS 开源模型在本机跑（MLX 加速）：3 秒参考音频克隆音色，不花钱、不上传。仅桌面端 Apple 芯片 Mac 可用。')}</div>
       <div className="voice-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        {serviceController && (
+          <ServiceSwitch controller={serviceController} serviceKey="qwentts" />
+        )}
         <span className={`local-status-badge ${qwenStatus?.running ? 'running' : ''}`}>
           {!qwenStatus ? t('未检测') : qwenStatus.running ? t('服务运行中') : qwenStatus.installed ? t('已安装 · 未运行') : t('未安装')}
         </span>
-        <button className="btn sm" onClick={() => void refreshQwenStatus()} disabled={qwenLoading}>{t('刷新状态')}</button>
+        <button className="btn sm" onClick={() => { void refreshQwenStatus(); serviceController?.refresh() }} disabled={qwenLoading}>{t('刷新状态')}</button>
         {!qwenStatus?.installed && (
           <button className="btn sm primary" onClick={() => void doQwenSetup()} disabled={qwenSettingUp}>
             {qwenSettingUp ? <><Loader2 size={14} className="spin" /> {t('安装中…')}</> : t('首次安装')}
@@ -486,7 +503,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           {qwenWarmup === 'warming' ? ` · ${t('模型预热中…')}` : qwenWarmup === 'ready' ? ` · ${t('模型已预热')}` : ''}
         </div>
       )}
-      <div className="voice-note"><Info size={13} /> {t('首次安装会下载约 1GB 模型（mlx-community 4-bit 量化版），需 Python 3.10+，请保持网络畅通、耐心等待几分钟；安装只需做一次。服务开关在「设置 → 本地模型服务 → Qwen3-TTS」，与 Ollama / ComfyUI 内存互斥（8G 一次只开一个）。')}</div>
+      <div className="voice-note"><Info size={13} /> {t('首次安装会下载约 1GB 模型（mlx-community 4-bit 量化版），需 Python 3.10+，请保持网络畅通、耐心等待几分钟；安装只需做一次。服务开关就在上方（与「设置 → 本地模型服务 → Qwen3-TTS」同一个开关，状态联动），与 Ollama / ComfyUI 内存互斥（8G 一次只开一个）。')}</div>
       <div className="voice-note"><Info size={13} /> {t('安装后到「第三方语音服务」页签选 Qwen3-TTS，再导入声音样本克隆。克隆时请填写参考音频的原文（不填也能克隆，写上效果更好）。')}</div>
       </>}
 
@@ -647,7 +664,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           <>
             <div className="voice-direct-guide">
               {t('1. 先到「声音克隆」页签，在「Qwen3-TTS 本地克隆」完成首次安装（下载约 1GB 模型）')}<br />
-              {t('2. 到「设置 → 本地模型服务」打开 Qwen3-TTS 开关，服务在 127.0.0.1:18123 运行')}<br />
+              {t('2. 在「声音克隆」页签打开上方 Qwen3-TTS 服务开关，服务在 127.0.0.1:18123 运行')}<br />
               {t('3. 点「测试连接」确认服务可用，再导入声音样本克隆')}
             </div>
             <div className="voice-config-actions">
