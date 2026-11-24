@@ -5,6 +5,10 @@ import {
   isUnofficialStreamUrl, isChannelUnofficial,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
+  normalizeTitleKey, regionLabelOfCountry, mapGenreNames,
+  fetchTmdbGenres, searchTmdbTitle, fetchTmdbDetails,
+  buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
+  type VodTitle, type TmdbTitle,
   PLAYLIST_CACHE_KEY, CUSTOM_SOURCES_KEY,
   type LiveChannel, type SourceSet,
 } from './watch'
@@ -467,5 +471,233 @@ describe('watch 看剧横向标题（v0.1.394）', () => {
     const { readFileSync } = await import('node:fs')
     const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
     expect(css).toMatch(/--accent:\s*#[0-9a-f]{6}/i)
+  })
+})
+
+describe('watch.normalizeTitleKey（v0.1.395 海报墙片名匹配）', () => {
+  it('去空格标点、转小写', () => {
+    expect(normalizeTitleKey('庆余年 第 2 集')).toBe('庆余年第2集')
+    expect(normalizeTitleKey('Dune: Part Two')).toBe('duneparttwo')
+    expect(normalizeTitleKey('流浪地球 2')).toBe('流浪地球2')
+  })
+})
+
+describe('watch.mapGenreNames（v0.1.395 类型映射到墙上 16 类）', () => {
+  it('直接映射 + 家庭/历史归剧情 + 西部归动作', () => {
+    expect(mapGenreNames(['科幻', '冒险'])).toEqual(['科幻', '冒险'])
+    expect(mapGenreNames(['家庭', '历史', '音乐', '电视电影'])).toEqual(['剧情'])
+    expect(mapGenreNames(['西部'])).toEqual(['动作'])
+  })
+  it('中文原声动作片多一个「武侠」', () => {
+    expect(mapGenreNames(['动作'], 'zh')).toContain('武侠')
+    expect(mapGenreNames(['动作'], 'en')).not.toContain('武侠')
+    expect(mapGenreNames(['剧情'], 'zh')).not.toContain('武侠')
+  })
+  it('未知类型名直接丢掉，不编造', () => {
+    expect(mapGenreNames(['不存在的类型'])).toEqual([])
+  })
+})
+
+describe('watch.regionLabelOfCountry（v0.1.395 地区）', () => {
+  it('CN/HK/TW/US/JP/KR/GB 映射，其余 undefined', () => {
+    expect(regionLabelOfCountry('CN')).toBe('大陆')
+    expect(regionLabelOfCountry('HK')).toBe('香港')
+    expect(regionLabelOfCountry('TW')).toBe('台湾')
+    expect(regionLabelOfCountry('US')).toBe('美国')
+    expect(regionLabelOfCountry('JP')).toBe('日本')
+    expect(regionLabelOfCountry('KR')).toBe('韩国')
+    expect(regionLabelOfCountry('GB')).toBe('英国')
+    expect(regionLabelOfCountry('FR')).toBeUndefined()
+    expect(regionLabelOfCountry(undefined)).toBeUndefined()
+  })
+})
+
+const VOD_WALL_VOD: VodTitle[] = [
+  { key: '流浪地球2', title: '流浪地球2', kind: 'movie', episodes: [{ label: '正片', urls: ['https://x/a.mp4', 'https://x/b.mp4'], episodeNo: 0, unofficial: false }], sourceIds: ['custom-1'], unofficial: false },
+  { key: '庆余年', title: '庆余年', kind: 'series', episodes: [
+    { label: '第 1 集', urls: ['https://x/q1.mp4'], episodeNo: 1, unofficial: false },
+    { label: '第 2 集', urls: ['https://x/q2.mp4'], episodeNo: 2, unofficial: false },
+  ], sourceIds: ['custom-1'], unofficial: false },
+]
+const VOD_WALL_TRENDING: TmdbTitle[] = [
+  { id: 1, mediaType: 'movie', title: '流浪地球2', originalTitle: 'The Wandering Earth II', overview: '太阳即将毁灭', poster: 'https://img/w.jpg', firstDate: '2023-01-22', vote: 7.9, genreIds: [878, 12], originalLanguage: 'zh', popularity: 90 },
+  { id: 2, mediaType: 'movie', title: '奥本海默', originalTitle: 'Oppenheimer', overview: '原子弹之父', poster: 'https://img/o.jpg', firstDate: '2023-07-21', vote: 8.3, genreIds: [18], originalLanguage: 'en', popularity: 80 },
+  { id: 3, mediaType: 'tv', title: '繁花', originalTitle: 'Blossoms Shanghai', overview: '九十年代上海', poster: 'https://img/f.jpg', firstDate: '2023-12-27', vote: 8.7, genreIds: [18], originCountry: ['CN'], originalLanguage: 'zh', popularity: 70 },
+]
+const VOD_WALL_GENRES = { movie: { 878: '科幻', 12: '冒险', 18: '剧情' }, tv: { 18: '剧情' } }
+
+describe('watch.buildVodWallItems（v0.1.395 拼墙）', () => {
+  it('点播全进墙（有源可播），热门里没匹配上的也进墙（仅展示），同名只留一部', () => {
+    const items = buildVodWallItems(VOD_WALL_VOD, VOD_WALL_TRENDING, {}, VOD_WALL_GENRES)
+    expect(items).toHaveLength(4) // 流浪地球2、庆余年、奥本海默、繁花
+    const wle = items.find(i => i.title === '流浪地球2')!
+    expect(wle.playable).toBe(true)
+    expect(wle.sourceCount).toBe(2)
+    expect(wle.tmdb?.vote).toBe(7.9)
+    expect(wle.genres).toEqual(['科幻', '冒险'])
+    const opp = items.find(i => i.title === '奥本海默')!
+    expect(opp.playable).toBe(false)
+    expect(opp.sourceCount).toBe(0)
+    expect(opp.genres).toEqual(['剧情'])
+    const qyn = items.find(i => i.title === '庆余年')!
+    expect(qyn.playable).toBe(true)
+    expect(qyn.kind).toBe('series')
+    expect(qyn.totalEps).toBe(2)
+    const fh = items.find(i => i.title === '繁花')!
+    expect(fh.region).toBe('大陆')
+  })
+  it('没 TMDB 元数据的点播只显示片名卡片，不编造海报评分', () => {
+    const items = buildVodWallItems(VOD_WALL_VOD, [], {}, null)
+    const qyn = items.find(i => i.title === '庆余年')!
+    expect(qyn.poster).toBeUndefined()
+    expect(qyn.vote).toBeUndefined()
+    expect(qyn.genres).toEqual([])
+    expect(qyn.status).toBe('unknown')
+  })
+  it('详情补上状态与集数：更新中给更新至N集，已完结给全N集', () => {
+    const enrich = {
+      '庆余年': { tmdb: { id: 9, mediaType: 'tv' as const, title: '庆余年', originalTitle: '', overview: '', firstDate: '2024-05-16', vote: 7.6 }, details: { genres: ['剧情'], region: '大陆', status: 'up' as const, episodes: 36, lastDate: '2024-06-03' } },
+    }
+    const items = buildVodWallItems(VOD_WALL_VOD, [], enrich, VOD_WALL_GENRES)
+    const qyn = items.find(i => i.title === '庆余年')!
+    expect(qyn.status).toBe('up')
+    expect(qyn.curEp).toBe(36)
+    expect(qyn.totalEps).toBe(36)
+    expect(qyn.region).toBe('大陆')
+  })
+})
+
+describe('watch.filterVodWall / sortVodWall（v0.1.395 筛选排序）', () => {
+  const items = buildVodWallItems(VOD_WALL_VOD, VOD_WALL_TRENDING, {}, VOD_WALL_GENRES)
+  it('类型筛：科幻只剩流浪地球2；没元数据的庆余年只在「全部」出现', () => {
+    expect(filterVodWall(items, { genre: '科幻', year: '全部', region: '全部', status: 'all' }).map(i => i.title)).toEqual(['流浪地球2'])
+    expect(filterVodWall(items, { genre: '剧情', year: '全部', region: '全部', status: 'all' }).map(i => i.title)).toEqual(['奥本海默', '繁花'])
+  })
+  it('年份筛：2023 只剩有日期的；更早为空', () => {
+    expect(filterVodWall(items, { genre: '全部', year: '2023', region: '全部', status: 'all' }).map(i => i.title)).toEqual(['流浪地球2', '奥本海默', '繁花'])
+    expect(filterVodWall(items, { genre: '全部', year: '更早', region: '全部', status: 'all' })).toHaveLength(0)
+  })
+  it('地区筛：大陆只剩繁花（剧集 origin_country），电影没详情时不进地区筛', () => {
+    expect(filterVodWall(items, { genre: '全部', year: '全部', region: '大陆', status: 'all' }).map(i => i.title)).toEqual(['繁花'])
+  })
+  it('状态筛：有源可播 2 部，仅展示 2 部', () => {
+    expect(filterVodWall(items, { genre: '全部', year: '全部', region: '全部', status: 'play' })).toHaveLength(2)
+    expect(filterVodWall(items, { genre: '全部', year: '全部', region: '全部', status: 'none' })).toHaveLength(2)
+    expect(filterVodWall(items, { genre: '全部', year: '全部', region: '全部', status: 'up' })).toHaveLength(0)
+  })
+  it('排序：评分最高按 vote 倒序（没评分沉底）；年份最新按年倒序', () => {
+    expect(sortVodWall(items, 'rating').map(i => i.title)).toEqual(['繁花', '奥本海默', '流浪地球2', '庆余年'])
+    expect(sortVodWall(items, 'year')[0].title).toBe('繁花')
+    expect(sortVodWall(items, 'updated')[0].title).toBe('繁花')
+  })
+})
+
+describe('watch.vodWallBadge（v0.1.395 卡片角标）', () => {
+  it('电影永远「更新HD」；没状态的剧集只写「共N集」，不谎称完结', () => {
+    const items = buildVodWallItems(VOD_WALL_VOD, VOD_WALL_TRENDING, {}, VOD_WALL_GENRES)
+    expect(vodWallBadge(items.find(i => i.title === '流浪地球2')!)).toEqual({ cls: 'hd', text: '更新HD' })
+    expect(vodWallBadge(items.find(i => i.title === '奥本海默')!)).toEqual({ cls: 'hd', text: '更新HD' })
+    expect(vodWallBadge(items.find(i => i.title === '庆余年')!)).toEqual({ cls: 'plain', text: '共2集' })
+  })
+  it('更新中「更新至N集」，已完结「全N集·完结」', () => {
+    const up = buildVodWallItems(VOD_WALL_VOD, [], { '庆余年': { details: { genres: [], status: 'up', episodes: 18 } } }, VOD_WALL_GENRES)
+    expect(vodWallBadge(up.find(i => i.title === '庆余年')!)).toEqual({ cls: 'up', text: '更新至18集' })
+    const done = buildVodWallItems(VOD_WALL_VOD, [], { '庆余年': { details: { genres: [], status: 'done', episodes: 36 } } }, VOD_WALL_GENRES)
+    expect(vodWallBadge(done.find(i => i.title === '庆余年')!)).toEqual({ cls: 'done', text: '全36集 · 完结' })
+  })
+})
+
+describe('watch.fetchTmdbGenres / searchTmdbTitle / fetchTmdbDetails（v0.1.395 TMDB 补全）', () => {
+  it('类型列表拉一次后缓存，第二次不请求', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      calls++
+      const url = String(u)
+      if (url.includes('/genre/movie/list')) return { ok: true, json: async () => ({ genres: [{ id: 28, name: '动作' }] }) }
+      if (url.includes('/genre/tv/list')) return { ok: true, json: async () => ({ genres: [{ id: 18, name: '剧情' }] }) }
+      throw new Error('unexpected ' + url)
+    })
+    const first = await fetchTmdbGenres('KEY')
+    expect(first.movie[28]).toBe('动作')
+    expect(first.tv[18]).toBe('剧情')
+    const second = await fetchTmdbGenres('KEY')
+    expect(second).toEqual(first)
+    expect(calls).toBe(2)
+  })
+  it('按片名搜：标题完全一致的优先，否则按热度；搜不到缓存 null 不再问', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      calls++
+      const url = String(u)
+      if (url.includes('/search/movie')) return { ok: true, json: async () => ({ results: [
+        { id: 11, media_type: 'movie', title: '流浪地球', vote_average: 7.0, popularity: 50, genre_ids: [878], original_language: 'zh', release_date: '2019-02-05' },
+        { id: 12, media_type: 'movie', title: '流浪地球2', vote_average: 7.9, popularity: 30, genre_ids: [878], original_language: 'zh', release_date: '2023-01-22' },
+      ] }) }
+      if (url.includes('/search/tv')) return { ok: true, json: async () => ({ results: [] }) }
+      throw new Error('unexpected ' + url)
+    })
+    const found = await searchTmdbTitle('KEY', '流浪地球2')
+    expect(found?.id).toBe(12) // 完全一致优先，哪怕热度更低
+    expect(found?.vote).toBe(7.9)
+    const again = await searchTmdbTitle('KEY', '流浪地球2')
+    expect(again?.id).toBe(12)
+    expect(calls).toBe(2) // 第二次走缓存，不请求
+  })
+  it('详情：电影给地区+导演+主演；剧集给状态+集数；缓存 24 小时', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      calls++
+      const url = String(u)
+      if (url.includes('/movie/123')) return { ok: true, json: async () => ({
+        genres: [{ name: '科幻' }], production_countries: [{ iso_3166_1: 'CN' }],
+        credits: { crew: [{ job: 'Director', name: '郭帆' }], cast: [{ name: '吴京' }, { name: '刘德华' }, { name: '李雪健' }, { name: '其他' }] },
+      }) }
+      if (url.includes('/tv/456')) return { ok: true, json: async () => ({
+        genres: [{ name: '剧情' }], production_countries: [{ iso_3166_1: 'CN' }], status: 'Returning Series',
+        number_of_episodes: 21, last_air_date: '2024-08-30',
+        credits: { crew: [], cast: [{ name: '郭麒麟' }, { name: '吴镇宇' }] },
+      }) }
+      throw new Error('unexpected ' + url)
+    })
+    const m = await fetchTmdbDetails('KEY', 'movie', 123)
+    expect(m.region).toBe('大陆')
+    expect(m.director).toBe('郭帆')
+    expect(m.cast).toBe('吴京、刘德华、李雪健')
+    expect(m.status).toBeUndefined()
+    const t = await fetchTmdbDetails('KEY', 'tv', 456)
+    expect(t.status).toBe('up')
+    expect(t.episodes).toBe(21)
+    expect(t.lastDate).toBe('2024-08-30')
+    await fetchTmdbDetails('KEY', 'movie', 123)
+    expect(calls).toBe(2) // 第三次走缓存
+  })
+  it('详情接口失败不缓存、不抛错到墙（调用方 catch），401 直接抛', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 401, json: async () => ({}) }))
+    await expect(fetchTmdbDetails('BAD', 'movie', 1)).rejects.toThrow('401')
+  })
+})
+
+describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () => {
+  it('点播页签是海报墙：四排筛选 + 计数行 + 12 部一页 + 详情弹层（选集/线路/加片单/播放）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of ['wt-wall-filters', 'wt-wall', 'wt-countbar', 'wt-sortbox', 'WALL_GENRES', 'WALL_YEARS', 'WALL_REGIONS', 'WALL_STATUS_FILTERS']) {
+      expect(src).toContain(s)
+    }
+    expect(src).toContain('pageSlice(wallFiltered, vodPage, 12)')
+    expect(src).toContain('pageCount(wallFiltered.length, 12)')
+    for (const s of ['VodDetailSheet', 'wt-sheet-backdrop', 'wt-eps', 'wt-src-chips', 'wt-playbar', '暂无片源 · 仅展示', '＋ 加入片单']) {
+      expect(src).toContain(s)
+    }
+    // 详情里选线路：播放用选中的集与线路
+    expect(src).toContain('openVod(v, vodDetailEp, 0, vodDetailLine)')
+    // 热门推荐带名次、继续观看带海报
+    expect(src).toContain('wt-rank')
+    expect(src).toContain('wt-cont-thumb')
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    for (const s of ['.wt-wall {', '.wt-wall-card', '.wt-wall-poster', '.wt-wall-badge', '.wt-wall-rate', '.wt-wall-veil', '.wt-sheet {', '.wt-play-btn', '.wt-rank']) {
+      expect(css).toContain(s)
+    }
+    expect(css).toMatch(/\.wt-wall \{[^}]*grid-template-columns: repeat\(6, 1fr\)/s)
   })
 })

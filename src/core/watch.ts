@@ -658,6 +658,11 @@ export interface TmdbTitle {
   poster?: string
   firstDate?: string
   vote?: number
+  /** v0.1.395 海报墙：搜索结果自带的分类/地区/热度（详情接口再补全） */
+  genreIds?: number[]
+  originCountry?: string[]
+  originalLanguage?: string
+  popularity?: number
 }
 
 const TMDB_IMG = 'https://image.tmdb.org/t/p/w500'
@@ -674,6 +679,10 @@ interface TmdbApiItem {
   first_air_date?: string
   release_date?: string
   vote_average?: number
+  genre_ids?: number[]
+  origin_country?: string[]
+  original_language?: string
+  popularity?: number
 }
 
 function toTmdbTitle(item: TmdbApiItem, fallbackType: 'tv' | 'movie'): TmdbTitle | null {
@@ -690,6 +699,10 @@ function toTmdbTitle(item: TmdbApiItem, fallbackType: 'tv' | 'movie'): TmdbTitle
     poster: item.poster_path ? `${TMDB_IMG}${item.poster_path}` : undefined,
     firstDate: item.first_air_date ?? item.release_date ?? undefined,
     vote: typeof item.vote_average === 'number' ? Math.round(item.vote_average * 10) / 10 : undefined,
+    genreIds: Array.isArray(item.genre_ids) ? item.genre_ids : undefined,
+    originCountry: Array.isArray(item.origin_country) ? item.origin_country : undefined,
+    originalLanguage: item.original_language ?? undefined,
+    popularity: typeof item.popularity === 'number' ? item.popularity : undefined,
   }
 }
 
@@ -746,4 +759,351 @@ export async function fetchTmdbProviders(key: string, mediaType: 'tv' | 'movie',
     .map(p => p.provider_name ?? '')
     .filter(Boolean)
   return [...new Set(names)].map(name => ({ name, link: cn.link ?? `https://www.themoviedb.org/${mediaType}/${id}/watch?locale=CN` }))
+}
+
+// ---------------- 点播海报墙（v0.1.395） ----------------
+// 墙 = 用户点播源里的片名（有源可播）+ TMDB 热门榜单里没匹配上片源的
+// 影片（仅展示）：海报/标题/评分/简介走 TMDB，播放永远走他自己的点播源
+// （m3u），没源的片子只展示不能播。TMDB 没有的片名（如自制 m3u 里的
+// 冷门条目）只显示片名卡片，不编造海报与评分。
+
+/** 片名归一化：去空格与标点、转小写，供点播标题与 TMDB 标题匹配 */
+export function normalizeTitleKey(title: string): string {
+  return (title ?? '')
+    .toLowerCase()
+    .replace(/[\s\-_·•・:：，,。.!！?？'"'""''()（）\[\]【】]/g, '')
+}
+
+/** TMDB 国家码 → 墙上的地区（production_countries / origin_country 都用这张表） */
+export function regionLabelOfCountry(code?: string): string | undefined {
+  switch ((code ?? '').toUpperCase()) {
+    case 'CN': return '大陆'
+    case 'HK': return '香港'
+    case 'TW': return '台湾'
+    case 'US': return '美国'
+    case 'JP': return '日本'
+    case 'KR': return '韩国'
+    case 'GB': return '英国'
+    default: return undefined
+  }
+}
+
+export const WALL_GENRES = ['全部', '动作', '喜剧', '爱情', '科幻', '恐怖', '剧情', '战争', '惊悚', '犯罪', '冒险', '动画', '悬疑', '武侠', '奇幻', '纪录片']
+export const WALL_YEARS = ['全部', '2024', '2023', '2022', '2021', '更早']
+export const WALL_REGIONS = ['全部', '大陆', '香港', '台湾', '美国', '日本', '韩国', '英国', '其他']
+export const WALL_STATUS_FILTERS = [
+  { k: 'all', t: '全部' },
+  { k: 'play', t: '有源可播' },
+  { k: 'up', t: '更新中' },
+  { k: 'done', t: '已完结' },
+  { k: 'none', t: '仅展示' },
+] as const
+export type VodWallStatusFilter = (typeof WALL_STATUS_FILTERS)[number]['k']
+export type VodWallSort = 'updated' | 'rating' | 'year'
+
+/** TMDB 类型名（zh-CN）→ 墙上的 16 类。TMDB 没有「武侠」这个类型：
+ * 家庭/历史/音乐/电视电影归剧情，西部归动作；武侠另算（见 mapGenreNames）。 */
+const WALL_GENRE_MAP: Record<string, string> = {
+  '动作': '动作', '冒险': '冒险', '动画': '动画', '喜剧': '喜剧', '犯罪': '犯罪',
+  '纪录片': '纪录片', '剧情': '剧情', '奇幻': '奇幻', '恐怖': '恐怖', '悬疑': '悬疑',
+  '爱情': '爱情', '科幻': '科幻', '惊悚': '惊悚', '战争': '战争',
+  '家庭': '剧情', '历史': '剧情', '音乐': '剧情', '电视电影': '剧情', '西部': '动作',
+}
+
+/** TMDB 类型名列表 → 墙上的类型（按 WALL_GENRES 顺序排）；
+ * 中文原声的动作片多一个「武侠」（TMDB 不分武侠，华语动作片多为武侠/功夫片，
+ * 只是启发式，筛「武侠」时相当于“华语动作”）。 */
+export function mapGenreNames(names: string[], originalLanguage?: string): string[] {
+  const out = new Set<string>()
+  for (const n of names) {
+    const m = WALL_GENRE_MAP[n]
+    if (m) out.add(m)
+  }
+  if (originalLanguage === 'zh' && out.has('动作')) out.add('武侠')
+  return WALL_GENRES.filter(g => g !== '全部' && out.has(g))
+}
+
+// ---------------- TMDB 类型列表（缓存永久，类型表基本不变） ----------------
+
+export interface TmdbGenreMap { movie: Record<number, string>; tv: Record<number, string> }
+export const TMDB_GENRES_KEY = 'acm.watch.tmdbGenres.v1'
+
+export async function fetchTmdbGenres(key: string): Promise<TmdbGenreMap> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TMDB_GENRES_KEY) ?? 'null') as { data?: TmdbGenreMap } | null
+    if (raw?.data?.movie && raw?.data?.tv) return raw.data
+  } catch { /* 缓存坏了就重新拉 */ }
+  const [movie, tv] = await Promise.all([
+    tmdbGet(key, '/genre/movie/list'),
+    tmdbGet(key, '/genre/tv/list'),
+  ])
+  const toMap = (d: unknown): Record<number, string> => {
+    const out: Record<number, string> = {}
+    for (const g of ((d as { genres?: { id?: number; name?: string }[] }).genres ?? [])) {
+      if (typeof g.id === 'number' && g.name) out[g.id] = g.name
+    }
+    return out
+  }
+  const data: TmdbGenreMap = { movie: toMap(movie), tv: toMap(tv) }
+  try { localStorage.setItem(TMDB_GENRES_KEY, JSON.stringify({ at: Date.now(), data })) } catch { /* 忽略 */ }
+  return data
+}
+
+// ---------------- TMDB 按片名搜索（点播标题 → TMDB 元数据，缓存 7 天） ----------------
+
+export const TMDB_TITLE_SEARCH_KEY = 'acm.watch.tmdbTitleSearch.v1'
+const TMDB_TITLE_SEARCH_TTL_MS = 7 * 24 * 3600_000
+
+interface TitleSearchCacheEntry { at: number; tmdb: TmdbTitle | null }
+type TitleSearchCache = Record<string, TitleSearchCacheEntry>
+
+function loadTitleSearchCache(): TitleSearchCache {
+  try {
+    const v = JSON.parse(localStorage.getItem(TMDB_TITLE_SEARCH_KEY) ?? '{}') as TitleSearchCache
+    return v && typeof v === 'object' ? v : {}
+  } catch { return {} }
+}
+
+/** 按片名在 TMDB 搜电影 + 剧集：先认标题完全一致的，再按热度取最高；
+ * 搜不到也缓存（7 天内不再重复问 TMDB）。 */
+export async function searchTmdbTitle(key: string, title: string): Promise<TmdbTitle | null> {
+  const q = (title ?? '').trim()
+  if (!q) return null
+  const cacheKey = normalizeTitleKey(q)
+  const hit = loadTitleSearchCache()[cacheKey]
+  if (hit && Date.now() - hit.at < TMDB_TITLE_SEARCH_TTL_MS) return hit.tmdb
+  const [movie, tv] = await Promise.all([
+    tmdbGet(key, `/search/movie?query=${encodeURIComponent(q)}`),
+    tmdbGet(key, `/search/tv?query=${encodeURIComponent(q)}`),
+  ])
+  const cands = [
+    ...(((movie as { results?: TmdbApiItem[] }).results ?? []).map(i => toTmdbTitle(i, 'movie'))),
+    ...(((tv as { results?: TmdbApiItem[] }).results ?? []).map(i => toTmdbTitle(i, 'tv'))),
+  ].filter((x): x is TmdbTitle => !!x)
+  const exact = cands.find(c => normalizeTitleKey(c.title) === cacheKey || normalizeTitleKey(c.originalTitle) === cacheKey)
+  const best = exact ?? cands.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))[0] ?? null
+  const cache = loadTitleSearchCache()
+  cache[cacheKey] = { at: Date.now(), tmdb: best }
+  try { localStorage.setItem(TMDB_TITLE_SEARCH_KEY, JSON.stringify(cache)) } catch { /* 忽略 */ }
+  return best
+}
+
+// ---------------- TMDB 详情（类型/地区/状态/导演主演，缓存 24 小时） ----------------
+
+export interface TmdbDetails {
+  genres: string[]
+  region?: string
+  /** 剧集才有：up 更新中 / done 已完结；电影不填 */
+  status?: 'up' | 'done'
+  /** 剧集总集数（TMDB 口径）；更新中时即当前已播集数 */
+  episodes?: number
+  /** 最近播出日期（剧集 last_air_date，电影上映日），供「最近更新」排序 */
+  lastDate?: string
+  director?: string
+  cast?: string
+}
+
+export const TMDB_DETAILS_KEY = 'acm.watch.tmdbDetails.v1'
+const TMDB_DETAILS_TTL_MS = 24 * 3600_000
+
+interface TmdbDetailsCacheEntry { at: number; details: TmdbDetails }
+type TmdbDetailsCache = Record<string, TmdbDetailsCacheEntry>
+
+function loadDetailsCache(): TmdbDetailsCache {
+  try {
+    const v = JSON.parse(localStorage.getItem(TMDB_DETAILS_KEY) ?? '{}') as TmdbDetailsCache
+    return v && typeof v === 'object' ? v : {}
+  } catch { return {} }
+}
+
+/** 一部影片的详情：类型、地区（production_countries 首个，剧集回落 origin_country）、
+ * 剧集状态与集数、导演与前三主演（append_to_response=credits，一次调用）。 */
+export async function fetchTmdbDetails(key: string, mediaType: 'tv' | 'movie', id: number): Promise<TmdbDetails> {
+  const cacheKey = `${mediaType}:${id}`
+  const hit = loadDetailsCache()[cacheKey]
+  if (hit && Date.now() - hit.at < TMDB_DETAILS_TTL_MS) return hit.details
+  const d = await tmdbGet(key, `/${mediaType}/${id}?append_to_response=credits`) as {
+    genres?: { name?: string }[]
+    production_countries?: { iso_3166_1?: string }[]
+    origin_country?: string[]
+    status?: string
+    number_of_episodes?: number
+    last_air_date?: string
+    release_date?: string
+    credits?: { crew?: { job?: string; name?: string }[]; cast?: { name?: string }[] }
+  }
+  const genres = (d.genres ?? []).map(g => g.name ?? '').filter(Boolean)
+  const region = regionLabelOfCountry(d.production_countries?.[0]?.iso_3166_1)
+    ?? regionLabelOfCountry(d.origin_country?.[0])
+    ?? (d.production_countries?.length || d.origin_country?.length ? '其他' : undefined)
+  const details: TmdbDetails = {
+    genres,
+    region,
+    status: mediaType === 'tv'
+      ? d.status === 'Ended' || d.status === 'Canceled' ? 'done'
+        : d.status === 'Returning Series' || d.status === 'In Production' ? 'up' : undefined
+      : undefined,
+    episodes: typeof d.number_of_episodes === 'number' ? d.number_of_episodes : undefined,
+    lastDate: d.last_air_date ?? d.release_date ?? undefined,
+    director: d.credits?.crew?.find(c => c.job === 'Director')?.name ?? undefined,
+    cast: (d.credits?.cast ?? []).slice(0, 3).map(c => c.name ?? '').filter(Boolean).join('、') || undefined,
+  }
+  const cache = loadDetailsCache()
+  cache[cacheKey] = { at: Date.now(), details }
+  try { localStorage.setItem(TMDB_DETAILS_KEY, JSON.stringify(cache)) } catch { /* 忽略 */ }
+  return details
+}
+
+// ---------------- 海报墙：拼墙 / 筛选 / 排序 / 角标 ----------------
+
+export interface VodEnrichEntry {
+  tmdb?: TmdbTitle
+  details?: TmdbDetails
+  /** 该标题已按片名搜过 TMDB（搜不到也算，避免对冷门片名反复搜、提示常驻） */
+  searched?: boolean
+  /** 该片的详情已拉过（失败也算，避免反复拉、提示常驻） */
+  detailsTried?: boolean
+}
+
+export interface VodWallItem {
+  id: string
+  title: string
+  kind: 'movie' | 'series'
+  playable: boolean
+  /** 有源时：全部集的播放地址总数（卡片上写“有源 · N 条线路可播”） */
+  sourceCount: number
+  vod?: VodTitle
+  tmdb?: TmdbTitle
+  details?: TmdbDetails
+  year?: number
+  genres: string[]
+  region?: string
+  vote?: number
+  overview?: string
+  poster?: string
+  /** 电影永远 'hd'；剧集有 TMDB 状态才分 up/done，否则 'unknown'（不谎称完结） */
+  status: 'hd' | 'up' | 'done' | 'unknown'
+  totalEps?: number
+  curEp?: number
+  lastDate?: string
+}
+
+/** 拼墙：点播标题全进墙（有源可播），热门榜单里没匹配上片源的也进墙
+ * （仅展示）；同名（归一化后）只留一部，点播优先。 */
+export function buildVodWallItems(
+  vod: VodTitle[],
+  trending: TmdbTitle[],
+  enrich: Record<string, VodEnrichEntry>,
+  genreMap: TmdbGenreMap | null,
+): VodWallItem[] {
+  const items: VodWallItem[] = []
+  const seen = new Set<string>()
+  const trendingByKey = new Map(trending.map(t => [normalizeTitleKey(t.title), t]))
+  const wallGenres = (tmdb: TmdbTitle | undefined, details: TmdbDetails | undefined): string[] => {
+    if (details) return mapGenreNames(details.genres, tmdb?.originalLanguage)
+    if (!tmdb?.genreIds?.length || !genreMap) return []
+    const names = tmdb.genreIds
+      .map(id => (tmdb.mediaType === 'tv' ? genreMap.tv[id] : genreMap.movie[id]) ?? '')
+      .filter(Boolean)
+    return mapGenreNames(names, tmdb.originalLanguage)
+  }
+  const fromTmdb = (tmdb: TmdbTitle, vodTitle?: VodTitle): VodWallItem => {
+    const details = enrich[normalizeTitleKey(vodTitle?.title ?? tmdb.title)]?.details
+    const isSeries = vodTitle ? vodTitle.kind === 'series' : tmdb.mediaType === 'tv'
+    const year = tmdb.firstDate ? parseInt(tmdb.firstDate.slice(0, 4), 10) : undefined
+    return {
+      id: `tmdb:${tmdb.mediaType}:${tmdb.id}`,
+      title: vodTitle?.title ?? tmdb.title,
+      kind: isSeries ? 'series' : 'movie',
+      playable: !!vodTitle,
+      sourceCount: vodTitle ? vodTitle.episodes.reduce((n, e) => n + e.urls.length, 0) : 0,
+      vod: vodTitle,
+      tmdb,
+      details,
+      year: Number.isFinite(year) ? year : undefined,
+      genres: wallGenres(tmdb, details),
+      region: details?.region ?? (tmdb.mediaType === 'tv' ? regionLabelOfCountry(tmdb.originCountry?.[0]) : undefined),
+      vote: tmdb.vote,
+      overview: tmdb.overview || undefined,
+      poster: tmdb.poster,
+      status: !isSeries ? 'hd' : details?.status ?? 'unknown',
+      totalEps: details?.episodes ?? (vodTitle && isSeries ? vodTitle.episodes.length : undefined),
+      curEp: details?.status === 'up' ? details.episodes : undefined,
+      lastDate: details?.lastDate ?? tmdb.firstDate,
+    }
+  }
+  const fromVodOnly = (v: VodTitle, details?: TmdbDetails): VodWallItem => ({
+    id: `vod:${v.key}`,
+    title: v.title,
+    kind: v.kind,
+    playable: true,
+    sourceCount: v.episodes.reduce((n, e) => n + e.urls.length, 0),
+    vod: v,
+    details,
+    genres: details ? mapGenreNames(details.genres) : [],
+    region: details?.region,
+    status: v.kind === 'movie' ? 'hd' : details?.status ?? 'unknown',
+    totalEps: details?.episodes ?? (v.kind === 'series' ? v.episodes.length : undefined),
+    curEp: details?.status === 'up' ? details.episodes : undefined,
+    lastDate: details?.lastDate,
+  })
+  for (const v of vod) {
+    const key = normalizeTitleKey(v.title)
+    const entry = enrich[key]
+    // 点播标题的 TMDB 元数据：先用按片名搜到的，再用热门榜单里同名的
+    const tmdb = entry?.tmdb ?? trendingByKey.get(key)
+    items.push(tmdb ? fromTmdb(tmdb, v) : fromVodOnly(v, entry?.details))
+    seen.add(key)
+  }
+  for (const t of trending) {
+    const k = normalizeTitleKey(t.title)
+    if (seen.has(k)) continue
+    seen.add(k)
+    items.push(fromTmdb(t))
+  }
+  return items
+}
+
+export interface VodWallFilters { genre: string; year: string; region: string; status: VodWallStatusFilter }
+
+/** 筛选：没 TMDB 元数据的影片（类型/年份/地区未知）只在对应项为「全部」时出现，
+ * 不因缺数据被筛掉；状态筛只看有源/更新状态，与元数据无关。 */
+export function filterVodWall(items: VodWallItem[], f: VodWallFilters): VodWallItem[] {
+  return items.filter(it => {
+    if (f.genre !== '全部' && !it.genres.includes(f.genre)) return false
+    if (f.year !== '全部') {
+      if (!it.year) return false
+      if (f.year === '更早') { if (it.year >= 2021) return false }
+      else if (String(it.year) !== f.year) return false
+    }
+    if (f.region !== '全部') {
+      if (!it.region) return false
+      if (f.region === '其他') { if (it.region !== '其他') return false }
+      else if (it.region !== f.region) return false
+    }
+    if (f.status === 'play' && !it.playable) return false
+    if (f.status === 'none' && it.playable) return false
+    if (f.status === 'up' && !(it.kind === 'series' && it.status === 'up')) return false
+    if (f.status === 'done' && !(it.kind === 'series' && it.status === 'done')) return false
+    return true
+  })
+}
+
+/** 排序：最近更新按最近播出/上映日倒序（没日期的沉底）；评分最高；年份最新。 */
+export function sortVodWall(items: VodWallItem[], sort: VodWallSort): VodWallItem[] {
+  const list = [...items]
+  if (sort === 'rating') list.sort((a, b) => (b.vote ?? -1) - (a.vote ?? -1))
+  else if (sort === 'year') list.sort((a, b) => (b.year ?? -1) - (a.year ?? -1) || (b.vote ?? -1) - (a.vote ?? -1))
+  else list.sort((a, b) => (b.lastDate ?? '').localeCompare(a.lastDate ?? '') || (b.vote ?? -1) - (a.vote ?? -1))
+  return list
+}
+
+/** 卡片左上角标：电影「更新HD」；剧集更新中「更新至N集」/已完结「全N集·完结」；
+ * 没 TMDB 状态的剧集只写「共N集」，不谎称完结；没集数的剧集不打标。 */
+export function vodWallBadge(item: VodWallItem): { cls: 'hd' | 'up' | 'done' | 'plain'; text: string } | null {
+  if (item.kind === 'movie') return { cls: 'hd', text: '更新HD' }
+  if (item.status === 'up') return { cls: 'up', text: item.curEp ? `更新至${item.curEp}集` : '更新中' }
+  if (item.status === 'done') return { cls: 'done', text: item.totalEps ? `全${item.totalEps}集 · 完结` : '已完结' }
+  if (item.totalEps) return { cls: 'plain', text: `共${item.totalEps}集` }
+  return null
 }

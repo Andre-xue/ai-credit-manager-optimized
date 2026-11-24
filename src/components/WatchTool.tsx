@@ -5,7 +5,7 @@
 // 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
 // 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」；点播条目同样打标记。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, ChevronDown, CircleAlert, Clapperboard, ExternalLink,
   Film, Loader2, Lock, Play, Plus, RefreshCw, Search, Trash2, Tv, X,
@@ -27,8 +27,12 @@ import {
   loadCustomSources, saveCustomSources, fetchSourceSet,
   hasTmdbKey, loadTmdbKey, saveTmdbKey, clearTmdbKey,
   fetchTmdbTrending, fetchTmdbProviders, loadRecPrefs, saveRecPrefs,
+  searchTmdbTitle, fetchTmdbGenres, fetchTmdbDetails,
+  normalizeTitleKey, buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
+  WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
+  type TmdbGenreMap, type VodEnrichEntry, type VodWallItem, type VodWallSort, type VodWallStatusFilter,
 } from '../core/watch'
 import { pageSlice, pageCount } from '../core/freeGames'
 import type { Account } from '../core/types'
@@ -44,7 +48,7 @@ function cacheAgeText(at?: number): string {
 
 type PlayerState =
   | { kind: 'hls'; title: string; channelKey: string; urls: string[] }
-  | { kind: 'vod'; title: string; vodKey: string; episodes: VodEpisode[]; episodeIndex: number; startAt?: number }
+  | { kind: 'vod'; title: string; vodKey: string; episodes: VodEpisode[]; episodeIndex: number; startAt?: number; startUrlIdx?: number }
   | { kind: 'iframe'; title: string; url: string }
   | { kind: 'blocked'; title: string; url: string; reason: string }
   | null
@@ -161,19 +165,21 @@ function HlsPlayer({ title, urls, onOpened }: {
   )
 }
 
-function VodPlayer({ title, episodes, episodeIndex, startAt, onLeave, onClose }: {
+function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeave, onClose }: {
   title: string
   episodes: VodEpisode[]
   episodeIndex: number
   /** 续播起点（0–1 进度），只对打开时那集有效 */
   startAt?: number
+  /** 详情页选中的线路下标（默认 0）；切集后回到第 1 条线路 */
+  startUrlIdx?: number
   /** 离开某集时回传（关闭 / 切集时都调）：父组件据此写继续观看 */
   onLeave: (episodeIndex: number, progress: number) => void
   onClose: () => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [epIdx, setEpIdx] = useState(episodeIndex)
-  const [urlIdx, setUrlIdx] = useState(0)
+  const [urlIdx, setUrlIdx] = useState(startUrlIdx ?? 0)
   const [failed, setFailed] = useState(false)
   const [needTap, setNeedTap] = useState(false)
   const playedRef = useRef(false)
@@ -434,14 +440,9 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   }
 
   // ---- 点播 ----
-  const openVod = (v: VodTitle, episodeIndex = 0, startAt = 0) => {
-    setPlayer({ kind: 'vod', title: v.title, vodKey: v.key, episodes: v.episodes, episodeIndex: Math.min(episodeIndex, v.episodes.length - 1), startAt })
+  const openVod = (v: VodTitle, episodeIndex = 0, startAt = 0, startUrlIdx = 0) => {
+    setPlayer({ kind: 'vod', title: v.title, vodKey: v.key, episodes: v.episodes, episodeIndex: Math.min(episodeIndex, v.episodes.length - 1), startAt, startUrlIdx: Math.min(startUrlIdx, (v.episodes[Math.min(episodeIndex, v.episodes.length - 1)]?.urls.length ?? 1) - 1) })
     setPlayerKey(k => k + 1)
-  }
-  const openVodWithResume = (v: VodTitle) => {
-    const prev = continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === v.key)
-    const parsed = prev ? parseVodContinueId(prev.id) : null
-    openVod(v, parsed?.episodeIndex ?? 0, prev?.progress ?? 0)
   }
   const recordVodLeave = (episodeIndex: number, progress: number) => {
     if (player?.kind !== 'vod') return
@@ -560,10 +561,124 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [liveLoaded, setLiveLoaded] = useState(false)
   const [contentFilter, setContentFilter] = useState('all')
   const [livePages, setLivePages] = useState<Record<string, number>>({})
-  // ---- 点播（与直播同一批源里拆出来） ----
+  // ---- 点播海报墙（v0.1.395：点播区改片库式海报墙） ----
+  // 墙 = 点播源里的片名（有源可播）+ TMDB 热门里没匹配上片源的影片（仅展示）；
+  // 海报/评分/简介走 TMDB，播放永远走自己的点播源。TMDB 元数据按片名搜 +
+  // 详情接口后台补全（都带缓存，重复打开不重复请求）。
   const [vodTitles, setVodTitles] = useState<VodTitle[]>([])
-  const [vodKind, setVodKind] = useState<'all' | 'movie' | 'series'>('all')
   const [vodPage, setVodPage] = useState(1)
+  const [vodGenre, setVodGenre] = useState('全部')
+  const [vodYear, setVodYear] = useState('全部')
+  const [vodRegion, setVodRegion] = useState('全部')
+  const [vodStatus, setVodStatus] = useState<VodWallStatusFilter>('all')
+  const [vodSort, setVodSort] = useState<VodWallSort>('updated')
+  const [vodGenreMap, setVodGenreMap] = useState<TmdbGenreMap | null>(null)
+  const [vodEnrich, setVodEnrich] = useState<Record<string, VodEnrichEntry>>({})
+  const vodEnrichRef = useRef(vodEnrich)
+  const vodEnrichRunRef = useRef(false)
+  const mergeEnrich = (key: string, patch: Partial<VodEnrichEntry>) => {
+    vodEnrichRef.current = { ...vodEnrichRef.current, [key]: { ...vodEnrichRef.current[key], ...patch } }
+    setVodEnrich(vodEnrichRef.current)
+  }
+  const [vodDetail, setVodDetail] = useState<VodWallItem | null>(null)
+  const [vodDetailEp, setVodDetailEp] = useState(0)
+  const [vodDetailLine, setVodDetailLine] = useState(0)
+
+  const wallItems = useMemo(
+    () => buildVodWallItems(vodTitles, trending, vodEnrich, vodGenreMap),
+    [vodTitles, trending, vodEnrich, vodGenreMap],
+  )
+  const wallFiltered = useMemo(
+    () => sortVodWall(filterVodWall(wallItems, { genre: vodGenre, year: vodYear, region: vodRegion, status: vodStatus }), vodSort),
+    [wallItems, vodGenre, vodYear, vodRegion, vodStatus, vodSort],
+  )
+  const wallPlayCount = wallFiltered.filter(i => i.playable).length
+  // 还在补全信息的影片数（有 TMDB 但没拉过详情，或点播标题还没搜过 TMDB；
+  // 搜不到/拉失败的也算完成，不常驻提示）
+  const wallEnrichPending = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried).length
+    + vodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched).length
+
+  // 打开点播页签且有 Key 时，后台补全：先按片名搜 TMDB，再拉详情（4 路并行、带节流）
+  useEffect(() => {
+    if (activeTab !== 'vod' || !tmdbKeySet) return
+    if (vodEnrichRunRef.current) return
+    const needSearch = vodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched)
+    const needDetails = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried)
+    if (!needSearch.length && !needDetails.length) return
+    let dead = false
+    vodEnrichRunRef.current = true
+    const run = async () => {
+      try {
+        const pwd = sessionPwd || getBiometricPassword() || ''
+        if (!pwd) return
+        const key = await loadTmdbKey(pwd)
+        if (!key || dead) return
+        if (!vodGenreMap) {
+          const gm = await fetchTmdbGenres(key).catch(() => null)
+          if (dead) return
+          if (gm) setVodGenreMap(gm)
+        }
+        for (const v of needSearch) {
+          if (dead) return
+          const found = await searchTmdbTitle(key, v.title).catch(() => null)
+          if (dead) return
+          mergeEnrich(normalizeTitleKey(v.title), { tmdb: found ?? undefined, searched: true })
+        }
+        // 详情按当前墙重新算（搜索刚补上的也算上），4 路并行、每路起步间隔 200ms
+        const queue = buildVodWallItems(vodTitles, trending, vodEnrichRef.current, vodGenreMap)
+          .filter(i => i.tmdb && !i.details)
+          .slice(0, 60)
+        let idx = 0
+        const workers = Array.from({ length: 4 }, async (_, w) => {
+          if (w > 0) await new Promise(r => globalThis.setTimeout(r, w * 200))
+          while (!dead && idx < queue.length) {
+            const it = queue[idx++]
+            if (!it.tmdb) continue
+            const d = await fetchTmdbDetails(key, it.tmdb.mediaType, it.tmdb.id).catch(() => null)
+            if (dead) return
+            mergeEnrich(normalizeTitleKey(it.title), { details: d ?? undefined, detailsTried: true })
+          }
+        })
+        await Promise.all(workers)
+      } finally {
+        vodEnrichRunRef.current = false
+      }
+    }
+    void run()
+    return () => { dead = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, tmdbKeySet, vodTitles, trending, wallItems.length])
+
+  // ---- 点播详情弹层（海报墙点卡片进详情：选集/选线路/加入片单/播放） ----
+  const openVodDetail = (item: VodWallItem) => {
+    const prev = item.vod
+      ? continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === item.vod!.key)
+      : undefined
+    const parsed = prev ? parseVodContinueId(prev.id) : null
+    setVodDetail(item)
+    setVodDetailEp(parsed?.episodeIndex ?? 0)
+    setVodDetailLine(0)
+  }
+  useEffect(() => {
+    if (!vodDetail) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setVodDetail(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [vodDetail])
+  const wallByKey = useMemo(() => new Map(wallItems.map(i => [normalizeTitleKey(i.title), i])), [wallItems])
+  /** 继续观看某条的海报：点播按 vodKey 找墙里的片，直播/iframe 按标题找，
+   * 标题带“第 N 集”后缀时先去掉后缀再找；找不到就没海报，只显示文字卡片。 */
+  const posterForContinue = (c: ContinueItem): string | undefined => {
+    if (c.kind === 'vod') {
+      const parsed = parseVodContinueId(c.id)
+      const v = parsed ? vodTitles.find(t => t.key === parsed.vodKey) : undefined
+      if (v) return wallByKey.get(normalizeTitleKey(v.title))?.poster
+    }
+    const hit = wallByKey.get(normalizeTitleKey(c.title))?.poster
+    if (hit) return hit
+    const stripped = c.title.replace(/第\s*\d+\s*集$/, '').trim()
+    return stripped ? wallByKey.get(normalizeTitleKey(stripped))?.poster : undefined
+  }
   // v0.1.394：设置页签分开填直播源 / 点播源；底层仍是同一份自定义源列表
   // （一个 m3u 里既可含直播台也可含点播条目，拉取后自动拆到两个区）
   const [liveLabel, setLiveLabel] = useState('')
@@ -579,7 +694,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     try {
       const { channels, vod, sets } = await loadCountryChannels(country, { force })
       setLiveChannels(channels); setVodTitles(vod); setLiveSets(sets); setLiveLoaded(true)
-      setContentFilter('all'); setVodKind('all'); setVodPage(1)
+      setContentFilter('all'); setVodGenre('全部'); setVodYear('全部'); setVodRegion('全部'); setVodStatus('all'); setVodPage(1)
       if (!channels.length && !vod.length) notify('该国家/地区的源都没拉到，请检查网络后重试', 'err')
       else notify(`已加载 ${channels.length} 个台${vod.length ? `、${vod.length} 部点播` : ''}`)
     } catch (e) { notify(e instanceof Error ? e.message : '加载失败', 'err') } finally { setLiveLoading(false) }
@@ -658,6 +773,88 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
 
   const [continuePage, setContinuePage] = useState(1)
 
+  // 点播详情弹层（海报墙点卡片进详情：大海报、评分、导演主演、简介、选集、线路）
+  const VodDetailSheet = ({ item }: { item: VodWallItem }) => {
+    const v = item.vod
+    const ep = v?.episodes[vodDetailEp] ?? v?.episodes[0]
+    const badge = vodWallBadge(item)
+    const inWatchlist = watchlist.some(w => w.title === item.title)
+    const watchedEp = (i: number) => {
+      if (!v) return false
+      const c = continueList.find(x => x.id === vodContinueId(v.key, i))
+      return !!c && c.progress >= 0.95
+    }
+    const toggleWatchlist = () => {
+      const found = watchlist.find(w => w.title === item.title)
+      if (found) removeFromWatchlist(found.id)
+      else addToWatchlist({ title: item.title, type: item.kind === 'movie' ? 'movie' : 'tv', platform: v ? '点播' : 'TMDB 热门', poster: item.poster, overview: item.overview })
+    }
+    const playLabel = !v ? '暂无片源 · 仅展示' : item.kind === 'movie' ? '▶ 播放正片' : `▶ 播放${ep?.label ?? ''}`
+    return (
+      <div className="wt-sheet-backdrop" onClick={e => { if (e.target === e.currentTarget) setVodDetail(null) }}>
+        <section className="wt-sheet" role="dialog" aria-modal="true" aria-label={`${item.title} 详情`}>
+          <button className="wt-sheet-close" aria-label="关闭详情" onClick={() => setVodDetail(null)}><X size={16} /></button>
+          <div className="wt-detail-top">
+            <div className="wt-detail-poster">
+              {item.poster
+                ? <img src={item.poster} alt={`${item.title} 海报`} onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                : <div className="wt-poster-ph"><Film size={24} /></div>}
+            </div>
+            <div className="wt-detail-info">
+              <h2>{item.title}</h2>
+              {item.tmdb?.originalTitle && item.tmdb.originalTitle !== item.title && <div className="wt-detail-en">{item.tmdb.originalTitle}</div>}
+              <div className="wt-detail-meta">
+                {typeof item.vote === 'number' && <span className="wt-meta-rate">★ TMDB {item.vote.toFixed(1)}</span>}
+                {item.year && <span>{item.year}</span>}
+                {item.region && <span>{item.region}</span>}
+                {item.genres.map(g => <span key={g}>{g}</span>)}
+                {badge && <span className={`wt-meta-status st-${badge.cls}`}>{badge.text}</span>}
+              </div>
+              {item.details?.director && <p className="wt-detail-kv">导演：<b>{item.details.director}</b></p>}
+              {item.details?.cast && <p className="wt-detail-kv">主演：<b>{item.details.cast}</b></p>}
+              {item.overview && <p className="wt-detail-syn">{item.overview}</p>}
+              {v?.unofficial && <div className="wt-unofficial-note"><CircleAlert size={13} /> 当前源为第三方转播 · 未经授权，可能随时失效</div>}
+            </div>
+          </div>
+          {v && item.kind === 'series' && v.episodes.length > 1 && (
+            <div className="wt-detail-sec">
+              <h4>选集 <small>共 {v.episodes.length} 集</small></h4>
+              <div className="wt-eps">
+                {v.episodes.map((e, i) => (
+                  <button key={i} type="button" data-ep={i + 1} aria-pressed={i === vodDetailEp}
+                    className={watchedEp(i) ? 'watched' : ''}
+                    onClick={() => { setVodDetailEp(i); setVodDetailLine(0) }}>{e.label.replace(/^第\s*/, '').replace(/\s*集$/, '')}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="wt-detail-sec">
+            <h4>片源 {v && <small>来自你的点播源 · 按片名自动匹配</small>}</h4>
+            {v && ep ? (
+              <div className="wt-src-chips">
+                {ep.urls.map((_u, i) => (
+                  <button key={i} type="button" className="wt-src-chip" data-src={i + 1} aria-pressed={i === vodDetailLine}
+                    onClick={() => setVodDetailLine(i)}>线路 {i + 1}{ep.urls.length > 1 ? '' : ' · 可播'}</button>
+                ))}
+              </div>
+            ) : (
+              <div className="wt-nosrc-box">这部还没匹配到你点播源里的条目，只能看海报和简介。在「设置」里换一个点播源，匹配上之后这里就会出现线路和播放按钮。</div>
+            )}
+          </div>
+          <div className="wt-playbar">
+            <button className="wt-fav-btn" type="button" aria-pressed={inWatchlist} onClick={toggleWatchlist}>
+              {inWatchlist ? '✓ 已在片单' : '＋ 加入片单'}
+            </button>
+            <button className="wt-play-btn" type="button" disabled={!v}
+              onClick={() => { if (v) { openVod(v, vodDetailEp, 0, vodDetailLine); setVodDetail(null) } }}>
+              {playLabel}
+            </button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
   return (
     <div className="ws-tool fg-tool">
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -681,7 +878,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       )}
       {player?.kind === 'vod' && (
         <VodPlayer key={playerKey} title={player.title} episodes={player.episodes}
-          episodeIndex={player.episodeIndex} startAt={player.startAt}
+          episodeIndex={player.episodeIndex} startAt={player.startAt} startUrlIdx={player.startUrlIdx}
           onLeave={(i, p) => recordVodLeave(i, p)} onClose={() => setPlayer(null)} />
       )}
       {player?.kind === 'iframe' && (
@@ -780,11 +977,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <button className="btn sm ghost" onClick={() => void loadTrending()}><RefreshCw size={13} /> 刷新</button>
             </div>
             <div className="fg-grid">
-              {pageSlice(trendingFiltered, trendPage).map(t => (
+              {pageSlice(trendingFiltered, trendPage).map((t, i) => (
                 <div key={`${t.mediaType}-${t.id}`} className="fg-card wt-trend-card">
-                  {t.poster
-                    ? <img className="wt-poster" src={t.poster} alt={t.title} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                    : <div className="wt-poster-ph"><Film size={20} /></div>}
+                  <div className="wt-poster-wrap">
+                    {t.poster
+                      ? <img className="wt-poster" src={t.poster} alt={t.title} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      : <div className="wt-poster-ph"><Film size={20} /></div>}
+                    <span className="wt-rank">{(trendPage - 1) * 8 + i + 1}</span>
+                  </div>
                   <div className="fg-card-title">{t.title}</div>
                   <div className="fg-muted">{t.mediaType === 'tv' ? '剧集' : '电影'}{t.firstDate ? ` · ${t.firstDate}` : ''}{typeof t.vote === 'number' ? ` · ${t.vote} 分` : ''}</div>
                   {t.overview && <div className="wt-rec-reason">{t.overview}</div>}
@@ -823,8 +1023,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         ) : (
           <>
             <div className="fg-grid">
-              {pageSlice(continueList, continuePage).map(c => (
-                <div key={c.id} className="fg-card">
+              {pageSlice(continueList, continuePage).map(c => {
+                const poster = posterForContinue(c)
+                return (
+                <div key={c.id} className="fg-card wt-cont-card">
+                  {poster && <img className="wt-cont-thumb" src={poster} alt="" loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />}
+                  <div className="wt-cont-main">
                   <div className="fg-card-title">{c.title}</div>
                   <div className="fg-muted">{c.platform} · {new Date(c.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
                   {c.progress > 0 && (
@@ -852,8 +1056,10 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                       <Trash2 size={13} />
                     </button>
                   </div>
+                  </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
             <Pager page={continuePage} pageCount={pageCount(continueList.length)} total={continueList.length} unit="条"
               onPage={setContinuePage} />
@@ -926,43 +1132,110 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         </div>
       )}
 
-      {/* 点播 */}
+      {/* 点播海报墙（v0.1.395）：类型/年份/地区/状态四排筛选 + 12 部一页 + 详情选集选线 */}
       {activeTab === 'vod' && (
         <div className="wt-tab-body">
-          <div className="wt-tab-sub">电影 / 剧集 · 从 m3u 认出单放</div>
-          <div className="fg-muted">在「设置」页签的「自定义点播源」里粘含 mp4 / mkv 条目的 m3u，电影和剧集会自动认出来放到这里；同一个地址里的直播流仍留在直播区。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          <div className="wt-tab-sub">电影 / 剧集 · 海报墙 · 有源可播，没源的只展示</div>
+          {vodTitles.length === 0 && (
+            <div className="fg-muted">在「设置」页签的「自定义点播源」里粘含 mp4 / mkv 条目的 m3u，电影和剧集会自动认出来放到这里；同一个地址里的直播流仍留在直播区。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          )}
+          {!tmdbKeySet && wallItems.length > 0 && (
+            <div className="fg-muted">没填 TMDB Key：只有片名列表，没有海报、评分与类型/年份/地区筛选；去「设置」页签填 Key 后再看。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          )}
         {!liveLoaded && liveLoading ? (
           <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取…</div>
-        ) : vodTitles.length === 0 ? (
+        ) : wallItems.length === 0 ? (
           <div className="fg-empty">当前源里没有点播条目：自定义源粘一个含 mp4 电影或剧集的 m3u，点播会自动出现在这里（直播台不受影响）。</div>
         ) : (
           <>
-            <div className="wt-chips">
-              {(['all', 'movie', 'series'] as const).map(k => (
-                <button key={k} className={`wt-chip${vodKind === k ? ' on' : ''}`}
-                  onClick={() => { setVodKind(k); setVodPage(1) }}>
-                  {k === 'all' ? '全部' : k === 'movie' ? '电影' : '剧集'}
-                </button>
-              ))}
+            {tmdbKeySet && (
+              <div className="wt-wall-filters">
+                <div className="wt-frow">
+                  <span className="wt-flab">类型</span>
+                  <div className="wt-fchips">
+                    {WALL_GENRES.map(g => (
+                      <button key={g} type="button" className={`wt-chip${vodGenre === g ? ' on' : ''}`} aria-pressed={vodGenre === g}
+                        onClick={() => { setVodGenre(g); setVodPage(1) }}>{g}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="wt-frow">
+                  <span className="wt-flab">年份</span>
+                  <div className="wt-fchips">
+                    {WALL_YEARS.map(y => (
+                      <button key={y} type="button" className={`wt-chip${vodYear === y ? ' on' : ''}`} aria-pressed={vodYear === y}
+                        onClick={() => { setVodYear(y); setVodPage(1) }}>{y}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="wt-frow">
+                  <span className="wt-flab">地区</span>
+                  <div className="wt-fchips">
+                    {WALL_REGIONS.map(r => (
+                      <button key={r} type="button" className={`wt-chip${vodRegion === r ? ' on' : ''}`} aria-pressed={vodRegion === r}
+                        onClick={() => { setVodRegion(r); setVodPage(1) }}>{r}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="wt-frow">
+                  <span className="wt-flab">状态</span>
+                  <div className="wt-fchips">
+                    {WALL_STATUS_FILTERS.map(s => (
+                      <button key={s.k} type="button" className={`wt-chip${vodStatus === s.k ? ' on' : ''}`} aria-pressed={vodStatus === s.k}
+                        onClick={() => { setVodStatus(s.k); setVodPage(1) }}>{s.t}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="wt-countbar">
+              <span className="wt-count-text">共 <b>{wallFiltered.length}</b> 部 · 其中 <span className="wt-ok">{wallPlayCount} 部有源可播</span>，{wallFiltered.length - wallPlayCount} 部仅展示</span>
+              {tmdbKeySet && wallEnrichPending > 0 && <span className="fg-muted">正在补全海报与信息（还剩 {wallEnrichPending} 部）…</span>}
+              <div className="wt-sortbox" role="group" aria-label="排序">
+                {([['updated', '最近更新'], ['rating', '评分最高'], ['year', '年份最新']] as const).map(([s, label]) => (
+                  <button key={s} type="button" aria-pressed={vodSort === s} onClick={() => { setVodSort(s); setVodPage(1) }}>{label}</button>
+                ))}
+              </div>
             </div>
-            <div className="fg-grid">
-              {pageSlice(vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind), vodPage).map(v => {
-                const prev = continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === v.key)
-                return (
-                  <button key={v.key} className="fg-card wt-plat-card" onClick={() => openVodWithResume(v)} title={`${v.title} · 点一下开始播放`}>
-                    <div className="fg-card-title"><Film size={15} /> {v.title}</div>
-                    <div className="fg-muted">{v.kind === 'movie' ? '电影' : `剧集 · ${v.episodes.length} 集`}{prev?.episode ? ` · 看到${prev.episode}` : ''}</div>
-                    {v.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
-                    <span className="fg-muted">点开即播 <Play size={11} /></span>
-                  </button>
-                )
-              })}
-            </div>
-            <Pager page={vodPage} pageCount={pageCount(vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind).length)}
-              total={vodTitles.filter(v => vodKind === 'all' || v.kind === vodKind).length} unit="部"
+            {wallFiltered.length === 0 ? (
+              <div className="fg-empty">
+                <div>这个筛选下没有影片</div>
+                <div className="fg-muted">换个类型、年份或地区试试；没匹配到 TMDB 的影片没有类型、年份信息，筛选时只按「全部」显示。</div>
+              </div>
+            ) : (
+              <div className="wt-wall">
+                {pageSlice(wallFiltered, vodPage, 12).map(item => {
+                  const badge = vodWallBadge(item)
+                  const prev = item.vod ? continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === item.vod!.key) : undefined
+                  return (
+                    <button key={item.id} type="button" className="wt-wall-card" onClick={() => openVodDetail(item)} aria-label={`查看《${item.title}》详情`}>
+                      <span className="wt-wall-poster">
+                        {item.poster
+                          ? <img src={item.poster} alt={`${item.title} 海报`} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          : <span className="wt-wall-ph"><Film size={22} /></span>}
+                        {badge && <span className={`wt-wall-badge ${badge.cls}`}>{badge.text}</span>}
+                        {typeof item.vote === 'number' && <span className="wt-wall-rate">★ {item.vote.toFixed(1)}</span>}
+                        {!item.playable && <span className="wt-wall-veil">暂无片源 · 仅展示</span>}
+                      </span>
+                      <span className="wt-wall-title">{item.title}</span>
+                      <span className="wt-wall-meta">
+                        {[item.year, item.region, item.genres.join('/')].filter(Boolean).join(' · ') || (item.kind === 'movie' ? '电影' : `剧集 · ${item.vod?.episodes.length ?? ''} 集`)}
+                      </span>
+                      {item.playable
+                        ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}</span>
+                        : <span className="wt-wall-src none"><span className="dot" />仅展示 · 未匹配到片源</span>}
+                      {item.vod?.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            <Pager page={vodPage} pageCount={pageCount(wallFiltered.length, 12)}
+              total={wallFiltered.length} unit="部"
               onPage={setVodPage} />
           </>
         )}
+        {vodDetail && <VodDetailSheet item={vodDetail} />}
         </div>
       )}
 
