@@ -4,12 +4,14 @@
 // 点播（v0.1.390）：m3u 里的点播条目（电影/剧集文件）单独成区，同名剧集多条合并带选集，看到一半记进度可续播。
 // 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
 // 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」；点播条目同样打标记。
+// 源体检（v0.1.391）：直播页手动「开始体检」，逐台测连通性（通/不通、耗时），
+// 死台标出、可过滤，快的排前面；结果缓存 30 分钟，后台跑不堵列表。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, ChevronDown, CircleAlert, Clapperboard, ExternalLink,
   Film, Loader2, Lock, Play, Plus, RefreshCw, Search, Trash2, Tv, X,
-  CalendarDays, BookmarkPlus, Minus, Check,
+  CalendarDays, BookmarkPlus, Minus, Check, Activity,
 } from 'lucide-react'
 import Hls from 'hls.js'
 import { useRouteData, RouteSelect } from './WorkshopView'
@@ -30,6 +32,8 @@ import {
   searchTmdbTitle, fetchTmdbGenres, fetchTmdbDetails,
   normalizeTitleKey, buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
   WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
+  loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
+  type HealthMap,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
   type TmdbGenreMap, type VodEnrichEntry, type VodWallItem, type VodWallSort, type VodWallStatusFilter,
@@ -701,7 +705,54 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   }
 
   useEffect(() => { void loadLive(liveCountry) }, [liveCountry])
-  const liveGroups = groupChannels(liveChannels, liveCountry)
+
+  // ---- 源体检（v0.1.391）：手动入口，后台逐台测连通性；结果缓存 30 分钟 ----
+  const [health, setHealth] = useState<HealthMap>(() => loadHealthCache())
+  const [healthRunning, setHealthRunning] = useState(false)
+  const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null)
+  const [healthOnly, setHealthOnly] = useState(false)
+  const [healthSort, setHealthSort] = useState(false)
+  const healthCtrlRef = useRef<AbortController | null>(null)
+  const healthCountsNow = useMemo(() => healthCounts(liveChannels, health), [liveChannels, health])
+  const healthAt = useMemo(() => {
+    let at = 0
+    for (const ch of liveChannels) {
+      const h = healthOf(health, ch)
+      if (h && h.at > at) at = h.at
+    }
+    return at || null
+  }, [liveChannels, health])
+  const healthAgeText = healthAt
+    ? (() => { const m = Math.floor((Date.now() - healthAt) / 60000); return m < 1 ? '刚刚' : `${m} 分钟前` })()
+    : ''
+  const startHealth = async () => {
+    if (healthRunning || !liveChannels.length) return
+    const ctrl = new AbortController()
+    healthCtrlRef.current = ctrl
+    setHealthRunning(true)
+    setHealthProgress({ done: 0, total: liveChannels.length })
+    try {
+      const fresh = await probeChannels(liveChannels, {
+        signal: ctrl.signal,
+        onProgress: (done, total, key, result) => {
+          setHealth(prev => { const next = { ...prev, [key]: result }; saveHealthCache(next); return next })
+          setHealthProgress({ done, total })
+        },
+      })
+      setHealth(prev => { const next = { ...prev, ...fresh }; saveHealthCache(next); return next })
+    } finally {
+      healthCtrlRef.current = null
+      setHealthRunning(false)
+      setHealthProgress(null)
+    }
+  }
+  const stopHealth = () => { healthCtrlRef.current?.abort() }
+  // 体检视图：过滤 + 排序只作用于当前直播列表（分组、内容筛选、分页都按它算）
+  const liveDisplay = useMemo(
+    () => applyHealthView(liveChannels, health, { onlyHealthy: healthOnly, sortBySpeed: healthSort }),
+    [liveChannels, health, healthOnly, healthSort],
+  )
+  const liveGroups = groupChannels(liveDisplay, liveCountry)
   const liveContents = ['all', ...liveGroups.contents]
 
   const addCustomSource = async (label: string, urlRaw: string, which: 'live' | 'vod') => {
@@ -756,14 +807,20 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     return (
       <>
         <div className="wt-channels">
-          {pageSlice(filtered, page).map(ch => (
-            <button key={ch.key} className="wt-channel" onClick={() => openHls(ch)} title={`${ch.name} · 点一下开始播放`}>
+          {pageSlice(filtered, page).map(ch => {
+            const h = healthOf(health, ch)
+            return (
+            <button key={ch.key} className={`wt-channel${h && !h.ok ? ' wt-channel-dead' : ''}`} onClick={() => openHls(ch)} title={`${ch.name} · 点一下开始播放`}>
               {ch.logo && <img className="wt-channel-logo" src={ch.logo} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />}
               <span className="wt-channel-name">{ch.name}</span>
+              {h && (h.ok
+                ? <span className="wt-health-ok">✓ {h.ms}ms</span>
+                : <span className="wt-health-bad">✗ 不通</span>)}
               {isChannelUnofficial(ch) && <span className="wt-unofficial-badge">未授权转播</span>}
               <span className="wt-channel-meta">{CONTENT_LABELS[ch.content] ?? '其他'}{ch.urls.length > 1 ? ` · ${ch.urls.length} 个源` : ''}</span>
             </button>
-          ))}
+            )
+          })}
         </div>
         <Pager page={page} pageCount={total} total={filtered.length} unit="个台"
           onPage={n => setLivePages(prev => ({ ...prev, [pageKey]: n }))} />
@@ -1080,6 +1137,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           <button className="btn sm ghost" disabled={liveLoading} onClick={() => void loadLive(liveCountry, true)}>
             <RefreshCw size={13} /> {liveLoading ? '加载中…' : '重新加载'}
           </button>
+          <button className="btn sm ghost" disabled={liveLoading || healthRunning || !liveLoaded || !liveChannels.length} onClick={() => void startHealth()} title="逐个测每个台的服务器通不通、快不快（后台进行，不堵列表）">
+            <Activity size={13} /> {healthRunning ? '体检中…' : '开始体检'}
+          </button>
+          {healthRunning && (
+            <button className="btn sm ghost" onClick={stopHealth}>停止</button>
+          )}
           <button className="btn sm ghost" onClick={() => openIframe('央视官网直播间', 'https://tv.cctv.com/live/')}>
             <ExternalLink size={13} /> 央视官网直播间
           </button>
@@ -1095,6 +1158,22 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <span className="fg-muted">自定义源优先于内置源；同名台自动合并多条地址。</span>
           </div>
         )}
+        {liveLoaded && (
+          <div className="wt-health-bar">
+            {healthRunning && healthProgress ? (
+              <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {healthProgress.done}/{healthProgress.total} 个台…（后台进行，不影响看列表；可点「停止」）</span>
+            ) : healthCountsNow.tested > 0 ? (
+              <>
+                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）</span>
+                <button className="btn sm ghost" disabled={healthRunning} onClick={() => void startHealth()}>
+                  <RefreshCw size={13} /> 重新体检
+                </button>
+              </>
+            ) : (
+              <span className="fg-muted">还没体检过：点「开始体检」逐个测每个台通不通、快不快，死的标出来、快的排前面。</span>
+            )}
+          </div>
+        )}
         <div className="fg-muted">自定义直播源不在这里填了，去「设置」页签粘贴 m3u 地址，保存后频道会合并进来。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
         {!liveLoaded && liveLoading && <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取频道列表…</div>}
         {liveLoaded && (
@@ -1108,6 +1187,15 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 </button>
               ))}
             </div>
+            {healthCountsNow.tested > 0 && (
+              <div className="wt-chips">
+                <span className="fg-muted">体检：</span>
+                <button className={`wt-chip${healthOnly ? ' on' : ''}`} aria-pressed={healthOnly}
+                  onClick={() => { setHealthOnly(v => !v); setLivePages({}) }}>只看已测通的</button>
+                <button className={`wt-chip${healthSort ? ' on' : ''}`} aria-pressed={healthSort}
+                  onClick={() => { setHealthSort(v => !v); setLivePages({}) }}>快的排前面</button>
+              </div>
+            )}
             {liveCountry === 'CN' ? (
               liveGroups.origins.map(g => {
                 const gid = `live-cn-${g.key}`
@@ -1125,7 +1213,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 )
               })
             ) : (
-              <ChannelList channels={liveChannels} pageKey={`${liveCountry}-${contentFilter}`} />
+              <ChannelList channels={liveDisplay} pageKey={`${liveCountry}-${contentFilter}`} />
             )}
           </>
         )}

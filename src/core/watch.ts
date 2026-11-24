@@ -2,6 +2,8 @@
 // 直播只用合法公开源：iptv-org（公开免费频道目录）与 Free-TV；绝不内置
 // vbskycn/lilei6900s/fanmingming/Guovin 等聚合央视/卫视的第三方转播源。
 // 自定义源由用户自己粘贴 m3u 订阅链接（像 VLC 里粘地址），输入框留空不预填。
+// 源体检（v0.1.391）：直播页手动「开始体检」，逐台测连通性（通/不通、耗时），
+// 死台标出、可过滤，快的排前面；结果缓存 30 分钟。
 // 分组口径（Ethan 定）：外国只按国家 + 内容两维；中国按央视/卫视/其他 + 内容
 // 两维；General/Undefined 统一归“其他”。全部数据只存本机，不进云同步/备份。
 // 来源标注（v0.1.387，Ethan 2026-11-24 拍板：保持现状、界面标注）：实测
@@ -520,6 +522,156 @@ export async function loadCountryChannels(country: string, opts: { force?: boole
     if (vodUrls.length) vodChannels.push({ ...ch, urls: vodUrls, unofficial: isUnofficialStreamUrl(vodUrls[0]) })
   }
   return { channels: live, vod: channelsToVod(vodChannels), sets: settled.map(s => s.result) }
+}
+
+// ---------------- 源体检（v0.1.391） ----------------
+// iptv-checker 思路的轻量版：只测每个台的服务器是否能连通（轻量探测，
+// 不是完整播流）。测法：fetch(mode: 'no-cors') 发一个 GET，响应头一到
+// 就算通（立刻 abort 断开，不等正文下完——流地址正文可能很大），
+// 耗时 = 发出请求到收到响应头；超时 / 网络错误 / 中止 = 不通。
+// no-cors 下读不到状态码，所以 404 的播放列表也会算通——这只是连通性
+// 探测，真播不了点开播放器仍会报错并自动换源，界面上如实写“测连通”。
+// 手动入口（不自动跑、不在启动时全量测）；结果缓存 30 分钟，重复打开
+// 直接读缓存；8 路并行、单地址 4 秒超时，后台跑、不堵列表渲染。
+
+export interface ChannelHealth {
+  ok: boolean
+  /** 通时的耗时（毫秒，发出请求 → 收到响应头） */
+  ms?: number
+  /** 测得的时间戳 */
+  at: number
+  /** 测通的那条地址；全不通时为试过的第一条地址（供缓存校验：须是当前频道的某条地址） */
+  url: string
+}
+
+export type HealthMap = Record<string, ChannelHealth>
+
+export const HEALTH_CACHE_KEY = 'acm.watch.health.v1'
+export const HEALTH_CACHE_TTL_MS = 30 * 60_000
+export const HEALTH_PROBE_TIMEOUT_MS = 4000
+export const HEALTH_PROBE_CONCURRENCY = 8
+
+export function loadHealthCache(): HealthMap {
+  try {
+    const v = JSON.parse(localStorage.getItem(HEALTH_CACHE_KEY) ?? '{}') as HealthMap
+    if (!v || typeof v !== 'object') return {}
+    const now = Date.now()
+    const out: HealthMap = {}
+    for (const [k, e] of Object.entries(v)) {
+      if (e && typeof e === 'object' && typeof e.ok === 'boolean' && typeof e.at === 'number' && typeof e.url === 'string' && now - e.at < HEALTH_CACHE_TTL_MS) out[k] = e
+    }
+    return out
+  } catch { return {} }
+}
+
+export function saveHealthCache(map: HealthMap): void {
+  try {
+    const entries = Object.entries(map).slice(0, 2000)
+    localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch { /* 忽略 */ }
+}
+
+/** 测一条流地址：响应头到了就算通，立刻断开不等正文 */
+export async function probeStreamUrl(url: string, timeoutMs = HEALTH_PROBE_TIMEOUT_MS, signal?: AbortSignal): Promise<{ ok: boolean; ms: number }> {
+  if (!/^https?:\/\//.test(url)) return { ok: false, ms: 0 }
+  if (signal?.aborted) return { ok: false, ms: 0 }
+  const ctrl = new AbortController()
+  const timer = globalThis.setTimeout(() => ctrl.abort(), timeoutMs)
+  const onAbort = () => ctrl.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  const t0 = Date.now()
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal })
+    return { ok: true, ms: Math.max(1, Date.now() - t0) }
+  } catch {
+    return { ok: false, ms: Date.now() - t0 }
+  } finally {
+    globalThis.clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+    try { ctrl.abort() } catch { /* 忽略 */ }
+  }
+}
+
+/** 测一个台：按播放顺序逐条试地址，第一条通的即算通（播放器也是这个顺序换源） */
+export async function probeChannel(ch: LiveChannel, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ChannelHealth> {
+  for (const u of ch.urls) {
+    if (opts.signal?.aborted) break
+    const r = await probeStreamUrl(u, opts.timeoutMs, opts.signal)
+    if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u }
+  }
+  return { ok: false, at: Date.now(), url: ch.urls[0] ?? '' }
+}
+
+export interface ProbeChannelsOptions {
+  concurrency?: number
+  timeoutMs?: number
+  signal?: AbortSignal
+  onProgress?: (done: number, total: number, key: string, result: ChannelHealth) => void
+}
+
+/** 测一批台：限定并行数后台跑；中途取消时返回已测到的部分结果 */
+export async function probeChannels(channels: LiveChannel[], opts: ProbeChannelsOptions = {}): Promise<HealthMap> {
+  const concurrency = Math.max(1, opts.concurrency ?? HEALTH_PROBE_CONCURRENCY)
+  const out: HealthMap = {}
+  let next = 0
+  let done = 0
+  const workers = Array.from({ length: Math.min(concurrency, channels.length) }, async () => {
+    for (;;) {
+      if (opts.signal?.aborted) return
+      const i = next++
+      if (i >= channels.length) return
+      const ch = channels[i]
+      const r = await probeChannel(ch, { timeoutMs: opts.timeoutMs, signal: opts.signal })
+      out[ch.key] = r
+      done++
+      opts.onProgress?.(done, channels.length, ch.key, r)
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/** 某台的体检结果：缓存条目须对应当前频道的某条地址，否则是别的国家
+ * 同名台的旧结果，不用（频道 key 只归一化了台名，不同国家可能重名）。 */
+export function healthOf(health: HealthMap, ch: LiveChannel): ChannelHealth | undefined {
+  const h = health[ch.key]
+  if (!h) return undefined
+  if (h.url && !ch.urls.includes(h.url)) return undefined
+  return h
+}
+
+export function healthCounts(channels: LiveChannel[], health: HealthMap): { tested: number; ok: number; bad: number } {
+  let tested = 0
+  let ok = 0
+  for (const ch of channels) {
+    const h = healthOf(health, ch)
+    if (!h) continue
+    tested++
+    if (h.ok) ok++
+  }
+  return { tested, ok, bad: tested - ok }
+}
+
+/** 体检视图：只看已测通的（过滤）+ 快的排前面（通的按耗时升序，未测的
+ * 居中，死的沉底；同组内保持原顺序，不二次打乱）。 */
+export function applyHealthView(channels: LiveChannel[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean } = {}): LiveChannel[] {
+  let list = channels
+  if (opts.onlyHealthy) list = list.filter(ch => healthOf(health, ch)?.ok === true)
+  if (opts.sortBySpeed) {
+    const rank = (ch: LiveChannel): number => {
+      const h = healthOf(health, ch)
+      if (!h) return 1
+      return h.ok ? 0 : 2
+    }
+    list = [...list].sort((a, b) => {
+      const ra = rank(a)
+      const rb = rank(b)
+      if (ra !== rb) return ra - rb
+      if (ra === 0) return (healthOf(health, a)?.ms ?? 0) - (healthOf(health, b)?.ms ?? 0)
+      return 0
+    })
+  }
+  return list
 }
 
 // ---------------- 分组 ----------------

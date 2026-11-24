@@ -2307,6 +2307,11 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-channel-logo { height: 22px; max-width: 100%; object-fit: contain; }
 .wt-channel-name { font-size: 13.5px; font-weight: 700; line-height: 1.35; word-break: break-word; }
 .wt-channel-meta { font-size: 11.5px; color: var(--text-3); }
+/* v0.1.391：源体检角标（通=绿、耗时；不通=红）+ 死台变淡 + 体检状态行 */
+.wt-health-ok { font-size: 11px; font-weight: 700; color: #16a34a; border: 1px solid #16a34a; border-radius: 999px; padding: 1px 7px; }
+.wt-health-bad { font-size: 11px; font-weight: 700; color: #dc2626; border: 1px solid #dc2626; border-radius: 999px; padding: 1px 7px; }
+.wt-channel-dead { opacity: .62; }
+.wt-health-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .wt-unofficial-badge { font-size: 11px; font-weight: 700; line-height: 1.4; color: #fff; background: #d97706; border-radius: 999px; padding: 1px 7px; }
 .wt-unofficial-note { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; line-height: 1.6; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--border); border-left: 3px solid #d97706; border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
 .wt-unofficial-note svg { flex-shrink: 0; margin-top: 2px; color: #d97706; }

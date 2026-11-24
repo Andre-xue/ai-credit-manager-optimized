@@ -5,6 +5,9 @@ import {
   isUnofficialStreamUrl, isChannelUnofficial,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
+  probeStreamUrl, probeChannel, probeChannels, loadHealthCache, saveHealthCache,
+  healthOf, healthCounts, applyHealthView,
+  type HealthMap,
   normalizeTitleKey, regionLabelOfCountry, mapGenreNames,
   fetchTmdbGenres, searchTmdbTitle, fetchTmdbDetails,
   buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
@@ -699,5 +702,177 @@ describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () 
       expect(css).toContain(s)
     }
     expect(css).toMatch(/\.wt-wall \{[^}]*grid-template-columns: repeat\(6, 1fr\)/s)
+  })
+})
+
+// 源体检（v0.1.391）：逐台测连通性——通/不通、耗时；死台标出、可过滤，快的排前面；结果缓存 30 分钟
+describe('watch.probeStreamUrl（v0.1.391 源体检探针）', () => {
+  it('fetch  resolve（响应头到了）→ 通，耗时 ≥ 1ms', async () => {
+    vi.stubGlobal('fetch', async () => ({}))
+    const r = await probeStreamUrl('http://example.com/a.m3u8', 1000)
+    expect(r.ok).toBe(true)
+    expect(r.ms).toBeGreaterThanOrEqual(1)
+  })
+  it('fetch 抛错 → 不通；非 http(s) 地址直接不通，不发请求', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => { calls++; throw new TypeError('Load failed') })
+    expect((await probeStreamUrl('http://example.com/a.m3u8', 1000)).ok).toBe(false)
+    expect((await probeStreamUrl('not-a-url', 1000)).ok).toBe(false)
+    expect((await probeStreamUrl('ftp://example.com/a.m3u8', 1000)).ok).toBe(false)
+    expect(calls).toBe(1)
+  })
+  it('超时无响应 → 不通（不等无限久）', async () => {
+    // 桩要像真 fetch 一样响应 abort 信号，否则超时后 await 永远不返回
+    vi.stubGlobal('fetch', (_u: unknown, init?: { signal?: AbortSignal }) => new Promise((_res, rej) => {
+      init?.signal?.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    const t0 = Date.now()
+    const r = await probeStreamUrl('http://example.com/slow.m3u8', 30)
+    expect(r.ok).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+  it('已取消的 signal → 直接不通，不发请求', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => { calls++; return {} })
+    const ctrl = new AbortController()
+    ctrl.abort()
+    expect((await probeStreamUrl('http://example.com/a.m3u8', 1000, ctrl.signal)).ok).toBe(false)
+    expect(calls).toBe(0)
+  })
+})
+
+const HEALTH_CH = (key: string, urls: string[]): LiveChannel => ({ key, name: key, content: 'other', country: 'CN', urls, sourceIds: ['iptv-cn'] })
+
+describe('watch.probeChannel / probeChannels（v0.1.391）', () => {
+  it('第一条不通自动试下一条：通的那条即算通，记通的地址', async () => {
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      return {}
+    })
+    const r = await probeChannel(HEALTH_CH('备用台', ['http://example.com/dead/a.m3u8', 'http://example.com/fast/b.m3u8']))
+    expect(r.ok).toBe(true)
+    expect(r.url).toBe('http://example.com/fast/b.m3u8')
+    expect(typeof r.ms).toBe('number')
+  })
+  it('全部地址都不通 → 不通，url 记第一条', async () => {
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    const r = await probeChannel(HEALTH_CH('死台', ['http://example.com/dead/a.m3u8', 'http://example.com/dead/b.m3u8']))
+    expect(r.ok).toBe(false)
+    expect(r.url).toBe('http://example.com/dead/a.m3u8')
+    expect(r.ms).toBeUndefined()
+  })
+  it('并行跑：onProgress 按完成数递增；并发数不超过上限', async () => {
+    let live = 0
+    let maxLive = 0
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      live++; maxLive = Math.max(maxLive, live)
+      await new Promise(r => setTimeout(r, 15))
+      live--
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      return {}
+    })
+    const chans = [
+      HEALTH_CH('a', ['http://example.com/fast/a.m3u8']),
+      HEALTH_CH('b', ['http://example.com/dead/b.m3u8']),
+      HEALTH_CH('c', ['http://example.com/fast/c.m3u8']),
+      HEALTH_CH('d', ['http://example.com/fast/d.m3u8']),
+      HEALTH_CH('e', ['http://example.com/dead/e.m3u8']),
+      HEALTH_CH('f', ['http://example.com/fast/f.m3u8']),
+    ]
+    const seen: number[] = []
+    const out = await probeChannels(chans, { concurrency: 2, onProgress: (done) => { seen.push(done) } })
+    expect(Object.keys(out)).toHaveLength(6)
+    expect(out['a'].ok).toBe(true)
+    expect(out['b'].ok).toBe(false)
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6])
+    expect(maxLive).toBeLessThanOrEqual(2)
+  })
+  it('取消后停在已测的部分：返回部分结果，不再测剩下的', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => { calls++; await new Promise(r => setTimeout(r, 10)); return {} })
+    const ctrl = new AbortController()
+    const chans = [1, 2, 3, 4, 5, 6].map(i => HEALTH_CH(`ch${i}`, [`http://example.com/fast/${i}.m3u8`]))
+    const out = await probeChannels(chans, {
+      concurrency: 1, signal: ctrl.signal,
+      onProgress: (done) => { if (done === 2) ctrl.abort() },
+    })
+    expect(Object.keys(out).length).toBeLessThanOrEqual(2)
+    expect(calls).toBeLessThanOrEqual(2)
+  })
+})
+
+describe('watch 体检缓存（v0.1.391：30 分钟）', () => {
+  it('保存后读回一致；超过 30 分钟的条目被丢掉', () => {
+    saveHealthCache({
+      'cctv-1': { ok: true, ms: 120, at: Date.now(), url: 'http://example.com/cctv1.m3u8' },
+      'old-one': { ok: true, ms: 300, at: Date.now() - 31 * 60_000, url: 'http://example.com/old.m3u8' },
+    })
+    const back = loadHealthCache()
+    expect(back['cctv-1']?.ok).toBe(true)
+    expect(back['cctv-1']?.ms).toBe(120)
+    expect(back['old-one']).toBeUndefined()
+  })
+  it('healthOf：缓存条目须是当前频道的某条地址，否则不用（防不同国家同名台串结果）', () => {
+    const health: HealthMap = {
+      'news': { ok: true, ms: 50, at: Date.now(), url: 'http://example.com/cn-news.m3u8' },
+    }
+    expect(healthOf(health, HEALTH_CH('news', ['http://example.com/cn-news.m3u8']))?.ok).toBe(true)
+    expect(healthOf(health, HEALTH_CH('news', ['http://example.com/us-news.m3u8']))).toBeUndefined()
+    expect(healthOf(health, HEALTH_CH('other', ['http://example.com/cn-news.m3u8']))).toBeUndefined()
+  })
+})
+
+describe('watch.applyHealthView / healthCounts（v0.1.391 过滤排序）', () => {
+  const chans = [
+    HEALTH_CH('fast', ['http://example.com/fast.m3u8']),
+    HEALTH_CH('slow', ['http://example.com/slow.m3u8']),
+    HEALTH_CH('dead', ['http://example.com/dead.m3u8']),
+    HEALTH_CH('untested', ['http://example.com/u.m3u8']),
+  ]
+  const health: HealthMap = {
+    'fast': { ok: true, ms: 80, at: Date.now(), url: 'http://example.com/fast.m3u8' },
+    'slow': { ok: true, ms: 900, at: Date.now(), url: 'http://example.com/slow.m3u8' },
+    'dead': { ok: false, at: Date.now(), url: 'http://example.com/dead.m3u8' },
+  }
+  it('healthCounts：已测 3 · 通 2 · 不通 1', () => {
+    expect(healthCounts(chans, health)).toEqual({ tested: 3, ok: 2, bad: 1 })
+    expect(healthCounts(chans, {})).toEqual({ tested: 0, ok: 0, bad: 0 })
+  })
+  it('只看已测通的：只剩通的台', () => {
+    expect(applyHealthView(chans, health, { onlyHealthy: true }).map(c => c.key)).toEqual(['fast', 'slow'])
+  })
+  it('快的排前面：通的按耗时升序，未测的居中，死的沉底；原顺序不打乱', () => {
+    expect(applyHealthView(chans, health, { sortBySpeed: true }).map(c => c.key))
+      .toEqual(['fast', 'slow', 'untested', 'dead'])
+    // 列表顺序打乱时仍按耗时排：慢台在前、快台在后 → 快台提到前面
+    const shuffled = [chans[1], chans[0], chans[2]]
+    expect(applyHealthView(shuffled, health, { sortBySpeed: true }).map(c => c.key))
+      .toEqual(['fast', 'slow', 'dead'])
+  })
+  it('不开启过滤/排序时原样返回', () => {
+    expect(applyHealthView(chans, health)).toEqual(chans)
+    expect(applyHealthView(chans, {})).toEqual(chans)
+  })
+})
+
+describe('watch 源体检结构（v0.1.391：WatchTool.tsx + styles.css）', () => {
+  it('直播页签有体检入口、状态行、过滤/排序开关；频道卡片按结果打角标', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of ['开始体检', '体检中', '停止', '上次体检', '只看已测通的', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead']) {
+      expect(src).toContain(s)
+    }
+    // 死台变淡、不通角标；通的角标带耗时
+    expect(src).toContain('✗ 不通')
+    expect(src).toContain('✓ {h.ms}ms')
+    // 体检不自动跑：没有在打开直播/切换国家时自动调用 startHealth
+    expect(src).not.toMatch(/useEffect\(\(\) => \{[^}]*startHealth/s)
+    // 394 横向页签与 395 海报墙未动
+    expect(src).toContain("activeTab === 'live'")
+    expect(src).toContain('wt-wall')
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    for (const s of ['.wt-health-ok {', '.wt-health-bad {', '.wt-channel-dead {', '.wt-health-bar {']) {
+      expect(css).toContain(s)
+    }
   })
 })
