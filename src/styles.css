@@ -2352,14 +2352,20 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-set-block h4 { margin: 0; font-size: 13.5px; font-weight: 700; }
 .wt-set-note { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
 .wt-ai-panel .ws-route > span, .wt-set-block .ws-route > span { white-space: nowrap; flex: none; }
-.wt-player { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #000; margin-bottom: 12px; }
+/* v0.1.407：视频区永远 16:9 定高（.wt-video 绝对定位铺满），加载中与失败是区内覆盖层，
+   失败时不再塌成黑条，也撑不大页面；.wt-player 加 min-width: 0 防内容撑宽 */
+.wt-player { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #000; margin-bottom: 12px; min-width: 0; }
 .wt-player-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; background: var(--bg-2); }
 .wt-player-title { font-size: 13.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
 .wt-player-head .btn { margin-left: auto; }
 .wt-player-head .fg-muted { margin-left: auto; }
 .wt-player-head .btn + .fg-muted { margin-left: 0; }
-.wt-video-wrap { position: relative; background: #000; }
-.wt-video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; }
+.wt-video-wrap { position: relative; background: #000; aspect-ratio: 16 / 9; }
+.wt-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000; }
+.wt-vload { position: absolute; inset: 0; display: flex; gap: 8px; align-items: center; justify-content: center; color: #fff; font-size: 13px; background: rgba(0,0,0,.55); pointer-events: none; z-index: 2; }
+.wt-vfail { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; justify-content: center; padding: 16px 20px; color: #fff; background: rgba(0,0,0,.82); font-size: 13.5px; line-height: 1.7; z-index: 2; overflow: auto; }
+.wt-vfail svg { color: #f87171; }
+.wt-vfail-sub { color: rgba(255,255,255,.65); font-size: 12.5px; }
 .wt-bigplay { position: absolute; inset: 0; margin: auto; width: max-content; height: max-content; display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,.65); color: #fff; border: 1px solid rgba(255,255,255,.4); border-radius: 999px; padding: 10px 18px; font-size: 14px; cursor: pointer; }
 .wt-iframe-wrap { position: relative; background: #000; }
 .wt-iframe { width: 100%; height: 480px; border: 0; display: block; background: #fff; }
@@ -2386,6 +2392,7 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 @media (max-width: 840px) { .wt-wall { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 560px) { .wt-wall { grid-template-columns: repeat(3, 1fr); gap: 14px 10px; } }
 .wt-wall-card { display: block; text-align: left; width: 100%; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit; min-width: 0; }
+.wt-wall-card-dead { opacity: .55; }
 .wt-wall-poster { display: block; position: relative; aspect-ratio: 2 / 3; border-radius: 10px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--border); }
 .wt-wall-poster img { width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; display: block; }
 .wt-wall-card:hover .wt-wall-poster img { transform: scale(1.045); }

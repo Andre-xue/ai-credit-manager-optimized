@@ -276,9 +276,12 @@ export function mergeChannels(lists: LiveChannel[][]): LiveChannel[] {
 }
 
 // ---------------- 视频点播（v0.1.390） ----------------
-// m3u 里的点播条目与直播分开：电影/剧集文件（mp4/mkv/mov/avi/webm/flv），
+// m3u 里的点播条目与直播分开：电影/剧集文件（mp4/mkv/mov/avi/webm），
 // 或内容为电影/剧集（group-title Movies/Series）且地址不是直播流的条目。
 // m3u8 与 .ts 永远算直播（哪怕 group-title 是 Movies，如 CCTV-6 电影频道）；
+// .flv 不算点播文件后缀：FLV over HTTP 是常见直播流格式（如东莞综合新闻频道的
+// stream.sun0769.com/dgrtv1/mp4tv1_1500.flv），按后缀判点播会把新闻直播台错分
+// 进点播区；Movies/Series 分组的 .flv 仍按点播算（走下面 content 规则）。
 // 无后缀的电影/剧集地址按点播算（直播流一般都带 m3u8/.ts 后缀）。
 
 export interface VodEpisode {
@@ -302,7 +305,12 @@ export interface VodTitle {
   unofficial: boolean
 }
 
-const VOD_FILE_RE = /\.(mp4|mkv|mov|avi|webm|flv)(\?.*)?$/i
+const VOD_FILE_RE = /\.(mp4|mkv|mov|avi|webm)(\?.*)?$/i
+
+/** 某条流地址是否为 FLV 流：浏览器 <video> 与 hls.js 都播不了，需 flv.js（MSE） */
+export function isFlvUrl(url: string): boolean {
+  return /\.flv(\?.*)?$/i.test(url.split('?')[0])
+}
 
 /** 某条流地址是否为点播：文件后缀是点播格式，或内容为电影/剧集且不是直播流 */
 export function isVodUrl(url: string, content?: string): boolean {
@@ -542,6 +550,8 @@ export interface ChannelHealth {
   at: number
   /** 测通的那条地址；全不通时为试过的第一条地址（供缓存校验：须是当前频道的某条地址） */
   url: string
+  /** 点播体检专用：测通的那一集标签（直播没有） */
+  episode?: string
 }
 
 export type HealthMap = Record<string, ChannelHealth>
@@ -653,9 +663,12 @@ export function healthCounts(channels: LiveChannel[], health: HealthMap): { test
 }
 
 /** 体检视图：只看已测通的（过滤）+ 快的排前面（通的按耗时升序，未测的
- * 居中，死的沉底；同组内保持原顺序，不二次打乱）。 */
-export function applyHealthView(channels: LiveChannel[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean } = {}): LiveChannel[] {
+ * 居中，死的沉底；同组内保持原顺序，不二次打乱）。
+ * v0.1.407 hideDead：体检后已测不通的台默认隐藏——只隐藏已测不通的，
+ * 未测的台不受影响；设置页签「显示已测不通的台」开关可恢复显示。 */
+export function applyHealthView(channels: LiveChannel[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean; hideDead?: boolean } = {}): LiveChannel[] {
   let list = channels
+  if (opts.hideDead) list = list.filter(ch => healthOf(health, ch)?.ok !== false)
   if (opts.onlyHealthy) list = list.filter(ch => healthOf(health, ch)?.ok === true)
   if (opts.sortBySpeed) {
     const rank = (ch: LiveChannel): number => {
@@ -672,6 +685,113 @@ export function applyHealthView(channels: LiveChannel[], health: HealthMap, opts
     })
   }
   return list
+}
+
+// ---------------- 点播体检（v0.1.407）：与 391 直播体检同款探针 ----------------
+// 一部点播可能多集、每集多线路：按集顺序、每集按线路顺序逐条试，第一条通的即算通
+// （播放器也是这个顺序换源）。结果与直播共用同一缓存 acm.watch.health.v1，
+// 键加 `vod:` 前缀，与直播台的键（归一化台名）不冲突。
+export function vodHealthKey(v: VodTitle): string {
+  return `vod:${v.key}`
+}
+
+/** 测一部点播：第一条通的线路即算通，记通的地址 */
+export async function probeVodTitle(v: VodTitle, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ChannelHealth> {
+  for (const ep of v.episodes) {
+    for (const u of ep.urls) {
+      if (opts.signal?.aborted) break
+      const r = await probeStreamUrl(u, opts.timeoutMs, opts.signal)
+      if (r.ok) return { ok: true, ms: r.ms, at: Date.now(), url: u, episode: ep.label }
+    }
+    if (opts.signal?.aborted) break
+  }
+  return { ok: false, at: Date.now(), url: v.episodes[0]?.urls[0] ?? '' }
+}
+
+export interface ProbeVodTitlesOptions {
+  concurrency?: number
+  timeoutMs?: number
+  signal?: AbortSignal
+  onProgress?: (done: number, total: number, key: string, result: ChannelHealth) => void
+}
+
+/** 测一批点播：限定并行数后台跑；中途取消时返回已测到的部分结果 */
+export async function probeVodTitles(titles: VodTitle[], opts: ProbeVodTitlesOptions = {}): Promise<HealthMap> {
+  const concurrency = Math.max(1, opts.concurrency ?? HEALTH_PROBE_CONCURRENCY)
+  const out: HealthMap = {}
+  let next = 0
+  let done = 0
+  const workers = Array.from({ length: Math.min(concurrency, titles.length) }, async () => {
+    for (;;) {
+      if (opts.signal?.aborted) return
+      const i = next++
+      if (i >= titles.length) return
+      const v = titles[i]
+      const r = await probeVodTitle(v, { timeoutMs: opts.timeoutMs, signal: opts.signal })
+      out[vodHealthKey(v)] = r
+      done++
+      opts.onProgress?.(done, titles.length, vodHealthKey(v), r)
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/** 某部点播的体检结果：缓存条目须是当前这部的某条线路地址，否则不用 */
+export function vodHealthOf(health: HealthMap, v: VodTitle): ChannelHealth | undefined {
+  const h = health[vodHealthKey(v)]
+  if (!h) return undefined
+  const urls = v.episodes.flatMap(e => e.urls)
+  if (h.url && !urls.includes(h.url)) return undefined
+  return h
+}
+
+export function vodHealthCounts(titles: VodTitle[], health: HealthMap): { tested: number; ok: number; bad: number } {
+  let tested = 0
+  let ok = 0
+  for (const v of titles) {
+    const h = vodHealthOf(health, v)
+    if (!h) continue
+    tested++
+    if (h.ok) ok++
+  }
+  return { tested, ok, bad: tested - ok }
+}
+
+/** 点播体检视图：只看能播的（过滤）+ 快的排前面（通的按耗时升序，未测的
+ * 居中，死的沉底；同组内保持原顺序）。入参是海报墙条目（带可选 vod），
+ * 没源只展示的条目按“未测”处理。 */
+export function applyVodHealthView<T extends { vod?: VodTitle }>(items: T[], health: HealthMap, opts: { onlyHealthy?: boolean; sortBySpeed?: boolean } = {}): T[] {
+  let list = items
+  if (opts.onlyHealthy) list = list.filter(it => it.vod && vodHealthOf(health, it.vod)?.ok === true)
+  if (opts.sortBySpeed) {
+    const rank = (it: T): number => {
+      if (!it.vod) return 1
+      const h = vodHealthOf(health, it.vod)
+      if (!h) return 1
+      return h.ok ? 0 : 2
+    }
+    list = [...list].sort((a, b) => {
+      const ra = rank(a)
+      const rb = rank(b)
+      if (ra !== rb) return ra - rb
+      if (ra === 0 && a.vod && b.vod) return (vodHealthOf(health, a.vod)?.ms ?? 0) - (vodHealthOf(health, b.vod)?.ms ?? 0)
+      return 0
+    })
+  }
+  return list
+}
+
+// ---------------- 显示已测不通的台（v0.1.407）：设置开关，只存本机 ----------------
+export const SHOW_DEAD_KEY = 'acm.watch.showDead.v1'
+
+/** 默认关：体检后已测不通的台默认隐藏 */
+export function loadShowDead(): boolean {
+  try { return localStorage.getItem(SHOW_DEAD_KEY) === '1' } catch { return false }
+}
+
+export function saveShowDead(v: boolean): void {
+  try { localStorage.setItem(SHOW_DEAD_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
 }
 
 // ---------------- 分组 ----------------

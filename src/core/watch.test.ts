@@ -2,11 +2,13 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
   parseM3u, parseM3uAsync, normalizeChannelName, contentKeyOf, stationOrigin,
   mergeChannels, groupChannels, fetchSourceSet, loadCountryChannels,
-  isUnofficialStreamUrl, isChannelUnofficial,
+  isUnofficialStreamUrl, isChannelUnofficial, isVodUrl, isFlvUrl,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
   probeStreamUrl, probeChannel, probeChannels, loadHealthCache, saveHealthCache,
   healthOf, healthCounts, applyHealthView,
+  probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
+  loadShowDead, saveShowDead,
   type HealthMap,
   normalizeTitleKey, regionLabelOfCountry, mapGenreNames,
   fetchTmdbGenres, searchTmdbTitle, fetchTmdbDetails,
@@ -687,8 +689,8 @@ describe('watch 海报墙结构（v0.1.395：WatchTool.tsx + styles.css）', () 
     for (const s of ['wt-wall-filters', 'wt-wall', 'wt-countbar', 'wt-sortbox', 'WALL_GENRES', 'WALL_YEARS', 'WALL_REGIONS', 'WALL_STATUS_FILTERS']) {
       expect(src).toContain(s)
     }
-    expect(src).toContain('pageSlice(wallFiltered, vodPage, 12)')
-    expect(src).toContain('pageCount(wallFiltered.length, 12)')
+    expect(src).toContain('pageSlice(wallShown, vodPage, 12)')
+    expect(src).toContain('pageCount(wallShown.length, 12)')
     for (const s of ['VodDetailSheet', 'wt-sheet-backdrop', 'wt-eps', 'wt-src-chips', 'wt-playbar', '暂无片源 · 仅展示', '＋ 加入片单']) {
       expect(src).toContain(s)
     }
@@ -859,7 +861,7 @@ describe('watch 源体检结构（v0.1.391：WatchTool.tsx + styles.css）', () 
   it('直播页签有体检入口、状态行、过滤/排序开关；频道卡片按结果打角标', async () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
-    for (const s of ['开始体检', '体检中', '停止', '上次体检', '只看已测通的', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead']) {
+    for (const s of ['开始体检', '体检中', '停止', '上次体检', '显示已测不通的台', '快的排前面', '重新体检', '还没体检过', 'startHealth', 'probeChannels', 'applyHealthView', 'healthCounts', 'loadHealthCache', 'wt-health-bar', 'wt-health-ok', 'wt-health-bad', 'wt-channel-dead']) {
       expect(src).toContain(s)
     }
     // 死台变淡、不通角标；通的角标带耗时
@@ -874,5 +876,170 @@ describe('watch 源体检结构（v0.1.391：WatchTool.tsx + styles.css）', () 
     for (const s of ['.wt-health-ok {', '.wt-health-bad {', '.wt-channel-dead {', '.wt-health-bar {']) {
       expect(css).toContain(s)
     }
+  })
+})
+
+describe('watch FLV 分类（v0.1.407：Dongguan 台）', () => {
+  const DONGGUAN_FLV = 'http://stream.sun0769.com/dgrtv1/mp4tv1_1500.flv'
+  it('isFlvUrl：.flv 认出来（带 query 也认），m3u8/mp4 不是', () => {
+    expect(isFlvUrl(DONGGUAN_FLV)).toBe(true)
+    expect(isFlvUrl('http://example.com/a.flv?token=1')).toBe(true)
+    expect(isFlvUrl('http://example.com/a.m3u8')).toBe(false)
+    expect(isFlvUrl('http://example.com/a.mp4')).toBe(false)
+  })
+  it('Dongguan 台：新闻分组的 .flv 不再判成点播；电影/剧集分组的 .flv 仍是点播', () => {
+    expect(isVodUrl(DONGGUAN_FLV, 'news')).toBe(false)
+    expect(isVodUrl(DONGGUAN_FLV)).toBe(false)
+    expect(isVodUrl(DONGGUAN_FLV, 'movies')).toBe(true)
+    expect(isVodUrl(DONGGUAN_FLV, 'series')).toBe(true)
+  })
+  it('真实条目：Dongguan 台留在直播、不进点播；mp4 电影仍进点播', async () => {
+    const m3u = `#EXTM3U
+#EXTINF:-1 tvg-id="DongguanComprehensiveNewsChannel.cn@SD" group-title="News",Dongguan Comprehensive News Channel
+${DONGGUAN_FLV}
+#EXTINF:-1 tvg-id="Movie1" group-title="Movies",Test Movie
+http://example.com/movie.mp4
+`
+    vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => m3u }))
+    const set: SourceSet = { id: 'custom-vod', label: '测试点播源', url: 'https://example.com/vod.m3u', country: 'WORLD' }
+    const { channels } = await fetchSourceSet(set)
+    expect(channels.some(c => c.name.includes('Dongguan'))).toBe(true)
+    const vod = channelsToVod(channels)
+    expect(vod.some(v => v.title.includes('Dongguan'))).toBe(false)
+    expect(vod.some(v => v.title === 'Test Movie')).toBe(true)
+  })
+})
+
+const VOD_A: VodTitle = {
+  key: 'movie-a', title: 'Movie A', kind: 'movie',
+  episodes: [{ label: '正片', urls: ['http://example.com/fast/a.mp4', 'http://example.com/dead/a2.mp4'], episodeNo: 0, unofficial: false }],
+  sourceIds: ['custom-vod'], unofficial: false,
+}
+const VOD_B: VodTitle = {
+  key: 'series-b', title: 'Series B', kind: 'series',
+  episodes: [
+    { label: '第 1 集', urls: ['http://example.com/dead/b1.mp4'], episodeNo: 1, unofficial: false },
+    { label: '第 2 集', urls: ['http://example.com/fast/b2.mp4'], episodeNo: 2, unofficial: false },
+  ],
+  sourceIds: ['custom-vod'], unofficial: false,
+}
+const VOD_DEAD: VodTitle = {
+  key: 'movie-dead', title: 'Dead Movie', kind: 'movie',
+  episodes: [{ label: '正片', urls: ['http://example.com/dead/d.mp4'], episodeNo: 0, unofficial: false }],
+  sourceIds: ['custom-vod'], unofficial: false,
+}
+
+describe('watch 点播体检（v0.1.407：probeVodTitle / vodHealthOf / vodHealthCounts / applyVodHealthView）', () => {
+  it('按集顺序、每集按线路顺序逐条试：第一条通的即算通，记通的地址与集', async () => {
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      return {}
+    })
+    const r = await probeVodTitle(VOD_A)
+    expect(r.ok).toBe(true)
+    expect(r.url).toBe('http://example.com/fast/a.mp4')
+    expect(r.episode).toBe('正片')
+    expect(typeof r.ms).toBe('number')
+  })
+  it('第一集死、第二集通 → 整部算通，记第二集', async () => {
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      return {}
+    })
+    const r = await probeVodTitle(VOD_B)
+    expect(r.ok).toBe(true)
+    expect(r.episode).toBe('第 2 集')
+  })
+  it('全部线路都不通 → 不通，url 记第一集第一条', async () => {
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Load failed') })
+    const r = await probeVodTitle(VOD_DEAD)
+    expect(r.ok).toBe(false)
+    expect(r.url).toBe('http://example.com/dead/d.mp4')
+  })
+  it('vodHealthOf：键带 vod: 前缀，缓存条目须是该片某条地址；直播键不串进来', () => {
+    const health: HealthMap = {
+      'vod:movie-a': { ok: true, ms: 90, at: Date.now(), url: 'http://example.com/fast/a.mp4' },
+    }
+    expect(vodHealthOf(health, VOD_A)?.ok).toBe(true)
+    expect(vodHealthOf(health, VOD_A)?.ms).toBe(90)
+    expect(vodHealthOf({ 'movie-a': { ok: true, ms: 90, at: Date.now(), url: 'http://example.com/fast/a.mp4' } }, VOD_A)).toBeUndefined()
+    const other: HealthMap = { 'vod:movie-a': { ok: true, ms: 90, at: Date.now(), url: 'http://example.com/other.mp4' } }
+    expect(vodHealthOf(other, VOD_A)).toBeUndefined()
+  })
+  it('vodHealthCounts / applyVodHealthView：只看能播的 + 快的排前面', () => {
+    const health: HealthMap = {
+      'vod:movie-a': { ok: true, ms: 90, at: Date.now(), url: 'http://example.com/fast/a.mp4' },
+      'vod:movie-dead': { ok: false, at: Date.now(), url: 'http://example.com/dead/d.mp4' },
+    }
+    const titles = [VOD_DEAD, VOD_A, VOD_B]
+    expect(vodHealthCounts(titles, health)).toEqual({ tested: 2, ok: 1, bad: 1 })
+    // 墙条目形（{ vod }）：点播体检视图作用在墙条目上
+    const wall = [{ vod: VOD_DEAD }, { vod: VOD_A }, { vod: VOD_B }]
+    expect(applyVodHealthView(wall, health, { onlyHealthy: true }).map(i => i.vod!.key)).toEqual(['movie-a'])
+    expect(applyVodHealthView(wall, health, { sortBySpeed: true }).map(i => i.vod!.key))
+      .toEqual(['movie-a', 'series-b', 'movie-dead'])
+    expect(applyVodHealthView(wall, health)).toEqual(wall)
+  })
+  it('probeVodTitles：批量跑，键带 vod: 前缀', async () => {
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      if (String(u).includes('dead')) throw new TypeError('Load failed')
+      return {}
+    })
+    const out = await probeVodTitles([VOD_A, VOD_DEAD])
+    expect(out['vod:movie-a'].ok).toBe(true)
+    expect(out['vod:movie-dead'].ok).toBe(false)
+  })
+})
+
+describe('watch 已测不通的台默认隐藏（v0.1.407）', () => {
+  const chans = [
+    HEALTH_CH('fast', ['http://example.com/fast.m3u8']),
+    HEALTH_CH('dead', ['http://example.com/dead.m3u8']),
+    HEALTH_CH('untested', ['http://example.com/u.m3u8']),
+  ]
+  const health: HealthMap = {
+    'fast': { ok: true, ms: 80, at: Date.now(), url: 'http://example.com/fast.m3u8' },
+    'dead': { ok: false, at: Date.now(), url: 'http://example.com/dead.m3u8' },
+  }
+  it('hideDead：只藏已测不通的，通的与未测的都留着', () => {
+    expect(applyHealthView(chans, health, { hideDead: true }).map(c => c.key)).toEqual(['fast', 'untested'])
+    expect(applyHealthView(chans, health, { hideDead: false }).map(c => c.key)).toEqual(['fast', 'dead', 'untested'])
+  })
+  it('hideDead 与快的排前面可叠加', () => {
+    expect(applyHealthView(chans, health, { hideDead: true, sortBySpeed: true }).map(c => c.key)).toEqual(['fast', 'untested'])
+  })
+  it('开关默认关；存取往返', () => {
+    expect(loadShowDead()).toBe(false)
+    saveShowDead(true)
+    expect(loadShowDead()).toBe(true)
+    saveShowDead(false)
+    expect(loadShowDead()).toBe(false)
+  })
+})
+
+describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
+  it('播放器失败态在视频区内、加载态、FLV、点播体检、死台隐藏开关都在', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../components/WatchTool.tsx', import.meta.url), 'utf8')
+    for (const s of [
+      'wt-vload', 'wt-vfail', '正在加载…', '再试一次', 'scrollIntoView', 'playerWrapRef',
+      'FlvJs', 'isFlvUrl', 'flv.js',
+      'startVodHealth', 'stopVodHealth', 'vodHealthCountsNow', '只看能播的',
+      '显示已测不通的台', 'loadShowDead', 'saveShowDead', 'hideDead',
+      'wt-wall-card-dead', '✓ {vh.ms}ms', '✗ 不通',
+    ]) {
+      expect(src).toContain(s)
+    }
+    // 直播与点播两个播放器都改成区内覆盖层：失败文案仍在，但不再用替换视频区的旧盒子
+    // （BlockedPlayer 的有意提示仍用 wt-player-fail，不算在内）
+    expect(src).not.toContain('<div className="wt-player-fail">\n          <CircleAlert size={18} />\n          <div>这个台试了')
+    expect(src).not.toContain('<div className="wt-player-fail">\n          <CircleAlert size={18} />\n          <div>这集试了')
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8')
+    for (const s of ['.wt-vload {', '.wt-vfail {', '.wt-wall-card-dead {', 'min-width: 0;']) {
+      expect(css).toContain(s)
+    }
+    // 视频区定高在 wrap 上（16:9），video 本身绝对定位铺满，不再靠自身撑高
+    expect(css).toContain('.wt-video-wrap { position: relative; background: #000; aspect-ratio: 16 / 9; }')
+    expect(css).toContain('.wt-video { position: absolute; inset: 0; width: 100%; height: 100%;')
   })
 })

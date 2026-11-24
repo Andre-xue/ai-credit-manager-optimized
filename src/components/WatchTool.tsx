@@ -1,11 +1,15 @@
 // 工坊 · 看剧（v0.1.386）：AI 找剧 + 热门推荐（TMDB）+ 直播 + 点播 + 追剧日历 + 片单。
-// 播放：App 内嵌播放器（官方播放页 iframe；直播走 HLS/m3u8，hls.js 兜底；点播走 <video>，mp4 直出、点播 m3u8 用 hls.js）。
+// 播放：App 内嵌播放器（官方播放页 iframe；直播走 HLS/m3u8，hls.js 兜底；点播走 <video>，mp4 直出、点播 m3u8 用 hls.js；
+// .flv 流用 flv.js，浏览器 <video> 与 hls.js 都播不了 FLV）。
 // 直播只用 iptv-org 与 Free-TV 内置源 + 用户自定义源；绝不内置第三方转播源。
 // 点播（v0.1.390）：m3u 里的点播条目（电影/剧集文件）单独成区，同名剧集多条合并带选集，看到一半记进度可续播。
 // 来源标注（v0.1.387）：内置源中国切片里混有第三方转播流（裸 IP），不拦截、
 // 不过滤，只在卡片、播放器、分区顶部三处标注「未授权转播」；点播条目同样打标记。
 // 源体检（v0.1.391）：直播页手动「开始体检」，逐台测连通性（通/不通、耗时），
 // 死台标出、可过滤，快的排前面；结果缓存 30 分钟，后台跑不堵列表。
+// 点播体检（v0.1.407）：与直播体检同款探针，逐部测点播线路通不通、快不快。
+// 播放器失败态（v0.1.407）：流死了也不只剩一条黑条——16:9 视频区始终保留，
+// 失败时区内显示原因 + 再试一次；加载中显示“正在加载…”；打开播放器时滚到视野内。
 // 各分区可展开折叠（本机记忆）、列表每页 8 条；片单与排期只存本机。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -14,6 +18,7 @@ import {
   CalendarDays, BookmarkPlus, Minus, Check, Activity,
 } from 'lucide-react'
 import Hls from 'hls.js'
+import FlvJs from 'flv.js'
 import { useRouteData, RouteSelect } from './WorkshopView'
 import { runWorkshopChat } from '../core/workshopChat'
 import { Pager } from './Pager'
@@ -33,6 +38,9 @@ import {
   normalizeTitleKey, buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
   WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
   loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
+  probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
+  loadShowDead, saveShowDead,
+  isFlvUrl,
   type HealthMap,
   type LiveChannel, type VodTitle, type VodEpisode, type WatchItem, type WatchType, type ContinueItem,
   type CustomSource, type SourceSetResult, type TmdbTitle, type StationOrigin, type TrendRange, type RecPrefs,
@@ -77,6 +85,7 @@ function HlsPlayer({ title, urls, onOpened }: {
   const [idx, setIdx] = useState(0)
   const [failed, setFailed] = useState(false)
   const [needTap, setNeedTap] = useState(false)
+  const [started, setStarted] = useState(false)
   const playedRef = useRef(false)
   const idxRef = useRef(0)
   idxRef.current = idx
@@ -93,15 +102,24 @@ function HlsPlayer({ title, urls, onOpened }: {
     if (!url) { setFailed(true); return }
     playedRef.current = false
     setNeedTap(false)
+    setStarted(false)
     let hls: Hls | null = null
+    let flvPlayer: FlvJs.Player | null = null
     let dead = false
-    const onPlaying = () => { playedRef.current = true }
+    const onPlaying = () => { playedRef.current = true; setStarted(true) }
     const onVideoError = () => { if (!dead) advance() }
     video.addEventListener('playing', onPlaying)
     video.addEventListener('error', onVideoError)
     // 15 秒还没出声出画面，判定该源不可用，自动换下一个
     const stallTimer = window.setTimeout(() => { if (!dead && !playedRef.current) advance() }, 15000)
-    if (Hls.isSupported()) {
+    if (isFlvUrl(url) && FlvJs.isSupported()) {
+      // .flv 流：浏览器 <video> 与 hls.js 都播不了，走 flv.js（MSE）
+      flvPlayer = FlvJs.createPlayer({ type: 'flv', url, isLive: true })
+      flvPlayer.attachMediaElement(video)
+      flvPlayer.load()
+      flvPlayer.on(FlvJs.Events.ERROR, () => { if (!dead) advance() })
+      video.play().catch(() => { if (!dead) setNeedTap(true) })
+    } else if (Hls.isSupported()) {
       hls = new Hls({ maxBufferLength: 30 })
       hls.loadSource(url)
       hls.attachMedia(video)
@@ -121,6 +139,7 @@ function HlsPlayer({ title, urls, onOpened }: {
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('error', onVideoError)
       // 切台/切源/关闭时先停掉上一个播放器的加载，避免多路流同时占带宽
+      flvPlayer?.destroy()
       hls?.destroy()
       video.pause()
       video.removeAttribute('src')
@@ -145,23 +164,27 @@ function HlsPlayer({ title, urls, onOpened }: {
         <span className="fg-muted">正在用第 {Math.min(idx + 1, urls.length)} / {urls.length} 个源{urls.length > 1 ? '（播不了自动换）' : ''}</span>
         <button className="btn sm ghost" onClick={close}><X size={14} /> 关闭</button>
       </div>
-      {failed ? (
-        <div className="wt-player-fail">
-          <CircleAlert size={18} />
-          <div>这个台试了 {urls.length} 个源都播不了：源可能已失效，或被网络拦截。</div>
-          <div className="fg-muted">可以换个台试试，或换个网络节点后点台名重播。</div>
-          <button className="btn sm" onClick={() => { setFailed(false); setIdx(0) }}>再试一次</button>
-        </div>
-      ) : (
-        <div className="wt-video-wrap">
-          <video ref={videoRef} className="wt-video" controls playsInline />
-          {needTap && (
-            <button className="wt-bigplay" onClick={() => { videoRef.current?.play().catch(() => {}); setNeedTap(false) }}>
-              <Play size={26} /> 点一下开始播放
-            </button>
-          )}
-        </div>
-      )}
+      {/* v0.1.407：视频区永远保留 16:9（CSS 定高），加载中与失败都是区内覆盖层，
+          失败时不再塌成一条黑条 */}
+      <div className="wt-video-wrap">
+        <video ref={videoRef} className="wt-video" controls playsInline />
+        {!started && !failed && !needTap && (
+          <div className="wt-vload"><Loader2 size={16} className="spin" /> 正在加载…</div>
+        )}
+        {needTap && !failed && (
+          <button className="wt-bigplay" onClick={() => { videoRef.current?.play().catch(() => {}); setNeedTap(false) }}>
+            <Play size={26} /> 点一下开始播放
+          </button>
+        )}
+        {failed && (
+          <div className="wt-vfail">
+            <CircleAlert size={18} />
+            <div>这个台试了 {urls.length} 个源都播不了：源可能已失效，或被网络拦截。</div>
+            <div className="wt-vfail-sub">可以换个台试试，或换个网络节点后点台名重播。</div>
+            <button className="btn sm" onClick={() => { setFailed(false); setIdx(0) }}>再试一次</button>
+          </div>
+        )}
+      </div>
       {curUnofficial && (
         <div className="wt-unofficial-note"><CircleAlert size={13} /> 当前源为第三方转播 · 未经授权，可能随时失效</div>
       )}
@@ -186,6 +209,7 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
   const [urlIdx, setUrlIdx] = useState(startUrlIdx ?? 0)
   const [failed, setFailed] = useState(false)
   const [needTap, setNeedTap] = useState(false)
+  const [started, setStarted] = useState(false)
   const playedRef = useRef(false)
   const soughtRef = useRef(false)
   const ep = episodes[epIdx] ?? episodes[0]
@@ -215,9 +239,11 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
     if (!video || failed || !url) { if (!url) setFailed(true); return }
     playedRef.current = false
     setNeedTap(false)
+    setStarted(false)
     let hls: Hls | null = null
+    let flvPlayer: FlvJs.Player | null = null
     let dead = false
-    const onPlaying = () => { playedRef.current = true }
+    const onPlaying = () => { playedRef.current = true; setStarted(true) }
     const onVideoError = () => { if (!dead) advanceUrl() }
     const onMeta = () => {
       // 续播：只对打开时那集、只 seek 一次
@@ -232,7 +258,14 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
     video.addEventListener('loadedmetadata', onMeta)
     // 15 秒还没出声出画面，判定该源不可用，自动换同一集的下一个源
     const stallTimer = window.setTimeout(() => { if (!dead && !playedRef.current) advanceUrl() }, 15000)
-    if (isHlsUrl && Hls.isSupported()) {
+    if (isFlvUrl(url) && FlvJs.isSupported()) {
+      // .flv 点播：浏览器 <video> 播不了，走 flv.js（MSE，点播 isLive: false）
+      flvPlayer = FlvJs.createPlayer({ type: 'flv', url, isLive: false })
+      flvPlayer.attachMediaElement(video)
+      flvPlayer.load()
+      flvPlayer.on(FlvJs.Events.ERROR, () => { if (!dead) advanceUrl() })
+      video.play().catch(() => { if (!dead) setNeedTap(true) })
+    } else if (isHlsUrl && Hls.isSupported()) {
       hls = new Hls({ maxBufferLength: 30 })
       hls.loadSource(url)
       hls.attachMedia(video)
@@ -256,6 +289,7 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('error', onVideoError)
       video.removeEventListener('loadedmetadata', onMeta)
+      flvPlayer?.destroy()
       hls?.destroy()
       video.pause()
       video.removeAttribute('src')
@@ -274,23 +308,26 @@ function VodPlayer({ title, episodes, episodeIndex, startAt, startUrlIdx, onLeav
         {ep && ep.urls.length > 1 && <span className="fg-muted">正在用第 {Math.min(urlIdx + 1, ep.urls.length)} / {ep.urls.length} 个源{ep.urls.length > 1 ? '（播不了自动换）' : ''}</span>}
         <button className="btn sm ghost" onClick={close}><X size={14} /> 关闭</button>
       </div>
-      {failed ? (
-        <div className="wt-player-fail">
-          <CircleAlert size={18} />
-          <div>这集试了 {ep?.urls.length ?? 0} 个源都播不了：源可能已失效，或被网络拦截。</div>
-          <div className="fg-muted">可以换一集试试，或换个网络节点后重播。</div>
-          <button className="btn sm" onClick={() => { setFailed(false); setUrlIdx(0) }}>再试一次</button>
-        </div>
-      ) : (
-        <div className="wt-video-wrap">
-          <video ref={videoRef} className="wt-video" controls playsInline />
-          {needTap && (
-            <button className="wt-bigplay" onClick={() => { videoRef.current?.play().catch(() => {}); setNeedTap(false) }}>
-              <Play size={26} /> 点一下开始播放
-            </button>
-          )}
-        </div>
-      )}
+      {/* v0.1.407：视频区永远保留 16:9（CSS 定高），加载中与失败都是区内覆盖层 */}
+      <div className="wt-video-wrap">
+        <video ref={videoRef} className="wt-video" controls playsInline />
+        {!started && !failed && !needTap && (
+          <div className="wt-vload"><Loader2 size={16} className="spin" /> 正在加载…</div>
+        )}
+        {needTap && !failed && (
+          <button className="wt-bigplay" onClick={() => { videoRef.current?.play().catch(() => {}); setNeedTap(false) }}>
+            <Play size={26} /> 点一下开始播放
+          </button>
+        )}
+        {failed && (
+          <div className="wt-vfail">
+            <CircleAlert size={18} />
+            <div>这集试了 {ep?.urls.length ?? 0} 个源都播不了：源可能已失效，或被网络拦截。</div>
+            <div className="wt-vfail-sub">可以换一集试试，或换个网络节点后重播。</div>
+            <button className="btn sm" onClick={() => { setFailed(false); setUrlIdx(0) }}>再试一次</button>
+          </div>
+        )}
+      </div>
       {episodes.length > 1 && (
         <div className="wt-chips">
           <span className="fg-muted">选集：</span>
@@ -403,6 +440,12 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [pwdInput, setPwdInput] = useState('')
   const [player, setPlayer] = useState<PlayerState>(null)
   const [playerKey, setPlayerKey] = useState(0)
+  const playerWrapRef = useRef<HTMLDivElement>(null)
+  // v0.1.407：打开播放器时滚到视野内——播放器挂在页签上方，从列表/墙下方点开时不滚就看不到
+  useEffect(() => {
+    if (player) playerWrapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerKey])
 
   const toggleGroup = (id: string) => setClosedGroups(prev => {
     const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -596,7 +639,9 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     () => sortVodWall(filterVodWall(wallItems, { genre: vodGenre, year: vodYear, region: vodRegion, status: vodStatus }), vodSort),
     [wallItems, vodGenre, vodYear, vodRegion, vodStatus, vodSort],
   )
-  const wallPlayCount = wallFiltered.filter(i => i.playable).length
+  // v0.1.407：点播体检筛选（只看能播的 + 快的排前面）；体检运行态与墙视图在下面直播体检块旁
+  const [vodHealthOnly, setVodHealthOnly] = useState(false)
+  const [vodHealthSort, setVodHealthSort] = useState(false)
   // 还在补全信息的影片数（有 TMDB 但没拉过详情，或点播标题还没搜过 TMDB；
   // 搜不到/拉失败的也算完成，不常驻提示）
   const wallEnrichPending = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried).length
@@ -710,7 +755,13 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [health, setHealth] = useState<HealthMap>(() => loadHealthCache())
   const [healthRunning, setHealthRunning] = useState(false)
   const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null)
-  const [healthOnly, setHealthOnly] = useState(false)
+  // v0.1.407：体检后已测不通的台默认隐藏（只隐藏已测不通的，未测的不受影响）；
+  // 「只看已测通的」chip 已并入这个默认行为（删掉：它还会藏起未测的台，与
+  // “未测不受影响”打架）。设置页签「显示已测不通的台」开关可恢复显示，状态只存本机。
+  const [showDead, setShowDead] = useState(() => loadShowDead())
+  const toggleShowDead = () => {
+    setShowDead(v => { const next = !v; saveShowDead(next); return next })
+  }
   const [healthSort, setHealthSort] = useState(false)
   const healthCtrlRef = useRef<AbortController | null>(null)
   const healthCountsNow = useMemo(() => healthCounts(liveChannels, health), [liveChannels, health])
@@ -747,10 +798,54 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     }
   }
   const stopHealth = () => { healthCtrlRef.current?.abort() }
-  // 体检视图：过滤 + 排序只作用于当前直播列表（分组、内容筛选、分页都按它算）
+  // ---- 点播体检（v0.1.407）：与直播体检同款探针；结果进同一缓存，键加 vod: 前缀 ----
+  const [vodHealthRunning, setVodHealthRunning] = useState(false)
+  const [vodHealthProgress, setVodHealthProgress] = useState<{ done: number; total: number } | null>(null)
+  const vodHealthCtrlRef = useRef<AbortController | null>(null)
+  const vodHealthCountsNow = useMemo(() => vodHealthCounts(vodTitles, health), [vodTitles, health])
+  const vodHealthAt = useMemo(() => {
+    let at = 0
+    for (const v of vodTitles) {
+      const h = vodHealthOf(health, v)
+      if (h && h.at > at) at = h.at
+    }
+    return at || null
+  }, [vodTitles, health])
+  const vodHealthAgeText = vodHealthAt
+    ? (() => { const m = Math.floor((Date.now() - vodHealthAt) / 60000); return m < 1 ? '刚刚' : `${m} 分钟前` })()
+    : ''
+  const startVodHealth = async () => {
+    if (vodHealthRunning || !vodTitles.length) return
+    const ctrl = new AbortController()
+    vodHealthCtrlRef.current = ctrl
+    setVodHealthRunning(true)
+    setVodHealthProgress({ done: 0, total: vodTitles.length })
+    try {
+      const fresh = await probeVodTitles(vodTitles, {
+        signal: ctrl.signal,
+        onProgress: (done, total, key, result) => {
+          setHealth(prev => { const next = { ...prev, [key]: result }; saveHealthCache(next); return next })
+          setVodHealthProgress({ done, total })
+        },
+      })
+      setHealth(prev => { const next = { ...prev, ...fresh }; saveHealthCache(next); return next })
+    } finally {
+      vodHealthCtrlRef.current = null
+      setVodHealthRunning(false)
+      setVodHealthProgress(null)
+    }
+  }
+  const stopVodHealth = () => { vodHealthCtrlRef.current?.abort() }
+  // 点播体检视图作用在筛选排序后的墙上、再分页（与直播体检同款；放体检块后声明，health 在此已定义）
+  const wallShown = useMemo(
+    () => applyVodHealthView(wallFiltered, health, { onlyHealthy: vodHealthOnly, sortBySpeed: vodHealthSort }),
+    [wallFiltered, health, vodHealthOnly, vodHealthSort],
+  )
+  const wallShownPlayCount = wallShown.filter(i => i.playable).length
+  // 体检视图：已测不通的默认隐藏 + 快的排前面（只作用于当前直播列表）
   const liveDisplay = useMemo(
-    () => applyHealthView(liveChannels, health, { onlyHealthy: healthOnly, sortBySpeed: healthSort }),
-    [liveChannels, health, healthOnly, healthSort],
+    () => applyHealthView(liveChannels, health, { hideDead: !showDead, sortBySpeed: healthSort }),
+    [liveChannels, health, showDead, healthSort],
   )
   const liveGroups = groupChannels(liveDisplay, liveCountry)
   const liveContents = ['all', ...liveGroups.contents]
@@ -929,6 +1024,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         </div>
       )}
 
+      <div ref={playerWrapRef}>
       {player?.kind === 'hls' && (
         <HlsPlayer key={playerKey} title={player.title} urls={player.urls}
           onOpened={p => closePlayer(p)} />
@@ -946,6 +1042,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           onClose={() => setPlayer(null)}
           onAddCalendar={() => { addToWatchlist({ title: player.title, type: 'tv', platform: '官方 App', platformUrl: player.url }); setPlayer(null) }} />
       )}
+      </div>
 
       {/* v0.1.394：横向页签（吸顶）+ AI 找剧收进标题栏右端搜索图标 */}
       <div className="wt-tabs" role="tablist">
@@ -1164,7 +1261,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {healthProgress.done}/{healthProgress.total} 个台…（后台进行，不影响看列表；可点「停止」）</span>
             ) : healthCountsNow.tested > 0 ? (
               <>
-                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）</span>
+                <span className="fg-muted">上次体检{healthAgeText}：{healthCountsNow.tested} 个台已测 · {healthCountsNow.ok} 通 · {healthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）{healthCountsNow.bad > 0 && !showDead ? ' · 不通的台已默认隐藏（设置里可打开显示）' : ''}</span>
                 <button className="btn sm ghost" disabled={healthRunning} onClick={() => void startHealth()}>
                   <RefreshCw size={13} /> 重新体检
                 </button>
@@ -1190,8 +1287,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             {healthCountsNow.tested > 0 && (
               <div className="wt-chips">
                 <span className="fg-muted">体检：</span>
-                <button className={`wt-chip${healthOnly ? ' on' : ''}`} aria-pressed={healthOnly}
-                  onClick={() => { setHealthOnly(v => !v); setLivePages({}) }}>只看已测通的</button>
                 <button className={`wt-chip${healthSort ? ' on' : ''}`} aria-pressed={healthSort}
                   onClick={() => { setHealthSort(v => !v); setLivePages({}) }}>快的排前面</button>
               </div>
@@ -1229,6 +1324,41 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           )}
           {!tmdbKeySet && wallItems.length > 0 && (
             <div className="fg-muted">没填 TMDB Key：只有片名列表，没有海报、评分与类型/年份/地区筛选；去「设置」页签填 Key 后再看。 <button className="btn sm ghost" onClick={() => setActiveTab('settings')}>去设置</button></div>
+          )}
+          {vodTitles.length > 0 && (
+            <>
+              <div className="wt-chips">
+                <button className="btn sm ghost" disabled={vodHealthRunning || !vodTitles.length} onClick={() => void startVodHealth()} title="逐部测点播线路通不通、快不快（后台进行，不堵墙）">
+                  <Activity size={13} /> {vodHealthRunning ? '体检中…' : '开始体检'}
+                </button>
+                {vodHealthRunning && (
+                  <button className="btn sm ghost" onClick={stopVodHealth}>停止</button>
+                )}
+              </div>
+              <div className="wt-health-bar">
+                {vodHealthRunning && vodHealthProgress ? (
+                  <span className="fg-muted"><Loader2 size={13} className="spin" /> 体检中 {vodHealthProgress.done}/{vodHealthProgress.total} 部…（后台进行，不影响看墙；可点「停止」）</span>
+                ) : vodHealthCountsNow.tested > 0 ? (
+                  <>
+                    <span className="fg-muted">上次体检{vodHealthAgeText}：{vodHealthCountsNow.tested} 部已测 · {vodHealthCountsNow.ok} 通 · {vodHealthCountsNow.bad} 不通（结果保留 30 分钟；测的是服务器是否能连通，不是完整播流）</span>
+                    <button className="btn sm ghost" disabled={vodHealthRunning} onClick={() => void startVodHealth()}>
+                      <RefreshCw size={13} /> 重新体检
+                    </button>
+                  </>
+                ) : (
+                  <span className="fg-muted">还没体检过：点「开始体检」逐部测线路通不通、快不快，死的标出来、快的排前面。</span>
+                )}
+              </div>
+              {vodHealthCountsNow.tested > 0 && (
+                <div className="wt-chips">
+                  <span className="fg-muted">体检：</span>
+                  <button className={`wt-chip${vodHealthOnly ? ' on' : ''}`} aria-pressed={vodHealthOnly}
+                    onClick={() => { setVodHealthOnly(v => !v); setVodPage(1) }}>只看能播的</button>
+                  <button className={`wt-chip${vodHealthSort ? ' on' : ''}`} aria-pressed={vodHealthSort}
+                    onClick={() => { setVodHealthSort(v => !v); setVodPage(1) }}>快的排前面</button>
+                </div>
+              )}
+            </>
           )}
         {!liveLoaded && liveLoading ? (
           <div className="fg-muted"><Loader2 size={13} className="spin" /> 正在拉取…</div>
@@ -1277,7 +1407,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               </div>
             )}
             <div className="wt-countbar">
-              <span className="wt-count-text">共 <b>{wallFiltered.length}</b> 部 · 其中 <span className="wt-ok">{wallPlayCount} 部有源可播</span>，{wallFiltered.length - wallPlayCount} 部仅展示</span>
+              <span className="wt-count-text">共 <b>{wallShown.length}</b> 部 · 其中 <span className="wt-ok">{wallShownPlayCount} 部有源可播</span>，{wallShown.length - wallShownPlayCount} 部仅展示</span>
               {tmdbKeySet && wallEnrichPending > 0 && <span className="fg-muted">正在补全海报与信息（还剩 {wallEnrichPending} 部）…</span>}
               <div className="wt-sortbox" role="group" aria-label="排序">
                 {([['updated', '最近更新'], ['rating', '评分最高'], ['year', '年份最新']] as const).map(([s, label]) => (
@@ -1285,18 +1415,19 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 ))}
               </div>
             </div>
-            {wallFiltered.length === 0 ? (
+            {wallShown.length === 0 ? (
               <div className="fg-empty">
                 <div>这个筛选下没有影片</div>
                 <div className="fg-muted">换个类型、年份或地区试试；没匹配到 TMDB 的影片没有类型、年份信息，筛选时只按「全部」显示。</div>
               </div>
             ) : (
               <div className="wt-wall">
-                {pageSlice(wallFiltered, vodPage, 12).map(item => {
+                {pageSlice(wallShown, vodPage, 12).map(item => {
                   const badge = vodWallBadge(item)
                   const prev = item.vod ? continueList.find(c => c.kind === 'vod' && parseVodContinueId(c.id)?.vodKey === item.vod!.key) : undefined
+                  const vh = item.vod ? vodHealthOf(health, item.vod) : undefined
                   return (
-                    <button key={item.id} type="button" className="wt-wall-card" onClick={() => openVodDetail(item)} aria-label={`查看《${item.title}》详情`}>
+                    <button key={item.id} type="button" className={`wt-wall-card${vh && !vh.ok ? ' wt-wall-card-dead' : ''}`} onClick={() => openVodDetail(item)} aria-label={`查看《${item.title}》详情`}>
                       <span className="wt-wall-poster">
                         {item.poster
                           ? <img src={item.poster} alt={`${item.title} 海报`} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
@@ -1310,7 +1441,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                         {[item.year, item.region, item.genres.join('/')].filter(Boolean).join(' · ') || (item.kind === 'movie' ? '电影' : `剧集 · ${item.vod?.episodes.length ?? ''} 集`)}
                       </span>
                       {item.playable
-                        ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}</span>
+                        ? <span className="wt-wall-src play"><span className="dot" />有源 · {item.sourceCount} 条线路可播{prev?.episode ? ` · 看到${prev.episode}` : ''}{vh ? (vh.ok ? <span className="wt-health-ok"> ✓ {vh.ms}ms</span> : <span className="wt-health-bad"> ✗ 不通</span>) : null}</span>
                         : <span className="wt-wall-src none"><span className="dot" />仅展示 · 未匹配到片源</span>}
                       {item.vod?.unofficial && <span className="wt-unofficial-badge">未授权转播</span>}
                     </button>
@@ -1318,8 +1449,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                 })}
               </div>
             )}
-            <Pager page={vodPage} pageCount={pageCount(wallFiltered.length, 12)}
-              total={wallFiltered.length} unit="部"
+            <Pager page={vodPage} pageCount={pageCount(wallShown.length, 12)}
+              total={wallShown.length} unit="部"
               onPage={setVodPage} />
           </>
         )}
@@ -1494,6 +1625,14 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
               <div className="wt-route"><RouteSelect data={data} routeKey={routeKey} setRouteKey={setRouteKey} /></div>
             </div>
             <div className="wt-set-note">推荐口径：AI 找剧只推正版平台（爱奇艺 / 腾讯视频 / 优酷 / 芒果 TV 等），不推盗版站。</div>
+          </div>
+          <div className="wt-set-block">
+            <h4>直播体检</h4>
+            <div className="wt-set-note">体检后不通的台默认从直播列表隐藏；打开后恢复显示（仍带 ✗ 不通角标）。未测的台一直显示。</div>
+            <label className="wt-set-row" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={showDead} onChange={toggleShowDead} />
+              <span>显示已测不通的台</span>
+            </label>
           </div>
           <div className="fg-muted">内置源：iptv-org（公开免费频道目录）与 Free-TV。直播源本身可能失效：一个台播不了会自动换下一个源，全部失败会写清已试过几套。</div>
         </div>
