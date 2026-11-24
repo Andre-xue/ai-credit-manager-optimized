@@ -12,15 +12,16 @@ import { GalleryView } from './GalleryView'
 import { CheckinTool } from './CheckinTool'
 import { WbPoolTool } from './WbPoolTool'
 import { FreeGamesTool } from './FreeGamesTool'
+import { WatchTool } from './WatchTool'
 import { TranslationView } from './TranslationView'
 import { ImageView } from './ImageView'
 import { VideoView } from './VideoView'
 import { DocQAView } from './DocQAView'
 import type { AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
-import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck, Users, Gamepad2 } from 'lucide-react'
+import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck, Users, Gamepad2, Tv } from 'lucide-react'
 
-type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin' | 'wbpool' | 'freegames'
+type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin' | 'wbpool' | 'freegames' | 'watch'
 
 /** 工具页共用：加载可选对话路线（免费模型 + 自有账户） */
 export function useRouteData(accounts: Account[]) {
@@ -424,6 +425,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
   if (tool === 'dailycheckin') return <CheckinTool sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
   if (tool === 'wbpool') return <WbPoolTool sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
   if (tool === 'freegames') return <FreeGamesTool sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
+  if (tool === 'watch') return <WatchTool accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
   if (tool === 'summary') return <SummaryTool {...toolProps} />
   if (tool === 'polish') return <PolishTool {...toolProps} />
   if (tool === 'webcheck') return <WebCheckTool {...toolProps} />
@@ -476,6 +478,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
         { id: 'table', name: '表格问答', desc: '把 CSV 丢进来，用问话查数、汇总、找异常，不用写公式。', tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
         { id: 'dailycheckin', name: '每日签到', desc: 'WorkBuddy、MiniMax Code 每日积分签到：授权一次，每天点一下领积分。', tag: '领积分', grad: 'g3', icon: <CalendarCheck size={21} />, action: () => setTool('dailycheckin'), isNew: true },
         { id: 'freegames', name: '免费游戏', desc: 'Epic 每周喜加一自动领取：绑定一次，定时自动领入库；GOG、育碧免费游戏一并列出，点卡片直达官网。', tag: '喜加一', grad: 'g3', icon: <Gamepad2 size={21} />, action: () => setTool('freegames'), isNew: true },
+        { id: 'watch', name: '看剧', desc: 'AI 找剧、热门推荐、短剧、直播：内嵌播放器直接看，直播多套源自动切换；片单与追剧日历只存本机。', tag: '看剧追剧', grad: 'g6', icon: <Tv size={21} />, action: () => setTool('watch'), isNew: true },
         { id: 'wbpool', name: 'WorkBuddy 账号池', desc: '多个 WorkBuddy 账号授权入池成一个模型来源：对话自动轮换、限流自动切换，签到一并带上。', tag: '多账号池', grad: 'g2', icon: <Users size={21} />, action: () => setTool('wbpool'), isNew: true },
         { id: 'catalog', name: 'AI 工具大全', desc: '各平台 AI 工具目录与签到入口汇总，原侧边栏入口已并入工坊。', tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
       ],

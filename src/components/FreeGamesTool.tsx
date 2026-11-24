@@ -15,9 +15,10 @@ import {
   bindEpicWithAuthCode, hasEpicAuth, unbindEpic,
   loadLastCheckAt, loadLastError, nextCheckAt,
   EPIC_LOGIN_URL, GOG_STORE_URL, UBI_STORE_URL,
+  sanitizeLoadFailedMessage,
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
 } from '../core/freeGames'
-import { openExternal } from '../core/openExternal'
+import { openExternal, isDesktopApp, isNativeApp } from '../core/openExternal'
 import { getBiometricPassword } from '../core/crypto'
 import { Pager } from './Pager'
 
@@ -123,6 +124,10 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [bindBusy, setBindBusy] = useState(false)
   const [pwdInput, setPwdInput] = useState('')
 
+  // 兜底（v0.1.386）：任何残留的英文 "Load failed" 在进 toast 前一律换成中文，
+  // 避免以后新增的 fetch 再漏包（385 只包了列表请求，绑定/领取 6 处漏了）。
+  const notifySafe = (m: string, kind?: 'ok' | 'err') => notify(sanitizeLoadFailedMessage(m), kind)
+
   const updatePrefs = (patch: Partial<FreeGamesPrefs>) => {
     setPrefs(prev => {
       const next = { ...prev, ...patch }
@@ -158,9 +163,9 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       const next: FreeGamesCache = { at, epicCurrent: epic.current, epicUpcoming: epic.upcoming, gog }
       try { localStorage.setItem('acm.freegames.cache.v1', JSON.stringify(next)) } catch { /* 忽略 */ }
       setCache(next)
-      notify(`已刷新：本周免费 ${epic.current.length} 款，预告 ${epic.upcoming.length} 款`)
+      notifySafe(`已刷新：本周免费 ${epic.current.length} 款，预告 ${epic.upcoming.length} 款`)
     } catch (e) {
-      notify(e instanceof Error ? e.message : '拉取失败', 'err')
+      notifySafe(e instanceof Error ? e.message : '拉取失败', 'err')
     } finally { setRefreshing(false) }
   }
 
@@ -171,10 +176,10 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       const res = await runFreeGamesCheck(pwd)
       refreshMeta()
       refreshRecords()
-      if (res.errors.length) notify(`检查完成：${summarizeCheckResult(res)}；${res.errors[0]}`, 'err')
-      else notify(`检查完成：${summarizeCheckResult(res)}`)
+      if (res.errors.length) notifySafe(`检查完成：${summarizeCheckResult(res)}；${res.errors[0]}`, 'err')
+      else notifySafe(`检查完成：${summarizeCheckResult(res)}`)
     } catch (e) {
-      notify(e instanceof Error ? e.message : '检查失败', 'err')
+      notifySafe(e instanceof Error ? e.message : '检查失败', 'err')
     } finally { setChecking(false) }
   }
 
@@ -182,30 +187,30 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     if (game.platform !== 'epic') { void openExternal(game.url); return }
     if (!game.autoClaimable) { void openExternal(game.url); return }
     const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notify('请先解锁保险箱（领取要用 Epic 设备授权）'); return }
+    if (!pwd) { notifySafe('请先解锁保险箱（领取要用 Epic 设备授权）'); return }
     setClaimingId(game.id)
     try {
       await claimEpicGameManual(pwd, game)
       refreshRecords()
-      notify(`「${game.title}」已领取入库`)
+      notifySafe(`「${game.title}」已领取入库`)
     } catch (e) {
       refreshRecords()
-      notify(e instanceof Error ? e.message : '领取失败', 'err')
+      notifySafe(e instanceof Error ? e.message : '领取失败', 'err')
     } finally { setClaimingId('') }
   }
 
   const doBind = async () => {
     const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notify('请先解锁保险箱，设备授权要加密保存'); return }
+    if (!pwd) { notifySafe('请先解锁保险箱，设备授权要加密保存'); return }
     setBindBusy(true)
     try {
       await bindEpicWithAuthCode(authCode, pwd)
       setEpicBound(true)
       setBindOpen(false)
       setAuthCode('')
-      notify('Epic 已绑定，自动领取已就绪')
+      notifySafe('Epic 已绑定，自动领取已就绪')
     } catch (e) {
-      notify(e instanceof Error ? e.message : '绑定失败', 'err')
+      notifySafe(e instanceof Error ? e.message : '绑定失败', 'err')
     } finally { setBindBusy(false) }
   }
 
@@ -309,12 +314,15 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             ) : (
               <div>未绑定 Epic 账号。绑定后每周自动领喜加一。</div>
             )}
+            {!isDesktopApp() && !isNativeApp() && (
+              <div className="fg-muted">网页版直连 Epic 会被浏览器 CORS 拦截，绑定与领取请用桌面端或安卓 App。</div>
+            )}
           </div>
           <div className="fg-plat-foot">
             {epicBound ? (
               <>
                 <button className="btn sm ghost" onClick={() => { setBindOpen(true); setAuthCode('') }}>重新绑定</button>
-                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); notify('已解除 Epic 绑定') }}>解除绑定</button>
+                <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
               </>
             ) : (
               <button className="btn sm primary" onClick={() => setBindOpen(true)}><Link2 size={13} /> 绑定 Epic 账号</button>

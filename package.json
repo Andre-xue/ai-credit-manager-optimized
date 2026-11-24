@@ -1,7 +1,7 @@
 {
   "name": "ai-credit-manager",
   "private": true,
-  "version": "0.1.385",
+  "version": "0.1.386",
   "type": "module",
   "description": "AI 积分管家 - 统一管理各家 AI 平台的积分、额度、用量与 API Key（合规版：只读官方接口 + 跳转本人操作）",
   "scripts": {
@@ -31,6 +31,7 @@
     "@tencent-ai/workbuddy-cloud-sdk": "^0.1.4-dev.71e5d1e.202611161655",
     "capacitor-voice-recorder": "^6.0.3",
     "docx": "^9.16.0",
+    "hls.js": "^1.7.4",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^4.10.38",

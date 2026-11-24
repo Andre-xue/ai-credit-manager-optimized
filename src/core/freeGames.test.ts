@@ -3,6 +3,8 @@ import {
   parseEpicPromotions, assertFreeToClaim, buildQuickPurchaseBody,
   sortRecords, pageSlice, pageCount, defaultPrefs, nextCheckAt,
   EPIC_LOGIN_URL, fetchEpicFreeGames,
+  toChineseFetchError, sanitizeLoadFailedMessage,
+  bindEpicWithAuthCode, claimEpicGame,
   type FreeGame, type ClaimRecord,
 } from './freeGames'
 
@@ -185,7 +187,7 @@ describe('freeGames bindEpicWithAuthCode', () => {
       if (u.includes('/oauth/token')) {
         return { ok: true, text: async () => JSON.stringify({ access_token: 'AT', account_id: 'ACC' }), json: async () => ({}) }
       }
-      return { ok: true, text: async () => '{}', json: async () => ({ deviceId: 'D', secret: 'S', accountId: 'ACC' }) }
+      return { ok: true, text: async () => JSON.stringify({ deviceId: 'D', secret: 'S', accountId: 'ACC' }), json: async () => ({ deviceId: 'D', secret: 'S', accountId: 'ACC' }) }
     }) as typeof fetch
     try {
       const { initVault } = await import('./crypto')
@@ -219,11 +221,188 @@ describe('freeGames fetchEpicFreeGames 报错文案', () => {
   })
   it('接口非 200 要写清状态码', async () => {
     const origFetch = globalThis.fetch
-    globalThis.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) })) as unknown as typeof fetch
+    globalThis.fetch = (async () => ({ ok: false, status: 403, text: async () => '{}', json: async () => ({}) })) as unknown as typeof fetch
     try {
       await expect(fetchEpicFreeGames()).rejects.toThrow(/免费游戏列表加载失败：Epic 接口返回 403/)
     } finally {
       globalThis.fetch = origFetch
+    }
+  })
+})
+
+// v0.1.386：385 只包了列表请求，绑定/领取 6 处 fetch 漏包，Ethan 实机点
+// 「确认绑定」仍弹英文 "Load failed"。共用 helper + notify 兜底，一处都不能漏。
+describe('freeGames toChineseFetchError', () => {
+  it('Load failed 换成中文并点名步骤', () => {
+    const e = toChineseFetchError(new TypeError('Load failed'), 'Epic 绑定失败')
+    expect(e.message).toContain('Epic 绑定失败')
+    expect(e.message).toContain('换个节点')
+    expect(e.message).not.toContain('Load failed')
+  })
+  it('Failed to fetch 同样换中文', () => {
+    expect(toChineseFetchError(new TypeError('Failed to fetch'), 'Epic 下单失败').message).toContain('换个节点')
+  })
+  it('非网络错误原样透传（不乱改业务报错）', () => {
+    expect(toChineseFetchError(new Error('Epic 授权码无效或已过期'), 'Epic 绑定失败').message)
+      .toBe('Epic 授权码无效或已过期')
+  })
+})
+
+describe('freeGames sanitizeLoadFailedMessage', () => {
+  it('残留的 Load failed 只替换该片段，步骤名保留', () => {
+    const out = sanitizeLoadFailedMessage('Epic 确认订单失败：Load failed')
+    expect(out).toContain('Epic 确认订单失败')
+    expect(out).toContain('换个节点')
+    expect(out).not.toContain('Load failed')
+  })
+  it('干净文案原样不动', () => {
+    expect(sanitizeLoadFailedMessage('Epic 已绑定，自动领取已就绪')).toBe('Epic 已绑定，自动领取已就绪')
+  })
+})
+
+describe('freeGames bindEpicWithAuthCode 网络失败', () => {
+  it('换 token 请求被拦（Load failed）要报中文绑定失败，不含英文', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new TypeError('Load failed') }) as typeof fetch
+    try {
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/Epic 绑定失败/)
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.toThrow(/换个节点/)
+      await expect(bindEpicWithAuthCode('CODE123', 'testpwd8')).rejects.not.toThrow(/Load failed/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('freeGames claimEpicGame 网络失败', () => {
+  it('quickPurchase 请求被拦（Load failed）要报中文下单失败，不含英文', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new TypeError('Load failed') }) as typeof fetch
+    try {
+      await expect(claimEpicGame('AT', 'ACC', fakeGame())).rejects.toThrow(/Epic 下单失败/)
+      await expect(claimEpicGame('AT', 'ACC', fakeGame())).rejects.toThrow(/换个节点/)
+      await expect(claimEpicGame('AT', 'ACC', fakeGame())).rejects.not.toThrow(/Load failed/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+// v0.1.386：Epic 不返回 ACAO，桌面 WKWebView 里前端 fetch 被 CORS 直接拦掉
+// （换节点修不好）。全部 Epic 请求改走原生通道：桌面 plugin_http / 安卓 CapacitorHttp。
+// 以下单测用假的 window.__TAURI_INTERNALS__.invoke 断言调用参数与旧 fetch 一致，
+// 并确认桌面通道下 fetch 根本不会被调用。真机上原生通道本身仍待 Ethan 实机验。
+function stubTauriInvoke(fn: (cmd: string, args: Record<string, unknown>) => Promise<string>) {
+  const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+  const invoke = async (cmd: string, args: Record<string, unknown>) => {
+    calls.push({ cmd, args })
+    return fn(cmd, args)
+  }
+  ;(globalThis as unknown as Record<string, unknown>).window = { __TAURI_INTERNALS__: { invoke } }
+  return calls
+}
+function unStubWindow() {
+  delete (globalThis as unknown as Record<string, unknown>).window
+}
+function pluginEnvelope(status: number, body: string): string {
+  return JSON.stringify({ status, body, headers: {} })
+}
+
+describe('freeGames epicRequest 桌面通道', () => {
+  it('列表请求走 plugin_http（URL/方法/头与旧 fetch 一致），fetch 不被调用', async () => {
+    const calls = stubTauriInvoke(async () => pluginEnvelope(200, JSON.stringify(EPIC_FIXTURE)))
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new Error('桌面通道下不应走 fetch') }) as typeof fetch
+    try {
+      const res = await fetchEpicFreeGames()
+      expect(res.current.map(g => g.title)).toContain('Mark of the Deep')
+      expect(calls).toHaveLength(1)
+      expect(calls[0].cmd).toBe('plugin_http')
+      expect(String(calls[0].args.url)).toContain('freeGamesPromotions')
+      expect(calls[0].args.method).toBe('GET')
+      expect(JSON.parse(String(calls[0].args.headersJson))).toEqual({ Accept: 'application/json' })
+      expect(calls[0].args.body).toBeNull()
+    } finally {
+      globalThis.fetch = origFetch
+      unStubWindow()
+    }
+  })
+  it('plugin_http 返回非 200 时状态码原样透传', async () => {
+    stubTauriInvoke(async () => pluginEnvelope(403, '{}'))
+    try {
+      await expect(fetchEpicFreeGames()).rejects.toThrow(/免费游戏列表加载失败：Epic 接口返回 403/)
+    } finally {
+      unStubWindow()
+    }
+  })
+})
+
+describe('freeGames bindEpicWithAuthCode 桌面通道', () => {
+  it('换 token 与创建设备授权都走 plugin_http，form 体与头与旧 fetch 一致', async () => {
+    const { webcrypto } = await import('node:crypto')
+    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
+    if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
+      const m = new Map<string, string>()
+      ;(globalThis as unknown as Record<string, unknown>).localStorage = {
+        getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+        setItem: (k: string, v: string) => { m.set(k, v) },
+        removeItem: (k: string) => { m.delete(k) },
+        clear: () => m.clear(),
+      }
+    }
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('/oauth/token')) return pluginEnvelope(200, JSON.stringify({ access_token: 'AT', account_id: 'ACC' }))
+      return pluginEnvelope(200, JSON.stringify({ deviceId: 'D', secret: 'S', accountId: 'ACC' }))
+    })
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new Error('桌面通道下不应走 fetch') }) as typeof fetch
+    try {
+      const { initVault } = await import('./crypto')
+      await initVault('testpwd8')
+      const auth = await bindEpicWithAuthCode('CODE123', 'testpwd8')
+      expect(auth.accountId).toBe('ACC')
+      expect(auth.deviceId).toBe('D')
+      expect(calls).toHaveLength(2)
+      const tokCall = calls[0]
+      expect(String(tokCall.args.url)).toContain('/oauth/token')
+      expect(tokCall.args.method).toBe('POST')
+      expect(JSON.parse(String(tokCall.args.headersJson))['Content-Type']).toBe('application/x-www-form-urlencoded')
+      expect(JSON.parse(String(tokCall.args.headersJson)).Authorization).toMatch(/^Basic /)
+      const params = new URLSearchParams(String(tokCall.args.body))
+      expect(params.get('grant_type')).toBe('authorization_code')
+      expect(params.get('code')).toBe('CODE123')
+      expect(params.get('token_type')).toBe('eg1')
+      const daCall = calls[1]
+      expect(String(daCall.args.url)).toContain('device/auth')
+      expect(JSON.parse(String(daCall.args.headersJson)).Authorization).toBe('Bearer AT')
+    } finally {
+      globalThis.fetch = origFetch
+      unStubWindow()
+    }
+  })
+})
+
+describe('freeGames claimEpicGame 桌面通道', () => {
+  it('quickPurchase 走 plugin_http，Bearer 头与下单体与旧 fetch 一致', async () => {
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      if (String(args.url).includes('quickPurchase')) {
+        return pluginEnvelope(200, JSON.stringify({ quickPurchaseStatus: 'SUCCESS', orderId: 'OID-1' }))
+      }
+      return pluginEnvelope(200, '{}')
+    })
+    try {
+      const orderId = await claimEpicGame('AT', 'ACC', fakeGame())
+      expect(orderId).toBe('OID-1')
+      expect(calls).toHaveLength(1)
+      expect(String(calls[0].args.url)).toContain('quickPurchase')
+      expect(calls[0].args.method).toBe('POST')
+      expect(JSON.parse(String(calls[0].args.headersJson)).Authorization).toBe('Bearer AT')
+      const body = JSON.parse(String(calls[0].args.body))
+      expect(body.lineOffers[0].offerId).toBe('x1')
+      expect(body.lineOffers[0].namespace).toBe('ns1')
+    } finally {
+      unStubWindow()
     }
   })
 })

@@ -8,6 +8,7 @@
 // 设备授权用保险箱主密码加密（仿照 tokenPool），绝不明文落盘。
 
 import { encryptSecret, decryptSecret } from './crypto'
+import { isNativeApp } from './openExternal'
 
 export type FreeGamePlatform = 'epic' | 'gog' | 'ubisoft'
 
@@ -274,16 +275,16 @@ export function parseEpicPromotions(data: unknown): { current: FreeGame[]; upcom
 }
 
 export async function fetchEpicFreeGames(): Promise<{ current: FreeGame[]; upcoming: FreeGame[] }> {
-  let res: Response
+  let res: NativeHttpResult
   try {
-    res = await fetch(PROMO_URL, { headers: { Accept: 'application/json' } })
-  } catch {
-    // WKWebView 下网络失败只抛一句英文 "Load failed"，不说明哪一步失败；
-    // 在这里换成中文，并点出代理被拦的可能（Ethan 的 Clash 出口曾多次被拦）
-    throw new Error('免费游戏列表加载失败：网络请求失败，Epic 接口可能被代理/网络拦截，请换个节点再试')
+    // 原生通道（桌面 plugin_http / 安卓 CapacitorHttp）：Epic 不返回 ACAO，
+    // 桌面 WKWebView 里前端 fetch 会被 CORS 直接拦掉抛 "Load failed"（2026-11-24 实测）
+    res = await epicRequest(PROMO_URL, 'GET', { Accept: 'application/json' })
+  } catch (e) {
+    throw toChineseFetchError(e, '免费游戏列表加载失败')
   }
   if (!res.ok) throw new Error(`免费游戏列表加载失败：Epic 接口返回 ${res.status}`)
-  return parseEpicPromotions(await res.json())
+  return parseEpicPromotions(JSON.parse(res.text))
 }
 
 // ---------------- GOG / 育碧：尽力拉取，抓不到就空态 ----------------
@@ -317,12 +318,13 @@ function parseGogProducts(data: unknown): FreeGame[] {
 
 export async function fetchGogFreeGames(): Promise<FreeGame[]> {
   try {
-    const res = await fetch(
+    const res = await epicRequest(
       'https://embed.gog.com/games/ajax/filtered?mediaType=game&priceRange=0,0&sort=popularity&page=1',
-      { headers: { Accept: 'application/json' } },
+      'GET',
+      { Accept: 'application/json' },
     )
     if (!res.ok) return []
-    return parseGogProducts(await res.json())
+    return parseGogProducts(JSON.parse(res.text))
   } catch { return [] }
 }
 
@@ -342,21 +344,71 @@ function pickStr(o: JsonObj, key: string): string {
   return typeof v === 'string' ? v : ''
 }
 
+/**
+ * WKWebView 下网络失败只抛一句英文 "Load failed"（TypeError），不说明哪一步失败
+ * （v0.1.385 只包了列表请求，绑定/领取 6 处漏了，Ethan 08:42 实机截图实证）。
+ * 所有 Epic fetch 统一经此 helper：网络失败换成中文并点名步骤。
+ */
+export function toChineseFetchError(e: unknown, step: string): Error {
+  const msg = e instanceof Error ? e.message : String(e)
+  if (/load failed|failed to fetch|networkerror|network request failed/i.test(msg)) {
+    return new Error(`${step}：网络请求失败，Epic 接口可能被代理/网络拦截，请换个节点再试`)
+  }
+  return e instanceof Error ? e : new Error(msg)
+}
+
+/** 兜底：文案里残留的 "Load failed" 一律替换成中文（防以后新增 fetch 再漏）。 */
+export function sanitizeLoadFailedMessage(msg: string): string {
+  return msg.replace(/load failed/gi, '网络请求失败，Epic 接口可能被代理/网络拦截，请换个节点再试')
+}
+
+export interface NativeHttpResult { ok: boolean; status: number; text: string }
+
+/**
+ * 免费游戏模块的 HTTP 出口（v0.1.386）：
+ * 桌面走 Rust plugin_http、安卓走 CapacitorHttp（原生栈，无 CORS 限制）；
+ * 网页版走 fetch（受目标站点 CORS 限制）。
+ * 根因：Epic 接口不返回 Access-Control-Allow-Origin，桌面 WKWebView 里前端
+ * fetch 会被 CORS 直接拦掉抛 "Load failed"，换节点也修不好（2026-11-24 实测）。
+ * plugin_http 自带 SSRF 校验（validate_proxy_url）：仅放行公网 https 域名，
+ * Epic/GOG 的域名都是公网 https，通过校验；不改弱全局规则。
+ */
+export async function epicRequest(url: string, method: string, headers: Record<string, string>, body?: string): Promise<NativeHttpResult> {
+  const w = typeof window !== 'undefined'
+    ? (window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<string> } })
+    : undefined
+  if (w?.__TAURI_INTERNALS__?.invoke) {
+    const raw = await w.__TAURI_INTERNALS__.invoke('plugin_http', {
+      url, method, headersJson: JSON.stringify(headers), body: body ?? null,
+    })
+    const parsed = JSON.parse(raw) as { status: number; body: string }
+    return { ok: parsed.status >= 200 && parsed.status < 300, status: parsed.status, text: parsed.body }
+  }
+  if (isNativeApp()) {
+    const { CapacitorHttp } = await import('@capacitor/core')
+    const res = await CapacitorHttp.request({ url, method, headers, data: body, responseType: 'text' })
+    return { ok: res.status >= 200 && res.status < 300, status: res.status, text: typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '') }
+  }
+  const res = await fetch(url, { method, headers, body })
+  return { ok: res.ok, status: res.status, text: await res.text() }
+}
+
 function basicAuth(): string {
   return 'Basic ' + btoa(`${EPIC_CLIENT_ID}:${EPIC_CLIENT_SECRET}`)
 }
 
-async function postForm(url: string, params: Record<string, string>, bearer?: string): Promise<JsonObj> {
+async function postForm(url: string, params: Record<string, string>, bearer?: string, step = 'Epic 请求失败'): Promise<JsonObj> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
     Authorization: bearer ? `Bearer ${bearer}` : basicAuth(),
   }
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: new URLSearchParams(params).toString(),
-  })
-  const text = await res.text()
+  let res: NativeHttpResult
+  try {
+    res = await epicRequest(url, 'POST', headers, new URLSearchParams(params).toString())
+  } catch (e) {
+    throw toChineseFetchError(e, step)
+  }
+  const text = res.text
   let data: JsonObj = {}
   try { data = JSON.parse(text) as JsonObj } catch { /* 非 JSON */ }
   if (!res.ok) {
@@ -378,16 +430,19 @@ export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<E
   const clean = code.trim()
   if (!clean) throw new Error('请先粘贴授权码')
   if (!pwd) throw new Error('请先解锁保险箱')
-  const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean, token_type: 'eg1' })
+  const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean, token_type: 'eg1' }, undefined, 'Epic 绑定失败')
   const access = pickStr(tok, 'access_token')
   const accountId = pickStr(tok, 'account_id')
   if (!access || !accountId) throw new Error('Epic 授权码无效或已过期，请重新登录获取')
-  const res = await fetch(DEVICE_AUTH_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${access}` },
-  })
+  let res: NativeHttpResult
+  try {
+    res = await epicRequest(DEVICE_AUTH_URL, 'POST', { Authorization: `Bearer ${access}` })
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 绑定失败')
+  }
   if (!res.ok) throw new Error(`创建设备授权失败（HTTP ${res.status}），请稍后重试`)
-  const da = (await res.json()) as JsonObj
+  let da: JsonObj = {}
+  try { da = JSON.parse(res.text) as JsonObj } catch { /* 非 JSON */ }
   const deviceId = pickStr(da, 'deviceId')
   const secret = pickStr(da, 'secret')
   const daAccountId = pickStr(da, 'accountId') || accountId
@@ -423,7 +478,7 @@ export async function epicAccessToken(auth: EpicDeviceAuth): Promise<{ access: s
       device_id: auth.deviceId,
       secret: auth.secret,
       token_type: 'eg1',
-    })
+    }, undefined, 'Epic 登录失败')
     const access = pickStr(tok, 'access_token')
     if (!access) throw new Error('Epic 登录失效')
     return { access, accountId: auth.accountId }
@@ -484,12 +539,15 @@ export async function claimEpicGame(access: string, accountId: string, game: Fre
   if (!game.autoClaimable) throw new Error(`「${game.title}」是捆绑包/DLC，请在浏览器打开商店手动领取`)
   const bearer = { Authorization: `Bearer ${access}` }
   // 1) quickPurchase
-  const qpRes = await fetch(`${QUICK_PURCHASE_URL}${accountId}/orders/quickPurchase`, {
-    method: 'POST',
-    headers: { ...bearer, 'Content-Type': 'application/json' },
-    body: JSON.stringify(buildQuickPurchaseBody(game)),
-  })
-  const qpText = await qpRes.text()
+  let qpRes: NativeHttpResult
+  try {
+    qpRes = await epicRequest(`${QUICK_PURCHASE_URL}${accountId}/orders/quickPurchase`, 'POST',
+      { ...bearer, 'Content-Type': 'application/json' },
+      JSON.stringify(buildQuickPurchaseBody(game)))
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 下单失败')
+  }
+  const qpText = qpRes.text
   let qp: JsonObj = {}
   try { qp = JSON.parse(qpText) as JsonObj } catch { /* 非 JSON */ }
   if (!qpRes.ok) {
@@ -501,28 +559,36 @@ export async function claimEpicGame(access: string, accountId: string, game: Fre
     throw new Error(`Epic 下单未完成（quickPurchaseStatus=${status || '未知'}），请在浏览器打开商店手动领取`)
   }
   // 2) purchaseToken
-  const pageRes = await fetch(
-    `${PURCHASE_PAGE_URL}?showNavigation=true&namespace=${encodeURIComponent(game.namespace ?? '')}&offers=${encodeURIComponent(game.id)}`,
-    { headers: bearer },
-  )
-  const html = await pageRes.text()
+  let pageRes: NativeHttpResult
+  try {
+    pageRes = await epicRequest(
+      `${PURCHASE_PAGE_URL}?showNavigation=true&namespace=${encodeURIComponent(game.namespace ?? '')}&offers=${encodeURIComponent(game.id)}`,
+      'GET',
+      bearer,
+    )
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 获取下单凭证失败')
+  }
+  const html = pageRes.text
   const m = /id=["']purchaseToken["'][^>]*value=["']([^"']+)["']/.exec(html)
     ?? /value=["']([^"']+)["'][^>]*id=["']purchaseToken["']/.exec(html)
   const purchaseToken = m?.[1] ?? ''
   if (!purchaseToken) throw new Error('Epic 没给到 purchaseToken，请在浏览器打开商店手动领取')
   const pciHeaders = { ...bearer, 'Content-Type': 'application/json', 'x-requested-with': purchaseToken }
   // 3) order-preview
-  const previewRes = await fetch(`${PCI_BASE}/order-preview`, {
-    method: 'POST',
-    headers: pciHeaders,
-    body: JSON.stringify({
-      useDefault: true, setDefault: false,
-      namespace: game.namespace, country: null, countryName: null,
-      orderId: null, orderComplete: null, orderError: null, orderPending: null,
-      offers: [game.id], offerPrice: '',
-    }),
-  })
-  const previewText = await previewRes.text()
+  let previewRes: NativeHttpResult
+  try {
+    previewRes = await epicRequest(`${PCI_BASE}/order-preview`, 'POST', pciHeaders,
+      JSON.stringify({
+        useDefault: true, setDefault: false,
+        namespace: game.namespace, country: null, countryName: null,
+        orderId: null, orderComplete: null, orderError: null, orderPending: null,
+        offers: [game.id], offerPrice: '',
+      }))
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 订单预览失败')
+  }
+  const previewText = previewRes.text
   let preview: JsonObj = {}
   try { preview = JSON.parse(previewText) as JsonObj } catch { /* 非 JSON */ }
   if (!previewRes.ok) {
@@ -531,20 +597,22 @@ export async function claimEpicGame(access: string, accountId: string, game: Fre
   const order = (preview.order ?? preview) as unknown as OrderInfo
   if (!order?.syncToken) throw new Error('Epic 订单预览没给 syncToken，请在浏览器打开商店手动领取')
   // 4) confirm-order
-  const confirmRes = await fetch(`${PCI_BASE}/confirm-order`, {
-    method: 'POST',
-    headers: pciHeaders,
-    body: JSON.stringify({
-      useDefault: true, setDefault: false,
-      namespace: order.namespace, country: order.country, countryName: order.countryName,
-      orderId: null, orderComplete: null, orderError: null, orderPending: null,
-      offers: order.offers, includeAccountBalance: false,
-      totalAmount: order.orderResponse?.totalPrice,
-      affiliateId: '', creatorSource: '',
-      syncToken: order.syncToken,
-    }),
-  })
-  const confirmText = await confirmRes.text()
+  let confirmRes: NativeHttpResult
+  try {
+    confirmRes = await epicRequest(`${PCI_BASE}/confirm-order`, 'POST', pciHeaders,
+      JSON.stringify({
+        useDefault: true, setDefault: false,
+        namespace: order.namespace, country: order.country, countryName: order.countryName,
+        orderId: null, orderComplete: null, orderError: null, orderPending: null,
+        offers: order.offers, includeAccountBalance: false,
+        totalAmount: order.orderResponse?.totalPrice,
+        affiliateId: '', creatorSource: '',
+        syncToken: order.syncToken,
+      }))
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 确认订单失败')
+  }
+  const confirmText = confirmRes.text
   let confirm: JsonObj = {}
   try { confirm = JSON.parse(confirmText) as JsonObj } catch { /* 非 JSON */ }
   if (!confirmRes.ok) {
