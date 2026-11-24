@@ -2522,9 +2522,11 @@ async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: Stri
     // 掐断请求（须与前端 QWENTTS_SYNTH_TIMEOUT_S 保持一致）
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
-    // 合成请求与取消标志二选一（v0.1.428）：取消分支胜出时丢弃进行中的请求 future，
-    // reqwest 随即中断连接，单线程服务端不再被占住；前端不再干等 600 秒超时。
-    let work = async {
+    // 合成请求与取消标志二选一（v0.1.428）：200ms 一片地轮询，取消标志一立就丢弃
+    // 进行中的请求 future，reqwest 随即中断连接，单线程服务端不再被占住；
+    // 前端不再干等 600 秒超时。这里不用 tokio::select!——本包 tokio 只开了 time
+    // 特性（select! 要 macros 特性，CI 编译不过），timeout 轮询只用已有特性。
+    let mut work = Box::pin(async {
         let resp = client.post(format!("{}/v1/audio/clone", QWENTTS_URL))
             .header("Content-Type", format!("multipart/form-data; boundary={}", boundary))
             .body(body).send().await.map_err(|e| format!("合成请求失败（请确认 Qwen3-TTS 服务已启动）：{}", e))?;
@@ -2540,15 +2542,15 @@ async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: Stri
             return Err(format!("合成返回非音频：{}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()));
         }
         Ok::<String, String>(format!("data:audio/wav;base64,{}", base64_encode(&bytes)))
-    };
-    tokio::select! {
-        r = work => r,
-        _ = async {
-            loop {
-                if QWENTTS_SYNTH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) { break; }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        } => Err("合成已取消".to_string()),
+    });
+    loop {
+        if QWENTTS_SYNTH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("合成已取消".to_string());
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(200), &mut work).await {
+            Ok(r) => return r,
+            Err(_) => continue,
+        }
     }
 }
 
