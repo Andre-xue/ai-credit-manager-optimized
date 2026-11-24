@@ -53,8 +53,11 @@ export async function saveCaption(rec: CaptionRec): Promise<void> {
   } catch { /* 保存失败不阻塞索引流程 */ }
 }
 
-/** 模型是否能看图：modelPurpose 的「看图」标签 + 常见多模态型号补充 */
+/** 模型是否能看图：modelPurpose 的「看图」标签 + 常见多模态型号补充。
+ * 排除（v0.1.393）：Embedding/Reranker 名字里带 VL 但不是对话模型，
+ * 只出向量/排序、不出文字描述，选了也索引不了，菜单里直接不列。 */
 export function isVisionModelId(id: string): boolean {
+  if (/embedding|rerank/i.test(id)) return false
   if (classifyModelPurpose(id).tags.includes('看图')) return true
   return /gpt-4o|gpt-5|claude|gemini|internvl|llava|minicpm-v|glm-4v|qwen[^ ]*vl|step-1v|moonshot[^ ]*vision/i.test(id)
 }
@@ -63,12 +66,58 @@ const TAG_PROMPT = '请用中文描述这张图片（视频取的是首帧）：
 
 /** 给一张图（data URL）打标，返回描述+标签文本 */
 /** 自有账户下「能看图」的模型逐个列成路线（v0.1.354）：账户本身配置的模型（acct.label）
- * 已由基础路线覆盖，这里只补同一账户还能调的其他看图模型 */
+ * 已由基础路线覆盖，这里只补同一账户还能调的其他看图模型。
+ * v0.1.393：接口返回的模型 id 可能重复，且账户配置的模型就是 label 本身
+ * （旧比较 m !== acct.label 永远为真、拦不住），这里按 id 去重并排除已配置的。 */
 export function accountVisionRoutes(acct: Account, models: string[]): WorkshopRoute[] {
   const providerName = PROVIDER_MAP[acct.providerId]?.name ?? acct.providerId
-  return models
-    .filter(m => m !== acct.label && isVisionModelId(m))
-    .map(m => ({ kind: 'account' as const, key: `acct:${acct.id}:${m}`, label: `自有 · ${providerName} · ${m}`, accountId: acct.id, modelId: m }))
+  const isConfigured = (m: string) => acct.label === m || acct.label.endsWith(`· ${m}`)
+  const seen = new Set<string>()
+  const out: WorkshopRoute[] = []
+  for (const m of models) {
+    if (seen.has(m) || isConfigured(m) || !isVisionModelId(m)) continue
+    seen.add(m)
+    out.push({ kind: 'account' as const, key: `acct:${acct.id}:${m}`, label: `自有 · ${providerName} · ${m}`, accountId: acct.id, modelId: m })
+  }
+  return out
+}
+
+/** 路线去重（v0.1.393）：同一模型可能同时来自基础路线与逐账户枚举，
+ * 或同一账户被加了两次，菜单里只留第一次出现的（按 label 判重）。 */
+export function dedupeVisionRoutes(routes: WorkshopRoute[]): WorkshopRoute[] {
+  const seen = new Set<string>()
+  return routes.filter(r => {
+    if (seen.has(r.label)) return false
+    seen.add(r.label)
+    return true
+  })
+}
+
+/** 看图模型一句话简介（v0.1.393，文案与 Ethan 确认过）：按模型 id 关键词匹配；
+ * 未知的新模型给通用文案，不留空。顺序有讲究：Thinking 版先于具体型号匹配，
+ * 因为 Thinking 版的简介是不推荐、与型号无关。 */
+export function describeVisionModel(modelId: string): string {
+  const id = modelId.toLowerCase()
+  if (/embedding/i.test(id)) return '只把图文转成向量，不出文字，不能索引'
+  if (/rerank/i.test(id)) return '只给图文相关性打分排序，不出文字，不能索引'
+  if (/paddleocr/i.test(id)) return '百度飞桨模型，专长认图里的文字，描述场景比较干'
+  if (/nemotron/i.test(id)) return '英伟达轻量多模态小模型，免费、快，但能力一般，免费档易限速'
+  if (/thinking/i.test(id)) return '回答前先推理，慢、费 token，贴标签用不上'
+  if (/captioner/i.test(id)) return '专门写图注的版本，最对口，描述最贴合图片内容'
+  if (/qwen3-vl-8b-instruct/i.test(id)) return '通义 8B 视觉模型，轻快便宜，描述够用，性价比最高'
+  if (/qwen3-vl-32b-instruct/i.test(id)) return '通义 32B 视觉模型，看图描述能力强，质量好，速度中等'
+  if (/qwen3-vl-30b-a3b-instruct/i.test(id)) return '30B 混合专家模型，质量接近 32B 但更快更便宜'
+  if (/qwen3-omni-30b-a3b-instruct/i.test(id)) return '通义全模态模型，文字图片音频视频都能处理，描述能力强'
+  if (/qwen[^ ]*vl|qwen[^ ]*omni/i.test(id)) return '通义视觉模型，可看图描述'
+  return '视觉模型，可看图描述'
+}
+
+/** 取路线对应的模型 id（简介用）：免费路线查 freeOptions；自有账户用
+ * modelId/engine；基础路线没有 modelId 时从 label 文本里匹配（label 含模型 id）。 */
+export function visionRouteModelId(route: WorkshopRoute, freeOptions: FreeAiOption[]): string {
+  if (route.kind === 'free') return freeOptions.find(o => `free:${o.key}` === route.key)?.modelId ?? route.label
+  if (route.kind === 'wbpool') return route.label
+  return route.modelId ?? route.engine ?? route.label
 }
 
 export async function visionTagImage(params: {

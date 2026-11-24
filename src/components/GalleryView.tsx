@@ -8,12 +8,12 @@ import { loadFilterCollapsed, saveFilterCollapsed } from '../core/galleryFilter'
 import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExternal'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
-import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, accountVisionRoutes, type CaptionRec } from '../core/galleryIndex'
+import { loadCaptions, saveCaption, visionTagImage, isVisionModelId, captionMatches, accountVisionRoutes, dedupeVisionRoutes, describeVisionModel, visionRouteModelId, type CaptionRec } from '../core/galleryIndex'
 import { isVoiceConfigAccount } from '../core/modelCategories'
 import { PROVIDER_MAP } from '../data/providers'
 import { fetchProviderModels } from '../core/providerCall'
 import { decryptSecret } from '../core/crypto'
-import { ToolShell, RouteSelect } from './WorkshopView'
+import { ToolShell } from './WorkshopView'
 import { Pager } from './Pager'
 
 /**
@@ -247,10 +247,13 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
       const acct = accounts.find(a => a.id === r.accountId)
       return !!acct && isVisionModelId(acct.label)
     })
-    return [...base, ...acctVisionRoutes]
+    // v0.1.393：基础路线与逐账户枚举可能列出同一模型（或同一账户被加两次），按 label 去重
+    return dedupeVisionRoutes([...base, ...acctVisionRoutes])
   }, [routeData, accounts, acctVisionRoutes])
   const tagRoute: WorkshopRoute | null = visionRoutes.find(r => r.key === tagRouteKey) ?? visionRoutes[0] ?? null
   const visionData: WorkshopRouteData | null = routeData ? { routes: visionRoutes, freeOptions: routeData.freeOptions } : null
+  // 菜单里去重后的自有看图模型数（v0.1.393：提示文案用去重后的数，别把重复的也算进去）
+  const acctVisionShown = visionRoutes.filter(r => r.kind === 'account').length
 
   const viewFiltered = useMemo(() => items.filter(i =>
     view === 'all' ? true : view === 'ai' ? i.ai : view === 'video' ? i.kind === 'video' : favs.has(i.path),
@@ -460,20 +463,20 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               {!filterCollapsed && (
                 <>
                   <span className="gal-filter-sep" />
-                  <div className="gal-filter-seg">
+                  <div className="gal-filter-seg gal-filter-seg-src">
                     <span className="gal-filter-seg-t">来源</span>
                     {mediaDir
                       ? (
-                        <span className="gal-src2">
+                        <span className="gal-src2" title={mediaDir}>
                           <span className="gal-side-ico sm"><FolderOpen size={14} /></span>
-                          <span className="gal-src-main">生成保存目录<span className="gal-src-path2">{mediaDir}</span></span>
+                          <span className="gal-src-main">生成保存目录<span className="gal-src-path2">{baseName(mediaDir)}</span></span>
                         </span>
                       )
                       : <span className="gal-src-none">未设置生成保存目录</span>}
                     {photosDir ? (
-                      <span className="gal-src2">
+                      <span className="gal-src2" title={photosDir}>
                         <span className="gal-side-ico sm"><Images size={14} /></span>
-                        <span className="gal-src-main">Mac 照片图库<span className="gal-src-path2">{photosDir}</span></span>
+                        <span className="gal-src-main">Mac 照片图库<span className="gal-src-path2">{baseName(photosDir)}</span></span>
                         <button className={`gal-switch ${photosOn ? 'on' : ''}`} title={photosOn ? '点击关闭这个来源' : '点击启用这个来源'}
                           onClick={() => { const next = !photosOn; setPhotosOn(next); try { localStorage.setItem(PHOTOS_ON_KEY, next ? '1' : '0') } catch { /* 忽略 */ } }}>
                           <span className="gal-switch-dot" />
@@ -483,9 +486,9 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                       <span className="gal-src-none">未找到 Mac 照片图库</span>
                     )}
                     {folders.filter(f => f !== mediaDir && f !== photosDir).map(f => (
-                      <span key={f} className="gal-src2">
+                      <span key={f} className="gal-src2" title={f}>
                         <span className="gal-side-ico sm"><Folder size={14} /></span>
-                        <span className="gal-src-main">{baseName(f)}<span className="gal-src-path2">{f}</span></span>
+                        <span className="gal-src-main">{baseName(f)}</span>
                         <button className="gal-src-x" title="移除这个来源" onClick={() => removeFolder(f)}><X size={12} /></button>
                       </span>
                     ))}
@@ -515,10 +518,11 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
                 <Sparkles size={14} /> AI 索引
                 <button className="gal-ai-pop-x" onClick={() => setAiPanelOpen(false)}><X size={14} /></button>
               </div>
-              <RouteSelect data={visionData} routeKey={tagRoute?.key ?? ''} setRouteKey={k => {
-                setTagRouteKey(k)
-                try { localStorage.setItem(TAG_ROUTE_KEY, k) } catch { /* 忽略 */ }
-              }} />
+              <GalModelSelect routes={visionRoutes} freeOptions={visionData?.freeOptions ?? []}
+                routeKey={tagRoute?.key ?? ''} setRouteKey={k => {
+                  setTagRouteKey(k)
+                  try { localStorage.setItem(TAG_ROUTE_KEY, k) } catch { /* 忽略 */ }
+                }} />
               {routeData && visionRoutes.length === 0 && (
                 <div className="gal-idx-hint">没有能看图的模型：免费模型里挑带「看图」的，或用支持多模态的自有账户。</div>
               )}
@@ -528,8 +532,8 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
               {routeData && sessionPwd && acctEnum.loading && (
                 <div className="gal-idx-hint">正在读取自有账户的模型列表…</div>
               )}
-              {routeData && sessionPwd && !acctEnum.loading && acctVisionRoutes.length > 0 && (
-                <div className="gal-idx-hint">已列出自有账户的看图模型 {acctVisionRoutes.length} 个，在上方菜单里选「自有 · …」即可用。</div>
+              {routeData && sessionPwd && !acctEnum.loading && acctVisionShown > 0 && (
+                <div className="gal-idx-hint">已列出自有账户的看图模型 {acctVisionShown} 个，在上方菜单里选「自有 · …」即可用。</div>
               )}
               {routeData && sessionPwd && !acctEnum.loading && acctEnum.errors.length > 0 && (
                 <div className="gal-idx-hint">有账户的模型列表没拉到：{acctEnum.errors.join('；')}</div>
@@ -627,6 +631,50 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
           notify={notify} />
       )}
     </ToolShell>
+  )
+}
+
+/** AI 索引模型选择（v0.1.393）：原生 <select> 的选项放不下简介，改自定义下拉，
+ * 每行同时显示模型名与一句话简介；收起时也在下方显示已选模型的简介。 */
+function GalModelSelect({ routes, freeOptions, routeKey, setRouteKey }: {
+  routes: WorkshopRoute[]
+  freeOptions: WorkshopRouteData['freeOptions']
+  routeKey: string
+  setRouteKey: (k: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const cur = routes.find(r => r.key === routeKey) ?? null
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  return (
+    <div className="gal-modelsel" ref={wrapRef}>
+      <span className="gal-modelsel-l">使用模型</span>
+      <button type="button" className="gal-modelsel-btn" disabled={routes.length === 0}
+        aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        <span className="gal-modelsel-cur">{cur ? cur.label : routes.length === 0 ? '无可用模型（先在 AI 助手登录云账号或添加账户）' : '请选择模型'}</span>
+        <ChevronDown size={14} className={open ? 'gal-modelsel-chev open' : 'gal-modelsel-chev'} />
+      </button>
+      {cur && <div className="gal-model-intro">{describeVisionModel(visionRouteModelId(cur, freeOptions))}</div>}
+      {open && routes.length > 0 && (
+        <div className="gal-modelsel-list" role="listbox" aria-label="看图模型">
+          {routes.map(r => (
+            <button type="button" key={r.key} role="option" aria-selected={r.key === routeKey}
+              className={`gal-modelsel-opt ${r.key === routeKey ? 'on' : ''}`}
+              onClick={() => { setRouteKey(r.key); setOpen(false) }}>
+              <span className="gal-modelsel-opt-l">{r.label}</span>
+              <span className="gal-modelsel-opt-d">{describeVisionModel(visionRouteModelId(r, freeOptions))}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

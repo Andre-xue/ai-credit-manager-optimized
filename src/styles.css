@@ -2186,8 +2186,14 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .gal-wrap { display: block; }
 .gal-bar { flex-wrap: wrap; }
 .gal-filter { position: sticky; top: 0; z-index: 25; background: var(--bg); padding: 2px 0 8px; margin-bottom: 4px; }
-.gal-filter-scroll { display: flex; align-items: center; gap: 12px; overflow-x: auto; scrollbar-width: none; padding: 2px; }
-.gal-filter-scroll::-webkit-scrollbar { display: none; }
+.gal-filter-scroll { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 2px; }
+.gal-filter-seg.gal-filter-seg-src { flex: 1 1 340px; min-width: 0; flex-wrap: wrap; }
+.gal-filter-seg-src .gal-src2 { flex: none; max-width: 100%; }
+/* v0.1.393：来源段不再靠条内横向滚动藏内容，放不下就换行；窄屏仍条内滚动、页面零溢出 */
+@media (max-width: 720px) {
+  .gal-filter-scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .gal-filter-scroll::-webkit-scrollbar { display: none; }
+}
 .gal-filter-toggle { flex: none; display: inline-flex; align-items: center; gap: 5px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-1); font-size: 12.5px; font-weight: 600; padding: 6px 11px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
 .gal-filter-seg { display: flex; align-items: center; gap: 6px; flex: none; }
 .gal-filter-sep { width: 1px; align-self: stretch; margin: 4px 0; background: var(--border); flex: none; }
@@ -2198,13 +2204,31 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .gal-chip-n { font-size: 11.5px; color: var(--text-3); }
 .gal-chip.on .gal-chip-n { color: var(--primary); }
 .gal-filter .gal-src2 { padding: 4px 6px; }
-.gal-filter .gal-src-main { max-width: 190px; }
+/* v0.1.393：来源名称全露出来（不再 190px 截断）；路径行只显示文件夹名，完整路径放 title 悬停提示 */
+.gal-filter .gal-src-main { max-width: none; overflow-wrap: anywhere; }
+.gal-filter .gal-src-path2 { white-space: normal; overflow: visible; text-overflow: clip; }
 .gal-ai-mini { flex: none; display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 7px 10px 7px 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(60, 50, 140, .06); }
 .gal-ai-mini-main { display: flex; flex-direction: column; gap: 3px; min-width: 110px; }
 .gal-ai-mini-t { display: flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text-1); }
 .gal-ai-mini-s { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
 .gal-ai-mini .gal-prog { width: 110px; }
 .gal-filter .gal-ai-pop { top: calc(100% + 8px); }
+
+/* ---- AI 图库模型菜单（v0.1.393）：去重 + 每模型一句话简介（原生 select 放不下简介，改自定义下拉） ---- */
+.gal-modelsel { position: relative; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.gal-modelsel-l { font-size: 12px; color: var(--text-2); }
+.gal-modelsel-btn { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; color: var(--text-1); cursor: pointer; }
+.gal-modelsel-btn:disabled { opacity: .6; cursor: default; }
+.gal-modelsel-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gal-modelsel-chev { flex: none; color: var(--text-3); transition: transform .15s; }
+.gal-modelsel-chev.open { transform: rotate(180deg); }
+.gal-model-intro { font-size: 12px; line-height: 1.5; color: var(--text-3); }
+.gal-modelsel-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40; max-height: 260px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 32px rgba(40, 30, 90, .18); padding: 4px; }
+.gal-modelsel-opt { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: none; border: none; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+.gal-modelsel-opt:hover { background: var(--surface-2); }
+.gal-modelsel-opt.on { background: var(--primary-soft); }
+.gal-modelsel-opt-l { font-size: 12.5px; color: var(--text-1); overflow-wrap: anywhere; }
+.gal-modelsel-opt-d { font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
 
 /* ---- 工坊 · 免费游戏（v0.1.384） ---- */
 .fg-tool { max-width: 860px; }
