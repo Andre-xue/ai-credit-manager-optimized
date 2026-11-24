@@ -13,6 +13,7 @@ import {
   loadClosedGroups, saveClosedGroups, pageSlice, pageCount,
   fetchEpicFreeGames,
   runFreeGamesCheck, claimEpicGameManual, summarizeCheckResult,
+  syncOwnedEpicGames, markEpicGameClaimed,
   bindEpicWithAuthCode, hasEpicAuth, unbindEpic, loadEpicAuth,
   loadLastCheckAt, loadLastError, nextCheckAt,
   EPIC_LOGIN_URL,
@@ -68,11 +69,12 @@ interface GroupDef {
   emptyUrlLabel?: string
 }
 
-function GameCard({ game, claimed, claiming, onClaim }: {
+function GameCard({ game, claimed, claiming, onClaim, onMarkClaimed }: {
   game: FreeGame
   claimed: boolean
   claiming: boolean
   onClaim?: (g: FreeGame) => void
+  onMarkClaimed?: (g: FreeGame) => void
 }) {
   const [imgOk, setImgOk] = useState(true)
   return (
@@ -100,6 +102,13 @@ function GameCard({ game, claimed, claiming, onClaim }: {
             <button className="btn sm primary" disabled={claiming}
               onClick={e => { e.stopPropagation(); onClaim(game) }}>
               {claiming ? <Loader2 size={12} className="spin" /> : null} {game.autoClaimable ? '立即领取' : '去商店领'}
+            </button>
+          )}
+          {/* v0.1.405：在浏览器领过的游戏，点一下就标成已入库（只影响显示，不会重复下单） */}
+          {game.platform === 'epic' && game.status === 'free' && !claimed && onMarkClaimed && (
+            <button className="btn sm ghost"
+              onClick={e => { e.stopPropagation(); onMarkClaimed(game) }}>
+              已领过
             </button>
           )}
         </div>
@@ -141,6 +150,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   }, [sessionPwd])
   const [checking, setChecking] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [claimingId, setClaimingId] = useState('')
   const [closedGroups, setClosedGroups] = useState<string[]>(loadClosedGroups)
   const [pages, setPages] = useState<Record<string, number>>({})
@@ -237,6 +247,34 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       saveEpicBrowserStatus(text)
       notifySafe(e instanceof Error ? e.message : '打开内嵌浏览器失败', 'err')
       void openExternal(checkoutUrl)
+    }
+  }
+
+  // v0.1.405：同步浏览器领取——查 Epic 库房已购，对照本周免费列表，命中
+  // 的补一条已入库记录（卡片与已入库组立刻显示已入库）。库房接口查不到时
+  // 用下面的 markClaimed 手动标记，失败原因会明确报出来，不静默。
+  const syncBrowserClaimed = async () => {
+    const pwd = sessionPwd || getBiometricPassword() || ''
+    if (!pwd) { notifySafe('请先解锁保险箱（同步库房要用 Epic 登录态）'); return }
+    setSyncing(true)
+    try {
+      const res = await syncOwnedEpicGames(pwd)
+      refreshMeta()
+      refreshRecords()
+      if (res.synced.length) notifySafe(`已同步：${res.synced.join('、')} 已在库，显示为已入库`)
+      else if (res.alreadyKnown.length) notifySafe(`库房已对照：${res.alreadyKnown.join('、')} 本来就显示已入库`)
+      else notifySafe(`库房已对照：本周免费游戏里没有在浏览器领过的（库房共 ${res.ownedCount} 款）`)
+    } catch (e) {
+      notifySafe(e instanceof Error ? e.message : '同步失败', 'err')
+    } finally { setSyncing(false) }
+  }
+
+  const markClaimed = (title: string) => {
+    if (markEpicGameClaimed(title)) {
+      refreshRecords()
+      notifySafe(`「${title}」已标记为已入库，之后不会再重复领取`)
+    } else {
+      notifySafe(`「${title}」本来就显示已入库`)
     }
   }
 
@@ -400,6 +438,10 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
           <div className="fg-plat-foot">
             {epicBound ? (
               <>
+                {/* v0.1.405：在浏览器领过的游戏，点这里对照库房同步成已入库 */}
+                <button className="btn sm" disabled={syncing} onClick={() => void syncBrowserClaimed()}>
+                  {syncing ? <Loader2 size={13} className="spin" /> : null} 同步浏览器领取
+                </button>
                 <button className="btn sm ghost" onClick={() => { setBindOpen(true); setAuthCode('') }}>重新绑定</button>
                 <button className="btn sm ghost" onClick={() => { unbindEpic(); setEpicBound(false); setEpicFallback(false); setEpicFallbackDetail(null); notifySafe('已解除 Epic 绑定') }}>解除绑定</button>
               </>
@@ -479,7 +521,8 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                       <GameCard key={`${game.platform}-${game.id}`} game={game}
                         claimed={claimedSet.has(`${game.platform}:${game.title}`)}
                         claiming={claimingId === game.id}
-                        onClaim={game.platform === 'epic' && game.status === 'free' ? claimOne : undefined} />
+                        onClaim={game.platform === 'epic' && game.status === 'free' ? claimOne : undefined}
+                        onMarkClaimed={game.platform === 'epic' && game.status === 'free' ? (g => markClaimed(g.title)) : undefined} />
                     ))}
                   </div>
                   <Pager page={page} pageCount={total} total={g.games.length} unit="款"
@@ -526,6 +569,10 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
                 </div>
                 {r.outcome === 'error' && /登录失效|重新绑定/.test(r.message) && (
                   <button className="btn sm" onClick={() => { setBindOpen(true); setAuthCode('') }}>重新绑定</button>
+                )}
+                {/* v0.1.405：领取失败的记录也能直接标「已领过」（浏览器领过的就不用再领了） */}
+                {r.outcome === 'error' && r.title !== 'Epic 账号登录' && !claimedSet.has(`epic:${r.title}`) && (
+                  <button className="btn sm" onClick={() => markClaimed(r.title)}>已领过</button>
                 )}
                 {r.outcome === 'error' && /验证码/.test(r.message) && (
                   <button className="btn sm" onClick={() => void openExternal('https://store.epicgames.com/zh-CN/free-games')}>去商店手动领</button>

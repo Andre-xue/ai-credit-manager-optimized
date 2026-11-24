@@ -883,6 +883,151 @@ export async function claimEpicGameManual(pwd: string, game: FreeGame): Promise<
   }
 }
 
+// ---------------- Epic：库房同步（v0.1.405） ----------------
+// Ethan 2026-11-24 在浏览器手动领了 Mark of the Deep，但 App 只认自己经手
+// 的领取记录，浏览器领的仍显示未领取。同步分两路：① 优先调 Epic 库房接口
+// 查已购（library-service，legendary/Heroic 同款；不通时再试授权接口），
+// 命中本周免费游戏就补一条 'already' 记录，卡片与已入库组立刻显示已入库；
+// ② 库房接口查不到时给手动「已领过」标记按钮（只影响显示，巡查会跳过它，
+// 不会重复下单）。注意：库房接口没法用真账号在沙箱验证——沙箱到
+// library-service 的连接被服务端直接挂断（Empty reply，TLS 握手后无响应），
+// entitlement 端点同环境可通（假 token 探回 401 token_verification_failed，
+// 路由存在）；真机上以 Ethan 的实机同步结果为准。
+
+export const EPIC_LIBRARY_URL = 'https://library-service.live.on.epicgames.com/library/api/public/items'
+export function epicEntitlementsUrl(accountId: string): string {
+  return `https://entitlement-public-service-prod08.ol.epicgames.com/entitlement/api/account/${encodeURIComponent(accountId)}/entitlements`
+}
+
+/** 从库房/授权接口返回体里抽已购键 `namespace:catalogItemId`（纯函数，可单测） */
+export function parseOwnedKeys(data: unknown): Set<string> {
+  const keys = new Set<string>()
+  const d = data as { records?: unknown; entitlements?: unknown } | null
+  const items: unknown[] = Array.isArray(data) ? data
+    : Array.isArray(d?.records) ? d.records as unknown[]
+    : Array.isArray(d?.entitlements) ? d.entitlements as unknown[]
+    : []
+  for (const it of items) {
+    const o = it as JsonObj | null
+    if (!o || typeof o !== 'object') continue
+    const ns = pickStr(o, 'namespace')
+    const cid = pickStr(o, 'catalogItemId')
+    if (ns && cid) { keys.add(`${ns}:${cid}`); continue }
+    // 授权接口的 entitlementName 有 `namespace:catalogItemId` 形态
+    const name = pickStr(o, 'entitlementName')
+    if (name.includes(':')) keys.add(name.trim())
+  }
+  return keys
+}
+
+async function fetchLibraryPage(access: string, start: number): Promise<{ keys: Set<string>; count: number }> {
+  const url = start > 0 ? `${EPIC_LIBRARY_URL}?count=100&start=${start}` : EPIC_LIBRARY_URL
+  let res: NativeHttpResult
+  try {
+    res = await epicRequest(url, 'GET', { Authorization: `Bearer ${access}`, 'User-Agent': EPIC_LAUNCHER_UA })
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 库房查询失败')
+  }
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Epic 登录失效，请重新绑定账号')
+    throw new Error(`Epic 库房接口返回 ${res.status}`)
+  }
+  let data: unknown = {}
+  try { data = JSON.parse(res.text) } catch { throw new Error('Epic 库房接口返回的不是 JSON，无法识别已购列表') }
+  const keys = parseOwnedKeys(data)
+  const raw = data as { records?: unknown[] } | null
+  const count = Array.isArray(raw?.records) ? raw.records.length : keys.size
+  return { keys, count }
+}
+
+export interface OwnedEpicKeys { keys: Set<string>; source: 'library' | 'entitlements' }
+
+/** 查当前账号的已购（先库房接口，不通再试授权接口；两路都失败才抛错，原因写明） */
+export async function fetchOwnedEpicKeys(access: string, accountId: string): Promise<OwnedEpicKeys> {
+  let libErr: string | null = null
+  try {
+    const keys = new Set<string>()
+    let start = 0
+    // 分页拉取（每页 100）：接口不认 count/start 参数时会原样返回全量，
+    // 此时第二页 keys 不再增长即停；最多 10 页防死循环。
+    for (let page = 0; page < 10; page++) {
+      const { keys: pageKeys, count } = await fetchLibraryPage(access, start)
+      const before = keys.size
+      for (const k of pageKeys) keys.add(k)
+      if (count < 100 || keys.size === before) break
+      start += count
+    }
+    return { keys, source: 'library' }
+  } catch (e) {
+    libErr = e instanceof Error ? e.message : 'Epic 库房查询失败'
+    if (/登录失效|重新绑定/.test(libErr)) throw e
+  }
+  // 库房接口不通时再试授权接口（同一套 token，不同路由；一个被拦另一个可能通）
+  let entRes: NativeHttpResult
+  try {
+    entRes = await epicRequest(epicEntitlementsUrl(accountId), 'GET', { Authorization: `Bearer ${access}`, 'User-Agent': EPIC_LAUNCHER_UA })
+  } catch (e) {
+    throw toChineseFetchError(e, 'Epic 库房查询失败')
+  }
+  if (!entRes.ok) {
+    if (entRes.status === 401) throw new Error('Epic 登录失效，请重新绑定账号')
+    throw new Error(`Epic 库房查询失败：库房接口（${libErr}）与授权接口（HTTP ${entRes.status}）都查不到已购。请确认 Epic 账号已绑定、网络正常，或直接用领取记录旁的「已领过」手动标记。`)
+  }
+  let entData: unknown = {}
+  try { entData = JSON.parse(entRes.text) } catch { throw new Error('Epic 授权接口返回的不是 JSON，无法识别已购列表') }
+  return { keys: parseOwnedKeys(entData), source: 'entitlements' }
+}
+
+export interface SyncOwnedResult {
+  synced: string[]
+  alreadyKnown: string[]
+  ownedCount: number
+  source: 'library' | 'entitlements'
+}
+
+/**
+ * 同步浏览器领取：查库房已购，对照本周免费列表，命中且未记过的补一条
+ * 'already' 记录（显示已入库，巡查不再重复领）。缓存没列表时先拉一份新的。
+ */
+export async function syncOwnedEpicGames(pwd: string): Promise<SyncOwnedResult> {
+  if (!pwd) throw new Error('请先解锁保险箱（同步库房要用 Epic 登录态）')
+  const auth = await loadEpicAuth(pwd)
+  if (!auth) throw new Error('请先绑定 Epic 账号')
+  const tokens = await epicAccessToken(auth, pwd)
+  const owned = await fetchOwnedEpicKeys(tokens.access, tokens.accountId)
+  let games = loadCache()?.epicCurrent ?? []
+  if (!games.length) {
+    try {
+      const fresh = await fetchEpicFreeGames()
+      saveCache({ at: Date.now(), epicCurrent: fresh.current, epicUpcoming: fresh.upcoming })
+      games = fresh.current
+    } catch (e) {
+      throw new Error(`免费游戏列表拉取失败，无法对照库房：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+  const claimed = claimedGameIds()
+  const at = Date.now()
+  const synced: string[] = []
+  const alreadyKnown: string[] = []
+  for (const g of games) {
+    if (!g.namespace || !g.id) continue
+    if (!owned.keys.has(`${g.namespace}:${g.id}`)) continue
+    if (claimed.has(`epic:${g.title}`)) { alreadyKnown.push(g.title); continue }
+    addRecord({ at, platform: 'epic', title: g.title, outcome: 'already', message: '已在库（浏览器领取，已同步）' })
+    synced.push(g.title)
+  }
+  return { synced, alreadyKnown, ownedCount: owned.keys.size, source: owned.source }
+}
+
+/** 手动把一款游戏标成已入库（浏览器领取、库房接口查不到时用；只影响显示，巡查会跳过它，不会重复下单） */
+export function markEpicGameClaimed(title: string): boolean {
+  const t = title.trim()
+  if (!t) return false
+  if (claimedGameIds().has(`epic:${t}`)) return false
+  addRecord({ at: Date.now(), platform: 'epic', title: t, outcome: 'already', message: '已手动标记已领过（浏览器领取，仅显示用，不会重复下单）' })
+  return true
+}
+
 /** 巡查是否到期（供 App 定时器调用） */
 export function freeGamesCheckDue(): boolean {
   const prefs = loadPrefs()

@@ -10,6 +10,8 @@ import {
   extractPurchaseToken, describePurchasePage,
   buildEpicCheckoutUrl,
   EpicManualCheckoutError, checkoutUrlOf,
+  parseOwnedKeys, fetchOwnedEpicKeys, syncOwnedEpicGames, markEpicGameClaimed,
+  readRecords, claimedGameIds, CACHE_KEY,
   type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
 
@@ -836,5 +838,190 @@ describe('freeGames 只保留 Epic（v0.1.398）', () => {
     expect('gogEnabled' in prefs).toBe(false)
     expect('ubiEnabled' in prefs).toBe(false)
     expect(prefs.epicEnabled).toBe(true)
+  })
+})
+
+// v0.1.405：浏览器手动领的游戏同步进 App 显示已入库。
+// 先试 Epic 库房接口（library-service，legendary 同款）查已购，不通再试授权
+// 接口；两路都查不到时给手动「已领过」标记按钮。库房接口在沙箱里没法用真账
+// 号验证（library-service 连接被服务端挂断，见 freeGames.ts 注释），以下
+// 单测用 stub 的 invoke 钉住请求参数与解析/对照逻辑；真机仍需 Ethan 实机验。
+function ensureLocalStorage() {
+  if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
+    const m = new Map<string, string>()
+    ;(globalThis as unknown as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+      setItem: (k: string, v: string) => { m.set(k, v) },
+      removeItem: (k: string) => { m.delete(k) },
+      clear: () => m.clear(),
+    }
+  } else {
+    ;(globalThis.localStorage as Storage).clear()
+  }
+}
+
+describe('freeGames parseOwnedKeys（v0.1.405）', () => {
+  it('库房 records 形态：抽 namespace:catalogItemId，去重、跳过缺字段的', () => {
+    const keys = parseOwnedKeys({
+      records: [
+        { namespace: 'ns1', catalogItemId: 'id1', title: 'A' },
+        { namespace: 'ns1', catalogItemId: 'id1' },
+        { namespace: 'ns2', catalogItemId: 'id2' },
+        { namespace: 'ns3' },
+        { catalogItemId: 'id4' },
+        'not-an-object',
+      ],
+      responseMetadata: { count: 6 },
+    })
+    expect([...keys].sort()).toEqual(['ns1:id1', 'ns2:id2'])
+  })
+  it('授权接口数组形态：entitlementName 的 ns:id 形态也认', () => {
+    const keys = parseOwnedKeys([
+      { entitlementName: 'ns9:id9', entitlementType: 'EXECUTABLE' },
+      { namespace: 'ns8', catalogItemId: 'id8' },
+      { entitlementName: 'no-colon' },
+    ])
+    expect([...keys].sort()).toEqual(['ns8:id8', 'ns9:id9'])
+  })
+  it('空体/非对象返回空集，不抛错', () => {
+    expect(parseOwnedKeys(null).size).toBe(0)
+    expect(parseOwnedKeys({}).size).toBe(0)
+    expect(parseOwnedKeys('oops').size).toBe(0)
+  })
+})
+
+describe('freeGames fetchOwnedEpicKeys（v0.1.405）', () => {
+  it('库房接口 200：走 plugin_http、Bearer 头，返回已购键', async () => {
+    const calls = stubTauriInvoke(async () => pluginEnvelope(200, JSON.stringify({
+      records: [{ namespace: '3d6441ab9d4246208bc97d7babf664b5', catalogItemId: '1f9a12b06b4f437790b6913ad136a08c' }],
+    })))
+    try {
+      const res = await fetchOwnedEpicKeys('AT', 'ACC')
+      expect(res.source).toBe('library')
+      expect(res.keys.has('3d6441ab9d4246208bc97d7babf664b5:1f9a12b06b4f437790b6913ad136a08c')).toBe(true)
+      expect(calls).toHaveLength(1)
+      expect(String(calls[0].args.url)).toContain('library-service.live.on.epicgames.com/library/api/public/items')
+      expect(JSON.parse(String(calls[0].args.headersJson)).Authorization).toBe('Bearer AT')
+    } finally { unStubWindow() }
+  })
+  it('库房接口 403 时改走授权接口', async () => {
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('library-service')) return pluginEnvelope(403, '{}')
+      if (u.includes('entitlement-public-service')) return pluginEnvelope(200, JSON.stringify([
+        { namespace: 'nsE', catalogItemId: 'idE' },
+      ]))
+      return pluginEnvelope(404, '{}')
+    })
+    try {
+      const res = await fetchOwnedEpicKeys('AT', 'ACC-1')
+      expect(res.source).toBe('entitlements')
+      expect(res.keys.has('nsE:idE')).toBe(true)
+      expect(calls.some(c => String(c.args.url).includes('/entitlement/api/account/ACC-1/entitlements'))).toBe(true)
+    } finally { unStubWindow() }
+  })
+  it('两路都失败时抛错，原因写明两路状态并提示手动标记', async () => {
+    stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('library-service')) return pluginEnvelope(403, '{}')
+      return pluginEnvelope(500, '{}')
+    })
+    try {
+      await expect(fetchOwnedEpicKeys('AT', 'ACC')).rejects.toThrow(/库房查询失败/)
+      await expect(fetchOwnedEpicKeys('AT', 'ACC')).rejects.toThrow(/已领过/)
+    } finally { unStubWindow() }
+  })
+  it('库房接口 401 直接报登录失效，不再试授权接口', async () => {
+    const calls = stubTauriInvoke(async () => pluginEnvelope(401, '{}'))
+    try {
+      await expect(fetchOwnedEpicKeys('AT', 'ACC')).rejects.toThrow(/登录失效/)
+      expect(calls).toHaveLength(1)
+    } finally { unStubWindow() }
+  })
+  it('分页：第一页 100 条、第二页 1 条，全部合并', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ namespace: 'ns', catalogItemId: `id${i}` }))
+    const calls = stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('start=100')) return pluginEnvelope(200, JSON.stringify({ records: [{ namespace: 'ns', catalogItemId: 'id100' }] }))
+      return pluginEnvelope(200, JSON.stringify({ records: page1 }))
+    })
+    try {
+      const res = await fetchOwnedEpicKeys('AT', 'ACC')
+      expect(res.keys.size).toBe(101)
+      expect(calls).toHaveLength(2)
+    } finally { unStubWindow() }
+  })
+})
+
+describe('freeGames markEpicGameClaimed（v0.1.405）', () => {
+  it('第一次标记写一条 already 记录，第二次返回 false、不重复写', () => {
+    ensureLocalStorage()
+    expect(markEpicGameClaimed('Mark of the Deep')).toBe(true)
+    const recs = readRecords()
+    expect(recs).toHaveLength(1)
+    expect(recs[0].outcome).toBe('already')
+    expect(recs[0].message).toMatch(/手动标记已领过/)
+    expect(markEpicGameClaimed('Mark of the Deep')).toBe(false)
+    expect(readRecords()).toHaveLength(1)
+    expect(claimedGameIds().has('epic:Mark of the Deep')).toBe(true)
+  })
+  it('空标题不写记录', () => {
+    ensureLocalStorage()
+    expect(markEpicGameClaimed('   ')).toBe(false)
+    expect(readRecords()).toHaveLength(0)
+  })
+})
+
+describe('freeGames syncOwnedEpicGames（v0.1.405）', () => {
+  async function seedBoundAuth() {
+    const { webcrypto } = await import('node:crypto')
+    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
+    ensureLocalStorage()
+    const { initVault } = await import('./crypto')
+    await initVault('testpwd8')
+    stubTauriInvoke(async (_cmd, args) => {
+      const u = String(args.url)
+      if (u.includes('/oauth/token')) return pluginEnvelope(200, JSON.stringify({ access_token: 'AT', account_id: 'ACC', refresh_token: 'RT' }))
+      if (u.includes('library-service')) return pluginEnvelope(200, JSON.stringify({
+        records: [{ namespace: '3d6441ab9d4246208bc97d7babf664b5', catalogItemId: '1f9a12b06b4f437790b6913ad136a08c' }],
+      }))
+      if (u.includes('freeGamesPromotions')) return pluginEnvelope(200, JSON.stringify(EPIC_FIXTURE))
+      return pluginEnvelope(200, JSON.stringify({ deviceId: 'D', secret: 'S', accountId: 'ACC' }))
+    })
+    await bindEpicWithAuthCode('CODE123', 'testpwd8')
+  }
+
+  it('库房命中本周免费游戏：补 already 记录，第二次同步不再重复', async () => {
+    await seedBoundAuth()
+    try {
+      const games = parseEpicPromotions(EPIC_FIXTURE).current
+      expect(games.map(g => g.title)).toContain('Mark of the Deep')
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), epicCurrent: games, epicUpcoming: [] }))
+      const res = await syncOwnedEpicGames('testpwd8')
+      expect(res.synced).toEqual(['Mark of the Deep'])
+      expect(res.ownedCount).toBe(1)
+      expect(res.source).toBe('library')
+      const recs = readRecords()
+      expect(recs.some(r => r.title === 'Mark of the Deep' && r.outcome === 'already' && /浏览器领取/.test(r.message))).toBe(true)
+      const res2 = await syncOwnedEpicGames('testpwd8')
+      expect(res2.synced).toEqual([])
+      expect(res2.alreadyKnown).toEqual(['Mark of the Deep'])
+      expect(readRecords().filter(r => r.title === 'Mark of the Deep')).toHaveLength(1)
+    } finally { unStubWindow() }
+  })
+  it('缓存没列表时先拉一份新的再对照', async () => {
+    await seedBoundAuth()
+    try {
+      const res = await syncOwnedEpicGames('testpwd8')
+      expect(res.synced).toEqual(['Mark of the Deep'])
+    } finally { unStubWindow() }
+  })
+  it('未解锁保险箱时抛错，不碰 Epic 接口', async () => {
+    ensureLocalStorage()
+    await expect(syncOwnedEpicGames('')).rejects.toThrow(/解锁保险箱/)
+  })
+  it('未绑定 Epic 时抛错，提示先绑定', async () => {
+    ensureLocalStorage()
+    await expect(syncOwnedEpicGames('testpwd8')).rejects.toThrow(/绑定 Epic/)
   })
 })
