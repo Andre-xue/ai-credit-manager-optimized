@@ -1,9 +1,17 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   isVisionModelId, accountVisionRoutes, dedupeVisionRoutes, describeVisionModel, visionRouteModelId,
+  visionTagImage,
 } from './galleryIndex'
+import { callChat } from './providerCall'
 import type { Account } from './types'
 import type { WorkshopRoute } from './workshopChat'
+
+vi.mock('./providerCall', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./providerCall')>()
+  return { ...orig, callChat: vi.fn() }
+})
+vi.mock('./crypto', () => ({ decryptSecret: async () => 'test-key' }))
 
 const siliconAcct = (label: string): Account => ({
   id: 'acct-silicon', providerId: 'siliconflow', label,
@@ -104,5 +112,25 @@ describe('visionRouteModelId', () => {
       { kind: 'account', key: 'acct:1', label: '自有 · 硅基流动 · Qwen/Qwen3-VL-32B-Thinking', accountId: '1' },
       freeOptions,
     )).toBe('自有 · 硅基流动 · Qwen/Qwen3-VL-32B-Thinking')
+  })
+})
+
+describe('visionTagImage 失败时抛出真原因（v0.1.430，同款吞错修法）', () => {
+  it('平台拒绝时报错里有真原因，不再是光秃秃的「调用失败」', async () => {
+    vi.mocked(callChat).mockResolvedValue({ ok: false, text: '', error: '调用失败：接口返回 400：Invalid model' })
+    let errMsg = ''
+    try {
+      await visionTagImage({
+        route: { kind: 'account', key: 'acct:1', label: 'Qwen/Qwen3-VL-8B-Instruct', accountId: 'acct-silicon', modelId: 'Qwen/Qwen3-VL-8B-Instruct' },
+        freeOptions: [],
+        accounts: [siliconAcct('Qwen/Qwen3-VL-8B-Instruct')],
+        sessionPwd: 'pwd',
+        imageDataUrl: 'data:image/png;base64,xxx',
+      })
+    } catch (e) {
+      errMsg = e instanceof Error ? e.message : String(e)
+    }
+    expect(errMsg).toContain('400')
+    expect(errMsg).not.toBe('调用失败')
   })
 })

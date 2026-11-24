@@ -154,7 +154,7 @@ export async function visionTagImage(params: {
   if (!acct.encryptedKey) throw new Error('该账户没有保存的密钥')
   const key = await decryptSecret(acct.encryptedKey, sessionPwd)
   const r = await callChat(acct, key, messages, route.modelId ?? route.engine)
-  if (!r.ok) throw new Error(r.text || '调用失败')
+  if (!r.ok) throw new Error(r.error || r.text || '调用失败')
   return r.text.trim()
 }
 

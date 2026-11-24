@@ -3,7 +3,8 @@
 
 import type { Account } from './types'
 import { decryptSecret } from './crypto'
-import { callChat } from './providerCall'
+import { callChat, extractModelId } from './providerCall'
+import { ENGINE_CATALOG } from '../data/engines'
 import { categoryFromNote, isVoiceConfigAccount } from './modelCategories'
 import { detectModelCapability, capabilityChatCapable } from './modelCapability'
 import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeAiOption } from './freeAi'
@@ -12,6 +13,32 @@ export type WorkshopRoute =
   | { kind: 'free'; key: string; label: string }
   | { kind: 'account'; key: string; label: string; accountId: string; engine?: string; modelId?: string }
   | { kind: 'wbpool'; key: string; label: string }
+
+/** 某平台的首选对话模型：引擎目录的旗舰款，没有旗舰则取倍率最低的一款；未收录返回 undefined */
+export function defaultChatEngine(providerId: string): string | undefined {
+  const list = ENGINE_CATALOG[providerId]
+  if (!list?.length) return undefined
+  return list.find(e => e.flagship)?.id ?? [...list].sort((a, b) => a.multiplier - b.multiplier)[0]?.id
+}
+
+/**
+ * 工坊自有账户实际要发的模型 id（v0.1.430：修「拿账户名当模型名发」）。
+ * 优先级：路线自带的 modelId/engine → label 本身就是目录里的模型 id →
+ * 平台首选模型（引擎目录旗舰款）→ 备注/标签里带 '/' 的明确模型 id → 账户名（旧行为兜底）。
+ */
+export function resolveWorkshopModel(acct: Account, route?: WorkshopRoute): string {
+  if (route?.kind === 'account') {
+    const explicit = route.modelId ?? route.engine
+    if (explicit) return explicit
+  }
+  const label = (acct.label ?? '').trim()
+  const catalog = ENGINE_CATALOG[acct.providerId] ?? []
+  if (label && catalog.some(e => e.id === label)) return label
+  const preferred = defaultChatEngine(acct.providerId)
+  if (preferred) return preferred
+  const extracted = extractModelId(acct)
+  return extracted.includes('/') ? extracted : acct.label
+}
 
 export interface WorkshopRouteData {
   routes: WorkshopRoute[]
@@ -35,7 +62,7 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
   try { freeOptions = filterChatCapableFreeOptions(await loadFreeAiOptions()) } catch { freeOptions = [] }
   const routes: WorkshopRoute[] = [
     ...freeOptions.map(o => ({ kind: 'free' as const, key: `free:${o.key}`, label: `免费 · ${o.label}` })),
-    ...workshopAccounts(accounts).map(a => ({ kind: 'account' as const, key: `acct:${a.id}`, label: a.label, accountId: a.id })),
+    ...workshopAccounts(accounts).map(a => ({ kind: 'account' as const, key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })),
   ]
   try {
     const { hasPoolAccounts } = await import('./wbPool')
@@ -76,7 +103,7 @@ export async function runWorkshopChat(params: {
   const r = await callChat(acct, key, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], route.engine)
-  if (!r.ok) throw new Error(r.text || '调用失败')
+  ], resolveWorkshopModel(acct, route))
+  if (!r.ok) throw new Error(r.error || r.text || '调用失败')
   return r.text
 }
