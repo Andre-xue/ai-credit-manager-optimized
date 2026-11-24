@@ -1627,7 +1627,7 @@ function App() {
             }}
           />}
 
-          {tab === 'voice' && <div className="set-content">
+          {tab === 'voice' && <div className="set-content set-content-page">
             <SettingsSection title="语音配置" desc="朗读音色、方言、语速与声音克隆 · 所有配置仅保存在此设备" icon={Volume2} tone="blue">
               <div style={{ padding: '4px 2px 2px' }}><VoiceSettings notify={notify} accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} /></div>
             </SettingsSection>

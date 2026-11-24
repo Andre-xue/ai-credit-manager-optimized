@@ -994,11 +994,16 @@ tbody tr:hover { background: var(--panel-2); }
 }
 
 .set-content { animation: set-content-in .28s cubic-bezier(.22, 1, .36, 1) both; }
+/* 页签页（如语音配置）：内容由外层 main 滚动；.claude-ui 下本容器的 overflow-y: auto
+   是不滚动的 inert 滚动容器，会截断内部 sticky 页签，改 visible 让吸顶能到达 main */
+.claude-ui .set-content.set-content-page { overflow-y: visible; }
 @keyframes set-content-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
 
 .set-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-  box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden;
+  /* overflow: clip 而非 hidden：视觉裁剪相同，但不生成滚动容器，卡片内的 sticky
+     元素（如语音页横向页签）才能吸到外层 .set-content 上；hidden 会把它截断 */
+  box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; overflow: clip;
 }
 .set-card-head { display: flex; align-items: center; gap: 12px; padding: 17px 20px 15px; border-bottom: 1px solid var(--border); }
 .set-card-icon {
@@ -1098,7 +1103,9 @@ tbody tr:hover { background: var(--panel-2); }
 
 .set-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-  box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden;
+  /* overflow: clip 而非 hidden：视觉裁剪相同，但不生成滚动容器，卡片内的 sticky
+     元素（如语音页横向页签）才能吸到外层 .set-content 上；hidden 会把它截断 */
+  box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; overflow: clip;
 }
 .set-card-head { display: flex; align-items: center; gap: 12px; padding: 17px 20px 15px; border-bottom: 1px solid var(--border); }
 .set-card-icon {

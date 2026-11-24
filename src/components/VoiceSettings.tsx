@@ -3,7 +3,7 @@
 // 系统内置音色/拟真预设/方言已从界面移除；未克隆时底层仍用系统 TTS 兜底，避免 AI 完全无声。
 
 import { useEffect, useState, useRef } from 'react'
-import { Volume2, Play, Square, Trash2, Loader2, Info, Globe2, Mic, Check, Pencil } from 'lucide-react'
+import { Volume2, Play, Square, Trash2, Loader2, Info, Mic, Check, Pencil } from 'lucide-react'
 import { HoldToConfirm } from './HoldToConfirm'
 import {
   getRate, saveRate, stopSpeak, getSpeakSource, speakAsync,
@@ -40,7 +40,6 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [rate, setRate] = useState(getRate())
   const [ttsConfigured, setTtsConfigured] = useState(hasTtsConfig() || accounts.some(a => a.providerId === 'voice-config'))
   const [config, setConfig] = useState<TtsProviderConfig>(() => getTtsConfig())
-  const [configOpen, setConfigOpen] = useState(false)
   const [testingKey, setTestingKey] = useState(false)
   const [importingVoices, setImportingVoices] = useState(false)
   // 语音配置账户解锁（生物识别免密 / 本次会话密码）
@@ -73,7 +72,6 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState('')
   const [volcConfig, setVolcConfig] = useState<VolcConfig>(() => getVolcConfig())
-  const [volcOpen, setVolcOpen] = useState(false)
   // Qwen3-TTS 本地克隆（桌面端 Apple 芯片 Mac）：安装/运行状态、参考音频原文
   const [qwenStatus, setQwenStatus] = useState<QwenTtsStatus | null>(null)
   const [qwenLoading, setQwenLoading] = useState(false)
@@ -81,16 +79,18 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [qwenTesting, setQwenTesting] = useState(false)
   const [refText, setRefText] = useState('')
   const [refTranscribing, setRefTranscribing] = useState(false)
-  // 区块折叠（Edge / 声音克隆 / 已保存的克隆音色），展开状态记本机
-  const [secOpen, setSecOpen] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem('acm.voice.sections') || '{}') as Record<string, boolean> } catch { return {} }
+  // 横向标题页签（v0.1.401，同看剧 394 样式），切换状态记本机
+  type VoiceTab = 'edge' | 'clone' | 'saved' | 'third' | 'volc'
+  const [activeTab, setActiveTab] = useState<VoiceTab>(() => {
+    try {
+      const v = localStorage.getItem('acm.voice.tab')
+      return v === 'clone' || v === 'saved' || v === 'third' || v === 'volc' ? v : 'edge'
+    } catch { return 'edge' }
   })
-  const isSecOpen = (k: string, dflt: boolean) => secOpen[k] ?? dflt
-  const toggleSec = (k: string, dflt: boolean) => setSecOpen(prev => {
-    const next = { ...prev, [k]: !(prev[k] ?? dflt) }
-    try { localStorage.setItem('acm.voice.sections', JSON.stringify(next)) } catch { /* ignore */ }
-    return next
-  })
+  const switchTab = (tab: VoiceTab) => {
+    setActiveTab(tab)
+    try { localStorage.setItem('acm.voice.tab', tab) } catch { /* ignore */ }
+  }
   const desktop = isDesktopApp()
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -152,7 +152,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     finally { setRefTranscribing(false) }
   }
   const saveConfig = () => {
-    if (!config.provider) { saveTtsConfig({ provider: '', endpoint: '', mode: 'direct' }); setTtsConfigured(false); setConfigOpen(false); notify(t('已清除语音服务配置')); return }
+    if (!config.provider) { saveTtsConfig({ provider: '', endpoint: '', mode: 'direct' }); setTtsConfigured(false); notify(t('已清除语音服务配置')); return }
     if (isQwenTts) {
       // Qwen3-TTS 本地服务：无需 Key、无需端点，服务地址固定本机 :18123
       saveTtsConfig({ ...config, mode: 'direct' })
@@ -167,7 +167,6 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       saveTtsConfig(config)
     }
     setTtsConfigured(true)
-    setConfigOpen(false)
     notify(t('语音服务配置已保存'))
   }
 
@@ -381,11 +380,17 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         {previewing ? <Square size={14} /> : <Play size={14} />} {previewing ? t('停止试听') : t('试听克隆音色')}
       </button>
 
-      {/* Edge 免费音色（可折叠） */}
-      <button className="voice-config-toggle" onClick={() => toggleSec('edge', true)}>
-        <Volume2 size={14} /> {t('Edge 免费音色（微软云端 · 免费）')} <span>{isSecOpen('edge', true) ? t('收起') : t('展开')}</span>
-      </button>
-      {isSecOpen('edge', true) && <>
+      {/* 横向标题页签（v0.1.401，同看剧 394：标题栏吸顶、数量标在标题上、手机端自动换行） */}
+      <div className="wt-tabs" role="tablist">
+        <button role="tab" aria-selected={activeTab === 'edge'} className={`wt-tab${activeTab === 'edge' ? ' on' : ''}`} onClick={() => switchTab('edge')}>{t('Edge 免费音色')}<span className="wt-tab-count">{EDGE_VOICES.length} 个</span></button>
+        <button role="tab" aria-selected={activeTab === 'clone'} className={`wt-tab${activeTab === 'clone' ? ' on' : ''}`} onClick={() => switchTab('clone')}>{t('声音克隆')}</button>
+        <button role="tab" aria-selected={activeTab === 'saved'} className={`wt-tab${activeTab === 'saved' ? ' on' : ''}`} onClick={() => switchTab('saved')}>{t('已保存的克隆音色')}<span className="wt-tab-count">{clonedVoices.length} 个</span></button>
+        <button role="tab" aria-selected={activeTab === 'third'} className={`wt-tab${activeTab === 'third' ? ' on' : ''}`} onClick={() => switchTab('third')}>{t('第三方语音服务')}{ttsConfigured ? <span className="wt-tab-count">{t('已配置')}</span> : null}</button>
+        <button role="tab" aria-selected={activeTab === 'volc'} className={`wt-tab${activeTab === 'volc' ? ' on' : ''}`} onClick={() => switchTab('volc')}>{t('火山豆包语音')}</button>
+      </div>
+
+      {activeTab === 'edge' && <>
+      <div className="wt-tab-sub">{t('Edge 免费音色（微软云端 · 免费）')}</div>
       <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('不需要 Key、不花钱；点任意音色即切换，行尾可试听')}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
         {EDGE_VOICES.map(v => (
@@ -399,12 +404,10 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       </div>
       </>}
 
-      {/* Qwen3-TTS 本地克隆（可折叠，仅桌面端） */}
+      {activeTab === 'clone' && <>
+      {/* Qwen3-TTS 本地克隆（仅桌面端，放在「声音克隆」页签内） */}
       {desktop && <>
-      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('qwentts', false)}>
-        <Volume2 size={14} /> {t('Qwen3-TTS 本地克隆（免费 · 本机）')} <span>{isSecOpen('qwentts', false) ? t('收起') : t('展开')}</span>
-      </button>
-      {isSecOpen('qwentts', false) && <>
+      <div className="wt-tab-sub">{t('Qwen3-TTS 本地克隆（免费 · 本机）')}</div>
       <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('阿里 Qwen3-TTS 开源模型在本机跑（MLX 加速）：3 秒参考音频克隆音色，不花钱、不上传。仅桌面端 Apple 芯片 Mac 可用。')}</div>
       <div className="voice-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <span className={`local-status-badge ${qwenStatus?.running ? 'running' : ''}`}>
@@ -430,15 +433,10 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         </div>
       )}
       <div className="voice-note"><Info size={13} /> {t('首次安装会下载约 1GB 模型（mlx-community 4-bit 量化版），需 Python 3.10+，请保持网络畅通、耐心等待几分钟；安装只需做一次。服务开关在「设置 → 本地模型服务 → Qwen3-TTS」，与 Ollama / ComfyUI 内存互斥（8G 一次只开一个）。')}</div>
-      <div className="voice-note"><Info size={13} /> {t('安装后在下方「第三方语音服务配置」选 Qwen3-TTS，再导入声音样本克隆。克隆时请填写参考音频的原文（不填也能克隆，写上效果更好）。')}</div>
-      </>}
+      <div className="voice-note"><Info size={13} /> {t('安装后到「第三方语音服务」页签选 Qwen3-TTS，再导入声音样本克隆。克隆时请填写参考音频的原文（不填也能克隆，写上效果更好）。')}</div>
       </>}
 
-      {/* 声音克隆（可折叠） */}
-      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('clone', false)}>
-        <Volume2 size={14} /> {t('声音克隆（录音 / 音频文件 → AI 发音）')} <span>{isSecOpen('clone', false) ? t('收起') : t('展开')}</span>
-      </button>
-      {isSecOpen('clone', false) && <>
+      <div className="wt-tab-sub" style={{ marginTop: 14 }}>{t('声音克隆（录音 / 音频文件 → AI 发音）')}</div>
       <div className="voice-row" style={{ flexWrap: 'wrap', gap: 8 }}>
         <button className="btn sm" disabled={desktop} title={desktop ? t('桌面 WebView 不支持浏览器录音') : t('连续朗读 12 秒（10~20 秒最佳）')} onClick={() => void doRecord()}><Mic size={14} /> {t('录音 12 秒')}</button>
         {desktop ? (
@@ -502,15 +500,12 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           <div className="voice-unlock-note">{t('在「API Key 管理 → 添加账户 → 语音配置(APP)」保存 Key；清除配置后账户仍在，无需重新申请。')}</div>
         </div>
       )}
-      {!ttsConfigured && <div className="voice-hint"><Info size={13} /> {t('声音克隆需配置语音服务：在「API Key 管理 → 添加账户 → 语音配置(APP)」保存 Key，或按下方直连配置；内置免费模型不提供克隆能力。')}</div>}
+      {!ttsConfigured && <div className="voice-hint"><Info size={13} /> {t('声音克隆需配置语音服务：在「API Key 管理 → 添加账户 → 语音配置(APP)」保存 Key，或到「第三方语音服务」页签配置直连；内置免费模型不提供克隆能力。')}</div>}
       {desktop && <div className="voice-hint"><Info size={13} /> {t('桌面 WebView 不提供浏览器录音接口；请用「选择音频文件」导入样本（可先用 QuickTime 等工具录音）。')}</div>}
       </>}
 
-      {/* 已保存的克隆音色列表（可折叠）：可命名、切换、删除 */}
-      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('saved', true)}>
-        <Volume2 size={14} /> {t('已保存的克隆音色（{n}）· 点击切换', { n: clonedVoices.length })} <span>{isSecOpen('saved', true) ? t('收起') : t('展开')}</span>
-      </button>
-      {isSecOpen('saved', true) && <>
+      {activeTab === 'saved' && <>
+      <div className="wt-tab-sub">{t('已保存的克隆音色（{n}）· 点击切换', { n: clonedVoices.length })}</div>
       {config.provider === 'voicestudio' && (
         <div style={{ margin: '6px 0' }}>
           <button className="btn sm ghost" onClick={() => void importVoiceStudioVoices()} disabled={importingVoices}>
@@ -554,11 +549,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       <div className="voice-hint">{t('克隆音色保存在本机；删除记录只移除本机引用，云端音色请到百炼控制台清理以释放配额。')}</div>
       </>}
 
-      {/* 第三方 TTS 配置 */}
-      <button className="voice-config-toggle" onClick={() => setConfigOpen(v => !v)}>
-        <Globe2 size={14} /> {t('第三方语音服务配置')} {ttsConfigured ? t('（已配置）') : t('（未配置）')} <span>{configOpen ? t('收起') : t('展开')}</span>
-      </button>
-      {configOpen && <div className="voice-config">
+      {activeTab === 'third' && <div className="voice-config">
         <label className="form-label">{t('连接模式')}
           <select className="select" value={config.mode ?? 'direct'} onChange={e => setConfig({ ...config, mode: e.target.value as 'direct' | 'proxy' })}>
             <option value="direct">{t('官方直连（推荐 · 无需部署，只需一个 API Key）')}</option>
@@ -577,7 +568,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         {isQwenTts ? (
           <>
             <div className="voice-direct-guide">
-              {t('1. 先在上方「Qwen3-TTS 本地克隆」完成首次安装（下载约 1GB 模型）')}<br />
+              {t('1. 先到「声音克隆」页签，在「Qwen3-TTS 本地克隆」完成首次安装（下载约 1GB 模型）')}<br />
               {t('2. 到「设置 → 本地模型服务」打开 Qwen3-TTS 开关，服务在 127.0.0.1:18123 运行')}<br />
               {t('3. 点「测试连接」确认服务可用，再导入声音样本克隆')}
             </div>
@@ -636,11 +627,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         </div>
       </div>}
 
-      {/* 火山引擎：声音复刻 + 端到端实时语音 共用凭据 */}
-      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => setVolcOpen(v => !v)}>
-        <Globe2 size={14} /> {t('火山引擎 · 豆包语音（声音复刻 / 实时语音）')} <span>{volcOpen ? t('收起') : t('展开')}</span>
-      </button>
-      {volcOpen && <div className="voice-config">
+      {activeTab === 'volc' && <div className="voice-config">
         <label className="form-label">APP ID
           <input className="input" value={volcConfig.appId} onChange={e => setVolcConfig({ ...volcConfig, appId: e.target.value })} placeholder={t('火山控制台的 APP ID')} />
         </label>
