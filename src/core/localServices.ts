@@ -2,6 +2,7 @@
 // 手机 / Web 端无法访问宿主本机，明确提示不可用（本地模型仅桌面端支持）。
 
 import { isDesktopApp } from './openExternal'
+import type { LocalServiceKey } from './types'
 
 export interface LocalService {
   service: string
@@ -82,7 +83,7 @@ export async function chooseModelFile(): Promise<string | null> {
 }
 
 /** 检测单个本地服务是否运行，返回其实际地址；未运行/非桌面端返回 null */
-export async function checkLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<string | null> {
+export async function checkLocalService(key: LocalServiceKey): Promise<string | null> {
   if (!isDesktopApp()) return null
   try {
     const w = window as unknown as {
@@ -97,7 +98,7 @@ export async function checkLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'):
 }
 
 /** 启动本机本地服务（显式调用）；返回指引文案或错误 */
-export async function startLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ ok: boolean; message: string }> {
+export async function startLocalService(key: LocalServiceKey): Promise<{ ok: boolean; message: string }> {
   if (!isDesktopApp()) return { ok: false, message: '仅桌面端支持一键启动，请在电脑上运行对应应用' }
   try {
     const w = window as unknown as {
@@ -113,7 +114,7 @@ export async function startLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'):
 }
 
 /** 停止由本 App 启动的本地服务进程（不碰用户手动启动的服务） */
-export async function stopLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ ok: boolean; message: string }> {
+export async function stopLocalService(key: LocalServiceKey): Promise<{ ok: boolean; message: string }> {
   if (!isDesktopApp()) return { ok: false, message: '仅桌面端支持' }
   try {
     const w = window as unknown as {
@@ -129,7 +130,7 @@ export async function stopLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): 
 }
 
 /** 停止占用服务端口的进程（含外部启动的）：确认式关闭——等进程真退出、端口真释放才算成功，赖着不走会强制结束 */
-export async function stopServiceByPort(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ ok: boolean; message: string }> {
+export async function stopServiceByPort(key: LocalServiceKey): Promise<{ ok: boolean; message: string }> {
   if (!isDesktopApp()) return { ok: false, message: '仅桌面端支持' }
   try {
     const w = window as unknown as {
@@ -149,7 +150,7 @@ export async function stopServiceByPort(key: 'ollama' | 'comfyui' | 'lmstudio'):
  * 清理上次遗留的服务进程（托管孤儿 / 端口上的服务进程 / 守护中的 Ollama 应用），
  * 保证「开关关了 = 服务不常驻」。返回是否真的动了进程与说明。
  */
-export async function reconcileLocalService(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<{ acted: boolean; message: string }> {
+export async function reconcileLocalService(key: LocalServiceKey): Promise<{ acted: boolean; message: string }> {
   if (!isDesktopApp()) return { acted: false, message: '' }
   try {
     const w = window as unknown as {
@@ -163,7 +164,7 @@ export async function reconcileLocalService(key: 'ollama' | 'comfyui' | 'lmstudi
 }
 
 /** 某服务是否由本 App 启动且仍在运行（决定是否显示停止按钮） */
-export async function isServiceAppManaged(key: 'ollama' | 'comfyui' | 'lmstudio'): Promise<boolean> {
+export async function isServiceAppManaged(key: LocalServiceKey): Promise<boolean> {
   if (!isDesktopApp()) return false
   try {
     const w = window as unknown as {

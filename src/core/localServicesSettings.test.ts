@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   memoryToTier, maxServicesForTier, isServiceEnabled, isAccountServiceEnabled,
   enabledServiceCount, toggleService, planServiceToggle, providerToService, tierAdvice, shouldShowLocalCategory,
+  initServicesForTier,
 } from './localServicesSettings'
 import type { AppSettings } from './types'
 
@@ -32,11 +33,12 @@ describe('memoryToTier', () => {
 describe('硬限制与默认值', () => {
   it('8G 档最多 1 个服务，16G/32G 不限', () => {
     expect(maxServicesForTier(8)).toBe(1)
-    expect(maxServicesForTier(16)).toBe(3)
-    expect(maxServicesForTier(32)).toBe(3)
+    expect(maxServicesForTier(16)).toBe(4)
+    expect(maxServicesForTier(32)).toBe(4)
   })
-  it('未配置时默认全部开启', () => {
+  it('未配置时默认全部开启（Qwen3-TTS 例外：未配置默认关）', () => {
     expect(isServiceEnabled(base(), 'ollama')).toBe(true)
+    expect(isServiceEnabled(base(), 'qwentts')).toBe(false)
     expect(enabledServiceCount(base())).toBe(3)
   })
   it('明确关闭的服务判定为关闭', () => {
@@ -55,6 +57,36 @@ describe('AI页本地型分类显隐', () => {
     expect(shouldShowLocalCategory(base({ ollama: true, comfyui: false, lmstudio: false }))).toBe(true)
     expect(shouldShowLocalCategory(base({ ollama: false, comfyui: true, lmstudio: false }))).toBe(true)
     expect(shouldShowLocalCategory(base())).toBe(true)
+  })
+  it('只开 Qwen3-TTS 不显示本地型分类（它是语音服务，不是模型服务）', () => {
+    expect(shouldShowLocalCategory(base({ ollama: false, comfyui: false, lmstudio: false, qwentts: true }))).toBe(false)
+  })
+})
+
+describe('Qwen3-TTS 服务开关（v0.1.400）', () => {
+  it('各档位首次初始化默认都不开 Qwen3-TTS（需用户显式启用）', () => {
+    expect(initServicesForTier(8).qwentts).toBe(false)
+    expect(initServicesForTier(16).qwentts).toBe(false)
+    expect(initServicesForTier(32).qwentts).toBe(false)
+    expect(initServicesForTier(8).ollama).toBe(true)
+  })
+  it('providerId 正确映射到 qwentts', () => {
+    expect(providerToService('local-qwentts')).toBe('qwentts')
+  })
+  it('8G 档：开 Qwen3-TTS 会挤掉已开的 Ollama（内存互斥）', () => {
+    const r = planServiceToggle({ localServices: { ollama: true, comfyui: false, lmstudio: false, qwentts: false } } as never, 'qwentts', 8)
+    expect(r!.enabled).toBe(true)
+    expect(r!.next.qwentts).toBe(true)
+    expect(r!.next.ollama).toBe(false)
+    expect(r!.stopKeys).toContain('ollama')
+  })
+  it('8G 档：Ollama 已开时再开 Qwen3-TTS 被 toggleService 拒绝', () => {
+    const s = base({ ollama: true, comfyui: false, lmstudio: false, qwentts: false })
+    expect(toggleService(s, 'qwentts', 8)).toBeNull()
+  })
+  it('16G 档：Qwen3-TTS 与 Ollama 可同时开', () => {
+    const s = base({ ollama: true, comfyui: false, lmstudio: false, qwentts: false })
+    expect(toggleService(s, 'qwentts', 16)).toEqual({ ollama: true, comfyui: false, lmstudio: false, qwentts: true })
   })
 })
 

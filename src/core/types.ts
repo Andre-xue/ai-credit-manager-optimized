@@ -279,7 +279,7 @@ export function mergeToolbarOrder(saved?: string[]): (keyof AiToolbarPrefs)[] {
 }
 
 /** 本地模型服务类型 */
-export type LocalServiceKey = 'ollama' | 'comfyui' | 'lmstudio'
+export type LocalServiceKey = 'ollama' | 'comfyui' | 'lmstudio' | 'qwentts'
 /** 内存档位（GB） */
 export type MemoryTier = 8 | 16 | 32
 

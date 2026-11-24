@@ -216,6 +216,7 @@ import { getTtsConfig } from './voice-download'
 import { getClonedVoiceId, listClonedVoices } from './voiceClone'
 import { isDirectMode, ttsSynthesizeDirect, voicestudioSynthesize } from './ttsDirect'
 import { getSpeakPref, getEdgeVoiceId, synthesizeEdgeMp3 } from './edgeTts'
+import { isQwenVoiceId, loadQwenVoiceRef, qwenTtsSynthesize } from './qwenTts'
 
 /** 是否使用本机 VoiceStudio 作为语音服务 */
 function isVoiceStudio(cfg: ReturnType<typeof getTtsConfig>): boolean {
@@ -228,7 +229,10 @@ let activeCallback: ((state: 'start' | 'end' | 'error') => void) | null = null
 export function getSpeakSource(): 'clone' | 'system' | 'edge' {
   if (getSpeakPref() === 'edge') return 'edge'
   const cfg = getTtsConfig()
-  return getClonedVoiceId() && (isDirectMode(cfg) || isVoiceStudio(cfg) || !!cfg.endpoint) ? 'clone' : 'system'
+  const active = getClonedVoiceId()
+  // 本地 Qwen 音色：无需第三方配置，服务在跑即可用
+  if (active && isQwenVoiceId(active)) return 'clone'
+  return active && (isDirectMode(cfg) || isVoiceStudio(cfg) || !!cfg.endpoint) ? 'clone' : 'system'
 }
 
 export function isSpeaking(): boolean {
@@ -329,6 +333,29 @@ export async function speakAsync(
   const cloned = resolveCloneVoiceId(
     voiceURI, clonedVoices, getSpeakSource() === 'clone' ? getClonedVoiceId() : null,
   )
+  // Qwen3-TTS 本地克隆音色：参考音频存本机，每次合成随请求带上；无需第三方配置。
+  // 服务未运行、参考音频丢失、合成失败时明确告知并回退系统音色。
+  if (cloned && isQwenVoiceId(cloned)) {
+    try {
+      stopSpeak()
+      const speakText = cleanForSpeech(text)
+      if (!speakText) throw new Error('朗读内容为空')
+      const ref = await loadQwenVoiceRef(cloned)
+      if (!ref) throw new Error('找不到该音色的参考音频，请在语音配置里重新克隆')
+      const dataUri = await qwenTtsSynthesize(ref.dataUrl, ref.refText, speakText)
+      const b64 = dataUri.split(',')[1] ?? ''
+      if (!b64) throw new Error('合成音频为空')
+      const bin = atob(b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      await playMp3Buffer(bytes.buffer, onState)
+      return true
+    } catch (e) {
+      const lastErr = (e as Error)?.message ?? String(e)
+      onFallback?.(`Qwen3-TTS 本地克隆音色播放失败（${lastErr.slice(0, 60)}），已临时改用系统音色`)
+    }
+    return speak(text, voiceURI, onState)
+  }
   const cfg = getTtsConfig()
   const direct = isDirectMode(cfg)
   const voiceStudio = isVoiceStudio(cfg)

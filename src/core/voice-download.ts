@@ -20,7 +20,7 @@ export interface VoiceFile {
 
 export interface TtsProviderConfig {
   /** 第三方 TTS 服务类型；未配置为空 */
-  provider: '' | 'local' | 'voicestudio' | 'aliyun' | 'volcengine' | 'tencent' | 'minimax' | 'elevenlabs'
+  provider: '' | 'local' | 'voicestudio' | 'qwentts' | 'aliyun' | 'volcengine' | 'tencent' | 'minimax' | 'elevenlabs'
   /** 服务端点（自建代理模式使用） */
   endpoint: string
   /** 配置模式：direct=官方 API Key 直连(免部署,推荐)；proxy=自建服务端代理 */
@@ -119,10 +119,11 @@ export function getTtsConfig(): TtsProviderConfig {
   } catch { return EMPTY_CONFIG }
 }
 
-/** 是否已配置可用（直连模式需 provider+apiKey；代理模式需 provider+endpoint） */
+/** 是否已配置可用（直连模式需 provider+apiKey；代理模式需 provider+endpoint；Qwen3-TTS 本地服务无需 Key/端点） */
 export function hasTtsConfig(): boolean {
   const c = getTtsConfig()
   if (!c.provider) return false
+  if (c.provider === 'qwentts') return true
   return c.mode === 'direct' ? !!c.apiKey?.trim() : !!c.endpoint?.trim()
 }
 

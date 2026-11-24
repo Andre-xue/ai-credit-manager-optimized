@@ -1660,6 +1660,11 @@ fn fp_comfyui(v: &serde_json::Value) -> bool { v.get("system").is_some() && v.ge
 /// LM Studio GET /v1/models 返回 OpenAI 格式 {"data":[...]}
 fn fp_lmstudio(v: &serde_json::Value) -> bool { v.get("data").is_some() }
 
+/// Qwen3-TTS /health 指纹：status ok 且带 model 字段（只认 status 的话无关 Web 服务也常回 ok）
+fn fp_qwentts(v: &serde_json::Value) -> bool {
+    v.get("status").and_then(|s| s.as_str()) == Some("ok") && v.get("model").is_some()
+}
+
 /// 探测本机正在运行的本地模型服务（Ollama / ComfyUI / LM Studio 等）。
 /// 不再仅凭 TCP 端口开放就认定（会把占用 8080/5000 的无关程序误报为本地服务），
 /// 而是对每个候选地址发真实 HTTP 请求做指纹校验，只有响应匹配服务特征才返回。
@@ -1760,8 +1765,36 @@ fn get_system_memory_gb() -> f64 {
     out.unwrap_or(0.0)
 }
 
+// ==================== Qwen3-TTS 本地服务（MLX 后端，仅 Apple 芯片 Mac） ====================
+// 首次安装与服务管理：venv 在 ~/.ai-credit-manager/qwen-tts/.venv，模型走 HF 缓存。
+
+/// Qwen3-TTS 本机服务端口（mlx-tts-server 默认 8000 易撞，改用专属端口）
+const QWENTTS_PORT: u16 = 18123;
+/// MLX 量化版 Base 模型（官方 mlx-tts-server 支持表内 0.6B 克隆档；权重约 1GB）
+const QWENTTS_MODEL: &str = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit";
+const QWENTTS_URL: &str = "http://127.0.0.1:18123";
+
+/// Qwen3-TTS 本机目录：~/.ai-credit-manager/qwen-tts（venv + 服务日志）
+fn qwentts_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::Path::new(&home).join(".ai-credit-manager").join("qwen-tts")
+}
+
+fn qwentts_venv_bin() -> std::path::PathBuf {
+    qwentts_dir().join(".venv").join("bin")
+}
+
+/// HF 缓存里的 MLX 模型是否已下载（snapshot_download 默认缓存位置）
+fn qwentts_model_cached() -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let dir = std::path::Path::new(&home)
+        .join(".cache").join("huggingface").join("hub")
+        .join("models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-4bit");
+    dir.join("snapshots").exists()
+}
+
 /// 检测单个本地服务是否正在运行（HTTP 指纹校验，返回服务实际地址或 null）。
-/// key: ollama / comfyui / lmstudio
+/// key: ollama / comfyui / lmstudio / qwentts
 #[tauri::command]
 async fn check_local_service(key: String) -> Option<String> {
     use std::time::Duration;
@@ -1769,6 +1802,7 @@ async fn check_local_service(key: String) -> Option<String> {
         "ollama" => (&[11434, 11435, 11436], "/api/tags", fp_ollama),
         "comfyui" => (&[8188, 8189, 8288], "/system_stats", fp_comfyui),
         "lmstudio" => (&[1234, 1235], "/v1/models", fp_lmstudio),
+        "qwentts" => (&[QWENTTS_PORT], "/health", fp_qwentts),
         _ => return None,
     };
     let client = reqwest::Client::builder()
@@ -2003,21 +2037,47 @@ fn start_local_service(key: String, launch_desktop: bool) -> Result<String, Stri
             )
         }
         "lmstudio" => return Err("LM Studio 无 CLI 后台启动方式，请在 LM Studio 应用内手动开启本地服务器".to_string()),
+        "qwentts" => {
+            // 前置检查：venv 与模型必须已由「首次安装」准备好，否则拒绝并指路（不在开关里现下 1GB）
+            let bin = qwentts_venv_bin().join("mlx-tts");
+            if !bin.exists() {
+                return Err("Qwen3-TTS 未安装：请先到「语音配置 → Qwen3-TTS 本地克隆」点「首次安装」完成准备（约下载 1GB 模型）".to_string());
+            }
+            if !qwentts_model_cached() {
+                return Err("Qwen3-TTS 模型尚未下载：请先到「语音配置 → Qwen3-TTS 本地克隆」点「首次安装」完成下载（约 1GB）".to_string());
+            }
+            (
+                bin.to_string_lossy().to_string(),
+                vec!["serve".to_string(), QWENTTS_MODEL.to_string(), "--host".to_string(), "127.0.0.1".to_string(), "--port".to_string(), QWENTTS_PORT.to_string()],
+                qwentts_dir().to_string_lossy().to_string(),
+                "Qwen3-TTS 本地服务将在 18123 端口运行，模型加载约 5~30 秒",
+            )
+        }
         _ => return Err("未知服务".to_string()),
     };
     if !std::path::Path::new(&program).exists() {
         return Err(format!("未找到启动程序 {}，请确认已安装", program))
     }
+    // Qwen3-TTS 的服务输出写进日志文件（起不来时在语音配置页可看到原因），其他服务沿用静默
+    let (mut cmd_out, mut cmd_err) = (Stdio::null(), Stdio::null());
+    if key == "qwentts" {
+        let log = qwentts_dir().join("server.log");
+        if let Some(dir) = log.parent() { let _ = std::fs::create_dir_all(dir); }
+        if let Ok(f) = std::fs::File::create(&log) {
+            if let Ok(f2) = f.try_clone() { cmd_out = Stdio::from(f); cmd_err = Stdio::from(f2); }
+        }
+    }
     let child = Command::new(&program)
         .args(&args)
         .current_dir(work_dir)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .stdin(Stdio::null()).stdout(cmd_out).stderr(cmd_err)
         .spawn()
         .map_err(|e| format!("启动失败：{}", e))?;
     let mut pids = load_managed_pids();
     pids.insert(key.clone(), child.id());
     save_managed_pids(&pids);
-    Ok(format!("已启动 {} 后台进程（PID {}），请稍候点击「重新检测」。{}", key, child.id(), guide))
+    let display = match key.as_str() { "qwentts" => "Qwen3-TTS", _ => key.as_str() };
+    Ok(format!("已启动 {} 后台进程（PID {}），请稍候点击「重新检测」。{}", display, child.id(), guide))
 }
 
 /// 停止由本 App 启动的本地服务进程；仅处理记录中的 PID，不碰用户手动启动的服务。
@@ -2050,6 +2110,7 @@ fn service_port(key: &str) -> Option<u16> {
         "ollama" => Some(11434),
         "comfyui" => Some(8188),
         "lmstudio" => Some(1234),
+        "qwentts" => Some(QWENTTS_PORT),
         _ => None,
     }
 }
@@ -2152,6 +2213,7 @@ fn reconcile_local_service(key: String) -> Result<(bool, String), String> {
         match key.as_str() {
             "ollama" => cmd.contains("ollama") && cmd.contains("serve"),
             "comfyui" => cmd.contains("main.py"),
+            "qwentts" => cmd.contains("mlx-tts"),
             _ => false,
         }
     };
@@ -2180,6 +2242,202 @@ fn reconcile_local_service(key: String) -> Result<(bool, String), String> {
         notes.push(format!("{} 端口被其他进程占用（非 {} 服务本身），未做处理", port, key));
     }
     Ok((acted, notes.join("；")))
+}
+
+// ==================== Qwen3-TTS 本地服务：安装 / 状态 / 测试 / 合成 ====================
+
+/// 找一个可用的 Python 3.10+：先试常见版本名与 Homebrew 路径，返回 (程序, 版本号)
+fn qwentts_find_python() -> Option<(String, String)> {
+    use std::process::Command;
+    let candidates = [
+        "/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.12", "/opt/homebrew/bin/python3.11",
+        "/opt/homebrew/bin/python3.10", "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "python3.13", "python3.12", "python3.11", "python3.10", "python3",
+    ];
+    for prog in candidates {
+        let out = match Command::new(prog).arg("--version").output() {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if let Some(v) = text.trim().strip_prefix("Python ") {
+            let parts: Vec<u32> = v.split('.').filter_map(|p| p.trim().parse().ok()).collect();
+            if parts.len() >= 2 && (parts[0] > 3 || (parts[0] == 3 && parts[1] >= 10)) {
+                return Some((prog.to_string(), v.trim().to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// 运行一条命令并返回 (成功与否, 合并输出尾部约 600 字)，供安装步骤报错时如实呈现原因
+fn run_captured(program: &str, args: &[String], work_dir: Option<&str>) -> (bool, String) {
+    use std::process::Command;
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(d) = work_dir { cmd.current_dir(d); }
+    match cmd.output() {
+        Ok(o) => {
+            let mut text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+            if text.chars().count() > 600 {
+                text = text.chars().skip(text.chars().count() - 600).collect();
+            }
+            (o.status.success(), text.trim().to_string())
+        }
+        Err(e) => (false, format!("执行失败：{}", e)),
+    }
+}
+
+/// Qwen3-TTS 安装/运行状态：JSON 字符串 {installed, python, pythonOk, modelCached, running, url, lastLog}
+#[tauri::command]
+async fn qwentts_status() -> Result<String, String> {
+    let installed = qwentts_venv_bin().join("mlx-tts").exists();
+    let (python, python_ok) = qwentts_find_python()
+        .map(|(_, v)| (v, true))
+        .unwrap_or_else(|| (String::new(), false));
+    let model_cached = qwentts_model_cached();
+    let running = check_local_service("qwentts".to_string()).await.is_some();
+    let url = if running { Some(QWENTTS_URL.to_string()) } else { None };
+    // 服务没在跑时附上日志尾部（起不来时看原因）；在跑时不附，避免 uvicorn 启动行刷屏
+    let last_log = if running { String::new() } else {
+        std::fs::read_to_string(qwentts_dir().join("server.log")).ok()
+            .map(|t| {
+                let lines: Vec<&str> = t.lines().collect();
+                let start = lines.len().saturating_sub(3);
+                let joined = lines[start..].join(" / ");
+                if joined.chars().count() > 300 { joined.chars().take(300).collect() } else { joined }
+            })
+            .unwrap_or_default()
+    };
+    Ok(serde_json::json!({
+        "installed": installed,
+        "python": python,
+        "pythonOk": python_ok,
+        "modelCached": model_cached,
+        "running": running,
+        "url": url,
+        "lastLog": last_log,
+    }).to_string())
+}
+
+/// Qwen3-TTS 首次安装准备（同步长任务，几分钟）：建 venv → pip 安装 mlx-tts-server → 预下载约 1GB 模型。
+/// 每步失败都返回真实原因（Python 版本、网络、磁盘），不静默兜底。
+#[tauri::command]
+fn qwentts_setup() -> Result<String, String> {
+    // 仅 Apple 芯片 Mac：MLX 不支持 Intel；macOS 需 13+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let arch = Command::new("uname").arg("-m").output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if arch != "arm64" {
+            return Err("Qwen3-TTS 本地服务需要 Apple 芯片 Mac（MLX 只支持 Apple Silicon），当前机器不是 arm64".to_string());
+        }
+        let ver = Command::new("sw_vers").args(["-productVersion"]).output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let major: u32 = ver.split('.').next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        if major < 13 {
+            return Err(format!("Qwen3-TTS 本地服务需要 macOS 13 或以上（MLX 要求），当前为 macOS {}", ver));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("Qwen3-TTS 本地服务目前只支持 macOS（MLX 后端）".to_string());
+    }
+    let (python, version) = qwentts_find_python().ok_or_else(|| {
+        "未找到 Python 3.10+：请先安装 Python 3.10 或以上（如 brew install python@3.12，或到 python.org 下载），再点「首次安装」".to_string()
+    })?;
+    let dir = qwentts_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{}", e))?;
+    let venv = dir.join(".venv");
+    let venv_bin = venv.join("bin");
+    let mlx_tts = venv_bin.join("mlx-tts");
+    // 1) 建 venv（已有则跳过）
+    if !venv_bin.join("python").exists() {
+        let (ok, out) = run_captured(&python, &["-m".to_string(), "venv".to_string(), venv.to_string_lossy().to_string()], None);
+        if !ok {
+            return Err(format!("创建 Python 虚拟环境失败（{}）：{}", python, out));
+        }
+    }
+    // 2) pip 安装 mlx-tts-server（已有则升级校验）
+    let pip = venv_bin.join("pip").to_string_lossy().to_string();
+    let (ok, out) = run_captured(&pip, &["install".to_string(), "-U".to_string(), "mlx-tts-server".to_string()], None);
+    if !ok {
+        return Err(format!("安装 mlx-tts-server 失败（可能网络被代理拦截，请换节点再试）：{}", out));
+    }
+    if !mlx_tts.exists() {
+        return Err("安装完成但未找到 mlx-tts 可执行文件，请重试或检查 pip 输出".to_string());
+    }
+    // 3) 预下载模型（约 1GB；首次启动服务时不再现下）
+    let venv_py = venv_bin.join("python").to_string_lossy().to_string();
+    let dl_code = "from huggingface_hub import snapshot_download; snapshot_download(repo_id='mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit')";
+    let (ok, out) = run_captured(&venv_py, &["-c".to_string(), dl_code.to_string()], None);
+    if !ok {
+        return Err(format!("下载 Qwen3-TTS 模型失败（约 1GB，可能网络被代理拦截，请换节点再试）：{}", out));
+    }
+    if !qwentts_model_cached() {
+        return Err("模型下载命令已执行，但未在缓存中找到模型文件，请重试".to_string());
+    }
+    Ok(format!("Qwen3-TTS 已安装就绪（Python {}，模型约 1GB 已下载）。现在可以到「设置 → 本地模型服务」打开 Qwen3-TTS 开关启动服务。", version))
+}
+
+/// 测试 Qwen3-TTS 本机服务：GET /health
+#[tauri::command]
+async fn qwentts_test() -> Result<String, String> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10))
+        .build().map_err(|e| format!("客户端错误：{}", e))?;
+    let resp = client.get(format!("{}/health", QWENTTS_URL)).send().await
+        .map_err(|e| format!("连接失败（请确认 Qwen3-TTS 服务已启动）：{}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("连接失败（HTTP {}）：{}", status.as_u16(), text.chars().take(160).collect::<String>()));
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let model = v.get("model").and_then(|m| m.as_str()).unwrap_or(QWENTTS_MODEL);
+    Ok(format!("连接成功，Qwen3-TTS 服务可用（模型 {}）", model))
+}
+
+/// Qwen3-TTS 本地克隆合成：POST /v1/audio/clone（multipart：input 文本 + ref_audio 参考音频 + ref_text 原文）。
+/// language=auto 由服务端按文本自动识别（传 english 会强制英文）。返回 wav 音频 data URI。
+#[tauri::command]
+async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: String) -> Result<String, String> {
+    let (mime, bytes) = parse_data_uri(&audio_data_url)?;
+    if text.trim().is_empty() {
+        return Err("朗读内容为空".to_string());
+    }
+    let boundary = format!("----QwenTtsBoundary{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let ext = match mime.as_str() { "audio/mpeg" | "audio/mp3" => "mp3", "audio/ogg" => "ogg", "audio/flac" => "flac", "audio/webm" => "webm", "audio/mp4" | "audio/x-m4a" => "m4a", _ => "wav" };
+    let mut body: Vec<u8> = Vec::new();
+    let mut part = |field: &str, value: &str| {
+        body.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}\r\n", boundary, field, value).as_bytes());
+    };
+    part("input", &text);
+    part("ref_text", &ref_text);
+    part("response_format", "wav");
+    part("language", "auto");
+    part("model", "clone");
+    body.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"ref_audio\"; filename=\"ref_audio.{}\"\r\nContent-Type: {}\r\n\r\n", boundary, ext, mime).as_bytes());
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180))
+        .build().map_err(|e| format!("客户端错误：{}", e))?;
+    let resp = client.post(format!("{}/v1/audio/clone", QWENTTS_URL))
+        .header("Content-Type", format!("multipart/form-data; boundary={}", boundary))
+        .body(body).send().await.map_err(|e| format!("合成请求失败（请确认 Qwen3-TTS 服务已启动）：{}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let t = resp.text().await.unwrap_or_default();
+        return Err(format!("合成失败（HTTP {}）：{}", status.as_u16(), t.chars().take(200).collect::<String>()));
+    }
+    let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败：{}", e))?;
+    // 防止误把 JSON 错误当成音频
+    if content_type.contains("application/json") || bytes.starts_with(b"{\"") {
+        return Err(format!("合成返回非音频：{}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()));
+    }
+    Ok(format!("data:audio/wav;base64,{}", base64_encode(&bytes)))
 }
 
 // ==================== 阿里云百炼 TTS 直连 ====================
@@ -3980,7 +4238,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
@@ -4107,10 +4365,27 @@ mod local_service_tests {
     }
 
     #[test]
+    fn qwentts_fingerprint_requires_status_ok_and_model() {
+        assert!(fp_qwentts(&json!({"status": "ok", "model": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit", "uptime": 42.0})));
+        assert!(!fp_qwentts(&json!({"status": "ok"}))); // 缺 model 不算（无关 Web 服务也常回 status ok）
+        assert!(!fp_qwentts(&json!({"status": "error", "model": "x"})));
+        assert!(!fp_qwentts(&json!({})));
+    }
+
+    #[test]
+    fn local_service_ports_are_distinct() {
+        assert_eq!(service_port("ollama"), Some(11434));
+        assert_eq!(service_port("comfyui"), Some(8188));
+        assert_eq!(service_port("lmstudio"), Some(1234));
+        assert_eq!(service_port("qwentts"), Some(18123));
+        assert_eq!(service_port("unknown"), None);
+    }
+
+    #[test]
     fn unrelated_services_do_not_match_any_fingerprint() {
         // 占用 8080/5000 的无关 Web 服务响应，不应被误判为任何本地模型服务
         for body in [json!({"status": "ok"}), json!({"hello": "world"}), json!({"version": "1.0"})] {
-            assert!(!fp_ollama(&body) && !fp_comfyui(&body) && !fp_lmstudio(&body));
+            assert!(!fp_ollama(&body) && !fp_comfyui(&body) && !fp_lmstudio(&body) && !fp_qwentts(&body));
         }
     }
 }

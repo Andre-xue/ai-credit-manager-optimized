@@ -277,7 +277,13 @@ function App() {
     void getSystemMemoryGb().then(gb => {
       if (!alive) return
       setMemGb(gb)
-      if (state.settings.localServicesInitialized) return
+      if (state.settings.localServicesInitialized) {
+        // v0.1.400 迁移：老用户 settings 里没有 qwentts 键，默认关（避免重服务默认启用）
+        if (state.settings.localServices && !('qwentts' in state.settings.localServices)) {
+          setState(prev => ({ ...prev, settings: { ...prev.settings, localServices: { ...prev.settings.localServices, qwentts: false } } }))
+        }
+        return
+      }
       const tier = memoryToTier(gb)
       setState(s => s.settings.localServicesInitialized ? s : ({
         ...s,
@@ -5348,7 +5354,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               setServiceStatus(prev => ({ ...prev, [key]: addr }))
               setManagedKeys(prev => ({ ...prev, [key]: true }))
               window.clearInterval(poll)
-            } else if (++tries >= 15) window.clearInterval(poll) // 最多等 ~30s（ComfyUI 首次加载较慢）
+            } else if (++tries >= (key === 'qwentts' ? 30 : 15)) window.clearInterval(poll) // 最多等 ~30s（ComfyUI 首次加载较慢；Qwen3-TTS 模型加载放宽到 ~60s）
           })
         }, 2000)
       }
@@ -5374,7 +5380,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     if (!plan) return
     const { next, stopKeys, enabled } = plan
     onChange({ localServices: next })
-    const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+    const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : key === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
     // 互斥：先停掉被挤掉的旧服务（关自己的情况留给下方 else 分支统一处理）
     for (const oldKey of stopKeys) {
       if (oldKey === key) continue
@@ -5382,7 +5388,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       setServiceStatus(prev => ({ ...prev, [oldKey]: '' }))
       setManagedKeys(prev => ({ ...prev, [oldKey]: false }))
       notifyLocalServiceChanged(oldKey, false)
-      const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+      const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : oldKey === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
       if (r.ok) notify(t('已关闭 {name} 以释放内存（{msg}）', { name: oldName, msg: r.message }))
     }
     if (enabled) {
@@ -5398,10 +5404,27 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           let tries = 0
           const poll = window.setInterval(() => {
             void checkLocalService(key).then(addr => {
-              if (addr) { setServiceStatus(prev => ({ ...prev, [key]: addr })); window.clearInterval(poll) }
-              else if (++tries >= 15) window.clearInterval(poll)
+              if (addr) { setServiceStatus(prev => ({ ...prev, [key]: addr })); setManagedKeys(prev => ({ ...prev, [key]: true })); window.clearInterval(poll) }
+              else if (++tries >= (key === 'qwentts' ? 30 : 15)) {
+                window.clearInterval(poll)
+                if (key === 'comfyui' && comfyLaunchDesktopEnabled()) {
+                  // Desktop 拉起模式：应用已打开但实例还没由用户点开，不算失败——不回滚开关
+                  notify('已打开 Comfy Desktop，请在其中打开你的实例，启动后会自动识别')
+                } else {
+                  // 启动命令返回成功但服务始终没起来 → 回滚开关，避免"已开启却连不上"的状态脱节
+                  onChange({ localServices: { ...(s.localServices ?? {}), [key]: false } })
+                  setServiceStatus(prev => ({ ...prev, [key]: null }))
+                  setManagedKeys(prev => ({ ...prev, [key]: false }))
+                  notifyLocalServiceChanged(key, false)
+                  notify(t('{name} 启动后未能正常监听端口，已自动关闭开关。请确认本机 {key} 可正常运行后重试', { name, key }))
+                }
+              }
             })
           }, 2000)
+        } else {
+          // 启动命令直接失败 → 回滚开关（与 useServiceController 的切换逻辑一致）
+          onChange({ localServices: { ...(s.localServices ?? {}), [key]: false } })
+          notifyLocalServiceChanged(key, false)
         }
       } else {
         notify(t('{name} 无 CLI 后台启动方式，请在 LM Studio 应用内手动开启本地服务器', { name }))
@@ -5532,7 +5555,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               </div>
             )}
             {LOCAL_SERVICE_KEYS.map(key => {
-              const label = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+              const label = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : key === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
               const enabled = isServiceEnabled(s, key)
               const status = serviceStatus[key]
               const running = typeof status === 'string' && status.length > 0

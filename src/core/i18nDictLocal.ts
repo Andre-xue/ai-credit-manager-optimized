@@ -121,4 +121,6 @@ export const PART_LOCAL: Record<string, Partial<Record<Lang, string>>> = {
   '视频 #{n}': { 'zh-TW': '影片 #{n}', en: 'Video #{n}', ja: '動画 #{n}', ko: '동영상 #{n}' },
   '还没有生成视频': { 'zh-TW': '還沒有生成影片', en: 'No videos generated yet', ja: 'まだ動画が生成されていません', ko: '아직 생성된 동영상이 없습니다' },
   '在左侧填写提示词，点击「生成视频」开始': { 'zh-TW': '在左側填寫提示詞，點擊「生成影片」開始', en: 'Enter a prompt on the left and click "Generate video" to start', ja: '左側にプロンプトを入力し、「動画を生成」をクリックして開始', ko: '왼쪽에 프롬프트를 입력하고 "동영상 생성"을 클릭해 시작하세요' },
+  // ---- 本地服务开关回滚（v0.1.400：设置页切换与 useServiceController 对齐） ----
+  '{name} 启动后未能正常监听端口，已自动关闭开关。请确认本机 {key} 可正常运行后重试': { 'zh-TW': '{name} 啟動後未能正常監聽連接埠，已自動關閉開關。請確認本機 {key} 可正常運行後重試', en: '{name} started but never listened on its port, so the switch was turned back off. Please confirm {key} runs correctly on this machine and try again', ja: '{name} は起動しましたがポートをリッスンしなかったため、スイッチを自動でオフに戻しました。このマシンで {key} が正常に動作することを確認してから再試行してください', ko: '{name}이(가) 시작되었지만 포트를 수신하지 못해 스위치를 자동으로 껐습니다. 이 기기에서 {key}이(가) 정상 동작하는지 확인한 뒤 다시 시도하세요' },
 }

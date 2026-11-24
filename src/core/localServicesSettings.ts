@@ -4,13 +4,17 @@
 import type { AppSettings, LocalServiceKey, MemoryTier } from './types'
 import { isLocalProvider } from './types'
 
-export const LOCAL_SERVICE_KEYS: LocalServiceKey[] = ['ollama', 'comfyui', 'lmstudio']
+export const LOCAL_SERVICE_KEYS: LocalServiceKey[] = ['ollama', 'comfyui', 'lmstudio', 'qwentts']
 
-/** 本地服务 key → providerId */
+/** 模型类本地服务（Ollama/ComfyUI/LM Studio）：Qwen3-TTS 是语音服务，不计入「本地型」模型分类 */
+export const MODEL_SERVICE_KEYS: LocalServiceKey[] = ['ollama', 'comfyui', 'lmstudio']
+
+/** 本地服务 key → providerId（qwentts 无模型账户，仅作开关与账户服务门控的映射） */
 export const SERVICE_TO_PROVIDER: Record<LocalServiceKey, string> = {
   ollama: 'local-ollama',
   comfyui: 'local-comfyui',
   lmstudio: 'local-lmstudio',
+  qwentts: 'local-qwentts',
 }
 
 /** providerId → 本地服务 key（非本地 provider 返回 null） */
@@ -40,8 +44,11 @@ export function tierAdvice(tier: MemoryTier): string {
   return `检测到 ${tier}G 及以上内存：可同时开启全部本地服务。`
 }
 
-/** 某服务在 App 内是否启用（未配置默认开启，避免升级后本地模型突然不可用） */
+/** 某服务在 App 内是否启用（未配置默认开启，避免升级后本地模型突然不可用）。
+ * 例外：Qwen3-TTS 未配置默认关闭——它是重服务（约 6GB 常驻内存、另需下载约 1GB 模型），
+ * 必须由用户显式启用；否则老用户 settings 里缺这个键会被默认算成已开，8G 下还会挤占唯一名额。 */
 export function isServiceEnabled(settings: AppSettings | undefined, key: LocalServiceKey): boolean {
+  if (key === 'qwentts') return settings?.localServices?.[key] === true
   return settings?.localServices?.[key] !== false
 }
 
@@ -56,18 +63,19 @@ export function enabledServiceCount(settings: AppSettings | undefined): number {
   return LOCAL_SERVICE_KEYS.filter(k => isServiceEnabled(settings, k)).length
 }
 
-/** AI 页是否显示「本地型」分类：设置页至少一个本地服务开启时才显示 */
+/** AI 页是否显示「本地型」分类：设置页至少一个本地模型服务开启时才显示（Qwen3-TTS 是语音服务，不计入） */
 export function shouldShowLocalCategory(settings: AppSettings | undefined): boolean {
-  return enabledServiceCount(settings) > 0
+  return MODEL_SERVICE_KEYS.some(k => isServiceEnabled(settings, k))
 }
 
 /**
  * 首次根据内存档位生成默认开关：8G 只开第一个（Ollama），其余档位全开。
  * 仅在 localServicesInitialized 标记未设置时调用一次。
+ * Qwen3-TTS 默认关：它需另行下载约 1GB 模型、常驻约 6GB 内存，由用户在语音配置页显式启用。
  */
 export function initServicesForTier(tier: MemoryTier): Partial<Record<LocalServiceKey, boolean>> {
-  if (tier === 8) return { ollama: true, comfyui: false, lmstudio: false }
-  return { ollama: true, comfyui: true, lmstudio: true }
+  if (tier === 8) return { ollama: true, comfyui: false, lmstudio: false, qwentts: false }
+  return { ollama: true, comfyui: true, lmstudio: true, qwentts: false }
 }
 
 /** 本地服务开关变化事件名：AIView 监听此事件清理该服务的内存缓存 */

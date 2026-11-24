@@ -24,6 +24,8 @@ import {
 } from '../core/volcConfig'
 import { ttsTestDirect, voicestudioTest, voicestudioList } from '../core/ttsDirect'
 import { EDGE_VOICES, getEdgeVoiceId, setEdgeVoiceId, getSpeakPref, setSpeakPref } from '../core/edgeTts'
+import { qwenTtsStatus, qwenTtsSetup, qwenTtsTest, deleteQwenVoiceRef, isQwenVoiceId, type QwenTtsStatus } from '../core/qwenTts'
+import { transcribeWithDashScope, cloudAsrConfigured } from '../core/asr'
 import { t } from '../core/i18n'
 import { verifyVault, getBiometricPassword } from '../core/crypto'
 import { voiceNeedsUnlock, setVoiceSessionPwd, hasVoiceCredential } from '../core/voiceKey'
@@ -72,6 +74,13 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [cloneError, setCloneError] = useState('')
   const [volcConfig, setVolcConfig] = useState<VolcConfig>(() => getVolcConfig())
   const [volcOpen, setVolcOpen] = useState(false)
+  // Qwen3-TTS 本地克隆（桌面端 Apple 芯片 Mac）：安装/运行状态、参考音频原文
+  const [qwenStatus, setQwenStatus] = useState<QwenTtsStatus | null>(null)
+  const [qwenLoading, setQwenLoading] = useState(false)
+  const [qwenSettingUp, setQwenSettingUp] = useState(false)
+  const [qwenTesting, setQwenTesting] = useState(false)
+  const [refText, setRefText] = useState('')
+  const [refTranscribing, setRefTranscribing] = useState(false)
   // 区块折叠（Edge / 声音克隆 / 已保存的克隆音色），展开状态记本机
   const [secOpen, setSecOpen] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('acm.voice.sections') || '{}') as Record<string, boolean> } catch { return {} }
@@ -86,6 +95,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => { void loadVoiceSample().then(setSample) }, [])
+  useEffect(() => { if (desktop) void qwenTtsStatus().then(setQwenStatus).catch(() => {}) }, [])
 
   const tryPreview = () => {
     if (previewing) { stopSpeak(); setPreviewing(false); return }
@@ -105,9 +115,48 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
 
   const isDirect = (config.mode ?? 'direct') === 'direct'
   const isVoiceStudio = config.provider === 'voicestudio'
+  const isQwenTts = config.provider === 'qwentts'
+
+  /** 刷新 Qwen3-TTS 本地服务状态（安装/Python/模型/运行） */
+  const refreshQwenStatus = async () => {
+    setQwenLoading(true)
+    try { setQwenStatus(await qwenTtsStatus()) } finally { setQwenLoading(false) }
+  }
+
+  /** Qwen3-TTS 首次安装（几分钟：建 venv → pip 装 mlx-tts-server → 预下载约 1GB 模型） */
+  const doQwenSetup = async () => {
+    setQwenSettingUp(true)
+    try {
+      notify(t('正在安装 Qwen3-TTS（首次需下载约 1GB 模型，请保持网络畅通、耐心等待几分钟）…'))
+      const r = await qwenTtsSetup()
+      notify(r.message)
+      await refreshQwenStatus()
+    } finally { setQwenSettingUp(false) }
+  }
+
+  const doQwenTest = async () => {
+    setQwenTesting(true)
+    try { const r = await qwenTtsTest(); notify(r.message) } finally { setQwenTesting(false) }
+  }
+
+  /** 用百炼 ASR 识别样本说的内容，填入参考音频原文（需已配百炼 Key） */
+  const doTranscribeRef = async () => {
+    if (!sample) return
+    setRefTranscribing(true)
+    try {
+      const text = await transcribeWithDashScope(sample.dataUrl)
+      if (!text) { notify(t('未识别到内容，请手动填写')); return }
+      setRefText(text)
+      notify(t('已识别填入，请核对后使用'))
+    } catch (e) { notify((e as Error)?.message ?? t('识别失败')) }
+    finally { setRefTranscribing(false) }
+  }
   const saveConfig = () => {
     if (!config.provider) { saveTtsConfig({ provider: '', endpoint: '', mode: 'direct' }); setTtsConfigured(false); setConfigOpen(false); notify(t('已清除语音服务配置')); return }
-    if (isVoiceStudio) {
+    if (isQwenTts) {
+      // Qwen3-TTS 本地服务：无需 Key、无需端点，服务地址固定本机 :18123
+      saveTtsConfig({ ...config, mode: 'direct' })
+    } else if (isVoiceStudio) {
       // VoiceStudio：本机回环无需 Key，端点留空默认 http://127.0.0.1:3900
       saveTtsConfig({ ...config, mode: 'direct' })
     } else if (isDirect) {
@@ -125,7 +174,10 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const testDirect = async () => {
     setTestingKey(true)
     try {
-      if (isVoiceStudio) {
+      if (isQwenTts) {
+        const r = await qwenTtsTest()
+        notify(r.message)
+      } else if (isVoiceStudio) {
         const r = await voicestudioTest(config)
         notify(r.message)
       } else {
@@ -236,10 +288,16 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
 
   const doClone = async () => {
     if (!sample) { notify(t('请先录音或选择音频文件')); return }
+    // Qwen3-TTS 本地克隆：服务没在跑时先提示去开开关，不直接调克隆（避免等半天才报错）
+    if (isQwenTts) {
+      const st = await qwenTtsStatus()
+      setQwenStatus(st)
+      if (!st.running) { notify(t('Qwen3-TTS 服务未运行：请先到「设置 → 本地模型服务」打开 Qwen3-TTS 开关（首次使用需先在上方完成安装）')); return }
+    }
     setCloning(true)
     setCloneError('')
     try {
-      const r = await cloneVoiceFromSample(sample)
+      const r = await cloneVoiceFromSample(sample, undefined, isQwenTts ? refText : undefined)
       if (!r.ok) {
         const msg = r.error ?? t('克隆失败')
         setCloneError(msg)
@@ -291,6 +349,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
 
   const dropCloned = (v: ClonedVoice) => {
     removeClonedVoice(v.id)
+    if (isQwenVoiceId(v.voiceId)) void deleteQwenVoiceRef(v.voiceId)
     syncClonedVoices()
     notify(t('已删除「{name}」；云端音色需到百炼控制台单独清理', { name: v.name }))
   }
@@ -340,6 +399,41 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
       </div>
       </>}
 
+      {/* Qwen3-TTS 本地克隆（可折叠，仅桌面端） */}
+      {desktop && <>
+      <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('qwentts', false)}>
+        <Volume2 size={14} /> {t('Qwen3-TTS 本地克隆（免费 · 本机）')} <span>{isSecOpen('qwentts', false) ? t('收起') : t('展开')}</span>
+      </button>
+      {isSecOpen('qwentts', false) && <>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 8px' }}>{t('阿里 Qwen3-TTS 开源模型在本机跑（MLX 加速）：3 秒参考音频克隆音色，不花钱、不上传。仅桌面端 Apple 芯片 Mac 可用。')}</div>
+      <div className="voice-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <span className={`local-status-badge ${qwenStatus?.running ? 'running' : ''}`}>
+          {!qwenStatus ? t('未检测') : qwenStatus.running ? t('服务运行中') : qwenStatus.installed ? t('已安装 · 未运行') : t('未安装')}
+        </span>
+        <button className="btn sm" onClick={() => void refreshQwenStatus()} disabled={qwenLoading}>{t('刷新状态')}</button>
+        {!qwenStatus?.installed && (
+          <button className="btn sm primary" onClick={() => void doQwenSetup()} disabled={qwenSettingUp}>
+            {qwenSettingUp ? <><Loader2 size={14} className="spin" /> {t('安装中…')}</> : t('首次安装')}
+          </button>
+        )}
+        {qwenStatus?.installed && (
+          <button className="btn sm" onClick={() => void doQwenTest()} disabled={qwenTesting}>{qwenTesting ? t('测试中…') : t('测试连接')}</button>
+        )}
+      </div>
+      {qwenStatus && (
+        <div className="voice-note">
+          {qwenStatus.python
+            ? t('Python {py} · {model}', { py: qwenStatus.python, model: qwenStatus.modelCached ? t('模型已下载') : t('模型未下载') })
+            : t('未找到 Python 3.10+（需安装 Python 3.10 或以上，如 brew install python@3.12）')}
+          {qwenStatus.running && qwenStatus.url ? ` · ${qwenStatus.url}` : ''}
+          {qwenStatus.lastLog ? ` · ${qwenStatus.lastLog}` : ''}
+        </div>
+      )}
+      <div className="voice-note"><Info size={13} /> {t('首次安装会下载约 1GB 模型（mlx-community 4-bit 量化版），需 Python 3.10+，请保持网络畅通、耐心等待几分钟；安装只需做一次。服务开关在「设置 → 本地模型服务 → Qwen3-TTS」，与 Ollama / ComfyUI 内存互斥（8G 一次只开一个）。')}</div>
+      <div className="voice-note"><Info size={13} /> {t('安装后在下方「第三方语音服务配置」选 Qwen3-TTS，再导入声音样本克隆。克隆时请填写参考音频的原文（不填也能克隆，写上效果更好）。')}</div>
+      </>}
+      </>}
+
       {/* 声音克隆（可折叠） */}
       <button className="voice-config-toggle" style={{ marginTop: 10 }} onClick={() => toggleSec('clone', false)}>
         <Volume2 size={14} /> {t('声音克隆（录音 / 音频文件 → AI 发音）')} <span>{isSecOpen('clone', false) ? t('收起') : t('展开')}</span>
@@ -364,6 +458,20 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         </button>
         {sample && <button className="btn sm ghost" onClick={() => void removeSample()}><Trash2 size={14} /> {t('删除样本')}</button>}
       </div>
+      {isQwenTts && sample && (
+        <>
+          <label className="form-label" style={{ marginTop: 8 }}>{t('参考音频说的内容（写上克隆效果更好）')}
+            <input className="input" value={refText} onChange={e => setRefText(e.target.value)} placeholder={t('如：你好，很高兴认识你')} />
+          </label>
+          {cloudAsrConfigured() && (
+            <div style={{ marginTop: 6 }}>
+              <button className="btn sm ghost" onClick={() => void doTranscribeRef()} disabled={refTranscribing}>
+                {refTranscribing ? t('识别中…') : t('用百炼识别填入')}
+              </button>
+            </div>
+          )}
+        </>
+      )}
       {sample && <div className="voice-hint">{t('样本：{name}（{size} KB）', { name: sample.name, size: (sample.size / 1024).toFixed(0) })}</div>}
       {sample && /\.(amr|3gpp)$/i.test(sample.name) && (
         <div className="voice-hint" style={{ color: 'var(--red)' }}>
@@ -466,7 +574,19 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           </select>
         </label>
 
-        {isVoiceStudio ? (
+        {isQwenTts ? (
+          <>
+            <div className="voice-direct-guide">
+              {t('1. 先在上方「Qwen3-TTS 本地克隆」完成首次安装（下载约 1GB 模型）')}<br />
+              {t('2. 到「设置 → 本地模型服务」打开 Qwen3-TTS 开关，服务在 127.0.0.1:18123 运行')}<br />
+              {t('3. 点「测试连接」确认服务可用，再导入声音样本克隆')}
+            </div>
+            <div className="voice-config-actions">
+              <button className="btn sm" onClick={() => void testDirect()} disabled={testingKey}>{testingKey ? t('测试中…') : t('测试连接')}</button>
+            </div>
+            <div className="voice-config-note">{t('Qwen3-TTS 权重开源免费（Apache-2.0），合成全在本机、不上传；克隆他人声音需获得授权。')}</div>
+          </>
+        ) : isVoiceStudio ? (
           <>
             <div className="voice-direct-guide">
               {t('1. 在本机运行')} <a href="https://github.com/debpalash/VoiceStudio" target="_blank" rel="noreferrer">VoiceStudio ↗</a>{t('（桌面端或 Docker，服务端口 3900）')}<br />

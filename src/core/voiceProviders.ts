@@ -1,7 +1,7 @@
 // 语音服务目录：按"免费优先"排序，供设置页展示与选择。
 // 说明：真正的密钥必须放在用户自己的服务端代理，客户端只保存端点地址。
 
-export type VoiceProviderId = 'system' | 'local' | 'voicestudio' | 'aliyun' | 'volcengine' | 'tencent' | 'minimax' | 'elevenlabs'
+export type VoiceProviderId = 'system' | 'local' | 'voicestudio' | 'qwentts' | 'aliyun' | 'volcengine' | 'tencent' | 'minimax' | 'elevenlabs'
 
 export interface VoiceProviderDef {
   id: VoiceProviderId
@@ -36,6 +36,13 @@ export const VOICE_PROVIDERS: VoiceProviderDef[] = [
     desc: '开源 ElevenLabs 替代：声音克隆/语音合成全在本机。需先在本机运行 VoiceStudio 服务（端口 3900），可复用已克隆的音色。',
     free: '软件开源免费(AGPL-3.0)，模型下载后离线可用', paid: '仅电费/硬件，GPU 更佳',
     docs: 'https://github.com/debpalash/VoiceStudio',
+    recommended: true,
+  },
+  {
+    id: 'qwentts', name: 'Qwen3-TTS 本地克隆（免费 · 本机）', short: 'Qwen3-TTS', rank: 2,
+    desc: '阿里 Qwen3-TTS 开源模型在本机跑（MLX 加速）：3 秒参考音频克隆音色，合成全在本机。需先在语音配置页完成首次安装（下载约 1GB 模型），仅桌面端 Apple 芯片 Mac 可用。',
+    free: '模型开源免费(Apache-2.0)，本机运行不花钱', paid: '仅电费/硬件',
+    docs: 'https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base',
     recommended: true,
   },
   {

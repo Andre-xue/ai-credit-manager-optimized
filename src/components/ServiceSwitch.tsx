@@ -21,7 +21,7 @@ export function ServiceSwitch({
   const enabled = controller.enabled(serviceKey)
   const running = !!controller.status[serviceKey]
   const busy = controller.busyKey === serviceKey
-  const name = label ?? (serviceKey === 'ollama' ? 'Ollama' : serviceKey === 'comfyui' ? 'ComfyUI' : 'LM Studio')
+  const name = label ?? (serviceKey === 'ollama' ? 'Ollama' : serviceKey === 'comfyui' ? 'ComfyUI' : serviceKey === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio')
 
   // 果冻动画方向（与 Toggle 组件同逻辑）：enabled 变化时播一次 350ms 滑动
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)

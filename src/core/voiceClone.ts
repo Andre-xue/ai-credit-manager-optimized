@@ -1,10 +1,14 @@
-// 声音克隆样本管理：录音或音频文件 → 本地 IndexedDB 保存 → 通过第三方 TTS 代理 /clone 克隆。
-// 当前内置免费云模型不提供声音克隆能力，因此克隆必须依赖用户在「第三方语音服务配置」里提供的代理端点。
+// 声音克隆样本管理：录音或音频文件 → 本地 IndexedDB 保存 → 通过第三方 TTS 代理 /clone 克隆，
+// 或 Qwen3-TTS 本地服务（桌面端本机 :18123）克隆。
+// 当前内置免费云模型不提供声音克隆能力，因此克隆必须依赖用户在「第三方语音服务配置」里提供的代理端点，
+// 或已安装的 Qwen3-TTS 本地服务。
 // 支持保存多个克隆音色，可命名、切换、删除；每个音色在本机独立记录其云端 voiceId。
+// Qwen 音色无云端 ID：voiceId 为 qwen-local: 前缀，参考音频存在本机 IndexedDB，合成时随请求带上。
 
 import { getTtsConfig } from './voice-download'
 import { isDirectMode, ttsCloneDirect, voicestudioClone } from './ttsDirect'
 import { isNativeApp } from './openExternal'
+import { qwenTtsSynthesize, saveQwenVoice } from './qwenTts'
 
 const DB_NAME = 'acm-voice-sample-db'
 const STORE = 'samples'
@@ -305,10 +309,22 @@ export function friendlyCloneError(raw: string): string {
   return raw.length > 160 ? raw.slice(0, 160) + '…' : raw
 }
 
-export async function cloneVoiceFromSample(sample: VoiceSample, name?: string): Promise<CloneResult> {
+export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, refText?: string): Promise<CloneResult> {
   const cfg = getTtsConfig()
   if (!cfg.provider) {
     return { ok: false, error: '请先在下方配置第三方语音服务' }
+  }
+  // Qwen3-TTS 本地克隆：桌面端直连本机 :18123，无需官方 Key；先用样本试合成一句验证链路，
+  // 成功后再保存音色（参考音频存本机 IndexedDB）。参考音频原文可空，写上效果更好。
+  if (cfg.provider === 'qwentts') {
+    try {
+      await qwenTtsSynthesize(sample.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
+      const voice = await saveQwenVoice(name || sample.name.replace(/\.[^.]+$/, ''), sample.dataUrl, refText ?? '', sample.name)
+      return { ok: true, voiceId: voice.voiceId }
+    } catch (e) {
+      const msg = `Qwen3-TTS 本地克隆失败：${(e as Error)?.message ?? String(e)}`
+      return { ok: false, error: msg.length > 200 ? msg.slice(0, 200) + '…' : msg }
+    }
   }
   // VoiceStudio：桌面端直连本机 :3900，无需官方 Key
   if (cfg.provider === 'voicestudio') {

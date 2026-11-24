@@ -51,7 +51,8 @@ export function useServiceController(
 
   // 启动对账（每个会话只做一次，等 settings 就绪后执行）：让开关状态成为唯一事实——
   // 开着的：Ollama 没在跑则拉起一次（原 refresh 自愈移到这里一次性做，避免每次刷新都
-  // 尝试拉起、与用户刚关掉开关的动作竞态，把用户关掉的服务又拉回来）；
+  // 尝试拉起、与用户刚关掉开关的动作竞态，把用户关掉的服务又拉回来）。
+  // Qwen3-TTS 开着也不自启：模型加载慢（约 5~30 秒）且常驻约 6GB 内存，由用户需要时手动启动；
   // 关着的：清理上次遗留的服务进程（App 异常退出留下的孤儿 / 端口上的服务进程 /
   // 守护中的 Ollama 应用），保证「关了就不常驻」跨重启也成立。清理真动了进程才提示。
   const reconciledRef = useRef(false)
@@ -71,7 +72,7 @@ export function useServiceController(
         } else {
           const r = await reconcileLocalService(k)
           if (r.acted) {
-            const name = k === 'ollama' ? 'Ollama' : k === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+            const name = k === 'ollama' ? 'Ollama' : k === 'comfyui' ? 'ComfyUI' : k === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
             notify(`已清理遗留的 ${name} 服务进程（开关处于关闭）：${r.message}`)
             notifyLocalServiceChanged(k, false)
           }
@@ -90,7 +91,7 @@ export function useServiceController(
     const { next, stopKeys, enabled: willEnable } = plan
     setBusyKey(key)
     patchSettings({ localServices: next })
-    const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+    const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : key === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
     try {
       // 互斥：先停掉被挤掉的其他服务（关自己留给下方 else 统一处理）
       for (const oldKey of stopKeys) {
@@ -98,7 +99,7 @@ export function useServiceController(
         const r = await stopServiceByPort(oldKey)
         setStatus(prev => ({ ...prev, [oldKey]: '' }))
         notifyLocalServiceChanged(oldKey, false)
-        const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : 'LM Studio'
+        const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : oldKey === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
         if (r.ok) notify(`已关闭 ${oldName} 以释放内存（${r.message}）`)
       }
       if (willEnable) {
@@ -114,7 +115,7 @@ export function useServiceController(
             const poll = window.setInterval(() => {
               void checkLocalService(key).then(addr => {
                 if (addr) { setStatus(prev => ({ ...prev, [key]: addr })); window.clearInterval(poll) }
-                else if (++tries >= 15) {
+                else if (++tries >= (key === 'qwentts' ? 30 : 15)) {
                   window.clearInterval(poll)
                   if (key === 'comfyui' && comfyLaunchDesktopEnabled()) {
                     // Desktop 拉起模式：应用已打开但实例还没由用户点开，不算失败——
