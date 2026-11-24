@@ -1004,6 +1004,14 @@ export async function fetchTmdbTrending(key: string, range: TrendRange = 'week')
   return items.filter((x): x is TmdbTitle => !!x).slice(0, 40)
 }
 
+/** v0.1.406：点播墙是否需要自己拉 TMDB 热门榜单——打开点播页签、榜单为空、
+ *  有 Key 且不在拉取中时拉一次；否则不拉（无 Key 时回落只有片名列表，与修前
+ *  一致；榜单已有时不重复拉）。以前墙拼热门依赖热门推荐页签已加载的榜单数据，
+ *  先开点播时 trending 为空，墙上 0 部仅展示。 */
+export function shouldAutoLoadTrending(args: { activeTab: string; tmdbKeySet: boolean; trendingCount: number; loading: boolean }): boolean {
+  return args.activeTab === 'vod' && args.tmdbKeySet && args.trendingCount === 0 && !args.loading
+}
+
 /** 推荐偏好（v0.1.394 设置页签「推荐设置」：热门范围 + 推荐类型），仅本机 */
 export interface RecPrefs { range: TrendRange; type: 'all' | 'tv' | 'movie' }
 export const REC_PREFS_KEY = 'acm.watch.recPrefs.v1'

@@ -34,6 +34,7 @@ import {
   loadCustomSources, saveCustomSources, fetchSourceSet,
   hasTmdbKey, loadTmdbKey, saveTmdbKey, clearTmdbKey,
   fetchTmdbTrending, fetchTmdbProviders, loadRecPrefs, saveRecPrefs,
+  shouldAutoLoadTrending,
   searchTmdbTitle, fetchTmdbGenres, fetchTmdbDetails,
   normalizeTitleKey, buildVodWallItems, filterVodWall, sortVodWall, vodWallBadge,
   WALL_GENRES, WALL_YEARS, WALL_REGIONS, WALL_STATUS_FILTERS,
@@ -568,17 +569,20 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     } catch (e) { notify(e instanceof Error ? e.message : '保存失败', 'err') } finally { setTmdbSaving(false) }
   }
 
-  const loadTrending = async (range: TrendRange = trendRange) => {
+  // quiet：点播墙自动拉榜单时静默（保险箱未解锁/无 Key/拉失败都不弹 toast，
+  // 墙只显示自己的点播源，与修前行为一致；成功也不额外提示）
+  const loadTrending = async (range: TrendRange = trendRange, opts?: { quiet?: boolean }) => {
+    const quiet = !!opts?.quiet
     const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notify('请先解锁保险箱，才能读取已保存的 TMDB Key'); return }
+    if (!pwd) { if (!quiet) notify('请先解锁保险箱，才能读取已保存的 TMDB Key'); return }
     setTmdbBusy(true)
     try {
       const key = await loadTmdbKey(pwd)
-      if (!key) { notify('还没保存 TMDB Key', 'err'); return }
+      if (!key) { if (!quiet) notify('还没保存 TMDB Key', 'err'); return }
       const list = await fetchTmdbTrending(key, range)
       setTrending(list); setTrendPage(1)
-      notify(`已加载${range === 'day' ? '今日热门' : range === 'top' ? '高分精选' : '本周热门'} ${list.length} 部`)
-    } catch (e) { notify(e instanceof Error ? e.message : '加载失败', 'err') } finally { setTmdbBusy(false) }
+      if (!quiet) notify(`已加载${range === 'day' ? '今日热门' : range === 'top' ? '高分精选' : '本周热门'} ${list.length} 部`)
+    } catch (e) { if (!quiet) notify(e instanceof Error ? e.message : '加载失败', 'err') } finally { setTmdbBusy(false) }
   }
 
   // v0.1.394：设置页签改热门范围时，已有 Key 就直接按新范围重拉
@@ -646,6 +650,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   // 搜不到/拉失败的也算完成，不常驻提示）
   const wallEnrichPending = wallItems.filter(i => i.tmdb && !i.details && !vodEnrichRef.current[normalizeTitleKey(i.title)]?.detailsTried).length
     + vodTitles.filter(v => !vodEnrichRef.current[normalizeTitleKey(v.title)]?.searched).length
+
+  // v0.1.406：点播墙自己拉 TMDB 热门榜单——以前墙拼热门依赖热门推荐页签已加载
+  // 的榜单数据，先开点播时 trending 为空，墙上 0 部仅展示；切去热门再回来才有。
+  // 打开点播页签且榜单为空、有 Key 时静默拉一次（用当前热门范围）；已加载/拉
+  // 取中不再重复拉；无 Key 时不请求（回落只有片名列表，与修前一致）。
+  const trendingAutoRef = useRef(false)
+  useEffect(() => {
+    if (!shouldAutoLoadTrending({ activeTab, tmdbKeySet, trendingCount: trending.length, loading: trendingAutoRef.current })) return
+    trendingAutoRef.current = true
+    void loadTrending(trendRange, { quiet: true }).finally(() => { trendingAutoRef.current = false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, tmdbKeySet, trending.length])
 
   // 打开点播页签且有 Key 时，后台补全：先按片名搜 TMDB，再拉详情（4 路并行、带节流）
   useEffect(() => {

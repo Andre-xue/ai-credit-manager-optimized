@@ -5,6 +5,7 @@ import {
   isUnofficialStreamUrl, isChannelUnofficial, isVodUrl, isFlvUrl,
   splitEpisode, channelsToVod, vodContinueId, parseVodContinueId,
   fetchTmdbTrending, loadRecPrefs, saveRecPrefs, REC_PREFS_KEY,
+  shouldAutoLoadTrending,
   probeStreamUrl, probeChannel, probeChannels, loadHealthCache, saveHealthCache,
   healthOf, healthCounts, applyHealthView,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
@@ -426,6 +427,27 @@ describe('watch.fetchTmdbTrending 范围（v0.1.394）', () => {
   it('非 200 抛中文错', async () => {
     vi.stubGlobal('fetch', async () => ({ ok: false, status: 401, json: async () => ({}) }))
     await expect(fetchTmdbTrending('BAD')).rejects.toThrow('401')
+  })
+})
+
+describe('watch.shouldAutoLoadTrending（v0.1.406 点播墙自己拉热门榜单）', () => {
+  const base = { activeTab: 'vod', tmdbKeySet: true, trendingCount: 0, loading: false }
+  it('打开点播页签、榜单为空、有 Key、不在拉取中 → 拉一次', () => {
+    expect(shouldAutoLoadTrending(base)).toBe(true)
+  })
+  it('不在点播页签（热门/直播/设置）→ 不拉', () => {
+    expect(shouldAutoLoadTrending({ ...base, activeTab: 'trending' })).toBe(false)
+    expect(shouldAutoLoadTrending({ ...base, activeTab: 'live' })).toBe(false)
+    expect(shouldAutoLoadTrending({ ...base, activeTab: 'settings' })).toBe(false)
+  })
+  it('无 Key → 不拉（回落只有片名列表，与修前一致）', () => {
+    expect(shouldAutoLoadTrending({ ...base, tmdbKeySet: false })).toBe(false)
+  })
+  it('榜单已有 → 不重复拉', () => {
+    expect(shouldAutoLoadTrending({ ...base, trendingCount: 40 })).toBe(false)
+  })
+  it('正在拉取中 → 不重复拉', () => {
+    expect(shouldAutoLoadTrending({ ...base, loading: true })).toBe(false)
   })
 })
 
