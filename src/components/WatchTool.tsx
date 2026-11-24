@@ -49,6 +49,7 @@ import {
   loadHealthCache, saveHealthCache, probeChannels, healthOf, healthCounts, applyHealthView,
   probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
+  loadVodTvboxCollapsed, saveVodTvboxCollapsed, loadVodFiltersCollapsed, saveVodFiltersCollapsed,
   isTvboxConfigText, isAdultTvboxSite,
   loadPlayerFloat, savePlayerFloat, clampPlayerFloat,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig, fetchCmsVodList, mergeVodTitles,
@@ -740,6 +741,16 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [vodYear, setVodYear] = useState('全部')
   const [vodRegion, setVodRegion] = useState('全部')
   const [vodStatus, setVodStatus] = useState<VodWallStatusFilter>('all')
+  // v0.1.417：点播页两处可折叠——TVBox 资源站 chips 行与类型/年份/地区/状态筛选区；
+  // 默认展开，折叠状态只存本机。
+  const [tvboxSitesCollapsed, setTvboxSitesCollapsed] = useState(() => loadVodTvboxCollapsed())
+  const toggleTvboxSitesCollapsed = () => {
+    setTvboxSitesCollapsed(v => { const next = !v; saveVodTvboxCollapsed(next); return next })
+  }
+  const [vodFiltersCollapsed, setVodFiltersCollapsed] = useState(() => loadVodFiltersCollapsed())
+  const toggleVodFiltersCollapsed = () => {
+    setVodFiltersCollapsed(v => { const next = !v; saveVodFiltersCollapsed(next); return next })
+  }
   const [vodSort, setVodSort] = useState<VodWallSort>('updated')
   const [vodGenreMap, setVodGenreMap] = useState<TmdbGenreMap | null>(null)
   const [vodEnrich, setVodEnrich] = useState<Record<string, VodEnrichEntry>>({})
@@ -1680,12 +1691,28 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
             <>
               <div className="wt-chips">
                 <span className="fg-muted">TVBox 资源站：</span>
-                <button className={`wt-chip${!tvboxSite ? ' on' : ''}`} aria-pressed={!tvboxSite}
-                  onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
-                {normalTvboxSites.map(s => (
-                  <button key={s.key} className={`wt-chip${tvboxSite?.key === s.key ? ' on' : ''}`} aria-pressed={tvboxSite?.key === s.key}
-                    onClick={() => selectSite(s, 'vod')}>{s.name}</button>
-                ))}
+                {tvboxSitesCollapsed ? (
+                  // v0.1.417：折叠时只留当前选中的站点（没选时是「只看 m3u 点播」）+ 展开按钮
+                  tvboxSite ? (
+                    <button className="wt-chip on" aria-pressed onClick={() => selectSite(tvboxSite, 'vod')}>{tvboxSite.name}</button>
+                  ) : (
+                    <button className="wt-chip on" aria-pressed
+                      onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
+                  )
+                ) : (
+                  <>
+                    <button className={`wt-chip${!tvboxSite ? ' on' : ''}`} aria-pressed={!tvboxSite}
+                      onClick={() => { setTvboxSite(null); setTvboxTitles([]); setTvboxError('') }}>只看 m3u 点播</button>
+                    {normalTvboxSites.map(s => (
+                      <button key={s.key} className={`wt-chip${tvboxSite?.key === s.key ? ' on' : ''}`} aria-pressed={tvboxSite?.key === s.key}
+                        onClick={() => selectSite(s, 'vod')}>{s.name}</button>
+                    ))}
+                  </>
+                )}
+                <button className="btn sm ghost" onClick={toggleTvboxSitesCollapsed} aria-expanded={!tvboxSitesCollapsed}>
+                  <ChevronDown size={13} style={{ transform: tvboxSitesCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+                  {tvboxSitesCollapsed ? '展开' : '收起'}
+                </button>
               </div>
               {tvboxSite && (
                 <div className="fg-muted">
@@ -1746,6 +1773,18 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
           <>
             {tmdbKeySet && (
               <div className="wt-wall-filters">
+                <div className="wt-filters-head">
+                  <button type="button" className="wt-filters-toggle" aria-expanded={!vodFiltersCollapsed} onClick={toggleVodFiltersCollapsed}>
+                    <ChevronDown size={14} style={{ transform: vodFiltersCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
+                    <span>筛选</span>
+                    {vodFiltersCollapsed && (
+                      <span className="fg-muted">类型：{vodGenre} · 年份：{vodYear} · 地区：{vodRegion} · 状态：{WALL_STATUS_FILTERS.find(s => s.k === vodStatus)?.t ?? '全部'}</span>
+                    )}
+                    <span className="fg-muted">{vodFiltersCollapsed ? '展开' : '收起'}</span>
+                  </button>
+                </div>
+                {!vodFiltersCollapsed && (
+                  <>
                 <div className="wt-frow">
                   <span className="wt-flab">类型</span>
                   <div className="wt-fchips">
@@ -1782,6 +1821,8 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
                     ))}
                   </div>
                 </div>
+                  </>
+                )}
               </div>
             )}
             <div className="wt-countbar">

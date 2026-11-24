@@ -10,6 +10,7 @@ import {
   healthOf, healthCounts, applyHealthView, parseM3u8Segments, probeConnectivity,
   probeVodTitle, probeVodTitles, vodHealthOf, vodHealthCounts, applyVodHealthView,
   loadShowDead, saveShowDead, loadShowDeadVod, saveShowDeadVod,
+  loadVodTvboxCollapsed, saveVodTvboxCollapsed, loadVodFiltersCollapsed, saveVodFiltersCollapsed,
   parseTvboxConfig, isTvboxConfigText, isAdultTvboxSite,
   loadTvboxConfigs, saveTvboxConfigs, fetchTvboxConfig,
   loadShowAdult, saveShowAdult, SHOW_ADULT_KEY,
@@ -1280,6 +1281,22 @@ describe('watch 已测不通的点播默认隐藏（v0.1.416）', () => {
   })
 })
 
+describe('watch 点播页可折叠（v0.1.417）', () => {
+  it('两处折叠默认展开；存取往返；各存各的键', () => {
+    expect(loadVodTvboxCollapsed()).toBe(false)
+    expect(loadVodFiltersCollapsed()).toBe(false)
+    saveVodTvboxCollapsed(true)
+    expect(loadVodTvboxCollapsed()).toBe(true)
+    expect(loadVodFiltersCollapsed()).toBe(false)
+    saveVodFiltersCollapsed(true)
+    expect(loadVodFiltersCollapsed()).toBe(true)
+    saveVodTvboxCollapsed(false)
+    saveVodFiltersCollapsed(false)
+    expect(loadVodTvboxCollapsed()).toBe(false)
+    expect(loadVodFiltersCollapsed()).toBe(false)
+  })
+})
+
 describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
   it('播放器失败态在视频区内、加载态、FLV、点播体检、死台隐藏开关都在', async () => {
     const { readFileSync } = await import('node:fs')
@@ -1292,6 +1309,9 @@ describe('watch v0.1.407 结构（WatchTool.tsx + styles.css）', () => {
       // v0.1.416：点播默认隐藏 + 开关 + 计数行 + TVBox 同样进体检
       '显示已测不通的点播', 'loadShowDeadVod', 'saveShowDeadVod', 'showDeadVod',
       '已隐藏', '点播体检', 'allVodTitles',
+      // v0.1.417：点播页两处可折叠——TVBox 资源站 chips 行 + 筛选区
+      'loadVodTvboxCollapsed', 'saveVodTvboxCollapsed', 'loadVodFiltersCollapsed', 'saveVodFiltersCollapsed',
+      'tvboxSitesCollapsed', 'vodFiltersCollapsed', 'wt-filters-toggle',
       'wt-wall-card-dead', '✓ {vh.ms}ms', '✗ 不通',
     ]) {
       expect(src).toContain(s)

@@ -2433,6 +2433,9 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 
 /* ---------- 点播海报墙（v0.1.395） ---------- */
 .wt-wall-filters { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px; }
+.wt-filters-head { padding: 7px 0 5px; }
+.wt-filters-toggle { display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 2px 0; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--text-2); text-align: left; }
+.wt-filters-toggle .fg-muted { font-weight: 400; }
 .wt-frow { display: flex; gap: 10px; padding: 9px 0; align-items: flex-start; }
 .wt-frow + .wt-frow { border-top: 1px dashed var(--border); }
 .wt-flab { flex: none; width: 40px; padding-top: 5px; font-size: 13px; font-weight: 700; color: var(--text-2); }

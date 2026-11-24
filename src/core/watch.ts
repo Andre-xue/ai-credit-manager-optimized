@@ -1073,6 +1073,28 @@ export function saveShowDeadVod(v: boolean): void {
   try { localStorage.setItem(SHOW_DEAD_VOD_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
 }
 
+// ---------------- 点播页可折叠区（v0.1.417）：TVBox 资源站 chips 行 + 筛选区，默认展开，只存本机 ----------------
+export const VOD_TVBOX_COLLAPSED_KEY = 'acm.watch.vodTvboxCollapsed.v1'
+export const VOD_FILTERS_COLLAPSED_KEY = 'acm.watch.vodFiltersCollapsed.v1'
+
+/** 默认展开（false = 展开） */
+export function loadVodTvboxCollapsed(): boolean {
+  try { return localStorage.getItem(VOD_TVBOX_COLLAPSED_KEY) === '1' } catch { return false }
+}
+
+export function saveVodTvboxCollapsed(v: boolean): void {
+  try { localStorage.setItem(VOD_TVBOX_COLLAPSED_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+/** 默认展开（false = 展开） */
+export function loadVodFiltersCollapsed(): boolean {
+  try { return localStorage.getItem(VOD_FILTERS_COLLAPSED_KEY) === '1' } catch { return false }
+}
+
+export function saveVodFiltersCollapsed(v: boolean): void {
+  try { localStorage.setItem(VOD_FILTERS_COLLAPSED_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
 // ---------------- 分组 ----------------
 
 export interface LiveGroups {
