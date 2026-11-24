@@ -8,7 +8,7 @@
 import { getTtsConfig } from './voice-download'
 import { isDirectMode, ttsCloneDirect, voicestudioClone } from './ttsDirect'
 import { isNativeApp } from './openExternal'
-import { qwenTtsSynthesize, saveQwenVoice, friendlyQwenError } from './qwenTts'
+import { qwenTtsSynthesize, saveQwenVoice, describeQwenCloneFailure } from './qwenTts'
 
 const DB_NAME = 'acm-voice-sample-db'
 const STORE = 'samples'
@@ -41,6 +41,14 @@ export interface CloneResult {
   voiceId?: string
   error?: string
 }
+
+/**
+ * 克隆进度阶段（v0.1.415，Qwen 本地克隆专用）：转换参考音频 → 服务端合成 → 保存音色。
+ * 阶段按真实执行顺序回调，调用方据此分阶段显示进度 + 已等待时间；合成是一次阻塞请求，
+ * 阶段内不假造百分比。'done' 由调用方在成功后自行置位。
+ */
+export type CloneStage = 'convert' | 'synthesize' | 'save' | 'done'
+export type CloneProgressCallback = (stage: CloneStage) => void
 
 /** 读取已保存的克隆音色列表（含旧版单音色迁移） */
 export function listClonedVoices(): ClonedVoice[] {
@@ -392,7 +400,7 @@ export function friendlyCloneError(raw: string): string {
   return raw.length > 160 ? raw.slice(0, 160) + '…' : raw
 }
 
-export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, refText?: string): Promise<CloneResult> {
+export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, refText?: string, onProgress?: CloneProgressCallback): Promise<CloneResult> {
   const cfg = getTtsConfig()
   if (!cfg.provider) {
     return { ok: false, error: '请先在下方配置第三方语音服务' }
@@ -401,15 +409,20 @@ export async function cloneVoiceFromSample(sample: VoiceSample, name?: string, r
   // 成功后再保存音色（参考音频存本机 IndexedDB）。参考音频原文可空，写上效果更好。
   // v0.1.414：服务端只认 WAV，先在浏览器内把样本转成 WAV 再上传（不依赖本机 ffmpeg）；
   // 存进 IndexedDB 的也是转好的 WAV，下次朗读直接用，不用再转。
+  // v0.1.415：Qwen 分支按真实阶段回调 onProgress（转换 → 合成 → 保存），调用方据此
+  // 分阶段显示进度 + 已等待时间；合成是一次阻塞请求，阶段内不假造百分比。
   if (cfg.provider === 'qwentts') {
     try {
+      onProgress?.('convert')
       const wav = await ensureWavDataUrl(sample.dataUrl)
       if (!wav.ok) return { ok: false, error: wav.error }
+      onProgress?.('synthesize')
       await qwenTtsSynthesize(wav.dataUrl, refText ?? '', '你好，这是克隆音色的试听。')
+      onProgress?.('save')
       const voice = await saveQwenVoice(name || sample.name.replace(/\.[^.]+$/, ''), wav.dataUrl, refText ?? '', sample.name)
       return { ok: true, voiceId: voice.voiceId }
     } catch (e) {
-      const msg = `Qwen3-TTS 本地克隆失败：${friendlyQwenError((e as Error)?.message ?? String(e))}`
+      const msg = `Qwen3-TTS 本地克隆失败：${describeQwenCloneFailure((e as Error)?.message ?? String(e))}`
       return { ok: false, error: msg.length > 200 ? msg.slice(0, 200) + '…' : msg }
     }
   }

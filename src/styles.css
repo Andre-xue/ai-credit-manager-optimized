@@ -1355,6 +1355,18 @@ html, body { touch-action: manipulation; }
 }
 .voice-clone-error span { flex: 1; word-break: break-word; }
 
+/* Qwen 克隆分阶段进度（v0.1.415）：真实阶段 + 已等待秒数，不假造百分比 */
+.qwen-clone-progress { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+.qwen-clone-steps { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.qwen-clone-step { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); }
+.qwen-clone-step.active { color: var(--text-1); font-weight: 600; }
+.qwen-clone-step.done { color: var(--text-2); }
+.qwen-clone-step svg { flex-shrink: 0; }
+.qwen-clone-step.done svg { color: var(--green); }
+.qwen-clone-dot { width: 13px; height: 13px; border: 2px solid var(--border); border-radius: 50%; flex-shrink: 0; }
+.qwen-clone-elapsed { margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--text-1); }
+.qwen-clone-hint { margin-top: 4px; font-size: 11px; line-height: 1.6; color: var(--text-2); }
+
 /* 附件选择对话框：点击/拖拽 + 即时预览 */
 .ap-modal { max-width: 620px; }
 .ap-x {

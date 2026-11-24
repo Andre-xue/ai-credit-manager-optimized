@@ -16,6 +16,21 @@ export const QWENTTS_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit'
 /** Qwen 官方原版权重（与 MLX 版同源，供界面说明） */
 export const QWENTTS_OFFICIAL_MODEL_ID = 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'
 export const QWEN_VOICE_PREFIX = 'qwen-local:'
+/**
+ * Rust 端 qwentts_synthesize 的请求超时（秒），须与 lib.rs 的 reqwest timeout 保持一致。
+ * 首次克隆要加载约 1GB 模型，M1 8GB 上可能超过 3 分钟——旧 180 秒会在加载中途掐断请求
+ * （Ethan 2026-11-24 18:43「等了很久才失败」即此），故放宽到 600 秒。
+ */
+export const QWENTTS_SYNTH_TIMEOUT_S = 600
+/** 合成阶段超过这么多秒仍未完成时，界面提示“仍在加载模型、请继续等待” */
+export const QWEN_CLONE_SLOW_HINT_S = 60
+
+/** 克隆已等待时长文案（不假造百分比，只报真实秒数） */
+export function formatCloneElapsed(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds))
+  if (s < 60) return `${s} 秒`
+  return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
+}
 
 export interface QwenTtsStatus {
   installed: boolean
@@ -115,6 +130,94 @@ export function friendlyQwenError(raw: string): string {
     return '参考音频不是 WAV 且本机未装 ffmpeg，请改用 WAV 音频或安装 ffmpeg（终端运行 brew install ffmpeg）'
   }
   return raw
+}
+
+/**
+ * 克隆失败原因再加工（v0.1.415）：超时（Rust 端 QWENTTS_SYNTH_TIMEOUT_S 秒仍未完成，
+ * reqwest 报错含 timed out）给明确提示 + 重试指引；其余走 414 的中文翻译。
+ * friendlyQwenError 本身一字未动。
+ */
+export function describeQwenCloneFailure(raw: string): string {
+  if (/timed?\s*out|timeout/i.test(raw)) {
+    return `克隆超时（等待超过 ${QWENTTS_SYNTH_TIMEOUT_S / 60} 分钟仍未完成）：模型首次加载较慢或服务卡住。请点「刷新状态」确认服务仍在运行，再点「重新克隆」`
+  }
+  return friendlyQwenError(raw)
+}
+
+/** 预热用静音 WAV（0.5 秒、16kHz 单声道 16-bit PCM）：只为触发服务端首次加载模型，结果丢弃 */
+export function buildSilentWavDataUrl(seconds = 0.5): string {
+  const sampleRate = 16000
+  const frames = Math.max(1, Math.floor(sampleRate * seconds))
+  const buf = new ArrayBuffer(44 + frames * 2)
+  const v = new DataView(buf)
+  const wstr = (o: number, s: string) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)) }
+  wstr(0, 'RIFF'); v.setUint32(4, 36 + frames * 2, true); wstr(8, 'WAVE'); wstr(12, 'fmt ')
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true)
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true)
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); wstr(36, 'data'); v.setUint32(40, frames * 2, true)
+  // 采样点默认全 0（静音），无需再写
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return `data:audio/wav;base64,${btoa(bin)}`
+}
+
+/** 预热失败是否值得立刻重试一次：仅连接不上时（服务刚起、端口已通但 HTTP 还没就绪） */
+export function shouldRetryQwenWarmup(raw: string): boolean {
+  return /合成请求失败|连接失败|connection refused|failed to connect|connection reset|network error/i.test(raw)
+}
+
+export type QwenWarmupState = 'idle' | 'warming' | 'ready' | 'failed'
+
+let warmupState: QwenWarmupState = 'idle'
+let warmupPromise: Promise<{ ok: boolean; message: string }> | null = null
+
+export function getQwenWarmupState(): QwenWarmupState {
+  return warmupState
+}
+
+/** 服务停掉后复位预热状态（下次启动重新预热）；页面重载时模块状态本身即 idle */
+export function resetQwenWarmup(): void {
+  warmupState = 'idle'
+  warmupPromise = null
+}
+
+/**
+ * 服务启动后预热模型（v0.1.415）：用一段静音参考音频做一次空合成，触发服务端首次加载
+ * 约 1GB 模型并等它加载完，之后第一次真正的克隆就不再等加载。调用方在服务确认运行后
+ * 后台触发一次即可（fire-and-forget，不阻塞开关）；已预热则直接返回，不重复合成。
+ * 预热失败不抛错、不静默：返回真实原因，界面可手动再点「预热模型」重试。
+ */
+export async function qwenTtsWarmup(): Promise<{ ok: boolean; message: string }> {
+  if (warmupState === 'ready') return { ok: true, message: '模型已预热' }
+  if (warmupPromise) return warmupPromise
+  warmupState = 'warming'
+  warmupPromise = (async (): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const st = await qwenTtsStatus()
+      if (!st.running) {
+        warmupState = 'failed'
+        return { ok: false, message: 'Qwen3-TTS 服务未运行，无法预热模型' }
+      }
+      try {
+        await qwenTtsSynthesize(buildSilentWavDataUrl(), '', '你好')
+      } catch (e) {
+        // 服务刚起、端口已通但 HTTP 还没就绪：等 5 秒再试一次
+        const raw = (e as Error)?.message ?? String(e)
+        if (!shouldRetryQwenWarmup(raw)) throw e
+        await new Promise(r => setTimeout(r, 5000))
+        await qwenTtsSynthesize(buildSilentWavDataUrl(), '', '你好')
+      }
+      warmupState = 'ready'
+      return { ok: true, message: '模型已预热，首次克隆会快很多' }
+    } catch (e) {
+      warmupState = 'failed'
+      return { ok: false, message: `预热失败：${friendlyQwenError((e as Error)?.message ?? String(e))}` }
+    } finally {
+      warmupPromise = null
+    }
+  })()
+  return warmupPromise
 }
 
 // ==================== 已保存 Qwen 音色的参考音频（本机 IndexedDB） ====================

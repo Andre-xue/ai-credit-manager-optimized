@@ -11,6 +11,7 @@ import {
 import {
   LOCAL_SERVICE_KEYS, isServiceEnabled, planServiceToggle, notifyLocalServiceChanged,
 } from './localServicesSettings'
+import { qwenTtsWarmup, resetQwenWarmup } from './qwenTts'
 
 export interface ServiceController {
   /** 某服务在 App 内是否启用（来自 settings） */
@@ -107,6 +108,8 @@ export function useServiceController(
         if (already) {
           setStatus(prev => ({ ...prev, [key]: already }))
           notify(`${name} 已在运行，已直接启用`)
+          // Qwen3-TTS 已在跑：后台预热一次模型，首次克隆不再等加载
+          if (key === 'qwentts') void qwenTtsWarmup()
         } else if (key !== 'lmstudio') {
           const r = await startLocalService(key)
           notify(`${name}：${r.message}`)
@@ -114,7 +117,11 @@ export function useServiceController(
             let tries = 0
             const poll = window.setInterval(() => {
               void checkLocalService(key).then(addr => {
-                if (addr) { setStatus(prev => ({ ...prev, [key]: addr })); window.clearInterval(poll) }
+                if (addr) {
+                  setStatus(prev => ({ ...prev, [key]: addr })); window.clearInterval(poll)
+                  // Qwen3-TTS 刚起来：后台预热一次模型，首次克隆不再等加载
+                  if (key === 'qwentts') void qwenTtsWarmup()
+                }
                 else if (++tries >= (key === 'qwentts' ? 30 : 15)) {
                   window.clearInterval(poll)
                   if (key === 'comfyui' && comfyLaunchDesktopEnabled()) {
@@ -143,6 +150,8 @@ export function useServiceController(
         const r = await stopServiceByPort(key)
         notify(`${name}：${r.ok ? r.message : `停止失败：${r.message}`}`)
         setStatus(prev => ({ ...prev, [key]: '' }))
+        // Qwen3-TTS 停掉后复位预热状态，下次启动重新预热
+        if (key === 'qwentts') resetQwenWarmup()
       }
       notifyLocalServiceChanged(key, willEnable)
     } finally { setBusyKey(null) }

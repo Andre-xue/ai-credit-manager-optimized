@@ -2505,7 +2505,9 @@ async fn qwentts_synthesize(audio_data_url: String, ref_text: String, text: Stri
     body.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"ref_audio\"; filename=\"ref_audio.{}\"\r\nContent-Type: {}\r\n\r\n", boundary, ext, mime).as_bytes());
     body.extend_from_slice(&bytes);
     body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(180))
+    // 600 秒：首次克隆要加载约 1GB 模型，M1 8GB 上可能超过 3 分钟，旧 180 秒会在加载中途
+    // 掐断请求（须与前端 QWENTTS_SYNTH_TIMEOUT_S 保持一致）
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600))
         .build().map_err(|e| format!("客户端错误：{}", e))?;
     let resp = client.post(format!("{}/v1/audio/clone", QWENTTS_URL))
         .header("Content-Type", format!("multipart/form-data; boundary={}", boundary))

@@ -12,6 +12,7 @@ import {
   loadVoiceSample, saveVoiceSample, deleteVoiceSample, recordVoiceSample,
   cloneVoiceFromSample, getClonedVoiceId, listClonedVoices, removeClonedVoice, addClonedVoice,
   setActiveClonedVoice, renameClonedVoice, blobToWav, type VoiceSample, type ClonedVoice,
+  type CloneStage,
 } from '../core/voiceClone'
 import { isDesktopApp } from '../core/openExternal'
 import { VOICE_PROVIDERS } from '../core/voiceProviders'
@@ -24,7 +25,7 @@ import {
 } from '../core/volcConfig'
 import { ttsTestDirect, voicestudioTest, voicestudioList } from '../core/ttsDirect'
 import { EDGE_VOICES, getEdgeVoiceId, setEdgeVoiceId, getSpeakPref, setSpeakPref } from '../core/edgeTts'
-import { qwenTtsStatus, qwenTtsSetup, qwenTtsTest, deleteQwenVoiceRef, isQwenVoiceId, type QwenTtsStatus } from '../core/qwenTts'
+import { qwenTtsStatus, qwenTtsSetup, qwenTtsTest, qwenTtsWarmup, getQwenWarmupState, formatCloneElapsed, QWEN_CLONE_SLOW_HINT_S, deleteQwenVoiceRef, isQwenVoiceId, type QwenTtsStatus, type QwenWarmupState } from '../core/qwenTts'
 import { transcribeWithDashScope, cloudAsrConfigured } from '../core/asr'
 import { t } from '../core/i18n'
 import { verifyVault, getBiometricPassword } from '../core/crypto'
@@ -71,12 +72,18 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const [renameText, setRenameText] = useState('')
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState('')
+  // Qwen 克隆分阶段进度（v0.1.415）：真实阶段 + 已等待秒数，不假造百分比
+  const [cloneStage, setCloneStage] = useState<CloneStage | null>(null)
+  const [cloneElapsed, setCloneElapsed] = useState(0)
+  const cloneTimerRef = useRef<number | null>(null)
+  const cloneStartRef = useRef(0)
   const [volcConfig, setVolcConfig] = useState<VolcConfig>(() => getVolcConfig())
   // Qwen3-TTS 本地克隆（桌面端 Apple 芯片 Mac）：安装/运行状态、参考音频原文
   const [qwenStatus, setQwenStatus] = useState<QwenTtsStatus | null>(null)
   const [qwenLoading, setQwenLoading] = useState(false)
   const [qwenSettingUp, setQwenSettingUp] = useState(false)
   const [qwenTesting, setQwenTesting] = useState(false)
+  const [qwenWarmup, setQwenWarmup] = useState<QwenWarmupState>(() => getQwenWarmupState())
   const [refText, setRefText] = useState('')
   const [refTranscribing, setRefTranscribing] = useState(false)
   // 横向标题页签（v0.1.401，同看剧 394 样式），切换状态记本机
@@ -95,7 +102,19 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => { void loadVoiceSample().then(setSample) }, [])
-  useEffect(() => { if (desktop) void qwenTtsStatus().then(setQwenStatus).catch(() => {}) }, [])
+  useEffect(() => { if (desktop) { void qwenTtsStatus().then(setQwenStatus).catch(() => {}); setQwenWarmup(getQwenWarmupState()) } }, [])
+  // 预热进行中时轮询模块状态，直到预热完成/失败（服务开关处后台触发的预热也会同步到这里）
+  useEffect(() => {
+    if (qwenWarmup !== 'warming') return
+    const id = window.setInterval(() => {
+      const s = getQwenWarmupState()
+      setQwenWarmup(s)
+      if (s !== 'warming') window.clearInterval(id)
+    }, 2000)
+    return () => window.clearInterval(id)
+  }, [qwenWarmup])
+  // 卸载时停掉克隆秒表
+  useEffect(() => () => { if (cloneTimerRef.current) window.clearInterval(cloneTimerRef.current) }, [])
 
   const tryPreview = () => {
     if (previewing) { stopSpeak(); setPreviewing(false); return }
@@ -117,10 +136,10 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const isVoiceStudio = config.provider === 'voicestudio'
   const isQwenTts = config.provider === 'qwentts'
 
-  /** 刷新 Qwen3-TTS 本地服务状态（安装/Python/模型/运行） */
+  /** 刷新 Qwen3-TTS 本地服务状态（安装/Python/模型/运行）+ 同步预热状态 */
   const refreshQwenStatus = async () => {
     setQwenLoading(true)
-    try { setQwenStatus(await qwenTtsStatus()) } finally { setQwenLoading(false) }
+    try { setQwenStatus(await qwenTtsStatus()); setQwenWarmup(getQwenWarmupState()) } finally { setQwenLoading(false) }
   }
 
   /** Qwen3-TTS 首次安装（几分钟：建 venv → pip 装 mlx-tts-server → 预下载约 1GB 模型） */
@@ -137,6 +156,14 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
   const doQwenTest = async () => {
     setQwenTesting(true)
     try { const r = await qwenTtsTest(); notify(r.message) } finally { setQwenTesting(false) }
+  }
+
+  /** 手动预热模型：做一次空合成触发服务端首次加载，之后第一次真正的克隆就不再等加载 */
+  const doQwenWarmup = async () => {
+    setQwenWarmup('warming')
+    const r = await qwenTtsWarmup()
+    setQwenWarmup(getQwenWarmupState())
+    notify(r.message)
   }
 
   /** 用百炼 ASR 识别样本说的内容，填入参考音频原文（需已配百炼 Key） */
@@ -295,18 +322,32 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     }
     setCloning(true)
     setCloneError('')
+    // Qwen 分阶段进度（v0.1.415）：秒表每秒走字，阶段按真实回调推进；失败时停在出错阶段
+    if (isQwenTts) {
+      cloneStartRef.current = Date.now()
+      setCloneElapsed(0)
+      setCloneStage('convert')
+      cloneTimerRef.current = window.setInterval(() => {
+        setCloneElapsed(Math.floor((Date.now() - cloneStartRef.current) / 1000))
+      }, 1000)
+    }
     try {
-      const r = await cloneVoiceFromSample(sample, undefined, isQwenTts ? refText : undefined)
+      const r = await cloneVoiceFromSample(sample, undefined, isQwenTts ? refText : undefined,
+        isQwenTts ? (stage) => setCloneStage(stage) : undefined)
       if (!r.ok) {
         const msg = r.error ?? t('克隆失败')
         setCloneError(msg)
         notify(msg)
         return
       }
+      if (isQwenTts) setCloneStage('done')
       setClonedId(r.voiceId ?? null)
       syncClonedVoices()
       notify(t('克隆成功，AI 回复将优先使用该音色'))
-    } finally { setCloning(false) }
+    } finally {
+      if (cloneTimerRef.current) { window.clearInterval(cloneTimerRef.current); cloneTimerRef.current = null }
+      setCloning(false)
+    }
   }
 
   const removeSample = async () => {
@@ -360,6 +401,14 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
     setRenaming(null)
     notify(t('已重命名'))
   }
+
+  // Qwen 克隆分阶段进度步骤（v0.1.415）：转换 → 合成 → 保存 → 完成
+  const QWEN_CLONE_STEPS: { key: CloneStage; label: string }[] = [
+    { key: 'convert', label: t('准备参考音频') },
+    { key: 'synthesize', label: t('服务端加载模型并合成') },
+    { key: 'save', label: t('保存音色') },
+    { key: 'done', label: t('克隆完成') },
+  ]
 
   return (
     <div className="voice-settings">
@@ -422,6 +471,11 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         {qwenStatus?.installed && (
           <button className="btn sm" onClick={() => void doQwenTest()} disabled={qwenTesting}>{qwenTesting ? t('测试中…') : t('测试连接')}</button>
         )}
+        {qwenStatus?.installed && qwenStatus?.running && (
+          <button className="btn sm" onClick={() => void doQwenWarmup()} disabled={qwenWarmup === 'warming'}>
+            {qwenWarmup === 'warming' ? <><Loader2 size={14} className="spin" /> {t('预热中…')}</> : t('预热模型')}
+          </button>
+        )}
       </div>
       {qwenStatus && (
         <div className="voice-note">
@@ -430,6 +484,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
             : t('未找到 Python 3.10+（需安装 Python 3.10 或以上，如 brew install python@3.12）')}
           {qwenStatus.running && qwenStatus.url ? ` · ${qwenStatus.url}` : ''}
           {qwenStatus.lastLog ? ` · ${qwenStatus.lastLog}` : ''}
+          {qwenWarmup === 'warming' ? ` · ${t('模型预热中…')}` : qwenWarmup === 'ready' ? ` · ${t('模型已预热')}` : ''}
         </div>
       )}
       <div className="voice-note"><Info size={13} /> {t('首次安装会下载约 1GB 模型（mlx-community 4-bit 量化版），需 Python 3.10+，请保持网络畅通、耐心等待几分钟；安装只需做一次。服务开关在「设置 → 本地模型服务 → Qwen3-TTS」，与 Ollama / ComfyUI 内存互斥（8G 一次只开一个）。')}</div>
@@ -456,6 +511,30 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
         </button>
         {sample && <button className="btn sm ghost" onClick={() => void removeSample()}><Trash2 size={14} /> {t('删除样本')}</button>}
       </div>
+      {/* Qwen 克隆分阶段进度（v0.1.415）：真实阶段 + 已等待秒数，不假造百分比 */}
+      {isQwenTts && cloneStage && (
+        <div className="qwen-clone-progress">
+          <div className="qwen-clone-steps">
+            {QWEN_CLONE_STEPS.map((s, i) => {
+              const cur = QWEN_CLONE_STEPS.findIndex(x => x.key === cloneStage)
+              const done = i < cur || cloneStage === 'done'
+              const active = i === cur && cloning
+              return (
+                <div key={s.key} className={`qwen-clone-step${done ? ' done' : ''}${active ? ' active' : ''}`}>
+                  {done ? <Check size={13} /> : active ? <Loader2 size={13} className="spin" /> : <span className="qwen-clone-dot" />}
+                  <span>{s.label}</span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="qwen-clone-elapsed">{t('已等待 {elapsed}', { elapsed: formatCloneElapsed(cloneElapsed) })}</div>
+          {cloneStage === 'synthesize' && cloning && (
+            <div className="qwen-clone-hint">
+              {cloneElapsed >= QWEN_CLONE_SLOW_HINT_S ? t('仍在等待…模型加载较慢是正常的，请继续等待，不要重复点击') : t('首次克隆需加载约 1GB 模型，M1 8GB 上可能需要几分钟，请耐心等待')}
+            </div>
+          )}
+        </div>
+      )}
       {isQwenTts && sample && (
         <>
           <label className="form-label" style={{ marginTop: 8 }}>{t('参考音频说的内容（写上克隆效果更好）')}
@@ -476,7 +555,7 @@ export function VoiceSettings({ notify, accounts, sessionPwd, onUnlock }: {
           <Info size={13} /> {t('当前样本是 AMR 格式，语音服务不支持。请点「录音 12 秒」重新录，或从「选择音频文件」导入 WAV / MP3 / M4A。')}
         </div>
       )}
-      {cloneError && <div className="voice-clone-error"><Info size={14} /> <span>{cloneError}</span><button className="icon-btn" onClick={() => setCloneError('')}>×</button></div>}
+      {cloneError && <div className="voice-clone-error"><Info size={14} /> <span>{cloneError}</span>{isQwenTts && !cloning && <button className="btn sm" onClick={() => void doClone()}>{t('重新克隆')}</button>}<button className="icon-btn" onClick={() => setCloneError('')}>×</button></div>}
       {/* 语音配置(APP) 账户：加密 Key 解锁 */}
       {accounts.some(a => a.providerId === 'voice-config') && (
         <div className="voice-key-unlock">
