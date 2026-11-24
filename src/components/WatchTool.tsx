@@ -626,12 +626,15 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [aiIntro, setAiIntro] = useState('')
   const [aiRecs, setAiRecs] = useState<AiRec[]>([])
   const [aiRaw, setAiRaw] = useState('')
+  // v0.1.431：推荐卡海报补全（片名 → 海报/评分）；无 Key 或搜不到时保持文字卡片
+  const [aiEnrich, setAiEnrich] = useState<Record<string, { poster?: string; vote?: number }>>({})
+  const aiEnrichRunRef = useRef(0)
 
   const runAi = async (query: string, scope?: string) => {
     if (!route) { notify('先选一个可用模型'); return }
     const q = query.trim()
     if (!q) { notify('先说一句想看什么'); return }
-    setAiBusy(true); setAiRecs([]); setAiIntro(''); setAiRaw('')
+    setAiBusy(true); setAiRecs([]); setAiIntro(''); setAiRaw(''); setAiEnrich({})
     try {
       const out = await runWorkshopChat({
         route, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd,
@@ -640,12 +643,31 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       })
       setAiRaw(out)
       const parsed = parseAiRecs(out)
-      if (parsed) { setAiIntro(parsed.intro); setAiRecs(parsed.items) }
+      if (parsed) { setAiIntro(parsed.intro); setAiRecs(parsed.items); void enrichAiRecs(parsed.items) }
     } catch (e) { notify(e instanceof Error ? e.message : '推荐失败', 'err') } finally { setAiBusy(false) }
   }
 
   // ---- 热门推荐（TMDB） ----
   const [tmdbKeySet, setTmdbKeySet] = useState(hasTmdbKey)
+  // v0.1.431：推荐出来后后台按片名补海报 + 评分（复用 395 的 searchTmdbTitle，7 天搜索缓存）。
+  // 搜不到的不写记录、卡片保持纯文字，不编造；无 Key / 保险箱未解锁时不补。
+  const enrichAiRecs = async (items: AiRec[]) => {
+    if (!tmdbKeySet || !items.length) return
+    const runId = ++aiEnrichRunRef.current
+    const pwd = sessionPwd || getBiometricPassword() || ''
+    if (!pwd) return
+    const key = await loadTmdbKey(pwd).catch(() => null)
+    if (!key || runId !== aiEnrichRunRef.current) return
+    for (const item of items) {
+      if (runId !== aiEnrichRunRef.current) return
+      const found = await searchTmdbTitle(key, item.title).catch(() => null)
+      if (runId !== aiEnrichRunRef.current) return
+      if (found?.poster || typeof found?.vote === 'number') {
+        const k = normalizeTitleKey(item.title)
+        setAiEnrich(prev => ({ ...prev, [k]: { poster: found.poster, vote: found.vote } }))
+      }
+    }
+  }
   const [tmdbInput, setTmdbInput] = useState('')
   const [tmdbBusy, setTmdbBusy] = useState(false)
   const [tmdbSaving, setTmdbSaving] = useState(false)
@@ -1505,16 +1527,27 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
         {aiIntro && <div className="wt-ai-intro">{aiIntro}</div>}
         {aiRecs.length > 0 && (
           <div className="fg-grid">
-            {aiRecs.map(r => (
+            {aiRecs.map(r => {
+              const enr = aiEnrich[normalizeTitleKey(r.title)]
+              return (
               <div key={r.title} className="fg-card wt-rec-card">
-                <div className="fg-card-title">{r.title}</div>
-                <div className="fg-muted">{r.type} · {r.platform}</div>
-                <div className="wt-rec-reason">{r.reason}</div>
-                <button className="btn sm" onClick={() => addToWatchlist({ title: r.title, type: r.type === '电影' ? 'movie' : r.type === '短剧' ? 'short' : 'tv', platform: r.platform })}>
-                  <BookmarkPlus size={13} /> 加入片单
-                </button>
+                {enr?.poster && (
+                  <span className="wt-wall-poster">
+                    <img src={enr.poster} alt={`${r.title} 海报`} loading="lazy" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                    {typeof enr.vote === 'number' && <span className="wt-wall-rate">★ {enr.vote.toFixed(1)}</span>}
+                  </span>
+                )}
+                <div className="wt-rec-body">
+                  <div className="fg-card-title">{r.title}</div>
+                  <div className="fg-muted">{r.type} · {r.platform}</div>
+                  <div className="wt-rec-reason">{r.reason}</div>
+                  <button className="btn sm" onClick={() => addToWatchlist({ title: r.title, type: r.type === '电影' ? 'movie' : r.type === '短剧' ? 'short' : 'tv', platform: r.platform, poster: enr?.poster })}>
+                    <BookmarkPlus size={13} /> 加入片单
+                  </button>
+                </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
         {!aiRecs.length && aiRaw && (

@@ -2326,7 +2326,10 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .wt-route { display: flex; }
 .wt-ai-intro { font-size: 13px; line-height: 1.7; color: var(--text-2); }
 .wt-ai-raw { font-size: 13px; line-height: 1.7; color: var(--text-2); white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-2); }
-.wt-rec-card { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: default; }
+.wt-rec-card { padding: 0; display: flex; flex-direction: column; gap: 0; cursor: default; }
+/* v0.1.431：推荐卡海报与点播墙同款（.wt-wall-poster），顶满卡片宽；文字区保留原间距 */
+.wt-rec-card .wt-wall-poster { border: 0; border-radius: 12px 12px 0 0; }
+.wt-rec-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .wt-rec-reason { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
 .wt-trend-card { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: default; }
 .wt-poster { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; background: var(--bg-2); }

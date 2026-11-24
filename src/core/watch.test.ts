@@ -796,6 +796,20 @@ describe('watch.fetchTmdbGenres / searchTmdbTitle / fetchTmdbDetails（v0.1.395 
     expect(again?.id).toBe(12)
     expect(calls).toBe(2) // 第二次走缓存，不请求
   })
+  it('搜不到返回 null 且缓存 null，不编造海报（v0.1.431 AI 找剧推荐卡）', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async (u: unknown) => {
+      calls++
+      const url = String(u)
+      if (url.includes('/search/movie') || url.includes('/search/tv')) return { ok: true, json: async () => ({ results: [] }) }
+      throw new Error('unexpected ' + url)
+    })
+    const found = await searchTmdbTitle('KEY', '不存在的剧名XYZ')
+    expect(found).toBeNull()
+    const again = await searchTmdbTitle('KEY', '不存在的剧名XYZ')
+    expect(again).toBeNull()
+    expect(calls).toBe(2) // 第二次走缓存，不请求
+  })
   it('详情：电影给地区+导演+主演；剧集给状态+集数；缓存 24 小时', async () => {
     let calls = 0
     vi.stubGlobal('fetch', async (u: unknown) => {
