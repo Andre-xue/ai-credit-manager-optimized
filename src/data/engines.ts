@@ -63,6 +63,9 @@ export const ENGINE_CATALOG: Record<string, Engine[]> = {
     { id: 'minimaxai-minimax-m3-1-flash:free', name: 'MiniMax M3.1 Flash（免费）', multiplier: 0 },
     { id: 'llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B（免费）', multiplier: 0 },
   ],
+  // AnyAPI.ai（v0.1.435）：不在此预置目录——官网没有可核实的免费模型 id 清单，
+  // 模型全量以 GET /v1/models 按用户 Key 动态拉取为准，冒烟通过的模型记在验证记录里
+  // 作默认对话模型（见 core/anyapi.ts 的 pickAnyApiSmokeModel / getAnyApiSmokeModel）。
   // DeepSeek（api-docs.deepseek.com：deepseek-chat/reasoner 已于 2026-07-24 下线）
   deepseek: [
     { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', multiplier: 0.15, tag: '高性价比', flagship: true },

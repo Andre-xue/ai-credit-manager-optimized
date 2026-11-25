@@ -12,6 +12,7 @@ import {
 } from './mediaAdapters'
 import { fetchInferbaseModels, inferbaseErrorText } from './inferbase'
 import { recordOneAiLocalUsage, recordOneAiRouteFailure, recordOneAiRouteSuccess } from './oneai'
+import { recordAnyApiLocalUsage, recordAnyApiRouteFailure, recordAnyApiRouteSuccess } from './anyapi'
 
 export interface ProviderCallResult {
   ok: boolean
@@ -195,6 +196,23 @@ function noteOneAiCall(account: Account, result: ProviderCallResult, usageTokens
   return result
 }
 
+/**
+ * AnyAPI.ai 记账（v0.1.435）：只对 anyapi 账户——成功记本机估算用量并清路线状态，
+ * 失败记限流冷却/密钥失效（供 anyApiGate 与切换链消费）。记账失败不影响调用结果本身。
+ */
+function noteAnyApiCall(account: Account, result: ProviderCallResult, usageTokens = 0): ProviderCallResult {
+  if (account.providerId !== 'anyapi') return result
+  try {
+    if (result.ok) {
+      recordAnyApiLocalUsage(account.id, usageTokens)
+      recordAnyApiRouteSuccess(account.id)
+    } else if (result.error) {
+      recordAnyApiRouteFailure(account.id, new Error(result.error))
+    }
+  } catch { /* 记账失败不影响调用结果 */ }
+  return result
+}
+
 function usageTokensOf(json: any): number {
   const u = json?.usage
   if (typeof u?.total_tokens === 'number') return u.total_tokens
@@ -277,10 +295,10 @@ export async function callChat(
     }
     const json = JSON.parse(raw)
     const text = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? ''
-    if (!text) return noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json))
-    return noteOneAiCall(account, { ok: true, text }, usageTokensOf(json))
+    if (!text) return noteAnyApiCall(account, noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json)), usageTokensOf(json))
+    return noteAnyApiCall(account, noteOneAiCall(account, { ok: true, text }, usageTokensOf(json)), usageTokensOf(json))
   } catch (e) {
-    return noteOneAiCall(account, toError(e))
+    return noteAnyApiCall(account, noteOneAiCall(account, toError(e)))
   }
 }
 

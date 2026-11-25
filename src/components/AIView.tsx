@@ -29,6 +29,7 @@ import {
 import { detectModelCapability, capabilityChatCapable } from '../core/modelCapability'
 import { inferbaseGate } from '../core/inferbase'
 import { oneAiGate, ONEAI_SMOKE_MODEL } from '../core/oneai'
+import { anyApiGate, getAnyApiSmokeModel } from '../core/anyapi'
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { t, locale } from '../core/i18n'
@@ -534,7 +535,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     .map(a => ({
       key: `own:${a.id}`,
       // Inferbase 启用门槛（v0.1.432）：冒烟未通过时在选项上明示待实测，不等发送失败才知道
-      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}${a.providerId === 'inferbase' && !inferbaseGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'oneai' && !oneAiGate(a).enabled ? ' · 待实测（未启用）' : ''}`,
+      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}${a.providerId === 'inferbase' && !inferbaseGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'oneai' && !oneAiGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'anyapi' && !anyApiGate(a).enabled ? ' · 待实测（未启用）' : ''}`,
       account: a,
       category: categoryForModel(a.note) as ModelCategory,
       free: false,
@@ -714,6 +715,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       for (const o of allOptions.filter(x => x.account?.providerId === 'oneai')) {
         if (o.account && oneAiGate(o.account).enabled) list.push({ id: `oneai:${o.account.id}`, label: o.account.label, kind: 'oneai', acct: o.account })
       }
+      for (const o of allOptions.filter(x => x.account?.providerId === 'anyapi')) {
+        if (o.account && anyApiGate(o.account).enabled) list.push({ id: `anyapi:${o.account.id}`, label: o.account.label, kind: 'anyapi', acct: o.account })
+      }
       try { if (hasPoolAccounts()) list.push({ id: 'wbpool', label: 'WorkBuddy 账号池', kind: 'wbpool', pool: true }) } catch { /* 池不可用 */ }
       const filtered = excludeId ? list.filter(c => c.id !== excludeId) : list
       const ordered = orderChainCandidates(selectedKey ?? '', filtered)
@@ -728,7 +732,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         const key = await decryptSecret(cand.acct.encryptedKey!, resolvePwd())
         const model = cand.kind === 'oneai'
           ? (defaultChatEngine('oneai') || ONEAI_SMOKE_MODEL)
-          : (defaultChatEngine('inferbase') || 'auto')
+          : cand.kind === 'anyapi'
+            ? (getAnyApiSmokeModel(cand.acct.id) || defaultChatEngine('anyapi') || '')
+            : (defaultChatEngine('inferbase') || 'auto')
         const r = await callChat(cand.acct, key, chainMsgs, model)
         if (!r.ok) throw new Error(r.error || r.text || '调用失败')
         return r.text
@@ -783,6 +789,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       if (acct.providerId === 'oneai') {
         const gate = oneAiGate(acct)
         if (!gate.enabled) throw Object.assign(new Error(gate.message), { oneaiGate: true })
+      }
+      // AnyAPI 启用门槛（v0.1.435）：与 Inferbase / One AI 同口径，未冒烟通过不调用、不自动切换
+      if (acct.providerId === 'anyapi') {
+        const gate = anyApiGate(acct)
+        if (!gate.enabled) throw Object.assign(new Error(gate.message), { anyapiGate: true })
       }
       if (!acct.encryptedKey) throw new Error(t('该账户未配置 API Key，请在 API Key 管理页添加'))
       const pwd = resolvePwd()
@@ -956,8 +967,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       } catch (firstErr) {
         // 自动故障转移：鉴权/额度/限流类失败且同平台有备用账户时，自动换备用 Key 重试（最多 2 个），
         // 全部失败才落到外层 catch（保留手动换 Key 重试条）
-        const fe = firstErr as { needPwd?: boolean; message?: string; inferbaseGate?: boolean; oneaiGate?: boolean }
-        const retryable = !fe?.needPwd && !fe?.inferbaseGate && !fe?.oneaiGate && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
+        const fe = firstErr as { needPwd?: boolean; message?: string; inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean }
+        const retryable = !fe?.needPwd && !fe?.inferbaseGate && !fe?.oneaiGate && !fe?.anyapiGate && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
         const failed0 = !optKey ? allOptions.find(o => o.key === model)?.account : undefined
         const alts = retryable && failed0
           ? ownOptions.filter(o => o.account && o.account.providerId === failed0.providerId && o.account.id !== failed0.id).slice(0, 2)
@@ -992,8 +1003,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
     } catch (e) {
       const need = (e as { needPwd?: boolean })?.needPwd
-      // Inferbase / One AI 门槛错误含真实状态与原因，原样展示（friendlyAiError 会把含「额度/401」的原文吞成泛化文案）
-      const msg = (e as { inferbaseGate?: boolean; oneaiGate?: boolean })?.inferbaseGate || (e as { oneaiGate?: boolean })?.oneaiGate ? ((e as Error)?.message ?? '') : friendlyAiError(e)
+      // Inferbase / One AI / AnyAPI 门槛错误含真实状态与原因，原样展示（friendlyAiError 会把含「额度/401」的原文吞成泛化文案）
+      const gateErr = e as { inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean }
+      const msg = gateErr?.inferbaseGate || gateErr?.oneaiGate || gateErr?.anyapiGate ? ((e as Error)?.message ?? '') : friendlyAiError(e)
       // needPwd 的情况：不重复 toast（顶部已有常驻解锁条），但仍需在对话里给出可见提示
       if (!need && msg !== '已停止生成' && !String(msg).includes('NEED_AI_PWD')) notify(msg)
       // 鉴权/额度类失败且同平台有备用账户 → 提供一键换 Key 重试（密码未验证/用户中止不触发）

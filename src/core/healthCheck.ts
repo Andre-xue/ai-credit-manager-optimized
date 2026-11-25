@@ -14,6 +14,10 @@ import {
   oneAiStateFromError, oneAiErrorText, recordOneAiVerification, oneAiEstimateText,
   ONEAI_BASE, ONEAI_SMOKE_MODEL, ONEAI_STATE_LABEL, type OneAiRouteState,
 } from './oneai'
+import {
+  anyApiStateFromError, anyApiErrorText, recordAnyApiVerification, anyApiEstimateText,
+  pickAnyApiSmokeModel, ANYAPI_BASE, ANYAPI_STATE_LABEL, type AnyApiRouteState,
+} from './anyapi'
 
 export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped' | 'rate' | 'pending' | 'model'
 
@@ -171,6 +175,67 @@ async function checkOneAiHealth(account: Account, apiKey: string | undefined, st
   return done({ status: 'ok', modelCount, message })
 }
 
+/** AnyAPI 状态 → 健康徽标状态（与 Inferbase / One AI 同口径，供 433 切换链消费 AnyApiRouteState） */
+function anyApiHealthStatus(state: AnyApiRouteState): KeyHealthStatus {
+  switch (state) {
+    case 'available': return 'ok'
+    case 'auth_invalid': return 'auth'
+    case 'quota_exceeded': return 'quota'
+    case 'rate_limited': return 'rate'
+    case 'network_error': return 'network'
+    case 'model_unavailable': return 'model'
+    case 'pending_verification': return 'pending'
+    default: return 'error'
+  }
+}
+
+/**
+ * AnyAPI.ai 专用健康检查 = 真实冒烟（v0.1.435 启用门槛，与 Inferbase / One AI 同口径）：
+ * 用 Ethan 自己的 Key 查 /v1/models → 从真实返回列表里挑一个模型发一条测试消息。
+ * 全过才记录「已验证」（含用通的模型）并启用路线、进入自动切换链；任一步失败记录
+ * 真实状态与原因，路线保持未启用。无公开余额接口，不查余额；冒烟消耗免费档 1 次请求。
+ * 官网无可核实的免费模型 id 清单，冒烟模型只从 /v1/models 的真实返回里挑，不写死。
+ */
+async function checkAnyApiHealth(account: Account, apiKey: string | undefined, started: number): Promise<KeyHealthResult> {
+  const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
+    ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
+  })
+  if (!apiKey) {
+    return done({
+      status: 'pending', latencyMs: 0,
+      message: '待实测：保险箱未解锁，无法用你的 Key 做模型列表与聊天冒烟；解锁后重新点健康检查，通过后才启用（AnyAPI 无公开余额接口，本检查不查余额）',
+    })
+  }
+  const eff: Account = { ...account, apiUrl: account.apiUrl?.trim() || ANYAPI_BASE }
+  let models: string[]
+  try {
+    models = await fetchProviderModels(eff, apiKey)
+  } catch (e) {
+    const state = anyApiStateFromError(e)
+    const text = anyApiErrorText(e)
+    recordAnyApiVerification(account, 'failed', state, `模型列表拉取失败：${text}`)
+    return done({ status: anyApiHealthStatus(state), message: `冒烟未通过（${ANYAPI_STATE_LABEL[state]}）：模型列表拉取失败：${text}` })
+  }
+  const smokeModel = pickAnyApiSmokeModel(models)
+  if (!smokeModel) {
+    recordAnyApiVerification(account, 'failed', 'model_unavailable', '模型列表为空，无可用于冒烟的模型')
+    return done({ status: 'model', modelCount: 0, message: `冒烟未通过（${ANYAPI_STATE_LABEL.model_unavailable}）：模型列表为空，无可用于冒烟的模型` })
+  }
+  try {
+    const res = await callChat(eff, apiKey, [{ role: 'user', content: 'Reply with OK' }], smokeModel)
+    if (!res.ok || res.error) throw new Error(res.error || '聊天接口无有效回复')
+    if (!res.text?.trim()) throw new Error('聊天接口返回空回复')
+  } catch (e) {
+    const state = anyApiStateFromError(e)
+    const text = anyApiErrorText(e)
+    recordAnyApiVerification(account, 'failed', state, `聊天冒烟失败：${text}`)
+    return done({ status: anyApiHealthStatus(state), modelCount: models.length, message: `冒烟未通过（${ANYAPI_STATE_LABEL[state]}）：聊天测试失败：${text}` })
+  }
+  const message = `冒烟通过，已启用：${models.length} 个模型 · ${smokeModel} 聊天可用 · ${anyApiEstimateText(account.id)}`
+  recordAnyApiVerification(account, 'verified', 'available', message, smokeModel)
+  return done({ status: 'ok', modelCount: models.length, message })
+}
+
 export async function checkKeyHealth(account: Account, apiKey?: string): Promise<KeyHealthResult> {
   const started = Date.now()
   const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
@@ -179,6 +244,7 @@ export async function checkKeyHealth(account: Account, apiKey?: string): Promise
   try {
     if (account.providerId === 'inferbase') return await checkInferbaseHealth(account, apiKey, started)
     if (account.providerId === 'oneai') return await checkOneAiHealth(account, apiKey, started)
+    if (account.providerId === 'anyapi') return await checkAnyApiHealth(account, apiKey, started)
     if (isLocalProvider(account.providerId)) {
       const base = (account.apiUrl || '').trim()
       if (!base) return done({ status: 'skipped', latencyMs: 0, message: '未填写本地服务地址' })
