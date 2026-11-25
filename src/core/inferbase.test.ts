@@ -58,6 +58,50 @@ describe('Inferbase 解析（mock 官方返回）', () => {
   it('余额：结构对不上时抛可读错误（不编造）', () => {
     expect(() => parseInferbaseCredits({ hello: 'world' })).toThrow(/无法识别/)
   })
+  // Ethan 2026-11-26 05:08 实机冒烟截图里的真实返回（截图在 "reques 处截断，
+  // 本样本保留全部完整可见字段）：credits 是 *_micros 微美元体系，432 报「无法识别」卡死冒烟。
+  const ETHAN_CREDITS_437 = {
+    available_formatted: '$0.00', available_micros: 0,
+    balance_formatted: '$0.00', balance_micros: 0,
+    held_micros: 0, included_expires_at: null, included_micros: 0,
+    purchased_available_micros: 0,
+  }
+  it('余额（437 回归）：真实 micros 结构解析出 $0.00，不再报无法识别', () => {
+    const c = parseInferbaseCredits(ETHAN_CREDITS_437)
+    expect(c.balanceUsd).toBe(0)
+    expect(c.availableUsd).toBe(0)
+    expect(c.heldUsd).toBe(0)
+    expect(c.includedUsd).toBe(0)
+    expect(c.purchasedUsd).toBe(0)
+  })
+  it('余额（437 回归）：micros 按 1e6 换算，included 进赠送、purchased_available 进充值', () => {
+    const c = parseInferbaseCredits({
+      balance_micros: 3_250_000, available_micros: 3_000_000, held_micros: 100_000,
+      included_micros: 500_000, purchased_available_micros: 2_500_000,
+      balance_formatted: '$3.25', available_formatted: '$3.00',
+    })
+    expect(c.balanceUsd).toBe(3.25)
+    expect(c.availableUsd).toBe(3)
+    expect(c.heldUsd).toBe(0.1)
+    expect(c.includedUsd).toBe(0.5)
+    expect(c.grantedUsd).toBe(0.5)
+    expect(c.purchasedUsd).toBe(2.5)
+  })
+  it('余额（437 回归）：只有 formatted 字符串时也能兜底解析', () => {
+    expect(parseInferbaseCredits({ balance_formatted: '$12.34' }).balanceUsd).toBe(12.34)
+  })
+  it('组合（437 回归）：真实 credits + 用量失败标记 → 余额成立、失败只降级明细', () => {
+    const data = buildInferbaseAccountData({
+      credits: ETHAN_CREDITS_437,
+      usage: { __error: 'usage boom', status: 500 },
+      transactions: { data: [] },
+    })
+    expect(data.credits.balanceUsd).toBe(0)
+    expect(data.partialErrors.join(' ')).toContain('用量同步失败')
+    const r = parseInferbaseBalance(data)
+    expect(r.remaining).toBe(0)
+    expect(r.total).toBe(0)
+  })
   it('用量：按时间戳聚合本月与近 24h、tokens 与花费（cost_micros 换算）', () => {
     const now = Date.parse('2026-11-26T12:00:00Z')
     const agg = parseInferbaseUsage({

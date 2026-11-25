@@ -103,8 +103,10 @@ export function parseInferbaseBalance(data: InferbaseAccountData): ParsedUsage {
   const fmt = (n: number, d = 2) => n.toLocaleString('zh-CN', { maximumFractionDigits: d })
   const parts: string[] = []
   const { credits, usage, transactions } = data
+  if (credits.availableUsd !== undefined && credits.availableUsd !== credits.balanceUsd) parts.push(`可用 $${fmt(credits.availableUsd)}`)
   if (credits.grantedUsd !== undefined && credits.grantedUsd > 0) parts.push(`赠送 $${fmt(credits.grantedUsd)}`)
   if (credits.purchasedUsd !== undefined && credits.purchasedUsd > 0) parts.push(`充值 $${fmt(credits.purchasedUsd)}`)
+  if (credits.heldUsd !== undefined && credits.heldUsd > 0) parts.push(`冻结 $${fmt(credits.heldUsd)}`)
   if (usage) {
     if (usage.monthRequests !== undefined) {
       parts.push(`本月请求 ${usage.monthRequests} / ${INFERBASE_FREE_LIMITS.monthlyRequests.toLocaleString()} 次`)

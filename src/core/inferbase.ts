@@ -205,24 +205,64 @@ function pickNum(obj: Record<string, unknown>, keys: string[]): number | undefin
   return undefined
 }
 
-export interface InferbaseCredits { balanceUsd: number; grantedUsd?: number; purchasedUsd?: number }
+export interface InferbaseCredits {
+  balanceUsd: number
+  availableUsd?: number
+  heldUsd?: number
+  includedUsd?: number
+  grantedUsd?: number
+  purchasedUsd?: number
+}
+
+/** 取 *_micros 微美元字段并换算成美元（1 美元 = 1,000,000 micros），嵌套对象同样递归找 */
+function pickMicros(obj: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = num(obj[k])
+    if (v !== undefined) return v / 1_000_000
+    if (k in obj && typeof obj[k] === 'object' && obj[k] !== null) {
+      const inner = pickMicros(obj[k] as Record<string, unknown>, keys)
+      if (inner !== undefined) return inner
+    }
+  }
+  return undefined
+}
+
+/** *_formatted 展示字符串（如 "$3.25"）→ 数字，仅作数值字段缺失时的兜底 */
+function parseFormattedUsd(v: unknown): number | undefined {
+  if (typeof v !== 'string') return undefined
+  const n = Number(v.replace(/[$,\s]/g, ''))
+  return Number.isFinite(n) && v.trim() !== '' ? n : undefined
+}
 
 export function parseInferbaseCredits(json: unknown): InferbaseCredits {
   const root = ((json as { data?: unknown })?.data ?? json) as Record<string, unknown> | null
   if (!root || typeof root !== 'object') {
     throw new Error(`Inferbase 余额接口返回无法识别：${JSON.stringify(json)?.slice(0, 200) ?? ''}`)
   }
-  const balanceUsd = pickNum(root, [
-    'balance_usd', 'balanceUsd', 'available_balance_usd', 'available_usd', 'remaining_usd',
-    'current_balance', 'balance', 'credits_balance', 'credits',
-  ])
+  // 真实结构（2026-11-26 Ethan 实机冒烟截图坐实）：credits 用 *_micros 微美元体系——
+  // balance_micros / available_micros / held_micros / included_micros /
+  // purchased_available_micros，另有 *_formatted 展示字符串。432 只认 *_usd 候选，
+  // 对真实返回报「找不到美元余额字段」。micros 优先，其次 *_usd 候选，最后 formatted 兜底；
+  // $0.00 是合法余额（免费新账户），取到 0 即成功，不再判无法识别。
+  const balanceUsd = pickMicros(root, ['balance_micros'])
+    ?? pickNum(root, [
+      'balance_usd', 'balanceUsd', 'available_balance_usd', 'available_usd', 'remaining_usd',
+      'current_balance', 'balance', 'credits_balance', 'credits',
+    ])
+    ?? parseFormattedUsd(root['balance_formatted'])
+    ?? parseFormattedUsd(root['available_formatted'])
   if (balanceUsd === undefined) {
     throw new Error(`Inferbase 余额接口返回无法识别（找不到美元余额字段）：${JSON.stringify(json)?.slice(0, 200) ?? ''}`)
   }
+  const includedUsd = pickMicros(root, ['included_micros']) ?? pickNum(root, ['included_usd'])
   return {
     balanceUsd,
-    grantedUsd: pickNum(root, ['granted_usd', 'grant_usd', 'free_credit_usd', 'beta_credit_usd', 'granted']),
-    purchasedUsd: pickNum(root, ['purchased_usd', 'topup_usd', 'paid_usd', 'topped_up_usd', 'purchased']),
+    availableUsd: pickMicros(root, ['available_micros']) ?? pickNum(root, ['available_usd', 'available_balance_usd']),
+    heldUsd: pickMicros(root, ['held_micros']) ?? pickNum(root, ['held_usd']),
+    includedUsd,
+    grantedUsd: pickNum(root, ['granted_usd', 'grant_usd', 'free_credit_usd', 'beta_credit_usd', 'granted']) ?? includedUsd,
+    purchasedUsd: pickMicros(root, ['purchased_available_micros', 'purchased_micros'])
+      ?? pickNum(root, ['purchased_usd', 'topup_usd', 'paid_usd', 'topped_up_usd', 'purchased']),
   }
 }
 
