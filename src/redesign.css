@@ -438,6 +438,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .health-badge.none{color:#9a94ad;background:rgba(120,113,150,.10);border-color:rgba(120,113,150,.30)}
 .health-badge.ok{color:#22a06b;background:rgba(34,160,107,.12);border-color:rgba(34,160,107,.40)}
 .health-badge.auth,.health-badge.error,.health-badge.quota,.health-badge.network{color:#dc2626;background:rgba(220,38,38,.10);border-color:rgba(220,38,38,.40)}
+.health-badge.rate,.health-badge.model{color:#d97706;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.40)}
+.health-badge.pending{color:#9a94ad;background:rgba(120,113,150,.10);border-color:rgba(120,113,150,.30)}
 .health-badge.checking{color:var(--primary);background:var(--primary-soft);border-color:rgba(109,40,217,.35)}
 .health-badge:disabled{opacity:.6;cursor:wait}
 .health-badge .health-dot{width:7px;height:7px;border-radius:50%;background:#b6b0c8;flex:none}

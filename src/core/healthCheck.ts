@@ -3,9 +3,15 @@
 
 import type { Account } from './types'
 import { isLocalProvider } from './types'
-import { fetchProviderModels, fetchLocalMediaModels } from './providerCall'
+import { fetchProviderModels, fetchLocalMediaModels, callChat } from './providerCall'
+import {
+  fetchInferbaseModels, fetchInferbaseAccountData, inferbaseStateFromError, inferbaseErrorText,
+  recordInferbaseVerification, INFERBASE_CHAT_BASE, INFERBASE_SMOKE_MODEL, INFERBASE_STATE_LABEL,
+  type InferbaseRouteState,
+} from './inferbase'
+import { parseInferbaseBalance, formatUsageBalance } from './adapters'
 
-export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped'
+export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped' | 'rate' | 'pending' | 'model'
 
 export interface KeyHealthResult {
   status: KeyHealthStatus
@@ -41,12 +47,78 @@ export function classifyHealthError(e: unknown): { status: KeyHealthStatus; mess
  * - 云端账户：需要明文 Key（未解锁时返回 skipped）；走 /v1/models。
  * - 本地服务（Ollama/ComfyUI 等）：不需要 Key，直接探测本机服务地址。
  */
+/** Inferbase 状态 → 健康徽标状态（433 自动切换链直接消费 InferbaseRouteState） */
+function inferbaseHealthStatus(state: InferbaseRouteState): KeyHealthStatus {
+  switch (state) {
+    case 'available': return 'ok'
+    case 'auth_invalid': return 'auth'
+    case 'quota_exceeded': return 'quota'
+    case 'rate_limited': return 'rate'
+    case 'network_error': return 'network'
+    case 'model_unavailable': return 'model'
+    case 'pending_verification': return 'pending'
+    default: return 'error'
+  }
+}
+
+/**
+ * Inferbase 专用健康检查 = 真实冒烟（v0.1.432 启用门槛）：
+ * 公开模型列表 → 用 Ethan 自己的 Key 查余额/用量 → 用 auto 模型发一条测试消息。
+ * 全过才记录「已验证」并启用路线；任一步失败记录真实状态与原因，路线保持未启用。
+ * 注意：冒烟会消耗 1 次请求（免费档每月 5,000 次内）。
+ */
+async function checkInferbaseHealth(account: Account, apiKey: string | undefined, started: number): Promise<KeyHealthResult> {
+  const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
+    ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
+  })
+  let modelCount: number
+  try {
+    modelCount = (await fetchInferbaseModels()).length
+  } catch (e) {
+    const state = inferbaseStateFromError(e)
+    const text = inferbaseErrorText(e)
+    recordInferbaseVerification(account, 'failed', state, `模型列表拉取失败：${text}`)
+    return done({ status: inferbaseHealthStatus(state), message: `冒烟未通过（${INFERBASE_STATE_LABEL[state]}）：模型列表拉取失败：${text}` })
+  }
+  if (!apiKey) {
+    return done({
+      status: 'pending', latencyMs: 0, modelCount,
+      message: `待实测：模型列表可达（${modelCount} 个模型），但保险箱未解锁，无法用你的 Key 做余额与聊天冒烟；解锁后重新点健康检查，通过后才启用`,
+    })
+  }
+  let balanceText: string
+  try {
+    const data = await fetchInferbaseAccountData(apiKey)
+    balanceText = formatUsageBalance({ ...parseInferbaseBalance(data), unit: 'currency' })
+  } catch (e) {
+    const state = inferbaseStateFromError(e)
+    const text = inferbaseErrorText(e)
+    recordInferbaseVerification(account, 'failed', state, text)
+    return done({ status: inferbaseHealthStatus(state), modelCount, message: `冒烟未通过（${INFERBASE_STATE_LABEL[state]}）：${text}` })
+  }
+  try {
+    const eff: Account = { ...account, apiUrl: account.apiUrl?.trim() || INFERBASE_CHAT_BASE }
+    const res = await callChat(eff, apiKey, [{ role: 'user', content: 'Reply with OK' }], INFERBASE_SMOKE_MODEL)
+    if (!res.ok || res.error) throw new Error(res.error || '聊天接口无有效回复')
+    if (!res.text?.trim()) throw new Error('聊天接口返回空回复')
+  } catch (e) {
+    const state = inferbaseStateFromError(e)
+    const text = inferbaseErrorText(e)
+    recordInferbaseVerification(account, 'failed', state, `聊天冒烟失败：${text}`)
+    return done({ status: inferbaseHealthStatus(state), modelCount, message: `冒烟未通过（${INFERBASE_STATE_LABEL[state]}）：聊天测试失败：${text}` })
+  }
+  const message = `冒烟通过，已启用：${balanceText} · ${modelCount} 个模型 · auto 聊天可用`
+  recordInferbaseVerification(account, 'verified', 'available', message)
+  return done({ status: 'ok', modelCount, message })
+}
+
 export async function checkKeyHealth(account: Account, apiKey?: string): Promise<KeyHealthResult> {
   const started = Date.now()
   const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
     ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
   })
   try {
+    if (account.providerId === 'inferbase') return await checkInferbaseHealth(account, apiKey, started)
     if (isLocalProvider(account.providerId)) {
       const base = (account.apiUrl || '').trim()
       if (!base) return done({ status: 'skipped', latencyMs: 0, message: '未填写本地服务地址' })
@@ -85,4 +157,5 @@ export function saveKeyHealth(map: Record<string, KeyHealthResult>): void {
 
 export const HEALTH_LABEL: Record<KeyHealthStatus, string> = {
   ok: '正常', auth: '密钥失效', quota: '额度不足', network: '网络不通', error: '异常', skipped: '未检查',
+  rate: '限流', pending: '待实测', model: '模型不可用',
 }

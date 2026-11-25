@@ -70,7 +70,7 @@ describe('余额接口解析', () => {
 
 describe('getAdapter.supported（余额可用性只看端点，不看目录 modes）', () => {
   it('已接端点的平台均可用（目录里 modes 为 manual 也不影响）', () => {
-    for (const id of ['deepseek', 'kim', 'siliconflow', 'openrouter']) {
+    for (const id of ['deepseek', 'kim', 'siliconflow', 'openrouter', 'inferbase']) {
       expect(getAdapter(id).supported, id).toBe(true)
     }
   })

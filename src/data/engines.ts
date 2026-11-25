@@ -43,6 +43,13 @@ export const ENGINE_CATALOG: Record<string, Engine[]> = {
     { id: 'qwen3-max', name: 'Qwen3 Max', multiplier: 0.80, reasoning: true },
     { id: 'qwen3-turbo', name: 'Qwen3 Turbo', multiplier: 0.12, tag: '高性价比' },
   ],
+  // Inferbase（智能路由网关：auto 由网关按策略选模型；其余 id 与 GET /models 实时目录一致，
+  // 账户页/对话页会再用公开模型列表刷新全量 100+ 模型，这里只放默认路线与常用款）
+  inferbase: [
+    { id: 'auto', name: 'Inferbase Auto（智能路由）', multiplier: 0, flagship: true },
+    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', multiplier: 0 },
+    { id: 'openai-gpt-oss-120b', name: 'GPT-OSS 120B', multiplier: 0 },
+  ],
   // DeepSeek（api-docs.deepseek.com：deepseek-chat/reasoner 已于 2026-07-24 下线）
   deepseek: [
     { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', multiplier: 0.15, tag: '高性价比', flagship: true },

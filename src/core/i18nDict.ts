@@ -1066,6 +1066,9 @@ Object.assign(D, {
   '触控': { 'zh-TW': '觸控', en: 'Touch', ja: 'タッチ', ko: '터치' },
   '正常': { 'zh-TW': '正常', en: 'OK', ja: '正常', ko: '정상' },
   '密钥失效': { 'zh-TW': '金鑰失效', en: 'Key invalid', ja: 'キーが無効', ko: '키 무효' },
+  '限流': { 'zh-TW': '限流', en: 'Rate limited', ja: 'レート制限', ko: '속도 제한' },
+  '待实测': { 'zh-TW': '待實測', en: 'Not yet verified', ja: '未検証', ko: '미검증' },
+  '模型不可用': { 'zh-TW': '模型不可用', en: 'Model unavailable', ja: 'モデル利用不可', ko: '모델 사용 불가' },
   '额度不足': { 'zh-TW': '額度不足', en: 'Insufficient quota', ja: 'クォータ不足', ko: '할당량 부족' },
   '网络不通': { 'zh-TW': '網路不通', en: 'Network unreachable', ja: 'ネットワーク不通', ko: '네트워크 연결 안 됨' },
   '异常': { 'zh-TW': '異常', en: 'Error', ja: '異常', ko: '이상' },
@@ -1494,9 +1497,9 @@ Object.assign(D, {
 // ---- 补齐批次 32：全局刷新（v0.1.302） ----
 Object.assign(D, {
   '刷新中…': { 'zh-TW': '刷新中…', en: 'Refreshing…', ja: '更新中…', ko: '새로고침 중…' },
-  '立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter）': { 'zh-TW': '立即刷新全部可自動查詢的餘額（DeepSeek、Kimi、矽基流動、OpenRouter）', en: 'Refresh all balances that have an official API (DeepSeek, Kimi, SiliconFlow, OpenRouter) now', ja: 'APIで照会できる全残高を今すぐ更新（DeepSeek、Kimi、SiliconFlow、OpenRouter）', ko: '자동 조회 가능한 모든 잔액을 지금 새로고침(DeepSeek, Kimi, SiliconFlow, OpenRouter)' },
+  '立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase）': { 'zh-TW': '立即刷新全部可自動查詢的餘額（DeepSeek、Kimi、矽基流動、OpenRouter、Inferbase）', en: 'Refresh all balances that have an official API (DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase) now', ja: 'APIで照会できる全残高を今すぐ更新（DeepSeek、Kimi、SiliconFlow、OpenRouter、Inferbase）', ko: '자동 조회 가능한 모든 잔액을 지금 새로고침(DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase)' },
   '请先解锁保险箱后再刷新（余额需要解密 Key 才能查询）': { 'zh-TW': '請先解鎖保險箱後再刷新（餘額需要解密 Key 才能查詢）', en: 'Unlock the vault first — balances can only be queried after decrypting your keys.', ja: '先に保管庫のロックを解除してください（残高照会にはキーの復号が必要です）', ko: '먼저 금고를 잠금 해제하세요(잔액 조회에는 키 복호화가 필요합니다).' },
-  '没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter 支持）': { 'zh-TW': '沒有可自動刷新餘額的帳戶（僅 DeepSeek、Kimi、矽基流動、OpenRouter 支援）', en: 'No account supports automatic balance refresh (only DeepSeek, Kimi, SiliconFlow, OpenRouter).', ja: '自動更新できるアカウントがありません（DeepSeek、Kimi、SiliconFlow、OpenRouter のみ対応）。', ko: '자동 잔액 새로고침을 지원하는 계정이 없습니다(DeepSeek, Kimi, SiliconFlow, OpenRouter만 지원).' },
+  '没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase 支持）': { 'zh-TW': '沒有可自動刷新餘額的帳戶（僅 DeepSeek、Kimi、矽基流動、OpenRouter、Inferbase 支援）', en: 'No account supports automatic balance refresh (only DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase).', ja: '自動更新できるアカウントがありません（DeepSeek、Kimi、SiliconFlow、OpenRouter、Inferbase のみ対応）。', ko: '자동 잔액 새로고침을 지원하는 계정이 없습니다(DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase만 지원).' },
   '已刷新全部余额：{n} 个账户已更新': { 'zh-TW': '已刷新全部餘額：{n} 個帳戶已更新', en: 'All balances refreshed: {n} account(s) updated.', ja: '全残高を更新しました：{n} 件のアカウントを更新。', ko: '모든 잔액을 새로고침했습니다: {n}개 계정 업데이트됨.' },
   '刷新完成：{ok} 个已更新，{fail} 个失败': { 'zh-TW': '刷新完成：{ok} 個已更新，{fail} 個失敗', en: 'Refresh done: {ok} updated, {fail} failed.', ja: '更新完了：{ok} 件更新、{fail} 件失敗。', ko: '새로고침 완료: {ok}개 업데이트, {fail}개 실패.' },
 })
@@ -1515,7 +1518,7 @@ Object.assign(D, {
 // ---- 补齐批次 29：余额自动刷新间隔（v0.1.299） ----
 Object.assign(D, {
   '余额自动刷新间隔': { 'zh-TW': '餘額自動刷新間隔', en: 'Balance auto-refresh interval', ja: '残高の自動更新間隔', ko: '잔액 자동 새로고침 간격' },
-  '保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter）；其余平台无官方接口，不受影响。此设置只保存在本设备': { 'zh-TW': '保險箱解鎖後，按此間隔靜默刷新能自動查餘額的平台（DeepSeek、Kimi、矽基流動、OpenRouter）；其餘平台無官方介面，不受影響。此設定只保存在本裝置', en: 'After the vault is unlocked, balances are silently refreshed at this interval for platforms with a balance API (DeepSeek, Kimi, SiliconFlow, OpenRouter). Other platforms have no official API and are unaffected. This setting stays on this device.', ja: '保管庫のロック解除後、この間隔で残高APIのあるプラットフォーム（DeepSeek、Kimi、SiliconFlow、OpenRouter）の残高を静かに更新します。他のプラットフォームには公式APIがなく影響しません。この設定はこのデバイスにのみ保存されます。', ko: '금고 잠금 해제 후 이 간격으로 잔액 API가 있는 플랫폼(DeepSeek, Kimi, SiliconFlow, OpenRouter)의 잔액을 조용히 새로고침합니다. 다른 플랫폼은 공식 API가 없어 영향이 없습니다. 이 설정은 이 기기에만 저장됩니다.' },
+  '保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase）；其余平台无官方接口，不受影响。此设置只保存在本设备': { 'zh-TW': '保險箱解鎖後，按此間隔靜默刷新能自動查餘額的平台（DeepSeek、Kimi、矽基流動、OpenRouter、Inferbase）；其餘平台無官方介面，不受影響。此設定只保存在本裝置', en: 'After the vault is unlocked, balances are silently refreshed at this interval for platforms with a balance API (DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase). Other platforms have no official API and are unaffected. This setting stays on this device.', ja: '保管庫のロック解除後、この間隔で残高APIのあるプラットフォーム（DeepSeek、Kimi、SiliconFlow、OpenRouter、Inferbase）の残高を静かに更新します。他のプラットフォームには公式APIがなく影響しません。この設定はこのデバイスにのみ保存されます。', ko: '금고 잠금 해제 후 이 간격으로 잔액 API가 있는 플랫폼(DeepSeek, Kimi, SiliconFlow, OpenRouter, Inferbase)의 잔액을 조용히 새로고침합니다. 다른 플랫폼은 공식 API가 없어 영향이 없습니다. 이 설정은 이 기기에만 저장됩니다.' },
   '{h} 小时': { 'zh-TW': '{h} 小時', en: '{h} h', ja: '{h} 時間', ko: '{h}시간' },
 })
 

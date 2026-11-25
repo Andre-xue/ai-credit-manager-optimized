@@ -27,6 +27,7 @@ import {
   CATEGORY_META, categoryForModel, isVoiceConfigAccount, type ModelCategory,
 } from '../core/modelCategories'
 import { detectModelCapability, capabilityChatCapable } from '../core/modelCapability'
+import { inferbaseGate } from '../core/inferbase'
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { t, locale } from '../core/i18n'
@@ -483,7 +484,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     .filter(a => isAccountServiceEnabled(settings, a.providerId))
     .map(a => ({
       key: `own:${a.id}`,
-      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}`,
+      // Inferbase 启用门槛（v0.1.432）：冒烟未通过时在选项上明示待实测，不等发送失败才知道
+      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}${a.providerId === 'inferbase' && !inferbaseGate(a).enabled ? ' · 待实测（未启用）' : ''}`,
       account: a,
       category: categoryForModel(a.note) as ModelCategory,
       free: false,
@@ -650,6 +652,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     // 用户自己的账户：用其 Key 真正调用
     if (opt?.account) {
       const acct = opt.account
+      // Inferbase 启用门槛（v0.1.432）：未冒烟通过不调用、不自动切换，打标让上层原样展示真实原因
+      if (acct.providerId === 'inferbase') {
+        const gate = inferbaseGate(acct)
+        if (!gate.enabled) throw Object.assign(new Error(gate.message), { inferbaseGate: true })
+      }
       if (!acct.encryptedKey) throw new Error(t('该账户未配置 API Key，请在 API Key 管理页添加'))
       const pwd = resolvePwd()
       if (!pwd) {
@@ -814,8 +821,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       } catch (firstErr) {
         // 自动故障转移：鉴权/额度/限流类失败且同平台有备用账户时，自动换备用 Key 重试（最多 2 个），
         // 全部失败才落到外层 catch（保留手动换 Key 重试条）
-        const fe = firstErr as { needPwd?: boolean; message?: string }
-        const retryable = !fe?.needPwd && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
+        const fe = firstErr as { needPwd?: boolean; message?: string; inferbaseGate?: boolean }
+        const retryable = !fe?.needPwd && !fe?.inferbaseGate && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
         const failed0 = !optKey ? allOptions.find(o => o.key === model)?.account : undefined
         const alts = retryable && failed0
           ? ownOptions.filter(o => o.account && o.account.providerId === failed0.providerId && o.account.id !== failed0.id).slice(0, 2)
@@ -850,7 +857,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
     } catch (e) {
       const need = (e as { needPwd?: boolean })?.needPwd
-      const msg = friendlyAiError(e)
+      // Inferbase 门槛错误含真实状态与原因，原样展示（friendlyAiError 会把含「额度/401」的原文吞成泛化文案）
+      const msg = (e as { inferbaseGate?: boolean })?.inferbaseGate ? ((e as Error)?.message ?? '') : friendlyAiError(e)
       // needPwd 的情况：不重复 toast（顶部已有常驻解锁条），但仍需在对话里给出可见提示
       if (!need && msg !== '已停止生成' && !String(msg).includes('NEED_AI_PWD')) notify(msg)
       // 鉴权/额度类失败且同平台有备用账户 → 提供一键换 Key 重试（密码未验证/用户中止不触发）

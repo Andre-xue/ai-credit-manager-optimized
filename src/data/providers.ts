@@ -177,6 +177,14 @@ export const PROVIDERS: ProviderDefinition[] = [
     apiKeyUrl: 'https://openrouter.ai/settings/keys',
     note: '聚合多厂商模型的统一 API 网关。',
   },
+  {
+    id: 'inferbase', name: 'Inferbase', shortName: 'Inferbase', category: 'llm',
+    officialUrl: 'https://inferbase.ai/', usageUrl: 'https://inferbase.ai/docs/observability/usage',
+    color: '#0ea5e9', initials: 'IB', modes: ['api', 'manual'],
+    apiBaseUrl: 'https://api.inferbase.ai/v1',
+    apiKeyUrl: 'https://inferbase.ai/',
+    note: '智能路由网关：model 用 auto 自动选模型。免费档每月 5,000 次请求；每天 100 次托管请求 + $0.50 托管模型额度，免绑卡。托管模型输出价上限 $2/1M tokens、单次输入 8192 / 输出 1024 tokens、60 rpm/Key、托管 10 rpm/组织。余额与用量可自动同步；新 Key 需先在 Key 管理页点健康检查做真实冒烟，通过后才启用对话路线。',
+  },
 
   // ==================== 编程助手 ====================
   {

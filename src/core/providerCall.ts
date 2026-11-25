@@ -10,6 +10,7 @@ import {
   detectMediaStyle, buildImageRequest, buildVideoRequest,
   extractTaskId, extractVideoUrl, videoTaskTerminal,
 } from './mediaAdapters'
+import { fetchInferbaseModels, inferbaseErrorText } from './inferbase'
 
 export interface ProviderCallResult {
   ok: boolean
@@ -77,6 +78,15 @@ function modelsUrl(account: Account): string {
  * 返回模型 id 列表；失败时抛出异常，由 UI 回退到内置目录。
  */
 export async function fetchProviderModels(account: Account, apiKey: string): Promise<string[]> {
+  // Inferbase 模型列表官方注明无需凭据：走公开拉取（原生层绕 CORS），不带 Key、不要求先解锁
+  if (account.providerId === 'inferbase') {
+    try {
+      const models = await fetchInferbaseModels()
+      return models.map(m => m.id)
+    } catch (e) {
+      throw new Error(inferbaseErrorText(e))
+    }
+  }
   const url = modelsUrl(account)
   let raw: string
   if (isDesktopApp()) {

@@ -1699,10 +1699,47 @@ async fn send_notification(title: String, body: String) -> Result<(), String> {
     }
 }
 
+/// Inferbase 单端点拉取（v0.1.432）：失败不抛错，回 {__error, status} 让前端区分
+/// 「余额必达」与「用量/交易可选」——可选部分失败要把真实原因显示出来，不静默吞掉。
+async fn inferbase_part(client: &reqwest::Client, path: &str, api_key: &str) -> Result<serde_json::Value, String> {
+    let url = format!("https://api.inferbase.ai/api/v1/inference/{}", path);
+    let resp = client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .map_err(|e| format!("请求官方接口失败：{}", e))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = body.chars().take(300).collect();
+        return Ok(serde_json::json!({ "__error": snippet, "status": status.as_u16() }));
+    }
+    Ok(serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null))
+}
+
 #[tauri::command]
 async fn proxy_usage(provider: String, api_key: String) -> Result<serde_json::Value, String> {
     if api_key.trim().is_empty() {
         return Err("API Key 不能为空".into())
+    }
+    // Inferbase（v0.1.432）：余额/用量/交易在完整基址 /api/v1/inference 下（相对 /v1 是 404），
+    // 一次拉齐三个端点回组合 JSON；credits 失败按其他平台惯例抛错，另两路失败回 __error 标记。
+    if provider.as_str() == "inferbase" {
+        let client = shared_http_client();
+        let credits = inferbase_part(client, "credits", &api_key).await?;
+        if credits.get("__error").is_some() {
+            let st = credits.get("status").and_then(|s| s.as_u64()).unwrap_or(0);
+            let snip = credits.get("__error").and_then(|s| s.as_str()).unwrap_or("");
+            return Err(format!("官方接口返回 {}：{}", st, snip));
+        }
+        let transactions = inferbase_part(client, "credits/transactions", &api_key).await?;
+        let usage = inferbase_part(client, "usage", &api_key).await?;
+        return Ok(serde_json::json!({
+            "credits": credits,
+            "transactions": transactions,
+            "usage": usage,
+        }));
     }
     let (url, need_range): (&str, bool) = match provider.as_str() {
         "openai" => ("https://api.openai.com/v1/organization/usage/completions", true),

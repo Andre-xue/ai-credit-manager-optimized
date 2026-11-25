@@ -130,3 +130,30 @@ describe('loadWorkshopRoutes 给自有账户路线带上 engine（v0.1.430）', 
     expect(engines).not.toContain('DeepSeek')
   })
 })
+
+describe('Inferbase 工坊路线（v0.1.432：冒烟门槛 + auto 模型）', () => {
+  it('Inferbase 首选模型是 auto（智能路由），不拿账户名当模型', () => {
+    expect(defaultChatEngine('inferbase')).toBe('auto')
+    expect(resolveWorkshopModel(acct('inferbase', 'Inferbase', 'https://api.inferbase.ai/v1', 'ib1'))).toBe('auto')
+  })
+  it('未冒烟的 Inferbase 路线带 disabledReason，发送时原样抛真实原因且不发请求', async () => {
+    const fetchMock = okFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const { routes } = await loadWorkshopRoutes([acct('inferbase', 'Inferbase', 'https://api.inferbase.ai/v1', 'ib1')])
+    const route = routes.find(r => r.kind === 'account')
+    expect(route).toBeTruthy()
+    expect((route as { label: string }).label).toContain('待实测')
+    expect((route as { disabledReason?: string }).disabledReason).toContain('健康检查')
+    const callsBefore = fetchMock.mock.calls.length // loadWorkshopRoutes 拉免费列表的请求不算
+    let errMsg = ''
+    try {
+      await runWorkshopChat({
+        route: route!, freeOptions: [],
+        accounts: [acct('inferbase', 'Inferbase', 'https://api.inferbase.ai/v1', 'ib1')],
+        sessionPwd: 'pwd', system: 's', user: 'u',
+      })
+    } catch (e) { errMsg = e instanceof Error ? e.message : String(e) }
+    expect(errMsg).toContain('待实测')
+    expect(fetchMock.mock.calls.length).toBe(callsBefore) // 门槛拦截发生在解密/发请求之前
+  })
+})

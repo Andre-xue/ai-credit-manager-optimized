@@ -3,6 +3,10 @@
 // 桌面端（Tauri）走 Rust 代理以绕过 CORS，且端点在后端白名单校验，防止开放代理。
 import type { CreditUnit, DataSourceAdapter } from './types'
 import { PROVIDER_MAP } from '../data/providers'
+import {
+  buildInferbaseAccountData, fetchInferbaseAccountData, INFERBASE_API_BASE,
+  INFERBASE_FREE_LIMITS, type InferbaseAccountData,
+} from './inferbase'
 
 interface UsageResult {
   used: number
@@ -89,6 +93,44 @@ export function parseOpenrouterKeyInfo(j: any): ParsedUsage {
   return { used: usage, total: limit, remaining: Math.max(0, limit - usage), symbol: '$', detail: `总额度 $${limit}` }
 }
 
+/**
+ * Inferbase：余额（GET /credits）+ 用量（GET /usage）+ 交易（GET /credits/transactions），
+ * 基址是完整形态 https://api.inferbase.ai/api/v1/inference（相对 /v1 这三个端点是 404）。
+ * 余额进额度看板；用量聚合成明细（本月请求数、近 24h 请求/花费对照免费档每日托管限额）；
+ * 任一可选部分失败都把真实原因拼进 detail，不静默吞掉。
+ */
+export function parseInferbaseBalance(data: InferbaseAccountData): ParsedUsage {
+  const fmt = (n: number, d = 2) => n.toLocaleString('zh-CN', { maximumFractionDigits: d })
+  const parts: string[] = []
+  const { credits, usage, transactions } = data
+  if (credits.grantedUsd !== undefined && credits.grantedUsd > 0) parts.push(`赠送 $${fmt(credits.grantedUsd)}`)
+  if (credits.purchasedUsd !== undefined && credits.purchasedUsd > 0) parts.push(`充值 $${fmt(credits.purchasedUsd)}`)
+  if (usage) {
+    if (usage.monthRequests !== undefined) {
+      parts.push(`本月请求 ${usage.monthRequests} / ${INFERBASE_FREE_LIMITS.monthlyRequests.toLocaleString()} 次`)
+    } else if (usage.rowsReturned > 0) {
+      parts.push(`用量日志 ${usage.rowsReturned} 条`)
+    }
+    if (usage.last24hRequests !== undefined) {
+      parts.push(`近 24h 请求 ${usage.last24hRequests} 次（托管上限 ${INFERBASE_FREE_LIMITS.dailyManagedRequests}/天）· 花费 $${fmt(usage.last24hCostUsd ?? 0, 4)}（托管额度 $${INFERBASE_FREE_LIMITS.dailyManagedCreditUsd}/天）`)
+    }
+    if (usage.failedRequests > 0) parts.push(`失败请求 ${usage.failedRequests} 次`)
+  }
+  if (transactions && transactions.count > 0) {
+    parts.push(`交易 ${transactions.count} 条${transactions.latestText ? ` · 最近：${transactions.latestText}` : ''}`)
+  }
+  for (const e of data.partialErrors) parts.push(e)
+  return {
+    used: 0, total: credits.balanceUsd, remaining: credits.balanceUsd, symbol: '$',
+    detail: parts.join(' · ') || undefined,
+  }
+}
+
+/** 桌面组合 JSON（{credits, usage, transactions}）→ ParsedUsage（fetchUsage 的 inferbase 专用路径不经此处，留作端点表解析器） */
+export function parseInferbaseCombined(j: any): ParsedUsage {
+  return parseInferbaseBalance(buildInferbaseAccountData(j as any))
+}
+
 /** 官方只读用量/余额端点白名单（Web 直连；桌面端后端有对应白名单） */
 const API_ENDPOINTS: Record<string, Endpoint> = {
   openai: {
@@ -103,6 +145,8 @@ const API_ENDPOINTS: Record<string, Endpoint> = {
   kim: { url: 'https://api.moonshot.cn/v1/users/me/balance', unit: 'currency', parse: parseMoonshotBalance },
   siliconflow: { url: 'https://api.siliconflow.cn/v1/user/info', unit: 'currency', parse: parseSiliconflowUserInfo },
   openrouter: { url: 'https://openrouter.ai/api/v1/auth/key', unit: 'currency', parse: parseOpenrouterKeyInfo },
+  // url 仅作端点登记（supported 判定）：实际拉取走 fetchInferbaseAccountData 的三端点组合
+  inferbase: { url: INFERBASE_API_BASE, unit: 'currency', parse: parseInferbaseCombined },
 }
 
 /**
@@ -164,6 +208,14 @@ export function getAdapter(providerId: string): DataSourceAdapter {
     usageUrl: p?.usageUrl ?? p?.officialUrl ?? '#',
     async fetchUsage(apiKey: string): Promise<UsageResult> {
       if (!endpoint) throw new Error(NO_BALANCE_API_NOTE[providerId] ?? `${p?.name ?? providerId} 无公开只读用量 API，请到官方页面查看后手动录入`)
+      if (providerId === 'inferbase') {
+        // 三端点组合拉取（桌面走 Rust 组合分支、手机走原生层、网页直连），错误带状态归类原文
+        try {
+          return { ...parseInferbaseBalance(await fetchInferbaseAccountData(apiKey)), unit: 'currency' }
+        } catch (e) {
+          throw new Error(errorText(e, 'Inferbase 余额查询失败'))
+        }
+      }
 
       let data: any
       if (inTauri()) {

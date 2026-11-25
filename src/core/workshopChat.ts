@@ -8,10 +8,11 @@ import { ENGINE_CATALOG } from '../data/engines'
 import { categoryFromNote, isVoiceConfigAccount } from './modelCategories'
 import { detectModelCapability, capabilityChatCapable } from './modelCapability'
 import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeAiOption } from './freeAi'
+import { inferbaseGate } from './inferbase'
 
 export type WorkshopRoute =
   | { kind: 'free'; key: string; label: string }
-  | { kind: 'account'; key: string; label: string; accountId: string; engine?: string; modelId?: string }
+  | { kind: 'account'; key: string; label: string; accountId: string; engine?: string; modelId?: string; disabledReason?: string }
   | { kind: 'wbpool'; key: string; label: string }
 
 /** 某平台的首选对话模型：引擎目录的旗舰款，没有旗舰则取倍率最低的一款；未收录返回 undefined */
@@ -62,7 +63,17 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
   try { freeOptions = filterChatCapableFreeOptions(await loadFreeAiOptions()) } catch { freeOptions = [] }
   const routes: WorkshopRoute[] = [
     ...freeOptions.map(o => ({ kind: 'free' as const, key: `free:${o.key}`, label: `免费 · ${o.label}` })),
-    ...workshopAccounts(accounts).map(a => ({ kind: 'account' as const, key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })),
+    ...workshopAccounts(accounts).map(a => {
+      // Inferbase 启用门槛（v0.1.432）：冒烟未通过的路线照常列出但标明待实测、不可调用，
+      // 选中发送时给出真实原因与手动切换入口，不静默兜底到别的路线
+      const gate = a.providerId === 'inferbase' ? inferbaseGate(a) : null
+      return {
+        kind: 'account' as const, key: `acct:${a.id}`,
+        label: gate && !gate.enabled ? `${a.label}（Inferbase 待实测，未启用）` : a.label,
+        accountId: a.id, engine: resolveWorkshopModel(a),
+        disabledReason: gate && !gate.enabled ? gate.message : undefined,
+      }
+    }),
   ]
   try {
     const { hasPoolAccounts } = await import('./wbPool')
@@ -97,6 +108,13 @@ export async function runWorkshopChat(params: {
   }
   const acct = accounts.find(a => a.id === route.accountId)
   if (!acct) throw new Error('所选账户不存在')
+  // Inferbase 门槛实时复查（路线列表生成后又完成冒烟的，以最新状态为准）
+  if (acct.providerId === 'inferbase') {
+    const gate = inferbaseGate(acct)
+    if (!gate.enabled) throw new Error(gate.message)
+  } else if (route.disabledReason) {
+    throw new Error(route.disabledReason)
+  }
   if (!sessionPwd) throw new Error('保险箱未解锁，无法使用自有账户（可改用免费模型）')
   if (!acct.encryptedKey) throw new Error('该账户没有保存的密钥')
   const key = await decryptSecret(acct.encryptedKey, sessionPwd)

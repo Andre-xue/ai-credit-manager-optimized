@@ -103,6 +103,7 @@ const PluginsView = lazy(() => import('./components/PluginsView').then(m => ({ d
 import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
+import { inferbaseLimitsText } from './core/inferbase'
 import {
   buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup, isReadableFormat,
   type KeyBackupMode, type KeyBackupFormat, type KeyBackupFile, type BackupFileFormat,
@@ -1152,7 +1153,7 @@ function App() {
       const res = await refreshAllBalances(stateRef.current.accounts, sessionPwd, (accountId, r) =>
         setState(s => upsertQuota(s, { accountId, used: r.used, total: r.total!, unit: r.unit, source: 'api' })))
       try { localStorage.setItem(PATROL_AT_KEY, String(Date.now())) } catch { /* ignore */ }
-      if (res.supported === 0) notify(t('没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter 支持）'))
+      if (res.supported === 0) notify(t('没有可自动刷新余额的账户（仅 DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase 支持）'))
       else if (res.failed === 0) notify(t('已刷新全部余额：{n} 个账户已更新', { n: res.updated }))
       else notify(t('刷新完成：{ok} 个已更新，{fail} 个失败', { ok: res.updated, fail: res.failed }))
     } finally {
@@ -4285,7 +4286,8 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
         voiceProvider: isVoiceCfg ? voiceProvider : undefined,
         createdAt: now, updatedAt: now,
       }
-      const quota: QuotaSnapshot | undefined = quotaTotal > 0 ? {
+      // Inferbase 免费账户余额可能正好是 $0，那是真实余额而非「没查到」，照样生成初始快照
+      const quota: QuotaSnapshot | undefined = (quotaTotal > 0 || (provider.id === 'inferbase' && !!fetchedQuota)) ? {
         id: uid('q'), accountId: account.id, unit: fetchedQuota!.unit, total: quotaTotal, used: 0,
         capturedAt: now, source: 'api' as const,
       } : undefined
@@ -4377,6 +4379,11 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
             {provider.id !== 'voice-config' && !isCustom && (
               <div className={`balance-box ${balance ? 'has' : ''}`}>
                 <Wallet size={13} /> {balance ?? t('余额未获取（可选，可稍后手动录入）')}
+              </div>
+            )}
+            {provider.id === 'inferbase' && (
+              <div className="form-hint" style={{ marginTop: 6 }}>
+                {inferbaseLimitsText()}。添加后请到「Key 管理」页对这个账户点健康检查做一次真实冒烟（查余额/用量 + 用 auto 模型发一条测试消息），通过后 AI 助手与工坊路线才启用；未通过会显示真实原因，不会自动切换到它。
               </div>
             )}
           </div>
@@ -5007,7 +5014,7 @@ function StorageDirPicker({ dir, onPick }: { dir: string; onPick: () => void }) 
 function GlobalRefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) {
   return (
     <button className="btn sm" onClick={onRefresh} disabled={refreshing}
-      title={t('立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter）')}>
+      title={t('立即刷新全部可自动查询的余额（DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase）')}>
       <RefreshCw size={14} style={refreshing ? { animation: 'acm-spin 1s linear infinite' } : undefined} /> {refreshing ? t('刷新中…') : t('刷新')}
     </button>
   )
@@ -5668,7 +5675,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                      onChange={e => onChange({ monthlyBudget: Math.max(0, Number(e.target.value)) })}
                      style={{ width: 100 }} />
             </SettingsRow>
-            <SettingsRow title="余额自动刷新间隔" desc="保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter）；其余平台无官方接口，不受影响。此设置只保存在本设备">
+            <SettingsRow title="余额自动刷新间隔" desc="保险箱解锁后，按此间隔静默刷新能自动查余额的平台（DeepSeek、Kimi、硅基流动、OpenRouter、Inferbase）；其余平台无官方接口，不受影响。此设置只保存在本设备">
               <select className="select" style={{ width: 110 }} value={patrolHours} onChange={e => { const v = Number(e.target.value); setPatrolHours(v); savePatrolHours(v) }}>
                 {PATROL_HOUR_OPTIONS.map(h => <option key={h} value={h}>{h === 0 ? t('关闭') : t('{h} 小时', { h })}</option>)}
               </select>
