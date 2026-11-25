@@ -72,6 +72,7 @@ export function parseMoonshotBalance(j: any): ParsedUsage {
  */
 export const NO_BALANCE_API_NOTE: Record<string, string> = {
   glm: '智谱 GLM 未向 API Key 开放余额查询接口，请在智谱控制台查看余额后手动录入额度',
+  oneai: 'One AI API Key 无公开余额接口，请在官网控制台（oneaiapikey.com）查看余额与用量后手动录入额度；App 内仅有本机调用估算，不代表官方余额',
 }
 
 /** 硅基流动：GET /v1/user/info → data.balance（字符串，人民币） */

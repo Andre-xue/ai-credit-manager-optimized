@@ -104,6 +104,7 @@ import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
 import { inferbaseLimitsText } from './core/inferbase'
+import { oneAiLimitsText } from './core/oneai'
 import {
   buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup, isReadableFormat,
   type KeyBackupMode, type KeyBackupFormat, type KeyBackupFile, type BackupFileFormat,
@@ -4384,6 +4385,11 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
             {provider.id === 'inferbase' && (
               <div className="form-hint" style={{ marginTop: 6 }}>
                 {inferbaseLimitsText()}。添加后请到「Key 管理」页对这个账户点健康检查做一次真实冒烟（查余额/用量 + 用 auto 模型发一条测试消息），通过后 AI 助手与工坊路线才启用；未通过会显示真实原因，不会自动切换到它。
+              </div>
+            )}
+            {provider.id === 'oneai' && (
+              <div className="form-hint" style={{ marginTop: 6 }}>
+                {oneAiLimitsText()}。无公开余额接口，余额请在官网控制台查看后手动录入；App 内只按本机发出的调用做请求/token 计数估算（标注「本机估算」）。添加后请到「Key 管理」页对这个账户点健康检查做一次真实冒烟（查 /v1/models 模型列表 + 用免费模型发一条测试消息），通过后 AI 助手与工坊路线才启用；未通过会显示真实原因，不会自动切换到它。
               </div>
             )}
           </div>

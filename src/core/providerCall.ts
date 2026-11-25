@@ -11,6 +11,7 @@ import {
   extractTaskId, extractVideoUrl, videoTaskTerminal,
 } from './mediaAdapters'
 import { fetchInferbaseModels, inferbaseErrorText } from './inferbase'
+import { recordOneAiLocalUsage, recordOneAiRouteFailure, recordOneAiRouteSuccess } from './oneai'
 
 export interface ProviderCallResult {
   ok: boolean
@@ -177,6 +178,31 @@ function stripVersionSuffix(url: string): string {
   return url.replace(/\/v\d+(\/chat\/completions)?$/, '/chat/completions')
 }
 
+/**
+ * One AI API Key 记账（v0.1.434）：只对 oneai 账户——成功记本机估算用量并清路线状态，
+ * 失败记限流冷却/密钥失效（供 oneAiGate 与切换链消费）。记账失败不影响调用结果本身。
+ */
+function noteOneAiCall(account: Account, result: ProviderCallResult, usageTokens = 0): ProviderCallResult {
+  if (account.providerId !== 'oneai') return result
+  try {
+    if (result.ok) {
+      recordOneAiLocalUsage(account.id, usageTokens)
+      recordOneAiRouteSuccess(account.id)
+    } else if (result.error) {
+      recordOneAiRouteFailure(account.id, new Error(result.error))
+    }
+  } catch { /* 记账失败不影响调用结果 */ }
+  return result
+}
+
+function usageTokensOf(json: any): number {
+  const u = json?.usage
+  if (typeof u?.total_tokens === 'number') return u.total_tokens
+  const p = typeof u?.prompt_tokens === 'number' ? u.prompt_tokens : 0
+  const c = typeof u?.completion_tokens === 'number' ? u.completion_tokens : 0
+  return p + c
+}
+
 /** 对话：OpenAI 兼容 chat completions（非流式，简化处理） */
 export async function callChat(
   account: Account, apiKey: string, messages: { role: string; content: string }[],
@@ -251,10 +277,10 @@ export async function callChat(
     }
     const json = JSON.parse(raw)
     const text = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? ''
-    if (!text) return { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }
-    return { ok: true, text }
+    if (!text) return noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json))
+    return noteOneAiCall(account, { ok: true, text }, usageTokensOf(json))
   } catch (e) {
-    return toError(e)
+    return noteOneAiCall(account, toError(e))
   }
 }
 

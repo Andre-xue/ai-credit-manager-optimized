@@ -160,6 +160,53 @@ describe('Inferbase 工坊路线（v0.1.432：冒烟门槛 + auto 模型）', ()
   })
 })
 
+describe('One AI 工坊路线（v0.1.434：冒烟门槛 + 免费车道模型 + 进切换链）', () => {
+  it('One AI 首选模型是官方免费车道旗舰款，不拿账户名当模型', () => {
+    expect(defaultChatEngine('oneai')).toBe('gpt-6-luna:free')
+    expect(resolveWorkshopModel(acct('oneai', 'One AI', 'https://api.oneaiapikey.com/v1', 'oa1'))).toBe('gpt-6-luna:free')
+  })
+  it('未冒烟的 One AI 路线带 disabledReason，发送时原样抛真实原因且不发请求', async () => {
+    const fetchMock = okFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const { routes } = await loadWorkshopRoutes([acct('oneai', 'One AI', 'https://api.oneaiapikey.com/v1', 'oa1')])
+    const route = routes.find(r => r.kind === 'account')
+    expect(route).toBeTruthy()
+    expect((route as { label: string }).label).toContain('待实测')
+    expect((route as { disabledReason?: string }).disabledReason).toContain('健康检查')
+    const callsBefore = fetchMock.mock.calls.length
+    let errMsg = ''
+    try {
+      await runWorkshopChat({
+        route: route!, freeOptions: [],
+        accounts: [acct('oneai', 'One AI', 'https://api.oneaiapikey.com/v1', 'oa1')],
+        sessionPwd: 'pwd', system: 's', user: 'u',
+      })
+    } catch (e) { errMsg = e instanceof Error ? e.message : String(e) }
+    expect(errMsg).toContain('待实测')
+    expect(fetchMock.mock.calls.length).toBe(callsBefore)
+  })
+  it('冒烟通过的 One AI 账户进自动切换链候选', async () => {
+    class MemStorage {
+      private m = new Map<string, string>()
+      getItem(k: string) { return this.m.has(k) ? this.m.get(k)! : null }
+      setItem(k: string, v: string) { this.m.set(k, String(v)) }
+      removeItem(k: string) { this.m.delete(k) }
+      clear() { this.m.clear() }
+    }
+    ;(globalThis as any).localStorage = new MemStorage()
+    const { recordOneAiVerification } = await import('./oneai')
+    const { buildWorkshopChainRoutes } = await import('./workshopChat')
+    const oa = acct('oneai', 'One AI', 'https://api.oneaiapikey.com/v1', 'oa1')
+    recordOneAiVerification(oa, 'verified', 'available', '冒烟通过')
+    const chain = await buildWorkshopChainRoutes({
+      route: { kind: 'free', key: 'free:up:zen:m', label: '免费 · M' },
+      freeOptions: [], accounts: [oa], sessionPwd: 'pwd', system: 's', user: 'u',
+    })
+    expect(chain.some(r => r.key === 'acct:oa1')).toBe(true)
+    delete (globalThis as any).localStorage
+  })
+})
+
 describe('runWorkshopChat 自动切换链（v0.1.433）', () => {
   class MemStorage {
     private m = new Map<string, string>()

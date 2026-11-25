@@ -12,6 +12,7 @@ import { categoryFromNote, isVoiceConfigAccount } from './modelCategories'
 import { detectModelCapability, capabilityChatCapable } from './modelCapability'
 import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeAiOption } from './freeAi'
 import { inferbaseGate } from './inferbase'
+import { oneAiGate } from './oneai'
 import { runFreeChain, loadChainMode, orderChainCandidates, ChainAllFailedError, type ChainCandidate } from './freeChain'
 
 export type WorkshopRoute =
@@ -68,12 +69,14 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
   const routes: WorkshopRoute[] = [
     ...freeOptions.map(o => ({ kind: 'free' as const, key: `free:${o.key}`, label: `免费 · ${o.label}` })),
     ...workshopAccounts(accounts).map(a => {
-      // Inferbase 启用门槛（v0.1.432）：冒烟未通过的路线照常列出但标明待实测、不可调用，
-      // 选中发送时给出真实原因与手动切换入口，不静默兜底到别的路线
-      const gate = a.providerId === 'inferbase' ? inferbaseGate(a) : null
+      // Inferbase / One AI 启用门槛（v0.1.432 / v0.1.434）：冒烟未通过的路线照常列出但标明
+      // 待实测、不可调用，选中发送时给出真实原因与手动切换入口，不静默兜底到别的路线
+      const gate = a.providerId === 'inferbase' ? inferbaseGate(a)
+        : a.providerId === 'oneai' ? oneAiGate(a) : null
+      const gateName = a.providerId === 'inferbase' ? 'Inferbase' : 'One AI'
       return {
         kind: 'account' as const, key: `acct:${a.id}`,
-        label: gate && !gate.enabled ? `${a.label}（Inferbase 待实测，未启用）` : a.label,
+        label: gate && !gate.enabled ? `${a.label}（${gateName} 待实测，未启用）` : a.label,
         accountId: a.id, engine: resolveWorkshopModel(a),
         disabledReason: gate && !gate.enabled ? gate.message : undefined,
       }
@@ -116,9 +119,12 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   }
   const acct = accounts.find(a => a.id === route.accountId)
   if (!acct) throw new Error('所选账户不存在')
-  // Inferbase 门槛实时复查（路线列表生成后又完成冒烟的，以最新状态为准）
+  // Inferbase / One AI 门槛实时复查（路线列表生成后又完成冒烟的，以最新状态为准）
   if (acct.providerId === 'inferbase') {
     const gate = inferbaseGate(acct)
+    if (!gate.enabled) throw new Error(gate.message)
+  } else if (acct.providerId === 'oneai') {
+    const gate = oneAiGate(acct)
     if (!gate.enabled) throw new Error(gate.message)
   } else if (route.disabledReason) {
     throw new Error(route.disabledReason)
@@ -139,7 +145,9 @@ function workshopRouteChainKind(route: WorkshopRoute, params: WorkshopChatParams
   if (route.kind === 'wbpool') return 'wbpool'
   if (route.kind === 'account') {
     const acct = params.accounts.find(a => a.id === route.accountId)
-    return acct?.providerId === 'inferbase' ? 'inferbase' : 'account'
+    if (acct?.providerId === 'inferbase') return 'inferbase'
+    if (acct?.providerId === 'oneai') return 'oneai'
+    return 'account'
   }
   const opt = params.freeOptions.find(o => `free:${o.key}` === route.key)
   return opt?.source ?? 'cloud'
@@ -147,7 +155,7 @@ function workshopRouteChainKind(route: WorkshopRoute, params: WorkshopChatParams
 
 /**
  * 组装自动模式的候选路线：首选（用户所选，含自有付费账户）+ 全部免费类路线
- * （云端/Zen/Kilo/APIsFreeLLM 免费选项、已验证启用的 Inferbase、WorkBuddy 账号池）。
+ * （云端/Zen/Kilo/APIsFreeLLM 免费选项、已验证启用的 Inferbase / One AI、WorkBuddy 账号池）。
  * 自有付费账户除首选外不进候选——自动切换不会悄悄切到要花钱的账户。
  */
 export async function buildWorkshopChainRoutes(params: WorkshopChatParams): Promise<WorkshopRoute[]> {
@@ -157,6 +165,9 @@ export async function buildWorkshopChainRoutes(params: WorkshopChatParams): Prom
   for (const o of params.freeOptions) push({ kind: 'free', key: `free:${o.key}`, label: `免费 · ${o.label}` })
   for (const a of workshopAccounts(params.accounts)) {
     if (a.providerId === 'inferbase' && inferbaseGate(a).enabled) {
+      push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
+    }
+    if (a.providerId === 'oneai' && oneAiGate(a).enabled) {
       push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
     }
   }

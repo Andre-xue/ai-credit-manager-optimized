@@ -4,7 +4,7 @@ import { PROVIDERS } from '../data/providers'
 
 describe('官方 Key 页地址', () => {
   it('全部平台都有 https 的 Key 页地址（自定义端点除外：无官方 Key 页，按钮打开账户自己的服务地址）', () => {
-    expect(PROVIDERS.length).toBe(58)
+    expect(PROVIDERS.length).toBe(59)
     for (const p of PROVIDERS) {
       if (p.id === 'custom-endpoint') continue
       const url = getKeyPageUrl(p)

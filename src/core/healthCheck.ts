@@ -10,6 +10,10 @@ import {
   type InferbaseRouteState,
 } from './inferbase'
 import { parseInferbaseBalance, formatUsageBalance } from './adapters'
+import {
+  oneAiStateFromError, oneAiErrorText, recordOneAiVerification, oneAiEstimateText,
+  ONEAI_BASE, ONEAI_SMOKE_MODEL, ONEAI_STATE_LABEL, type OneAiRouteState,
+} from './oneai'
 
 export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped' | 'rate' | 'pending' | 'model'
 
@@ -112,6 +116,61 @@ async function checkInferbaseHealth(account: Account, apiKey: string | undefined
   return done({ status: 'ok', modelCount, message })
 }
 
+/** One AI 状态 → 健康徽标状态（与 Inferbase 同口径，供 433 切换链消费 OneAiRouteState） */
+function oneAiHealthStatus(state: OneAiRouteState): KeyHealthStatus {
+  switch (state) {
+    case 'available': return 'ok'
+    case 'auth_invalid': return 'auth'
+    case 'quota_exceeded': return 'quota'
+    case 'rate_limited': return 'rate'
+    case 'network_error': return 'network'
+    case 'model_unavailable': return 'model'
+    case 'pending_verification': return 'pending'
+    default: return 'error'
+  }
+}
+
+/**
+ * One AI API Key 专用健康检查 = 真实冒烟（v0.1.434 启用门槛，与 Inferbase 同口径）：
+ * 用 Ethan 自己的 Key 查 /v1/models（官方口径：返回该 Key 可调用的模型）→ 用免费车道
+ * 模型发一条测试消息。全过才记录「已验证」并启用路线；任一步失败记录真实状态与原因，
+ * 路线保持未启用、不进自动切换链。无公开余额接口，不查余额；冒烟消耗免费档 1 次请求。
+ */
+async function checkOneAiHealth(account: Account, apiKey: string | undefined, started: number): Promise<KeyHealthResult> {
+  const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
+    ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
+  })
+  if (!apiKey) {
+    return done({
+      status: 'pending', latencyMs: 0,
+      message: '待实测：保险箱未解锁，无法用你的 Key 做模型列表与聊天冒烟；解锁后重新点健康检查，通过后才启用（One AI 无公开余额接口，本检查不查余额）',
+    })
+  }
+  const eff: Account = { ...account, apiUrl: account.apiUrl?.trim() || ONEAI_BASE }
+  let modelCount: number
+  try {
+    modelCount = (await fetchProviderModels(eff, apiKey)).length
+  } catch (e) {
+    const state = oneAiStateFromError(e)
+    const text = oneAiErrorText(e)
+    recordOneAiVerification(account, 'failed', state, `模型列表拉取失败：${text}`)
+    return done({ status: oneAiHealthStatus(state), message: `冒烟未通过（${ONEAI_STATE_LABEL[state]}）：模型列表拉取失败：${text}` })
+  }
+  try {
+    const res = await callChat(eff, apiKey, [{ role: 'user', content: 'Reply with OK' }], ONEAI_SMOKE_MODEL)
+    if (!res.ok || res.error) throw new Error(res.error || '聊天接口无有效回复')
+    if (!res.text?.trim()) throw new Error('聊天接口返回空回复')
+  } catch (e) {
+    const state = oneAiStateFromError(e)
+    const text = oneAiErrorText(e)
+    recordOneAiVerification(account, 'failed', state, `聊天冒烟失败：${text}`)
+    return done({ status: oneAiHealthStatus(state), modelCount, message: `冒烟未通过（${ONEAI_STATE_LABEL[state]}）：聊天测试失败：${text}` })
+  }
+  const message = `冒烟通过，已启用：${modelCount} 个模型 · ${ONEAI_SMOKE_MODEL} 聊天可用 · ${oneAiEstimateText(account.id)}`
+  recordOneAiVerification(account, 'verified', 'available', message)
+  return done({ status: 'ok', modelCount, message })
+}
+
 export async function checkKeyHealth(account: Account, apiKey?: string): Promise<KeyHealthResult> {
   const started = Date.now()
   const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
@@ -119,6 +178,7 @@ export async function checkKeyHealth(account: Account, apiKey?: string): Promise
   })
   try {
     if (account.providerId === 'inferbase') return await checkInferbaseHealth(account, apiKey, started)
+    if (account.providerId === 'oneai') return await checkOneAiHealth(account, apiKey, started)
     if (isLocalProvider(account.providerId)) {
       const base = (account.apiUrl || '').trim()
       if (!base) return done({ status: 'skipped', latencyMs: 0, message: '未填写本地服务地址' })

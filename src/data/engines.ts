@@ -50,6 +50,19 @@ export const ENGINE_CATALOG: Record<string, Engine[]> = {
     { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', multiplier: 0 },
     { id: 'openai-gpt-oss-120b', name: 'GPT-OSS 120B', multiplier: 0 },
   ],
+  // One AI API Key（官方免费模型页 2026-11-25 实查：免费车道 id 以 :free 结尾、共享每天
+  // 100 次请求 + 500 万 tokens；账户页/对话页会再用 GET /v1/models 按 Key 动态刷新全量，
+  // 这里只放冒烟默认款与常用免费款。付费款走 $10 注册额度/充值，不在免费档口径内）
+  oneai: [
+    { id: 'gpt-6-luna:free', name: 'GPT-6 Luna（免费）', multiplier: 0, flagship: true },
+    { id: 'moonshotai-kimi-k3.1-pro:free', name: 'Kimi K3.1 Pro（免费）', multiplier: 0, reasoning: true },
+    { id: 'nvidia-deepseek-v4-1-flash:free', name: 'DeepSeek V4.1 Flash（免费）', multiplier: 0 },
+    { id: 'deepseek-v4-flash-0731:free', name: 'DeepSeek V4 Flash 0731（免费）', multiplier: 0 },
+    { id: 'qwen-qwen3.8-27b:free', name: 'Qwen3.8 27B（免费）', multiplier: 0 },
+    { id: 'z-ai-glm-5.3:free', name: 'GLM 5.3（免费）', multiplier: 0, reasoning: true },
+    { id: 'minimaxai-minimax-m3-1-flash:free', name: 'MiniMax M3.1 Flash（免费）', multiplier: 0 },
+    { id: 'llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B（免费）', multiplier: 0 },
+  ],
   // DeepSeek（api-docs.deepseek.com：deepseek-chat/reasoner 已于 2026-07-24 下线）
   deepseek: [
     { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', multiplier: 0.15, tag: '高性价比', flagship: true },

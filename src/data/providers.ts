@@ -185,6 +185,14 @@ export const PROVIDERS: ProviderDefinition[] = [
     apiKeyUrl: 'https://inferbase.ai/',
     note: '智能路由网关：model 用 auto 自动选模型。免费档每月 5,000 次请求；每天 100 次托管请求 + $0.50 托管模型额度，免绑卡。托管模型输出价上限 $2/1M tokens、单次输入 8192 / 输出 1024 tokens、60 rpm/Key、托管 10 rpm/组织。余额与用量可自动同步；新 Key 需先在 Key 管理页点健康检查做真实冒烟，通过后才启用对话路线。',
   },
+  {
+    id: 'oneai', name: 'One AI API Key', shortName: 'One AI', category: 'llm',
+    officialUrl: 'https://oneaiapikey.com/', usageUrl: 'https://oneaiapikey.com/',
+    color: '#0891b2', initials: 'OK', modes: ['api', 'manual'],
+    apiBaseUrl: 'https://api.oneaiapikey.com/v1',
+    apiKeyUrl: 'https://oneaiapikey.com/',
+    note: '一个 Key 通吃多家模型：OpenAI 兼容（另有 Anthropic 兼容入口 https://api.oneaiapikey.com，根域名）。注册送 $10 不过期、免绑卡；免费模型（id 以 :free 结尾）每天 100 次请求 + 500 万 tokens（00:00 UTC 重置，全账户共享）。无公开余额接口，余额与用量请在官网控制台查看后手动录入；App 内只有本机调用估算。新 Key 需先在 Key 管理页点健康检查做真实冒烟（查 /v1/models + 用免费模型发一条测试消息），通过后才启用对话路线。',
+  },
 
   // ==================== 编程助手 ====================
   {
