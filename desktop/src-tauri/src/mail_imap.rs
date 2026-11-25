@@ -17,7 +17,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-type BoxStream = Box<dyn tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send>;
+/// dyn 不能同时挂两个非 auto trait，用一个汇总 trait 包住读写两面。
+trait MailStream: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> MailStream for T {}
+
+type BoxStream = Box<dyn MailStream + Unpin + Send>;
 
 enum Seg {
     Line(String),
@@ -680,5 +684,7 @@ pub fn mail_oauth_listen_start() -> Result<u16, String> {
 pub fn mail_oauth_listen_result() -> Option<OAuthResult> {
     let g = globals().oauth.lock().ok()?;
     let slot = g.as_ref()?;
-    slot.result.lock().ok()?.clone()
+    // 先绑定再返回：尾表达式里的锁 guard 临时量会活过 g 的析构，借用检查不过
+    let result = slot.result.lock().ok()?.clone();
+    result
 }
