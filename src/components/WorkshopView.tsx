@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   FolderCog, FileText, Languages, PenLine, Image as ImageIcon, Images, SearchCheck, Search, Table2, Mic,
-  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, ChevronDown, LayoutGrid,
+  ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, LayoutGrid, Star,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
@@ -10,6 +10,7 @@ import {
   APISFREE_LIMITS_TEXT, APISFREE_CHANGED_EVENT, type ApisFreeState,
 } from '../core/apisFree'
 import { loadChainMode, saveChainMode, CHAIN_MODE_EVENT, type ChainMode } from '../core/freeChain'
+import { countWorkshopMatches, visibleWorkshopCards, loadWorkshopFavs, saveWorkshopFavs, toggleWorkshopFav } from '../core/workshopHub'
 import { buildSearchContextCached } from '../core/webSearch'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { FileManagerView } from './FileManagerView'
@@ -462,15 +463,17 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
 }) {
   const [tool, setTool] = useState<ToolId>('hub')
   const back = () => setTool('hub')
-  // 工坊主页分组折叠（v0.1.333 Ethan 要求，与插件页折叠同一处理）：点组标题收起该组卡片，状态存本机
-  const [closedGroups, setClosedGroups] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('acm.workshop.closedGroups') ?? '[]') as string[] } catch { return [] }
-  })
-  const toggleGroup = (title: string) => setClosedGroups(prev => {
-    const next = prev.includes(title) ? prev.filter(x => x !== title) : [...prev, title]
-    try { localStorage.setItem('acm.workshop.closedGroups', JSON.stringify(next)) } catch { /* 忽略 */ }
-    return next
-  })
+  // 工坊主页横向分类页签（v0.1.438，按预览定案）：点分类只显示该分类卡片；
+  // 原折叠分组 acm.workshop.closedGroups 自本版弃用（不再读写，旧值留着忽略）。
+  const [hubTabIdx, setHubTabIdx] = useState(0)
+  const [hubQuery, setHubQuery] = useState('')
+  const [favs, setFavs] = useState<string[]>(loadWorkshopFavs)
+  const toggleFav = (card: { id: string; name: string }) => {
+    const next = toggleWorkshopFav(favs, card.id)
+    setFavs(next)
+    saveWorkshopFavs(next)
+    notify(next.includes(card.id) ? `已收藏「${card.name}」` : `已取消收藏「${card.name}」`)
+  }
   const toolProps: ToolProps = { accounts, sessionPwd, notify, onBack: back }
 
   // 外部直达信号（看板瓷砖等）：打开工坊时直达指定工具页
@@ -551,37 +554,55 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
     },
   ]
 
+  const activeGroup = groups[hubTabIdx] ?? groups[0]
+  const shownCards = visibleWorkshopCards(activeGroup.cards, hubQuery, favs)
+
   return (
     <div className="ws-hub">
       <div className="ws-head">
         <div className="ws-title"><span className="ws-logo"><Hammer size={18} /></span>AI 工坊</div>
         <p className="ws-subtitle">每个工具一个独立页面，点开即用 · 用的都是你已配置的模型与账户</p>
       </div>
-      {groups.map(g => (
-        <div key={g.title}>
-          <div className="ws-group-title" role="button" tabIndex={0} style={{ cursor: 'pointer', userSelect: 'none' }}
-            onClick={() => toggleGroup(g.title)} title={closedGroups.includes(g.title) ? '展开分组' : '收起分组'}>
-            {g.title} <small>{g.sub}</small>
-            <ChevronDown size={14} style={{ marginLeft: 6, verticalAlign: -2, transform: closedGroups.includes(g.title) ? 'rotate(-90deg)' : undefined, transition: 'transform .2s' }} />
-          </div>
-          {!closedGroups.includes(g.title) && (
-          <div className="ws-grid">
-            {g.cards.map(c => (
-              <button key={c.id} className="ws-card" onClick={c.action}>
-                {c.isNew && <span className="ws-new">NEW</span>}
-                <span className={`ws-tico ${c.grad}`}>{c.icon}</span>
-                <span className="ws-tname">{c.name}</span>
-                <span className="ws-tdesc">{c.desc}</span>
-                <span className="ws-tfoot">
-                  <span className={`ws-tag ${c.tagClass ?? ''}`}>{c.tag}</span>
-                  <span className="ws-open">打开 <ChevronRight size={13} /></span>
-                </span>
-              </button>
-            ))}
-          </div>
-          )}
+      <div className="ws-tabsbar">
+        <div className="ws-tabs" role="tablist" aria-label="工坊分类">
+          {groups.map((g, i) => (
+            <button key={g.title} role="tab" aria-selected={i === hubTabIdx}
+              className={`ws-tab ${i === hubTabIdx ? 'on' : ''}`} onClick={() => setHubTabIdx(i)}>
+              {g.title}<span className="ws-tab-n">{countWorkshopMatches(g.cards, hubQuery)}</span>
+            </button>
+          ))}
         </div>
-      ))}
+        <label className="ws-search">
+          <Search size={15} />
+          <input className="input" placeholder="搜索工具名、说明或标签…" value={hubQuery} onChange={e => setHubQuery(e.target.value)} />
+        </label>
+      </div>
+      {shownCards.length > 0 ? (
+        <div className="ws-grid" key={activeGroup.title}>
+          {shownCards.map((c, i) => (
+            <div key={c.id} className="ws-card" role="button" tabIndex={0}
+              style={{ animationDelay: `${Math.min(i, 8) * 30}ms` }}
+              onClick={c.action}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.action() } }}>
+              {c.isNew && <span className="ws-new">NEW</span>}
+              <button className={`ws-fav ${favs.includes(c.id) ? 'faved' : ''}`}
+                aria-label={`收藏${c.name}`} title={favs.includes(c.id) ? '取消收藏' : '收藏'}
+                onClick={e => { e.stopPropagation(); toggleFav(c) }}>
+                <Star size={16} fill={favs.includes(c.id) ? 'currentColor' : 'none'} />
+              </button>
+              <span className={`ws-tico ${c.grad}`}>{c.icon}</span>
+              <span className="ws-tname">{c.name}</span>
+              <span className="ws-tdesc">{c.desc}</span>
+              <span className="ws-tfoot">
+                <span className={`ws-tag ${c.tagClass ?? ''}`}>{c.tag}</span>
+                <span className="ws-open">打开 <ChevronRight size={13} /></span>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="ws-empty">这个分类里没有匹配「{hubQuery}」的工具，换个关键词，或切到其他分类看看。</div>
+      )}
     </div>
   )
 }
