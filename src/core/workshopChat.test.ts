@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Account } from './types'
 import { loadWorkshopRoutes, runWorkshopChat, resolveWorkshopModel, defaultChatEngine } from './workshopChat'
+import { saveChainMode } from './freeChain'
+import type { FreeAiOption } from './freeAi'
 
 vi.mock('./crypto', () => ({ decryptSecret: async () => 'test-key' }))
 
@@ -155,5 +157,87 @@ describe('Inferbase 工坊路线（v0.1.432：冒烟门槛 + auto 模型）', ()
     } catch (e) { errMsg = e instanceof Error ? e.message : String(e) }
     expect(errMsg).toContain('待实测')
     expect(fetchMock.mock.calls.length).toBe(callsBefore) // 门槛拦截发生在解密/发请求之前
+  })
+})
+
+describe('runWorkshopChat 自动切换链（v0.1.433）', () => {
+  class MemStorage {
+    private m = new Map<string, string>()
+    getItem(k: string) { return this.m.has(k) ? this.m.get(k)! : null }
+    setItem(k: string, v: string) { this.m.set(k, String(v)) }
+    removeItem(k: string) { this.m.delete(k) }
+    clear() { this.m.clear() }
+  }
+  beforeEach(() => { ;(globalThis as any).localStorage = new MemStorage() })
+  afterEach(() => { delete (globalThis as any).localStorage })
+
+  const zenOpt: FreeAiOption = { key: 'up:zen:m-free', label: 'M · Zen', group: 'Zen 免费通道', source: 'zen', modelId: 'm-free' }
+  const kiloOpt: FreeAiOption = { key: 'up:kilo:free-x', label: 'X · Kilo', group: 'Kilo 免费通道', source: 'kilo', modelId: 'free-x' }
+  const zenRoute = { kind: 'free' as const, key: 'free:up:zen:m-free', label: '免费 · M · Zen' }
+
+  /** Zen 429、Kilo 正常：按 URL 分流的 fetch */
+  const zenDownKiloOk = () => vi.fn(async (url: unknown) => {
+    if (String(url).includes('opencode.ai')) return { status: 429, text: async () => 'rate limit exceeded' }
+    return { status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'Kilo 的答案' } }] }) }
+  })
+
+  it('自动模式：Zen 限流自动切 Kilo，并通过 onChainNote 明示原因', async () => {
+    const fetchMock = zenDownKiloOk()
+    vi.stubGlobal('fetch', fetchMock)
+    const notes: string[] = []
+    const text = await runWorkshopChat({
+      route: zenRoute, freeOptions: [zenOpt, kiloOpt], accounts: [],
+      sessionPwd: '', system: 's', user: 'u', onChainNote: m => notes.push(m),
+    })
+    expect(text).toBe('Kilo 的答案')
+    expect(notes.join(' ')).toContain('限流')
+    expect(notes.join(' ')).toContain('已自动切换到')
+  })
+
+  it('手动锁定：Zen 限流直接报错，不试 Kilo', async () => {
+    saveChainMode('locked')
+    const fetchMock = zenDownKiloOk()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(runWorkshopChat({
+      route: zenRoute, freeOptions: [zenOpt, kiloOpt], accounts: [],
+      sessionPwd: '', system: 's', user: 'u',
+    })).rejects.toThrow('429')
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('kilo.ai'))).toBe(false)
+  })
+
+  it('自动模式：自有付费账户 429 后只切免费路线（不切其他付费账户）', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).includes('moonshot.cn')) return { ok: false, status: 429, text: async () => JSON.stringify({ error: { message: 'rate limit exceeded' } }) }
+      if (String(url).includes('opencode.ai')) return { status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'Zen 的答案' } }] }) }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: '不该被调用' } }] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const notes: string[] = []
+    const text = await runWorkshopChat({
+      route: { kind: 'account', key: 'acct:a1', label: 'Kimi', accountId: 'a1' },
+      freeOptions: [zenOpt], accounts: [acct('kim', 'Kimi', 'https://api.moonshot.cn'), acct('glm', 'GLM', 'https://open.bigmodel.cn/api/paas/v4', 'a2')],
+      sessionPwd: 'pwd', system: 's', user: 'u', onChainNote: m => notes.push(m),
+    })
+    expect(text).toBe('Zen 的答案')
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('bigmodel.cn'))).toBe(false)
+    expect(notes.join(' ')).toContain('已自动切换到')
+  })
+
+  it('自动模式：全部免费路线失败时汇总各路线真实原因', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).includes('opencode.ai')) return { status: 429, text: async () => 'rate limit exceeded' }
+      return { status: 503, text: async () => 'gateway down' }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let errMsg = ''
+    try {
+      await runWorkshopChat({
+        route: zenRoute, freeOptions: [zenOpt, kiloOpt], accounts: [],
+        sessionPwd: '', system: 's', user: 'u',
+      })
+    } catch (e) { errMsg = e instanceof Error ? e.message : String(e) }
+    expect(errMsg).toContain('全部路线都不可用')
+    expect(errMsg).toContain('429')
+    expect(errMsg).toContain('503')
   })
 })

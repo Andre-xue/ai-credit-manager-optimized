@@ -638,6 +638,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     try {
       const out = await runWorkshopChat({
         route, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd,
+        onChainNote: msg => notify(msg),
         system: `你是追剧推荐助手。只推荐真实存在、能在正版平台看的剧/电影/短剧（爱奇艺、腾讯视频、优酷、芒果TV、哔哩哔哩、红果短剧、抖音、快手、Netflix、Disney+ 等）；每部写清在哪个平台播、一句话推荐理由；不要编造不存在的剧名、评分与简介，不确定的写“需核实”。输出格式：先写一句简短导语，然后只输出一个 \`\`\`json 代码块，内容是数组，每项 {"title":"剧名","platform":"平台","type":"剧集/电影/短剧","reason":"一句话理由"}，最多 6 部。${scope ? `本次范围：${scope}。` : ''}`,
         user: `我想看：${q}`,
       })

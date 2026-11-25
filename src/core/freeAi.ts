@@ -1,18 +1,20 @@
 // 免费 AI 模型（供 AI 翻译等模块复用 AI 助手的免费来源）：
 // 1) 云端免费模型（WorkBuddy 网关 listModels，需登录云账号；未登录时该组为空）；
-// 2) 上游免费通道 Zen / Kilo（免 Key 匿名直连，清单缓存 6 小时）。
+// 2) 上游免费通道 Zen / Kilo（免 Key 匿名直连，清单缓存 6 小时）；
+// 3) APIsFreeLLM 兜底通道（v0.1.433，免 Key；仅在用户开启且真实测活通过后才出现）。
 // 过滤规则：只保留能做文本对话的模型——嵌入（embedding）与语音（audio）类不能翻译，直接剔除；
 // 视觉语言（VL）模型保留（文本对话照常可用）。
 
 import { listModels, streamChat, type AiModel } from './ai'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, type UpstreamModel, type UpstreamSource } from './upstreamFree'
 import { detectModelCapability, capabilityChatCapable } from './modelCapability'
+import { apisFreeReady, chatApisFree, APISFREE_MODEL } from './apisFree'
 
 export interface FreeAiOption {
   key: string
   label: string
-  group: '云端免费' | 'Zen 免费通道' | 'Kilo 免费通道'
-  source: 'cloud' | UpstreamSource
+  group: '云端免费' | 'Zen 免费通道' | 'Kilo 免费通道' | 'APIsFreeLLM 兜底通道'
+  source: 'cloud' | UpstreamSource | 'apisfree'
   modelId: string
 }
 
@@ -56,7 +58,12 @@ export async function loadFreeAiOptions(): Promise<FreeAiOption[]> {
   try { cloud = await listModels() } catch { /* 未登录云账号：云端组为空 */ }
   let upstream: UpstreamModel[] = []
   try { upstream = await fetchUpstreamFreeModels() } catch { /* 网络失败：上游组为空 */ }
-  return buildFreeAiOptions(cloud, upstream)
+  const out = buildFreeAiOptions(cloud, upstream)
+  // APIsFreeLLM 兜底：只有用户开启且在自己网络下真实测活通过后才列出，未测通不出现、不冒充可用
+  if (apisFreeReady()) {
+    out.push({ key: `apisfree:${APISFREE_MODEL}`, label: `${APISFREE_MODEL} · APIsFreeLLM`, group: 'APIsFreeLLM 兜底通道', source: 'apisfree', modelId: APISFREE_MODEL })
+  }
+  return out
 }
 
 /** 用所选免费模型完成一次对话（翻译场景：system 提示 + 单条文本） */
@@ -65,6 +72,12 @@ export async function freeAiChat(opt: FreeAiOption, system: string, text: string
     // 独立 conversationId，避免与 AI 助手页面的对话流互相冲突被网关拒绝
     const convId = `tr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     return streamChat(opt.modelId, [], text, () => {}, undefined, undefined, undefined, system, convId)
+  }
+  if (opt.source === 'apisfree') {
+    return chatApisFree([
+      { role: 'system', content: system },
+      { role: 'user', content: text },
+    ])
   }
   return chatUpstream(opt.source, opt.modelId, [
     { role: 'system', content: system },
@@ -80,6 +93,7 @@ export function classifyFreeTestError(e: unknown): string {
   const low = msg.toLowerCase()
   if (/freeusagelimit|quota|额度|insufficient|429|rate.?limit|限流/.test(low)) return '免费额度已耗尽或被限流'
   if (/timeout|timed out|超时/.test(low)) return '响应超时'
+  if (/refused|policy|child_safety|拒绝/.test(low)) return `上游拒绝请求：${msg.slice(0, 80)}`
   if (/401|403|unauthor|login|登录/.test(low)) return '需要先登录云账号'
   if (/network|fetch|网络|econn|dns|connect/.test(low)) return '网络不通'
   return msg.slice(0, 80) || '未知错误'

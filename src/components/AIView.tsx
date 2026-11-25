@@ -33,10 +33,21 @@ import { loadState } from '../core/store'
 import { t, locale } from '../core/i18n'
 import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
-import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels } from '../core/providerCall'
+import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels, callChat } from '../core/providerCall'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDelayMs, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
 import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
 import { testFreeAiOption, classifyFreeTestError, type FreeAiOption } from '../core/freeAi'
+import {
+  loadApisFreeState, saveApisFreeState, apisFreeReady, apisFreeRateText, testApisFree, chatApisFree,
+  APISFREE_MODEL, APISFREE_LIMITS_TEXT, APISFREE_CHANGED_EVENT, type ApisFreeState,
+} from '../core/apisFree'
+import {
+  runFreeChain, loadChainMode, saveChainMode, classifyChainError, failoverEligible, orderChainCandidates,
+  CHAIN_KIND_REASON, CHAIN_MODE_EVENT, ChainAllFailedError, ChainPartialError,
+  type ChainMode, type ChainCandidate, type ChainAvailability,
+} from '../core/freeChain'
+import { hasPoolAccounts, poolChat } from '../core/wbPool'
+import { defaultChatEngine } from '../core/workshopChat'
 import { collectMcpTools, loadToolCallingEnabled, runToolChatLoop } from '../core/toolChat'
 import { buildSearchContextCached, loadWebSearchEnabled, saveWebSearchEnabled } from '../core/webSearch'
 import type { Account, PromptTemplate, AiToolbarPrefs } from '../core/types'
@@ -455,8 +466,33 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return () => { alive = false; window.clearTimeout(timer) }
   }, [ollamaEnabled])
 
+  // 免费路线切换链模式 + APIsFreeLLM 通道状态（v0.1.433，本机偏好；工坊 RouteSelect 共用同一份）
+  const [chainMode, setChainModeState] = useState<ChainMode>(() => loadChainMode())
+  const [apisFreeState, setApisFreeState] = useState<ApisFreeState>(() => loadApisFreeState())
+  const [apisFreeTesting, setApisFreeTesting] = useState(false)
+  useEffect(() => {
+    const refresh = () => { setApisFreeState(loadApisFreeState()); setChainModeState(loadChainMode()) }
+    window.addEventListener(APISFREE_CHANGED_EVENT, refresh)
+    window.addEventListener(CHAIN_MODE_EVENT, refresh)
+    return () => { window.removeEventListener(APISFREE_CHANGED_EVENT, refresh); window.removeEventListener(CHAIN_MODE_EVENT, refresh) }
+  }, [])
+  const changeChainMode = (m: ChainMode) => { saveChainMode(m); setChainModeState(m) }
+  const runApisFreeTest = async () => {
+    if (apisFreeTesting) return
+    setApisFreeTesting(true)
+    const r = await testApisFree()
+    setApisFreeState(loadApisFreeState())
+    setApisFreeTesting(false)
+    notify(r.ok ? `APIsFreeLLM 测活通过（${r.ms} 毫秒），已可作兜底路线` : `APIsFreeLLM 测活失败：${r.error ?? ''}`)
+  }
+  const toggleApisFree = async (on: boolean) => {
+    saveApisFreeState({ enabled: on })
+    setApisFreeState(loadApisFreeState())
+    if (on) await runApisFreeTest()
+  }
+
   // 免费模型 + 用户自己的账户模型，按分类联动过滤
-  const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined, upstream: undefined as UpstreamSource | undefined })), [models])
+  const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined, upstream: undefined as UpstreamSource | undefined, apisFree: undefined as boolean | undefined })), [models])
   // 内置免费通道模型（Zen / Kilo）：与云端免费模型同列「免费模型」分类，标签带来源后缀区分
   const upstreamOptions = useMemo(() => upstreamModels.map(m => ({
     key: `up:${m.source}:${m.id}`,
@@ -466,7 +502,19 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     free: true,
     localModel: undefined as string | undefined,
     upstream: m.source as UpstreamSource | undefined,
+    apisFree: undefined as boolean | undefined,
   })), [upstreamModels])
+  // APIsFreeLLM 兜底通道：仅在开启且真实测活通过后才作为选项出现（未测通不冒充可用）
+  const apisFreeOptions = useMemo(() => (apisFreeReady(apisFreeState) ? [{
+    key: `apisfree:${APISFREE_MODEL}`,
+    label: `${APISFREE_MODEL} · APIsFreeLLM`,
+    account: null as Account | null,
+    category: '免费模型' as ModelCategory,
+    free: true,
+    localModel: undefined as string | undefined,
+    upstream: undefined as UpstreamSource | undefined,
+    apisFree: true as boolean | undefined,
+  }] : []), [apisFreeState])
   const ownOptions = useMemo(() => dedupeSameKeyAccounts(accounts
     // 无密钥的影子账户（多由早期导入/合并产生）不能调用，与翻译/图片等模块一致不展示；
     // Key 管理页按密钥计数同样不含它们，所以会出现「管理页 1 个、助手里 2 个」的假重复
@@ -491,6 +539,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       free: false,
       localModel: undefined as string | undefined,
       upstream: undefined as UpstreamSource | undefined,
+      apisFree: undefined as boolean | undefined,
     })), [accounts, settings])
   // 本机 Ollama 模型作为「本地型」选项（无账户、无 Key，直接调本机服务）
   const localOptions = useMemo(() => localModels.map(m => ({
@@ -501,8 +550,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     free: false,
     localModel: m,
     upstream: undefined as UpstreamSource | undefined,
+    apisFree: undefined as boolean | undefined,
   })), [localModels])
-  const allOptions = useMemo(() => [...freeOptions, ...upstreamOptions, ...ownOptions, ...localOptions], [freeOptions, upstreamOptions, ownOptions, localOptions])
+  const allOptions = useMemo(() => [...freeOptions, ...upstreamOptions, ...apisFreeOptions, ...ownOptions, ...localOptions], [freeOptions, upstreamOptions, apisFreeOptions, ownOptions, localOptions])
   const visibleOptions = useMemo(() => allOptions.filter(o => o.category === category), [category, allOptions])
   const selectedOption = allOptions.find(o => o.key === model) ?? null
   const canChat = !selectedOption || selectedOption.free || CATEGORY_META[selectedOption.category].canChat
@@ -649,6 +699,71 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     // 语音模式：关闭推理、只带最近 2 条上下文，最大限度缩短首字延迟
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
     const voiceHistory = voiceMode ? history.slice(-2) : history
+    // ---- 免费路线自动切换链（v0.1.433）：候选只含免费类（云端/Zen/Kilo、已验证启用的
+    // Inferbase、WorkBuddy 账号池、APIsFreeLLM 兜底）；自有付费账户永不被自动切入 ----
+    const chainMsgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
+    const chainFid = (o: (typeof allOptions)[number]) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
+    type AiCand = { id: string; label: string; kind: string; opt?: (typeof allOptions)[number]; acct?: Account; pool?: boolean }
+    const buildAiChain = (selectedKey?: string, excludeId?: string): { cands: AiCand[]; byId: Map<string, AiCand> } => {
+      const list: AiCand[] = []
+      for (const o of allOptions.filter(x => x.free)) list.push({ id: o.key, label: o.label, kind: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), opt: o })
+      for (const o of allOptions.filter(x => x.account?.providerId === 'inferbase')) {
+        if (o.account && inferbaseGate(o.account).enabled) list.push({ id: `inferbase:${o.account.id}`, label: o.account.label, kind: 'inferbase', acct: o.account })
+      }
+      try { if (hasPoolAccounts()) list.push({ id: 'wbpool', label: 'WorkBuddy 账号池', kind: 'wbpool', pool: true }) } catch { /* 池不可用 */ }
+      const filtered = excludeId ? list.filter(c => c.id !== excludeId) : list
+      const ordered = orderChainCandidates(selectedKey ?? '', filtered)
+      return { cands: ordered, byId: new Map(ordered.map(c => [c.id, c])) }
+    }
+    const aiChainAttempt = async (cand: AiCand, ctx: { markEmitted: () => void }): Promise<string> => {
+      if (cand.pool) {
+        const r = await poolChat(resolvePwd(), chainMsgs)
+        return r.text
+      }
+      if (cand.acct) {
+        const key = await decryptSecret(cand.acct.encryptedKey!, resolvePwd())
+        const r = await callChat(cand.acct, key, chainMsgs, defaultChatEngine('inferbase') || 'auto')
+        if (!r.ok) throw new Error(r.error || r.text || '调用失败')
+        return r.text
+      }
+      const o = cand.opt!
+      if (o.apisFree) {
+        const text = await chatApisFree(chainMsgs)
+        if (onDelta) onDelta(text); else setStreamingText(text)
+        return text
+      }
+      if (o.upstream) {
+        const text = await chatUpstream(o.upstream, chainFid(o), chainMsgs, effectiveReasoning)
+        if (onDelta) onDelta(text); else setStreamingText(text)
+        return text
+      }
+      // 云端免费走流式：已吐字后失败由 chain 判定为 partial，不自动重发（避免回答混杂）
+      return streamChat(o.key, voiceHistory, content, delta => { ctx.markEmitted(); if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
+    }
+    const aiChainAvailability = (cand: AiCand): ChainAvailability | null => {
+      if (cand.acct && (!cand.acct.encryptedKey || !resolvePwd())) return { available: false, probe: false, reason: '保险箱未解锁，无法使用 Inferbase' }
+      if (cand.pool && !resolvePwd()) return { available: false, probe: false, reason: '保险箱未解锁，无法使用账号池' }
+      return null
+    }
+    const runAiChain = async (selectedKey?: string, excludeId?: string) => {
+      const { cands, byId } = buildAiChain(selectedKey, excludeId)
+      return runFreeChain(
+        cands.map(c => ({ id: c.id, label: c.label, kind: c.kind } satisfies ChainCandidate)),
+        (cand, ctx) => aiChainAttempt(byId.get(cand.id)!, ctx),
+        { extraAvailability: cand => aiChainAvailability(byId.get(cand.id)!) },
+      )
+    }
+    /** 链的成败同步进免费模型测活标记（菜单里能直接看到哪条刚失败/刚跑通） */
+    const markChainFreeTest = (failures: { id: string; message: string }[], usedId?: string) => {
+      for (const f of failures) {
+        if (allOptions.some(o => o.key === f.id && o.free)) {
+          setFreeTest(prev => ({ ...prev, [f.id]: { state: 'done', ok: false, ms: 0, error: classifyFreeTestError(new Error(f.message)) } }))
+        }
+      }
+      if (usedId && allOptions.some(o => o.key === usedId && o.free)) {
+        setFreeTest(prev => ({ ...prev, [usedId]: { state: 'done', ok: true, ms: 0 } }))
+      }
+    }
     // 用户自己的账户：用其 Key 真正调用
     if (opt?.account) {
       const acct = opt.account
@@ -699,7 +814,26 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         }
       }
       const r = await callByCategory(acct, apiKey, opt.category, msgs, engForCall, effectiveReasoning)
-      if (!r.ok) throw Object.assign(new Error(r.error ?? t('调用失败')), { cors: r.cors })
+      if (!r.ok) {
+        const errMsg = r.error ?? t('调用失败')
+        // 自动切换（v0.1.433）：自有账户（含已验证的 Inferbase）聊天失败且属可切换类时，
+        // 只切免费路线并明示；Inferbase 门槛错误在上方已拦下、不会走到这里。
+        // 手动锁定 / 指定 optKey 的调用不切换，失败原样报真实原因。
+        const cls = classifyChainError(new Error(errMsg))
+        if (!optKey && loadChainMode() === 'auto' && CATEGORY_META[opt.category].canChat && failoverEligible(cls.kind)) {
+          try {
+            const res = await runAiChain(undefined, `inferbase:${acct.id}`)
+            markChainFreeTest(res.failures, res.usedId)
+            notify(`「${acct.label}」${CHAIN_KIND_REASON[cls.kind]}，已自动切换到「${res.usedLabel}」（免费路线）`)
+            return res.text
+          } catch (chainErr) {
+            if (chainErr instanceof ChainPartialError) throw new Error(`${chainErr.message}（已输出部分内容，未自动重发；可点重试或换一个模型）`)
+            if (chainErr instanceof ChainAllFailedError) throw new Error(`${errMsg}\n${chainErr.message}`)
+            throw chainErr
+          }
+        }
+        throw Object.assign(new Error(errMsg), { cors: r.cors })
+      }
       if (r.images?.length) {
         return `${r.text}\n${r.images.map(u => u.startsWith('data:') ? t('[已生成图片]') : u).join('\n')}`
       }
@@ -716,40 +850,29 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       if (!r.ok) throw new Error(r.error ?? t('本地模型调用失败'))
       return r.text
     }
-    // 免费模型（云端免费 / Zen / Kilo）：主选不可用时自动换下一个候选，不再让用户逐个试。
-    // 候选顺序：主选 → 已测跑通的 → 未测的 → 已知测不通的；换成功后同步切换当前选择并标记状态。
-    // 指定 optKey 的调用（对比/换 Key 重试）不兜底，失败原样抛出。
+    // 免费模型（云端免费 / Zen / Kilo / APIsFreeLLM）：自动模式走 freeChain 切换链——
+    // 首选遇限流/额度/5xx/超时/空响应/网络问题时切下一条免费路线（含已验证 Inferbase 与
+    // 账号池），切换原因明示，冷却/熔断中的路线自动跳过；流式已吐字后失败不重发。
+    // 手动锁定或指定 optKey（对比/换 Key 重试）时只跑所选路线，失败原样抛出。
     if (opt?.free) {
-      const fid = (o: (typeof allOptions)[number]) => (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key)
-      const score = (o: (typeof allOptions)[number]) => { const tt = freeTest[o.key]; return tt?.state === 'done' ? (tt.ok ? 0 : 2) : 1 }
-      const candidates = [opt, ...allOptions.filter(o => o.free && o.key !== opt.key).sort((a, b) => score(a) - score(b))]
-      let firstErr: unknown = null
-      for (const cand of candidates) {
-        if (signal?.aborted) throw new Error(t('已停止'))
-        let emitted = false
-        try {
-          let text: string
-          if (cand.upstream) {
-            const src = cand.upstream
-            const msgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
-            text = await chatUpstream(src, fid(cand), msgs, effectiveReasoning)
-            if (onDelta) onDelta(text); else setStreamingText(text)
-          } else {
-            text = await streamChat(cand.key, voiceHistory, content, delta => { emitted = true; if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
-          }
-          if (cand.key !== opt.key) {
-            setFreeTest(prev => ({ ...prev, [cand.key]: { state: 'done', ok: true, ms: 0 } }))
-            setModel(cand.key); saveModel(cand.key)
-            notify(t('免费模型 {name} 不可用，已自动切换到 {next}', { name: fid(opt), next: fid(cand) }))
-          }
-          return text
-        } catch (e) {
-          if (!firstErr) firstErr = e
-          setFreeTest(prev => ({ ...prev, [cand.key]: { state: 'done', ok: false, ms: 0, error: classifyFreeTestError(e) } }))
-          if (optKey || emitted) throw e
-        }
+      if (optKey || loadChainMode() === 'locked') {
+        const single: AiCand = { id: opt.key, label: opt.label, kind: opt.apisFree ? 'apisfree' : (opt.upstream ?? 'cloud'), opt }
+        return aiChainAttempt(single, { markEmitted: () => {} })
       }
-      throw firstErr ?? new Error(t('调用失败'))
+      try {
+        const res = await runAiChain(opt.key)
+        markChainFreeTest(res.failures, res.usedId)
+        if (res.usedId !== opt.key) {
+          const usedOpt = allOptions.find(o => o.key === res.usedId)
+          if (usedOpt?.free) { setModel(usedOpt.key); saveModel(usedOpt.key) }
+          for (const s of res.switches) notify(`「${s.fromLabel}」${s.reason}，已自动切换到「${s.toLabel}」`)
+        }
+        return res.text
+      } catch (e) {
+        if (e instanceof ChainPartialError) throw new Error(`${e.message}（已输出部分内容，未自动重发；可点重试或换一个模型）`)
+        if (e instanceof ChainAllFailedError) { markChainFreeTest(e.failures); throw new Error(e.message) }
+        throw e
+      }
     }
     // 自有账户等其他模型：流式输出
     return streamChat((model || 'auto'), voiceHistory, content, delta => { if (onDelta) onDelta(delta); else setStreamingText(prev => prev + delta) }, signal, images, effectiveReasoning, effectiveSystemPrompt, convId)
@@ -1177,7 +1300,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 免费模型：按用途分组（v0.1.317）+ 选中即测活，结果记状态供菜单打标并通知用户
   type FreeTestState = { state: 'testing' } | { state: 'done'; ok: boolean; ms: number; error?: string }
   const [freeTest, setFreeTest] = useState<Record<string, FreeTestState>>({})
-  const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource }) => (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key)
+  const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource; apisFree?: boolean }) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
   const groupedFreeOptions = useMemo(() => {
     if (category !== '免费模型') return null
     const byPurpose = new Map<string, typeof visibleOptions>()
@@ -1194,8 +1317,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const lastProbeAtRef = useRef(0)
   const toFreeAiOption = (o: (typeof allOptions)[number]): FreeAiOption => ({
     key: o.key, label: o.label,
-    group: o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费',
-    source: o.upstream ?? 'cloud', modelId: freeModelIdOf(o),
+    group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
+    source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: freeModelIdOf(o),
   })
   /** 一键全测：并发 3 路逐个测活，结果实时打标；当前主选已死时自动选第一个活的 */
   const probeAllFree = async (autoSelect: boolean) => {
@@ -1233,8 +1356,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setFreeTest(prev => ({ ...prev, [o.key]: { state: 'testing' } }))
     const opt: FreeAiOption = {
       key: o.key, label: o.label,
-      group: o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费',
-      source: o.upstream ?? 'cloud', modelId: id,
+      group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
+      source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: id,
     }
     void testFreeAiOption(opt).then(r => {
       setFreeTest(prev => ({ ...prev, [o.key]: { state: 'done', ok: r.ok, ms: r.ms, error: r.error } }))
@@ -1248,6 +1371,23 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
+      <div className="ai-model-option" style={{ cursor: 'default' }}>
+        <span>🔀 免费路线切换</span>
+        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn sm" disabled={chainMode === 'auto'} onClick={() => changeChainMode('auto')}>自动切换</button>
+          <button className="btn sm" disabled={chainMode === 'locked'} onClick={() => changeChainMode('locked')}>手动锁定</button>
+          {chainMode === 'auto' ? '首选失败自动切下一条免费路线并说明原因' : '只用所选路线，失败只报真实原因'}
+        </small>
+      </div>
+      {category === '免费模型' && <div className="ai-model-option" style={{ cursor: 'default' }}>
+        <span>🛟 APIsFreeLLM 兜底通道（免 Key）</span>
+        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn sm" onClick={() => void toggleApisFree(!apisFreeState.enabled)}>{apisFreeState.enabled ? '关闭' : '开启'}</button>
+          <button className="btn sm" disabled={apisFreeTesting} onClick={() => void runApisFreeTest()}>{apisFreeTesting ? '测活中…' : '测活'}</button>
+          {!apisFreeState.enabled ? '未开启' : apisFreeState.verifiedAt > 0 ? `已测通 · ${apisFreeRateText(apisFreeState.rate)}` : `未测通${apisFreeState.lastError ? `：${apisFreeState.lastError}` : '（点测活在你当前网络下验证）'}`}
+        </small>
+        <small>{APISFREE_LIMITS_TEXT}</small>
+      </div>}
       {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('自动标出哪些还能用，并选到第一个可用的')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
@@ -1262,7 +1402,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
                 onClick={() => selectFreeModel(o)}>
                 <span>⚡ {displayLabel}</span>
-                <small>{o.upstream ? UPSTREAM_LABEL[o.upstream] : t('云端')} · {info.tags.map(x => t(x)).join(' / ')}{test?.state === 'testing' ? ` · ${t('测活中…')}` : test?.state === 'done' ? (test.ok ? ` · ✅ ${t('已跑通')} ${test.ms}ms` : ` · ❌ ${test.error ?? ''}`) : ''}</small>
+                <small>{o.apisFree ? 'APIsFreeLLM' : (o.upstream ? UPSTREAM_LABEL[o.upstream] : t('云端'))} · {info.tags.map(x => t(x)).join(' / ')}{test?.state === 'testing' ? ` · ${t('测活中…')}` : test?.state === 'done' ? (test.ok ? ` · ✅ ${t('已跑通')} ${test.ms}ms` : ` · ❌ ${test.error ?? ''}`) : ''}</small>
               </button>
             )
           })}

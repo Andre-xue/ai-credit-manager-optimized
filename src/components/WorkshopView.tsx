@@ -5,6 +5,11 @@ import {
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
+import {
+  loadApisFreeState, saveApisFreeState, apisFreeRateText, testApisFree,
+  APISFREE_LIMITS_TEXT, APISFREE_CHANGED_EVENT, type ApisFreeState,
+} from '../core/apisFree'
+import { loadChainMode, saveChainMode, CHAIN_MODE_EVENT, type ChainMode } from '../core/freeChain'
 import { buildSearchContextCached } from '../core/webSearch'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { FileManagerView } from './FileManagerView'
@@ -28,6 +33,7 @@ type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 't
 export function useRouteData(accounts: Account[]) {
   const [data, setData] = useState<WorkshopRouteData | null>(null)
   const [routeKey, setRouteKey] = useState('')
+  const [reloadNonce, setReloadNonce] = useState(0)
   useEffect(() => {
     let dead = false
     void loadWorkshopRoutes(accounts).then(d => {
@@ -37,21 +43,66 @@ export function useRouteData(accounts: Account[]) {
     })
     return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accounts.length])
+  }, [accounts.length, reloadNonce])
+  // APIsFreeLLM 测活状态变化（测通后兜底路线要立刻出现在列表里）→ 重载路线
+  useEffect(() => {
+    const onChange = () => setReloadNonce(n => n + 1)
+    window.addEventListener(APISFREE_CHANGED_EVENT, onChange)
+    return () => window.removeEventListener(APISFREE_CHANGED_EVENT, onChange)
+  }, [])
   const route: WorkshopRoute | null = data?.routes.find(r => r.key === routeKey) ?? null
   return { data, route, routeKey, setRouteKey }
 }
 
 export function RouteSelect({ data, routeKey, setRouteKey }: { data: WorkshopRouteData | null; routeKey: string; setRouteKey: (k: string) => void }) {
+  const [chainMode, setChainModeState] = useState<ChainMode>(() => loadChainMode())
+  const [afState, setAfState] = useState<ApisFreeState>(() => loadApisFreeState())
+  const [afTesting, setAfTesting] = useState(false)
+  useEffect(() => {
+    const refresh = () => { setAfState(loadApisFreeState()); setChainModeState(loadChainMode()) }
+    window.addEventListener(APISFREE_CHANGED_EVENT, refresh)
+    window.addEventListener(CHAIN_MODE_EVENT, refresh)
+    return () => { window.removeEventListener(APISFREE_CHANGED_EVENT, refresh); window.removeEventListener(CHAIN_MODE_EVENT, refresh) }
+  }, [])
+  const changeMode = (m: ChainMode) => { saveChainMode(m); setChainModeState(m) }
+  const runAfTest = async () => {
+    if (afTesting) return
+    setAfTesting(true)
+    await testApisFree()
+    setAfState(loadApisFreeState())
+    setAfTesting(false)
+  }
+  const toggleAf = async (on: boolean) => {
+    saveApisFreeState({ enabled: on })
+    setAfState(loadApisFreeState())
+    if (on) await runAfTest()
+  }
   return (
-    <label className="ws-route">
-      <span>使用模型</span>
-      <select className="select" value={routeKey} onChange={e => setRouteKey(e.target.value)} disabled={!data || data.routes.length === 0}>
-        {!data && <option value="">加载中…</option>}
-        {data && data.routes.length === 0 && <option value="">无可用模型（先在 AI 助手登录云账号或添加账户）</option>}
-        {data?.routes.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-      </select>
-    </label>
+    <div>
+      <label className="ws-route">
+        <span>使用模型</span>
+        <select className="select" value={routeKey} onChange={e => setRouteKey(e.target.value)} disabled={!data || data.routes.length === 0}>
+          {!data && <option value="">加载中…</option>}
+          {data && data.routes.length === 0 && <option value="">无可用模型（先在 AI 助手登录云账号或添加账户）</option>}
+          {data?.routes.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+        </select>
+      </label>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12 }}>
+        <span style={{ opacity: 0.75 }}>免费路线切换</span>
+        <button className="btn sm" disabled={chainMode === 'auto'} onClick={() => changeMode('auto')}>自动切换</button>
+        <button className="btn sm" disabled={chainMode === 'locked'} onClick={() => changeMode('locked')}>手动锁定</button>
+        <span style={{ opacity: 0.6 }}>{chainMode === 'auto' ? '首选失败自动切下一条免费路线并说明原因' : '只用所选路线，失败只报真实原因'}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
+        <span style={{ opacity: 0.75 }}>APIsFreeLLM 兜底通道（免 Key）</span>
+        <button className="btn sm" onClick={() => void toggleAf(!afState.enabled)}>{afState.enabled ? '关闭' : '开启'}</button>
+        <button className="btn sm" disabled={afTesting} onClick={() => void runAfTest()}>{afTesting ? '测活中…' : '测活'}</button>
+        <span style={{ opacity: 0.6 }}>
+          {!afState.enabled ? '未开启' : afState.verifiedAt > 0 ? `已测通 · ${apisFreeRateText(afState.rate)}` : `未测通${afState.lastError ? `：${afState.lastError}` : '（点测活在你当前网络下验证）'}`}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, opacity: 0.55, marginTop: 2 }}>{APISFREE_LIMITS_TEXT}</div>
+    </div>
   )
 }
 
@@ -142,6 +193,7 @@ function SummaryTool({ accounts, sessionPwd, notify, onBack }: ToolProps) {
 
   const chat = (system: string, user: string) => runWorkshopChat({
     route: route!, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd, system, user,
+    onChainNote: msg => notify(msg),
   })
 
   const run = async () => {
@@ -241,6 +293,7 @@ function PolishTool({ accounts, sessionPwd, notify, onBack }: ToolProps) {
       if (custom.trim()) extras.push(`附加要求：${custom.trim()}`)
       const out = await runWorkshopChat({
         route, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd,
+        onChainNote: msg => notify(msg),
         system: '你是中文文案编辑。按用户要求处理文本，只输出处理后的正文，不要解释、不要加引号。',
         user: `处理方式：${mode}${extras.length ? `\n${extras.join('\n')}` : ''}\n\n原文：\n${text.slice(0, 8000)}`,
       })
@@ -319,6 +372,7 @@ function WebCheckTool({ accounts, sessionPwd, notify, onBack }: ToolProps) {
       setSources(ctx.sources)
       const out = await runWorkshopChat({
         route, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd,
+        onChainNote: msg => notify(msg),
         system: `你是事实核查员。下面是联网搜索到的资料：\n\n${ctx.block}\n\n核查要求：只依据资料判断，给出结论（属实 / 不实 / 证据不足），引用资料编号说明依据；资料没有提到的明确说证据不足，不许猜测。`,
         user: `核查这句话：${claim.trim()}`,
       })
@@ -359,6 +413,7 @@ function TableTool({ accounts, sessionPwd, notify, onBack }: ToolProps) {
     try {
       const out = await runWorkshopChat({
         route, freeOptions: data?.freeOptions ?? [], accounts, sessionPwd,
+        onChainNote: msg => notify(msg),
         system: '你是表格数据分析助手。只依据给出的表格数据回答，给出具体数字与计算过程；数据里没有的明确说明。',
         user: `表格《${tableName}》内容（CSV/文本）：\n\n${tableText.slice(0, 14000)}\n\n问题：${question.trim()}`,
       })

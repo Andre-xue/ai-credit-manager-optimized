@@ -143,6 +143,7 @@ export async function visionTagImage(params: {
     const opt = freeOptions.find(o => `free:${o.key}` === route.key)
     if (!opt) throw new Error('所选免费模型已不可用，请换一个')
     if (opt.source === 'cloud') throw new Error('云端免费模型暂不支持看图打标，请换带看图能力的免费模型或自有账户')
+    if (opt.source === 'apisfree') throw new Error('APIsFreeLLM 是纯文本通道，不支持看图打标，请换带看图能力的免费模型或自有账户')
     const text = await chatUpstream(opt.source, opt.modelId, messages)
     if (!text.trim()) throw new Error('模型没有返回描述')
     return text.trim()

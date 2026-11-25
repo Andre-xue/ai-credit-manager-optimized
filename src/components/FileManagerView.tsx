@@ -410,6 +410,7 @@ export function FileManagerView({ accounts, sessionPwd, notify, onBack }: {
         const ctx = qaChunks.map((c, i) => `[${i + 1}] 文件：${c.path}\n${c.text}`).join('\n\n')
         const out = await runWorkshopChat({
           route, freeOptions: routeData?.freeOptions ?? [], accounts, sessionPwd,
+          onChainNote: msg => notify(msg),
           system: `你是文件管家助手。下面是从用户本地文件索引中检索到的原文片段：\n\n${ctx}\n\n依据片段回答问题，并注明出自哪个文件；片段里没有的不要编造，明确说明没找到。`,
           user: q,
         })
