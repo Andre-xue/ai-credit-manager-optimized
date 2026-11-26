@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -479,6 +479,14 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return () => { window.removeEventListener(APISFREE_CHANGED_EVENT, refresh); window.removeEventListener(CHAIN_MODE_EVENT, refresh) }
   }, [])
   const changeChainMode = (m: ChainMode) => { saveChainMode(m); setChainModeState(m) }
+  // v0.1.439：右上角功能菜单里的「免费路线切换」组点选——全局同一设置（与工坊共用），切换给 toast 确认
+  const pickChainMode = (m: ChainMode) => {
+    if (m !== chainMode) {
+      changeChainMode(m)
+      notify(m === 'auto' ? '免费路线已切到「自动切换」：首选失败自动切下一条免费路线并说明原因' : '免费路线已切到「手动锁定」：只用所选路线，失败只报真实原因')
+    }
+    setToolsOpen(false)
+  }
   const runApisFreeTest = async () => {
     if (apisFreeTesting) return
     setApisFreeTesting(true)
@@ -1540,6 +1548,17 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                     <Globe size={16} /><span>{t('联网搜索')}</span>{webSearchOn && <Check size={15} className="ai-tools-check" />}
                   </button>
                 )}
+                {/* v0.1.439：免费路线切换组（全局设置，与工坊共用同一份；切换入口统一收在这里） */}
+                <div className="ai-tools-group" style={{ order: 5 }}>
+                  <div className="ai-tools-group-label">免费路线切换</div>
+                  <button className={`ai-tools-item ${chainMode === 'auto' ? 'active' : ''}`} onClick={() => pickChainMode('auto')}>
+                    <Shuffle size={16} /><span>自动切换</span>{chainMode === 'auto' && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                  <button className={`ai-tools-item ${chainMode === 'locked' ? 'active' : ''}`} onClick={() => pickChainMode('locked')}>
+                    <Lock size={16} /><span>手动锁定</span>{chainMode === 'locked' && <Check size={15} className="ai-tools-check" />}
+                  </button>
+                  <div className="ai-tools-note">{chainMode === 'auto' ? '自动切换：首选路线撞限流/超时等失败时，自动切到下一条免费路线继续，并弹出提示说明原因。' : '手动锁定：只用当前选中的路线，失败时直接显示真实原因，不自动换路线。'}</div>
+                </div>
                 {tbShow('compare') && (
                   <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} style={{ order: toolOrder('compare') }} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
                     <Columns2 size={16} /><span>{t('多模型对比')}</span>{compareMode && <Check size={15} className="ai-tools-check" />}

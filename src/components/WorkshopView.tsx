@@ -9,7 +9,7 @@ import {
   loadApisFreeState, saveApisFreeState, apisFreeRateText, testApisFree,
   APISFREE_LIMITS_TEXT, APISFREE_CHANGED_EVENT, type ApisFreeState,
 } from '../core/apisFree'
-import { loadChainMode, saveChainMode, CHAIN_MODE_EVENT, type ChainMode } from '../core/freeChain'
+import { loadChainMode, CHAIN_MODE_EVENT, type ChainMode } from '../core/freeChain'
 import { countWorkshopMatches, visibleWorkshopCards, loadWorkshopFavs, saveWorkshopFavs, toggleWorkshopFav } from '../core/workshopHub'
 import { buildSearchContextCached } from '../core/webSearch'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
@@ -67,7 +67,6 @@ export function RouteSelect({ data, routeKey, setRouteKey }: { data: WorkshopRou
     window.addEventListener(CHAIN_MODE_EVENT, refresh)
     return () => { window.removeEventListener(APISFREE_CHANGED_EVENT, refresh); window.removeEventListener(CHAIN_MODE_EVENT, refresh) }
   }, [])
-  const changeMode = (m: ChainMode) => { saveChainMode(m); setChainModeState(m) }
   const runAfTest = async () => {
     if (afTesting) return
     setAfTesting(true)
@@ -90,11 +89,9 @@ export function RouteSelect({ data, routeKey, setRouteKey }: { data: WorkshopRou
           {data?.routes.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
         </select>
       </label>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12 }}>
-        <span style={{ opacity: 0.75 }}>免费路线切换</span>
-        <button className="btn sm" disabled={chainMode === 'auto'} onClick={() => changeMode('auto')}>自动切换</button>
-        <button className="btn sm" disabled={chainMode === 'locked'} onClick={() => changeMode('locked')}>手动锁定</button>
-        <span style={{ opacity: 0.6 }}>{chainMode === 'auto' ? '首选失败自动切下一条免费路线并说明原因' : '只用所选路线，失败只报真实原因'}</span>
+      {/* v0.1.439：模式切换入口已搬到 AI 助手右上角菜单，这里只留一行当前模式小字（全局同一设置，实时联动） */}
+      <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
+        当前模式：{chainMode === 'auto' ? '自动切换' : '手动锁定'} · 切换入口在 AI 助手右上角菜单，改一次全局生效
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
         <span style={{ opacity: 0.75 }}>APIsFreeLLM 兜底通道（免 Key）</span>
