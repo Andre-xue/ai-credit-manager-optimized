@@ -286,7 +286,7 @@ export async function checkDesktopUpdate(onStage?: (s: DesktopCheckStage) => voi
   return { version: '', currentVersion: APP_VERSION, error: lastErr || '检查更新失败，请稍后重试' }
 }
 
-export interface InstallProgress { downloaded: number }
+export interface InstallProgress { downloaded: number; total?: number }
 
 /** 桌面端：下载并安装更新。macOS/Linux 安装后需调用 relaunchApp() */
 export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
@@ -301,22 +301,26 @@ export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => 
     const update = await check()
     if (!update) return false
     let downloaded = 0
+    let total = 0
     await update.downloadAndInstall((event) => {
-      if (event.event === 'Progress') {
+      if (event.event === 'Started') {
+        total = event.data.contentLength ?? 0
+        onProgress?.({ downloaded: 0, total })
+      } else if (event.event === 'Progress') {
         downloaded += event.data.chunkLength
-        onProgress?.({ downloaded })
+        onProgress?.({ downloaded, total: total || undefined })
       }
     })
     return true
   } catch { return false }
 }
 
-/** 镜像快速更新：从 latest.json 找本平台安装包路径，交给 Rust 测速下载+校验+安装 */
-async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
+/** 从 latest.json 解析本平台的镜像更新包（版本/相对路径/文件名）；无可用包返回 null */
+async function resolveMirrorPackage(): Promise<{ version: string; notes?: string; path: string; fileName: string } | null> {
   const text = await fetchFastestText(LATEST_JSON_CANDIDATES)
-  if (!text) return false
-  const manifest = JSON.parse(text) as { version?: string; platforms?: Record<string, { url?: string }> }
-  if (!manifest.version || !manifest.platforms) return false
+  if (!text) return null
+  const manifest = JSON.parse(text) as { version?: string; notes?: string; platforms?: Record<string, { url?: string }> }
+  if (!manifest.version || !manifest.platforms) return null
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
   const keys = /Mac/i.test(ua)
     ? ['darwin-aarch64', 'darwin-x86_64']
@@ -324,19 +328,179 @@ async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): 
       ? ['windows-x86_64', 'windows-aarch64']
       : ['linux-x86_64', 'linux-aarch64']
   const key = keys.find(k => manifest.platforms?.[k]?.url)
-  if (!key) return false
+  if (!key) return null
   const url = manifest.platforms[key].url as string
   const marker = `github.com/${REPO}/`
   const idx = url.indexOf(marker)
-  if (idx < 0) return false
+  if (idx < 0) return null
   const path = url.slice(idx + marker.length)
   const fileName = decodeURIComponent(path.split('/').pop() ?? '')
-  if (!fileName) return false
+  if (!fileName) return null
+  return { version: manifest.version.replace(/^v/i, ''), notes: manifest.notes, path, fileName }
+}
+
+/** 镜像快速更新：交给 Rust 测速下载+校验+安装 */
+async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
+  const pkg = await resolveMirrorPackage()
+  if (!pkg) return false
   const { invoke, Channel } = await import('@tauri-apps/api/core')
   const channel = new Channel<number>()
   channel.onmessage = (downloaded: number) => onProgress?.({ downloaded })
-  await invoke('update_fast_install', { path, fileName, onProgress: channel })
+  await invoke('update_fast_install', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
   return true
+}
+
+// ---- 待安装更新（v0.1.474 后台自动更新） ----
+// 流程：启动静默检查 → 后台把包下载好 → 弹窗问「现在更新 / 稍后」；选稍后
+// 则持久化待安装状态并布防 Rust 关窗闸门，用户下次关窗/退出时等任务结束
+// 再安装。全部状态仅本机保存（localStorage），不进云同步。
+
+const PENDING_KEY = 'acm.update.pending.v1'
+const AUTO_KEY = 'acm.update.autoEnabled.v1'
+const JUST_KEY = 'acm.update.justUpdated.v1'
+
+export interface PendingUpdate {
+  version: string
+  notes?: string
+  /** mirror = 安装包已落盘（filePath 跨进程存活）；plugin = 已下载对象只在内存里 */
+  via: 'mirror' | 'plugin'
+  filePath?: string
+  fileName?: string
+  downloadedAt: number
+  /** 用户已选过「稍后」：关窗/退出时自动安装 */
+  deferred: boolean
+}
+
+export function loadPendingUpdate(): PendingUpdate | null {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as PendingUpdate
+    if (!p || typeof p.version !== 'string' || !versionGreater(p.version, APP_VERSION)) {
+      // 损坏或版本不大于当前的待安装一律作废并清掉，防反复弹/装回旧版
+      try { localStorage.removeItem(PENDING_KEY) } catch { /* 忽略 */ }
+      return null
+    }
+    return p
+  } catch { return null }
+}
+
+export function savePendingUpdate(p: PendingUpdate): void {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(p)) } catch { /* 忽略 */ }
+}
+
+export function clearPendingUpdate(): void {
+  try { localStorage.removeItem(PENDING_KEY) } catch { /* 忽略 */ }
+}
+
+/** 「自动更新」开关：默认开，仅本机保存 */
+export function loadAutoUpdateEnabled(): boolean {
+  try { return localStorage.getItem(AUTO_KEY) !== '0' } catch { return true }
+}
+
+export function saveAutoUpdateEnabled(on: boolean): void {
+  try { localStorage.setItem(AUTO_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+/** 安装前落标记：安装会退出/重启进程，重启回来据此轻提示一次「已更新到 vX」 */
+export function markJustUpdated(version: string): void {
+  try { localStorage.setItem(JUST_KEY, version.replace(/^v/i, '')) } catch { /* 忽略 */ }
+}
+
+export function clearJustUpdated(): void {
+  try { localStorage.removeItem(JUST_KEY) } catch { /* 忽略 */ }
+}
+
+/** 读并清除「刚更新完」标记：版本与当前一致才返回（只提示一次） */
+export function consumeJustUpdated(): string | null {
+  try {
+    const v = localStorage.getItem(JUST_KEY)
+    if (!v) return null
+    localStorage.removeItem(JUST_KEY)
+    return v.replace(/^v/i, '') === APP_VERSION ? v.replace(/^v/i, '') : null
+  } catch { return null }
+}
+
+/** 官方 updater 已下载待安装对象（内存态，进程重启即失） */
+let pluginPendingUpdate: import('@tauri-apps/plugin-updater').Update | null = null
+
+/**
+ * 后台下载更新包（不安装）：优先镜像通道（落盘、可跨进程）；镜像不可用时
+ * 回退官方 updater 的 download()（只下载、对象留内存）。成功后待安装状态
+ * 已持久化并返回；无更新/失败返回 null。
+ */
+export async function downloadUpdateInBackground(onProgress?: (p: InstallProgress) => void): Promise<PendingUpdate | null> {
+  try {
+    const pkg = await resolveMirrorPackage()
+    if (pkg && versionGreater(pkg.version, APP_VERSION)) {
+      const { invoke, Channel } = await import('@tauri-apps/api/core')
+      const channel = new Channel<number>()
+      channel.onmessage = (downloaded: number) => onProgress?.({ downloaded })
+      const filePath = await invoke<string>('update_fast_download', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
+      const p: PendingUpdate = {
+        version: pkg.version, notes: pkg.notes, via: 'mirror',
+        filePath, fileName: pkg.fileName, downloadedAt: Date.now(), deferred: false,
+      }
+      savePendingUpdate(p)
+      return p
+    }
+  } catch { /* 镜像不可用 → 回退官方通道 */ }
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater')
+    const update = await withTimeout(check(), PLUGIN_CHECK_ATTEMPT_MS)
+    if (!update) return null
+    let downloaded = 0
+    let total = 0
+    await update.download((event) => {
+      if (event.event === 'Started') {
+        total = event.data.contentLength ?? 0
+        onProgress?.({ downloaded: 0, total })
+      } else if (event.event === 'Progress') {
+        downloaded += event.data.chunkLength
+        onProgress?.({ downloaded, total: total || undefined })
+      }
+    })
+    pluginPendingUpdate = update
+    const p: PendingUpdate = {
+      version: update.version, notes: update.body, via: 'plugin',
+      downloadedAt: Date.now(), deferred: false,
+    }
+    savePendingUpdate(p)
+    return p
+  } catch { return null }
+}
+
+/**
+ * 安装一份待安装更新并重启进新版。镜像包走 Rust 装已落盘文件（macOS/
+ * Windows 安装器自带重启）；官方通道走内存对象的 install() + relaunch。
+ * 已下载对象丢失（进程重启过）时整段重走「检查+下载+安装」。失败返回
+ * false 且保留待安装状态，不静默吞掉（调用方负责报错）。
+ */
+export async function installPendingUpdate(p: PendingUpdate): Promise<boolean> {
+  markJustUpdated(p.version)
+  try {
+    if (p.via === 'mirror' && p.filePath && p.fileName) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('update_install_downloaded', { filePath: p.filePath, fileName: p.fileName })
+      clearPendingUpdate()
+      return true
+    }
+    if (p.via === 'plugin' && pluginPendingUpdate) {
+      await pluginPendingUpdate.install()
+      pluginPendingUpdate = null
+      clearPendingUpdate()
+      await relaunchApp()
+      return true
+    }
+  } catch { /* 已下载对象不可用 → 整段重走 */ }
+  const ok = await installDesktopUpdate()
+  if (ok) {
+    clearPendingUpdate()
+    await relaunchApp()
+    return true
+  }
+  clearJustUpdated()
+  return false
 }
 
 /** 桌面端：重启应用以启用新版本 */

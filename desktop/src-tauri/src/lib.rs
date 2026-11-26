@@ -1118,18 +1118,18 @@ fn probe_mirror_order(path: &str) -> Vec<String> {
     scored.into_iter().map(|(_, u)| u).collect()
 }
 
-/// 更新快速安装（v0.1.346）：镜像测速下载更新包（stall 看门狗：8 秒窗口 <240KB 自动换源重下），
-/// 用 SHA256SUMS.txt（尽量与安装包不同源）校验完整性，随后按平台安装：
-/// macOS 解压替换 .app 并重启；Windows 运行安装器；其他平台报错由前端回退官方 updater。
-#[tauri::command]
-fn update_fast_install(
-    app: tauri::AppHandle,
-    path: String,
-    file_name: String,
-    on_progress: tauri::ipc::Channel<u64>,
-) -> Result<String, String> {
+/// 更新包下载（v0.1.346 的下载半段，v0.1.474 拆出）：镜像测速下载更新包
+/// （stall 看门狗：8 秒窗口 <240KB 自动换源重下），用 SHA256SUMS.txt（尽量与
+/// 安装包不同源）校验完整性，落盘到临时目录后返回（绝对路径, 实际下载源）。
+/// 只下载不安装——后台自动更新先把包下好，用户确认或关窗时再调
+/// update_install_downloaded 安装；手动流程仍走 update_fast_install 一步到位。
+fn download_update_package(
+    path: &str,
+    file_name: &str,
+    on_progress: &tauri::ipc::Channel<u64>,
+) -> Result<(std::path::PathBuf, String), String> {
     use sha2::Digest;
-    let order = probe_mirror_order(&path);
+    let order = probe_mirror_order(path);
     // 1) 取校验和：优先与安装包不同源的 SHA256SUMS.txt
     let sums_path = path
         .rsplit_once('/')
@@ -1162,12 +1162,12 @@ fn update_fast_install(
     // 2) 按测速顺序逐源下载，带 stall 看门狗
     let tmp_dir = std::env::temp_dir().join("acm-update");
     let _ = std::fs::create_dir_all(&tmp_dir);
-    let dest = tmp_dir.join(&file_name);
+    let dest = tmp_dir.join(file_name);
     let mut used_url = String::new();
     let mut last_err = String::new();
     for url in &order {
         let _ = std::fs::remove_file(&dest);
-        match download_with_watchdog(&client, url, &dest, &on_progress) {
+        match download_with_watchdog(&client, url, &dest, on_progress) {
             Ok(()) => {
                 used_url = url.clone();
                 break;
@@ -1184,9 +1184,48 @@ fn update_fast_install(
     if got != expected {
         return Err("更新包校验不一致，已回退官方更新通道".into());
     }
-    // 4) 安装
+    Ok((dest, used_url))
+}
+
+/// 更新快速安装（v0.1.346）：下载（含测速换源与 SHA256 校验）后立即按平台
+/// 安装：macOS 解压替换 .app 并重启；Windows 运行安装器；其他平台报错由
+/// 前端回退官方 updater。
+#[tauri::command]
+fn update_fast_install(
+    app: tauri::AppHandle,
+    path: String,
+    file_name: String,
+    on_progress: tauri::ipc::Channel<u64>,
+) -> Result<String, String> {
+    let (dest, used_url) = download_update_package(&path, &file_name, &on_progress)?;
     install_downloaded_update(&app, &dest, &file_name)?;
     Ok(used_url)
+}
+
+/// 后台下载更新包（v0.1.474）：只下载+校验、落盘，返回绝对路径，不安装。
+#[tauri::command]
+fn update_fast_download(
+    path: String,
+    file_name: String,
+    on_progress: tauri::ipc::Channel<u64>,
+) -> Result<String, String> {
+    let (dest, _used_url) = download_update_package(&path, &file_name, &on_progress)?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// 安装此前 update_fast_download 已下载并校验过的更新包（v0.1.474）。
+/// macOS/Windows 安装成功即重启进新版（进程在本调用内退出/交棒）。
+#[tauri::command]
+fn update_install_downloaded(
+    app: tauri::AppHandle,
+    file_path: String,
+    file_name: String,
+) -> Result<(), String> {
+    let dest = std::path::PathBuf::from(&file_path);
+    if !dest.exists() {
+        return Err("已下载的更新包不存在（可能已被系统清理），请重新下载".into());
+    }
+    install_downloaded_update(&app, &dest, &file_name)
 }
 
 /// 流式下载 + stall 看门狗：每 8 秒窗口下载量 <240KB 判定太慢，中断换源
@@ -4231,7 +4270,49 @@ fn mini_hide(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    if update_close_gate(&app, "exit") {
+        return;
+    }
     app.exit(0);
+}
+
+/// 待安装更新的关窗闸门（v0.1.474）：前端把已下载更新选了「稍后」后经
+/// update_close_arm 布防。此后主窗口关闭（隐藏进托盘 / dock 模式退出）、
+/// 托盘退出、quit_app 都先被拦下并向主窗口广播 update-close-requested
+/// （payload 为原动作 "hide" | "exit"），由前端等进行中的任务（邮件删除/
+/// 同步等）结束后再执行安装（安装自带重启）；装不了或不装时前端调
+/// update_close_proceed 放行原动作。Rust 只管拦截与放行，不懂更新状态。
+static UPDATE_CLOSE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UPDATE_CLOSE_BYPASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn update_close_arm(armed: bool) {
+    UPDATE_CLOSE_ARMED.store(armed, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn update_close_proceed(app: tauri::AppHandle, action: String) {
+    UPDATE_CLOSE_ARMED.store(false, std::sync::atomic::Ordering::SeqCst);
+    UPDATE_CLOSE_BYPASS.store(true, std::sync::atomic::Ordering::SeqCst);
+    if action == "exit" {
+        app.exit(0);
+    } else if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    UPDATE_CLOSE_BYPASS.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 关窗/退出意图先过闸门：已布防且非放行中时广播给前端并返回 true（已拦截）
+fn update_close_gate(app: &tauri::AppHandle, action: &str) -> bool {
+    if UPDATE_CLOSE_ARMED.load(std::sync::atomic::Ordering::SeqCst)
+        && !UPDATE_CLOSE_BYPASS.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.emit("update-close-requested", action);
+        }
+        return true;
+    }
+    false
 }
 
 /// Mac 系统毛玻璃增强（v0.1.294）：液态玻璃风格开启时给主窗口挂系统
@@ -4330,6 +4411,13 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
         let handle_for_event = handle.clone();
         main.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 待安装更新已布防（v0.1.474）：先拦下交给前端（等任务结束装更新），
+                // 前端放行或装完重启前窗口保持原样
+                let action = if icon_mode() == "dock" { "exit" } else { "hide" };
+                if update_close_gate(&handle_for_event, action) {
+                    api.prevent_close();
+                    return;
+                }
                 if icon_mode() == "dock" {
                     handle_for_event.exit(0);
                 } else {
@@ -4396,7 +4484,11 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
             "open-main" => show_main_window(app, None),
             "open-ai" => show_main_window(app, Some("ai")),
             "open-checkin" => show_main_window(app, Some("checkin")),
-            "quit" => app.exit(0),
+            "quit" => {
+                if !update_close_gate(app, "exit") {
+                    app.exit(0);
+                }
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -4465,7 +4557,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

@@ -390,6 +390,22 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .sidebar-collapsed:not(.phone-shell) .sync-status-icon { display: none; }
 .sidebar-collapsed:not(.phone-shell) .sync-status-bar .status-dot { margin-top: 0; }
 
+/* 侧边栏常驻更新入口（v0.1.474，仅桌面端渲染） */
+.sidebar-update {
+  display: flex; align-items: center; gap: 8px; width: auto;
+  margin: 0 16px 10px; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--text-2); font-size: 12px; cursor: pointer; text-align: left;
+  position: relative; transition: border-color .15s, color .15s, background .15s;
+}
+.sidebar-update:hover { border-color: var(--primary); color: var(--text); }
+.sidebar-update .sidebar-update-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-update.has-update { border-color: var(--primary); color: var(--primary); font-weight: 600; background: color-mix(in srgb, var(--primary) 8%, var(--panel-2)); }
+.sidebar-update-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex: none; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-update { justify-content: center; margin: 0 10px 10px; padding: 10px 0; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-update-label { display: none; }
+.sidebar-collapsed:not(.phone-shell) .sidebar-update-dot { position: absolute; top: 6px; right: 8px; }
+
 
 /* 全局标题栏已移除（用户 2026-11-20 要求）：内容整体上移 */
 .page-action-row { display: flex; justify-content: flex-end; margin-bottom: 14px; gap: 12px; }

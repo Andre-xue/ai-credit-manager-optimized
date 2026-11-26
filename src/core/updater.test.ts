@@ -120,3 +120,66 @@ describe('检查更新超时上限（v0.1.464）', () => {
     await expect(withTimeout(Promise.reject(new Error('boom')), 1_000)).rejects.toThrow('boom')
   })
 })
+
+import { beforeEach } from 'vitest'
+import {
+  loadPendingUpdate, savePendingUpdate, clearPendingUpdate,
+  loadAutoUpdateEnabled, saveAutoUpdateEnabled,
+  markJustUpdated, consumeJustUpdated, APP_VERSION,
+} from './updater'
+
+// 内存版 localStorage polyfill（node 环境）
+class MemStorage474 {
+  private m = new Map<string, string>()
+  getItem(k: string) { return this.m.has(k) ? this.m.get(k)! : null }
+  setItem(k: string, v: string) { this.m.set(k, String(v)) }
+  removeItem(k: string) { this.m.delete(k) }
+  clear() { this.m.clear() }
+}
+;(globalThis as unknown as { localStorage: unknown }).localStorage = new MemStorage474()
+
+describe('待安装更新与自动更新开关持久化（v0.1.474）', () => {
+  beforeEach(() => { (localStorage as unknown as MemStorage474).clear() })
+
+  it('待安装往返：保存后原样读回（版本/路径/通道/稍后标记）', () => {
+    savePendingUpdate({ version: '9.9.9', notes: 'n', filePath: '/tmp/x.dmg', via: 'mirror', deferred: true, downloadedAt: 123 })
+    const p = loadPendingUpdate()
+    expect(p?.version).toBe('9.9.9')
+    expect(p?.filePath).toBe('/tmp/x.dmg')
+    expect(p?.via).toBe('mirror')
+    expect(p?.deferred).toBe(true)
+  })
+
+  it('版本不大于当前版本的待安装自动作废（防装回旧版）', () => {
+    savePendingUpdate({ version: '0.0.1', via: 'plugin', deferred: false, downloadedAt: 1 })
+    expect(loadPendingUpdate()).toBeNull()
+    expect(localStorage.getItem('acm.update.pending.v1')).toBeNull()
+  })
+
+  it('损坏的 JSON 不抛错、视为无待安装', () => {
+    localStorage.setItem('acm.update.pending.v1', '{oops')
+    expect(loadPendingUpdate()).toBeNull()
+  })
+
+  it('clearPendingUpdate 清掉待安装', () => {
+    savePendingUpdate({ version: '9.9.9', via: 'plugin', deferred: false, downloadedAt: 1 })
+    clearPendingUpdate()
+    expect(loadPendingUpdate()).toBeNull()
+  })
+
+  it('自动更新开关默认开；关掉后读回为关（仅本机键）', () => {
+    expect(loadAutoUpdateEnabled()).toBe(true)
+    saveAutoUpdateEnabled(false)
+    expect(loadAutoUpdateEnabled()).toBe(false)
+    saveAutoUpdateEnabled(true)
+    expect(loadAutoUpdateEnabled()).toBe(true)
+  })
+
+  it('刚更新标记：与当前版本一致才返回且只消费一次', () => {
+    markJustUpdated('0.0.1')
+    expect(consumeJustUpdated()).toBeNull() // 版本对不上不误报
+    markJustUpdated(APP_VERSION)
+    expect(consumeJustUpdated()).toBe(APP_VERSION)
+    expect(consumeJustUpdated()).toBeNull() // 只提示一次
+  })
+})

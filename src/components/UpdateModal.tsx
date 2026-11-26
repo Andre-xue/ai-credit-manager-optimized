@@ -4,12 +4,13 @@ import { X, RefreshCw, Download, RotateCw, ExternalLink, Copy, Check, Info, Load
 import {
   APP_VERSION, currentPlatform, checkDesktopUpdate, checkReleaseUpdate,
   installDesktopUpdate, relaunchApp, dockerUpdateCommands, latestApkUrl,
-  checkMiniappUpdate, type UpdatePlatform, type DesktopCheckStage,
+  checkMiniappUpdate, markJustUpdated, type UpdatePlatform, type DesktopCheckStage,
 } from '../core/updater'
+import { noteManualUpdateFound, noteManualUpToDate } from '../core/autoUpdate'
 import { openExternal } from '../core/openExternal'
 import { t } from '../core/i18n'
 
-type Phase = 'checking' | 'available' | 'latest' | 'downloading' | 'ready' | 'error' | 'manual'
+type Phase = 'checking' | 'available' | 'latest' | 'downloading' | 'installing' | 'ready' | 'error' | 'manual'
 
 export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: (m: string) => void }) {
   const platform: UpdatePlatform = currentPlatform()
@@ -19,6 +20,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   const [releaseUrl, setReleaseUrl] = useState('')
   const [errMsg, setErrMsg] = useState('')
   const [downloadedMb, setDownloadedMb] = useState(0)
+  const [totalMb, setTotalMb] = useState(0)
   const [copied, setCopied] = useState(false)
   const [apkUrl, setApkUrl] = useState<string | null>(null)
   const [fallback, setFallback] = useState(false)
@@ -38,8 +40,8 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         const u = await checkDesktopUpdate((s) => { if (alive) setStage(s) })
         if (!alive) return
         // 已是最新：立刻定论，不再多走一遍 GitHub 回退流程（旧实现白等十几秒）
-        if (u.upToDate) { setLatest(u.version); setPhase('latest'); return }
-        if (!u.error) { setLatest(u.version); setNotes(u.body ?? ''); setPhase('available'); return }
+        if (u.upToDate) { setLatest(u.version); setPhase('latest'); noteManualUpToDate(); return }
+        if (!u.error) { setLatest(u.version); setNotes(u.body ?? ''); setPhase('available'); noteManualUpdateFound(u.version); return }
         // 自动更新检查失败：记住原因，继续走手动通道，保证用户仍可下载
         if (u.error) setAutoErr(u.error)
         setStage('comparing')
@@ -52,7 +54,8 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         setNotes(info.notes)
         setReleaseUrl(info.releaseUrl)
         setFallback(info.fallback === true)
-        if (!info.hasUpdate) { setPhase('latest'); return }
+        if (!info.hasUpdate) { setPhase('latest'); if (platform === 'desktop') noteManualUpToDate(); return }
+        if (platform === 'desktop') noteManualUpdateFound(info.latest)
         if (info.installersReady === false) {
           setErrMsg(t('新版本已发布，但桌面安装包还在构建中（通常几分钟）。请稍后再点检查更新。'))
           setPhase('error'); return
@@ -87,12 +90,19 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   const doInstall = async () => {
     setPhase('downloading')
     setDownloadedMb(0)
+    setTotalMb(0)
     const ok = await installDesktopUpdate(p => {
       setDownloadedMb(Math.round(p.downloaded / 1024 / 1024 * 10) / 10)
+      if (p.total) setTotalMb(Math.round(p.total / 1024 / 1024 * 10) / 10)
     })
-    if (!ok) { setPhase('error'); notify(t('下载安装失败，请稍后重试')); return }
-    setPhase('ready')
-    notify(t('新版本已安装，点击「重启应用」生效'))
+    if (!ok) { setErrMsg(t('下载安装失败，请稍后重试')); setPhase('error'); return }
+    // v0.1.474：装完自动重启（旧流程停在「ready」等用户点重启，实机反馈
+    // 以为没装上）。先落「刚更新」标记，重启回来会轻提示已更新到新版；
+    // 自动重启没生效时 2.5 秒后回落到手动「重启应用」按钮，不卡死。
+    if (latest) markJustUpdated(latest)
+    setPhase('installing')
+    void relaunchApp()
+    window.setTimeout(() => { setPhase(prev => (prev === 'installing' ? 'ready' : prev)) }, 2500)
   }
 
   const versionText = latest ? `v${latest.replace(/^v/i, '')}` : ''
@@ -122,8 +132,15 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
               {notes && <pre className="upd-notes">{notes.slice(0, 600)}</pre>}
               {isDesktop && (
                 <>
-                  <div className="upd-hint">{t('点击下方按钮自动下载并安装，完成后点击「重启应用」即可使用新版本。')}</div>
-                  {phase === 'downloading' && <div className="upd-downloading"><Loader2 size={14} className="spin" /> {t('正在下载… 已下载 {mb} MB', { mb: downloadedMb })}</div>}
+                  <div className="upd-hint">{t('点击下方按钮自动下载并安装，完成后将自动重启应用。')}</div>
+                  {phase === 'downloading' && (
+                    <>
+                      <div className="upd-progress"><div style={{ width: `${totalMb > 0 ? Math.min(100, Math.round(downloadedMb / totalMb * 100)) : 0}%` }} /></div>
+                      <div className="upd-downloading"><Loader2 size={14} className="spin" /> {totalMb > 0
+                        ? t('正在下载… {pct}%（{mb} / {total} MB）', { pct: Math.min(100, Math.round(downloadedMb / totalMb * 100)), mb: downloadedMb, total: totalMb })
+                        : t('正在下载… 已下载 {mb} MB', { mb: downloadedMb })}</div>
+                    </>
+                  )}
                   <button className="btn primary" style={{ width: '100%' }} disabled={phase === 'downloading'} onClick={() => void doInstall()}>
                     <Download size={16} /> {phase === 'downloading' ? t('下载中…') : t('下载并安装')}
                   </button>
@@ -144,6 +161,10 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
                 </>
               )}
             </div>
+          )}
+
+          {phase === 'installing' && (
+            <div className="upd-state"><Loader2 size={18} className="spin" /> {t('安装完成，正在重启应用…')}</div>
           )}
 
           {phase === 'ready' && (

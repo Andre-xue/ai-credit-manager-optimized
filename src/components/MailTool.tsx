@@ -29,6 +29,7 @@ import {
   type MailBodyContent, type MailDeleteAllReport, type MailDeleteAllPreviewEntry, type MailDeleteCancelToken,
 } from '../core/mail'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
+import { setAppBusy } from '../core/appBusy'
 import { getBiometricPassword } from '../core/crypto'
 
 function JellyToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -90,6 +91,11 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   const [visibility, setVisibility] = useState(loadMailVisibility)
   const [cacheVersion, setCacheVersion] = useState(0)
   const [syncMap, setSyncMap] = useState<Record<string, AccountSync>>({})
+  // 全局忙碌登记（v0.1.474）：任一账户同步中即登记，供更新安装等待避让
+  useEffect(() => {
+    setAppBusy('mail-sync', Object.values(syncMap).some(s => s.state === 'syncing'))
+    return () => setAppBusy('mail-sync', false)
+  }, [syncMap])
   // v0.1.446：OAuth 令牌失效（invalid_grant）的账户标记 + 重新授权弹窗目标
   const [reauthFlags, setReauthFlags] = useState<Record<string, string>>(() => loadMailReauthFlags())
   const [reauthTarget, setReauthTarget] = useState<MailAccountMeta | null>(null)
@@ -1450,6 +1456,11 @@ function DeleteAllModal({ metas, pwd, notify, onClose, onDone, singleAccount }: 
   const [runRows, setRunRows] = useState<Record<string, DeleteRunRow>>({})
   const [cancelling, setCancelling] = useState(false)
   const cancelTokenRef = useRef<MailDeleteCancelToken>({ cancelled: false })
+  // 全局忙碌登记（v0.1.474）：删除执行中登记，更新安装不得硬打断删除
+  useEffect(() => {
+    setAppBusy('mail-delete', stage === 'running')
+    return () => setAppBusy('mail-delete', false)
+  }, [stage])
 
   useEffect(() => {
     let dead = false

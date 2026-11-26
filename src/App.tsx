@@ -81,7 +81,9 @@ import { openExternal, openTool, isDesktopApp, isNativeApp, isAppInstalled, biom
 import { cloud, type CloudUser } from './core/cloud'
 import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror, restoreCloudSessionMirrorForce } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
-import { APP_VERSION, currentPlatform } from './core/updater'
+import { UpdateReadyPrompt } from './components/UpdateReadyPrompt'
+import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled } from './core/updater'
+import { initAutoUpdate, getAutoUpdateUiState, subscribeAutoUpdate, reopenUpdatePrompt } from './core/autoUpdate'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, webdavHttpBlocked, type ChannelIO } from './core/altSync'
@@ -379,6 +381,9 @@ function App() {
   const [quotaTarget, setQuotaTarget] = useState<string | null>(null)
   const [usageOpen, setUsageOpen] = useState(false)
   const [updateOpen, setUpdateOpen] = useState(false)
+  // 后台自动更新状态（v0.1.474）：侧边栏更新入口据此渲染（红点/下载进度/待安装）
+  const [autoUpd, setAutoUpd] = useState(() => getAutoUpdateUiState())
+  useEffect(() => subscribeAutoUpdate(() => setAutoUpd(getAutoUpdateUiState())), [])
   const [importData, setImportData] = useState<AppState | null>(null)
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null)
   const [servicePreview, setServicePreview] = useState<ServiceEntry[] | null>(null)
@@ -457,6 +462,10 @@ function App() {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
   }, [])
+
+  // 后台自动更新（v0.1.474，仅桌面端，init 内部自检平台）：启动静默检查与
+  // 后台下载、待安装恢复、关窗/退出时自动安装的闸门监听都在 core/autoUpdate
+  useEffect(() => { initAutoUpdate({ notify }) }, [notify])
 
   // 插件系统：给运行时注入宿主回调（通知 + 最新状态源）；插件增删/启停时刷新全树，
   // 让 Key 管理里「查询/刷新余额」按钮随插件适配器的启用状态即时出现/消失
@@ -1411,6 +1420,34 @@ function App() {
           </div>
           <span className="sync-status-icon">{!cloudUser ? <CloudOff size={16} /> : syncError ? <AlertTriangle size={16} /> : <Cloud size={16} />}</span>
         </button>
+        {isDesktopApp() && (
+          <button
+            type="button"
+            className={`sidebar-update${autoUpd.kind === 'available' || autoUpd.kind === 'ready' ? ' has-update' : ''}`}
+            title={autoUpd.kind === 'deferred'
+              ? t('已安排在关闭窗口时自动安装')
+              : autoUpd.kind === 'available' || autoUpd.kind === 'ready'
+                ? t('更新到 v{ver}', { ver: autoUpd.version })
+                : t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
+            onClick={() => {
+              if (autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') reopenUpdatePrompt()
+              else setUpdateOpen(true)
+            }}
+          >
+            {autoUpd.kind === 'downloading' || autoUpd.kind === 'installing'
+              ? <Loader2 size={15} className="spin" />
+              : <RefreshCw size={15} />}
+            <span className="sidebar-update-label">
+              {autoUpd.kind === 'idle' && t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
+              {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && t('更新到 v{ver}', { ver: autoUpd.version })}
+              {autoUpd.kind === 'downloading' && (autoUpd.total
+                ? t('正在下载更新 {pct}%', { pct: Math.min(100, Math.round(autoUpd.downloaded / autoUpd.total * 100)) })
+                : t('正在下载更新…'))}
+              {autoUpd.kind === 'installing' && t('正在安装更新…')}
+            </span>
+            {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && <span className="sidebar-update-dot" />}
+          </button>
+        )}
         <div className="sidebar-foot">
           <div className="sidebar-status">
             <span className="status-dot" />
@@ -1927,6 +1964,7 @@ function App() {
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
       {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
+      <UpdateReadyPrompt />
       {undo && <div className="undo-bar">
         <span><Check size={15} /> {undo.label}</span>
         <button onClick={doUndo}><RotateCcw size={14} /> {t('撤回')}</button>
@@ -5111,6 +5149,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   const [clearSel, setClearSel] = useState<ClearCat[]>([])
   const [scanDesktop, setScanDesktopState] = useState(() => comfyScanDesktopEnabled())
   const [launchDesktop, setLaunchDesktopState] = useState(() => comfyLaunchDesktopEnabled())
+  // 自动更新开关（v0.1.474，仅桌面、仅本机 acm.update.autoEnabled.v1，默认开）
+  const [autoUpdEnabled, setAutoUpdEnabled] = useState(() => loadAutoUpdateEnabled())
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const toggleClearCat = (key: ClearCat) => setClearSel(sel => sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key])
   const [confirmReset, setConfirmReset] = useState(false)
@@ -5983,7 +6023,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
 
           <SettingsSection title="应用更新" desc={t('当前版本 v{ver} · 检查并安装新版本', { ver: APP_VERSION })} icon={RefreshCw} tone="green">
             <SettingsRow title="检查更新" desc={isDesktopApp()
-              ? '桌面端自动下载安装，完成后点击重启生效'
+              ? '桌面端自动下载安装，完成后自动重启生效'
               : currentPlatform() === 'docker'
                 ? 'Docker 版提供可一键复制的更新命令，在终端执行后自动替换实例'
                 : currentPlatform() === 'android'
@@ -5991,6 +6031,11 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   : '检测新版本并按平台提示更新方式'}>
               <button className="btn sm primary" onClick={onCheckUpdate}><RefreshCw size={14} /> {t('检查更新')}</button>
             </SettingsRow>
+            {isDesktopApp() && (
+              <SettingsRow title={t('自动更新')} desc={t('启动时静默检查并在后台下载新版本，下载完弹窗询问是否安装（仅本机保存）')}>
+                <Toggle checked={autoUpdEnabled} onChange={v => { setAutoUpdEnabled(v); saveAutoUpdateEnabled(v) }} />
+              </SettingsRow>
+            )}
           </SettingsSection>
 
           <SettingsSection title="数据管理" desc="备份、恢复与清理" icon={HardDrive} tone="amber">

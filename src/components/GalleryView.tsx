@@ -4,6 +4,7 @@ import {
   Sparkles, Images, Clapperboard, FolderOpen, Folder, Search, ScanSearch, Square, Cloud, SlidersHorizontal,
 } from 'lucide-react'
 import { loadStoragePrefs, storageDir } from '../core/storagePrefs'
+import { setAppBusy } from '../core/appBusy'
 import { loadFilterCollapsed, saveFilterCollapsed } from '../core/galleryFilter'
 import { isDesktopApp, openExternal as openExternalUrl } from '../core/openExternal'
 import type { Account } from '../core/types'
@@ -112,6 +113,11 @@ export function GalleryView({ accounts, sessionPwd, notify, onBack }: {
   const [routeData, setRouteData] = useState<WorkshopRouteData | null>(null)
   const [tagRouteKey, setTagRouteKey] = useState(() => { try { return localStorage.getItem(TAG_ROUTE_KEY) ?? '' } catch { return '' } })
   const [indexing, setIndexing] = useState<{ done: number; total: number } | null>(null)
+  // 全局忙碌登记（v0.1.474）：AI 索引进行中登记，供更新安装等待避让
+  useEffect(() => {
+    setAppBusy('gallery-index', indexing !== null)
+    return () => setAppBusy('gallery-index', false)
+  }, [indexing])
   const cancelRef = useRef(false)
   const [query, setQuery] = useState('')
   const [photosDbFailed, setPhotosDbFailed] = useState(false)

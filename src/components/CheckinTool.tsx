@@ -3,6 +3,7 @@ import { CalendarCheck, ChevronDown, Fingerprint, Loader2, LogOut, RefreshCw, Sp
 import { ToolShell } from './WorkshopView'
 import { PlatformIcon } from './PlatformIcon'
 import { openExternal, biometricAvailable } from '../core/openExternal'
+import { setAppBusy } from '../core/appBusy'
 import { resolveBiometricVaultPassword } from '../core/biometric'
 import {
   minimaxBeginDevice, minimaxPollDevice,
@@ -75,6 +76,11 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
   const [enabled, setEnabled] = useState(() => getPlatformEnabled(id))
   const [rows, setRows] = useState<TokenRow[]>([])
   const [busy, setBusy] = useState('')
+  // 全局忙碌登记（v0.1.474）：签到/添加等操作进行中登记，供更新安装等待避让
+  useEffect(() => {
+    setAppBusy(`checkin:${id}`, busy !== '')
+    return () => setAppBusy(`checkin:${id}`, false)
+  }, [busy, id])
   const [open, setOpen] = useState<boolean | null>(null)
   const [adding, setAdding] = useState(false)
   const [labelInput, setLabelInput] = useState('')
