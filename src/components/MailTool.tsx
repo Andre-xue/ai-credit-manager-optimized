@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Mail, RefreshCw, Settings, Plus, Trash2, Star, Archive, Search, Lock, X, ChevronLeft, ChevronRight, ChevronDown,
-  Paperclip, Copy, Sparkles, AlertTriangle, CheckCircle2, Loader2, FolderInput, ShieldCheck, Globe, KeyRound,
+  Paperclip, Copy, Sparkles, AlertTriangle, CheckCircle2, Loader2, FolderInput, ShieldCheck, Globe, KeyRound, ImageOff,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
@@ -16,7 +16,7 @@ import {
   loadMailCache, applyCategoryOverrides, setCategoryOverride,
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
   mailDeleteAllPreview, mailDeleteAll,
-  mailEnsureConnected, mailCancelConnect, sanitizeMailHtml,
+  mailEnsureConnected, mailCancelConnect, prepareMailHtml, htmlHasVisibleText, MAIL_IMG_PLACEHOLDER,
   OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
   loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
   saveMailSecret, mailForgetSession,
@@ -465,6 +465,8 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
 }) {
   const [body, setBody] = useState<(MailBodyContent & { code: string | null }) | null>(null)
   const [bodyError, setBodyError] = useState('')
+  const [showImages, setShowImages] = useState(false)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
   const [routeData, setRouteData] = useState<WorkshopRouteData | null>(null)
   const [routeKey, setRouteKey] = useState('')
   const [summary, setSummary] = useState('')
@@ -479,6 +481,7 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
     let dead = false
     setBody(null)
     setBodyError('')
+    setShowImages(false)
     setSummary('')
     if (!account) { setBodyError('账户已被删除'); return }
     void (async () => {
@@ -505,6 +508,33 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
   }, [accounts])
 
   const route: WorkshopRoute | null = routeData?.routes.find(r => r.key === routeKey) ?? null
+
+  // 正文呈现（v0.1.449）：HTML 预处理（cid 内嵌图换 data:、远程图默认占位）；
+  // HTML 没有可见文字时回落纯文本全文，不许出现大空框（都没有正文时才勉强渲染 HTML）。
+  const prepared = useMemo(
+    () => (body?.html ? prepareMailHtml(body.html, body.inlineImages, showImages) : null),
+    [body, showImages],
+  )
+  const renderHtml = !!body && !!prepared && (htmlHasVisibleText(body.html) || !(body.text ?? '').trim())
+
+  // 远程图放行后仍加载失败（防盗链/404）：捕获 error 事件换回占位图，不露原生破图图标；
+  // 监听挂载前就已失败的图一并扫掉。
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const swap = (img: HTMLImageElement) => {
+      if (!img.src.startsWith('data:image/svg')) {
+        img.dataset.failed = '1'
+        img.src = MAIL_IMG_PLACEHOLDER
+      }
+    }
+    const onErr = (e: Event) => { const t = e.target; if (t instanceof HTMLImageElement) swap(t) }
+    el.addEventListener('error', onErr, true)
+    el.querySelectorAll('img').forEach(img => {
+      if (img.complete && img.naturalWidth === 0 && !img.src.startsWith('data:')) swap(img)
+    })
+    return () => el.removeEventListener('error', onErr, true)
+  }, [prepared?.html, showImages])
 
   const runSummary = async () => {
     if (!route || !routeData || !body) return
@@ -583,9 +613,20 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
       {!body && !bodyError && <div className="mail-loading"><Loader2 size={16} className="spin" /> 正在从服务器取正文…</div>}
       {body && (
         <>
-          {body.html
-            ? <div className="mail-body-html" dangerouslySetInnerHTML={{ __html: sanitizeMailHtml(body.html) }} />
-            : <div className="mail-body-text">{body.text}</div>}
+          {renderHtml
+            ? (
+              <>
+                {prepared!.remoteCount > 0 && !showImages && (
+                  <div className="mail-images-bar">
+                    <ImageOff size={14} />
+                    <span>这封邮件有 {prepared!.remoteCount} 张远程图片，默认不加载（防追踪、防裂图）。</span>
+                    <button className="btn sm" onClick={() => setShowImages(true)}>显示图片</button>
+                  </div>
+                )}
+                <div className="mail-body-html" ref={bodyRef} dangerouslySetInnerHTML={{ __html: prepared!.html }} />
+              </>
+            )
+            : <div className="mail-body-text">{body.text || '（这封邮件没有正文内容）'}</div>}
           {body.attachments.length > 0 && (
             <div className="mail-attachments">
               <div className="mail-attachments-title"><Paperclip size={14} /> 附件（{body.attachments.length}）</div>

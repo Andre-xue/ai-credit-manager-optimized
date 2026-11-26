@@ -497,10 +497,17 @@ export interface MailAttachment {
   base64: string
 }
 
+export interface MailInlineImage {
+  cid: string
+  contentType: string
+  base64: string
+}
+
 export interface MailBodyContent {
   text: string
   html: string
   attachments: MailAttachment[]
+  inlineImages: MailInlineImage[]
 }
 
 function bytesToBinaryString(bytes: Uint8Array): string {
@@ -547,7 +554,7 @@ function decodeTransfer(bodyRaw: string, encoding: string): Uint8Array {
 
 export function parseMimeMessage(bytes: Uint8Array): MailBodyContent {
   const raw = bytesToBinaryString(bytes)
-  const result: MailBodyContent = { text: '', html: '', attachments: [] }
+  const result: MailBodyContent = { text: '', html: '', attachments: [], inlineImages: [] }
 
   const walk = (entityRaw: string): void => {
     const sep = entityRaw.indexOf('\r\n\r\n') >= 0 ? entityRaw.indexOf('\r\n\r\n') : entityRaw.indexOf('\n\n')
@@ -568,6 +575,13 @@ export function parseMimeMessage(bytes: Uint8Array): MailBodyContent {
       return
     }
     const decoded = decodeTransfer(bodyRaw, headers.get('content-transfer-encoding') ?? '')
+    // 带 Content-ID 的非文本 part 是 HTML 里 cid: 引用的内嵌图：单独收集供渲染时换成 data: URL，
+    // 否则它会被当成附件（甚至因无文件名被丢弃），正文里的 cid 图永远裂图（v0.1.449）。
+    const cidRaw = (headers.get('content-id') ?? '').trim().replace(/^</, '').replace(/>$/, '').trim()
+    if (cidRaw && !ct.type.startsWith('text/')) {
+      result.inlineImages.push({ cid: cidRaw, contentType: ct.type || 'application/octet-stream', base64: bytesToBase64(decoded) })
+      return
+    }
     const isAttachment = /attachment/i.test(disp) || (!!filenameRaw && !ct.type.startsWith('text/'))
     if (isAttachment) {
       result.attachments.push({
@@ -618,6 +632,64 @@ export function sanitizeMailHtml(html: string): string {
     .replace(/<(script|style|iframe|object|embed|form|link|meta|base)[^>]*\/?>/gi, ' ')
     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, ' ')
     .replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"')
+}
+
+/** 远程图片占位图：浅灰块 + 图片字样。data: 必达，不会出现浏览器原生破图图标。 */
+export const MAIL_IMG_PLACEHOLDER = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="140" viewBox="0 0 320 140">'
+  + '<rect width="320" height="140" fill="#eceff3"/>'
+  + '<circle cx="112" cy="48" r="10" fill="#9aa3ad"/>'
+  + '<path d="M78 104 L132 58 L168 88 L194 70 L244 104 Z" fill="#9aa3ad"/>'
+  + '<text x="160" y="126" font-family="sans-serif" font-size="14" fill="#7a828c" text-anchor="middle">图片</text>'
+  + '</svg>',
+)
+
+/** HTML 里有没有肉眼可见的正文文字（只有图片/空壳的 HTML 返回 false，阅读页据此回落纯文本）。 */
+export function htmlHasVisibleText(html: string): boolean {
+  if (!html) return false
+  return htmlToText(html).replace(/\s+/g, '').length > 0
+}
+
+export interface PreparedMailHtml {
+  html: string
+  remoteCount: number
+}
+
+/**
+ * 阅读页渲染前的正文预处理（v0.1.449）：
+ * - cid: 内嵌图换成 data: URL（解析不到的换占位图）；
+ * - 远程图（http/https）：默认不加载——换成占位图并把原地址存进 data-remote-src，
+ *   showRemote=true 时才保留原地址真正加载；srcset 一律剥掉防绕过；
+ * - data: 图与相对地址：data: 保留，相对地址无从解析换占位图。
+ */
+export function prepareMailHtml(html: string, inlineImages: MailInlineImage[], showRemote: boolean): PreparedMailHtml {
+  const byCid = new Map(inlineImages.map(i => [i.cid, i]))
+  let remoteCount = 0
+  const out = sanitizeMailHtml(html).replace(/<img\b[^>]*>/gi, tag => {
+    let t = tag.replace(/\s+srcset\s*=\s*("[^"]*"|'[^']*')/gi, '')
+    const m = t.match(/\ssrc\s*=\s*("([^"]*)"|'([^']*)')/i)
+    if (!m) return t
+    const src = (m[2] ?? m[3] ?? '').trim()
+    const quote = m[1].startsWith("'") ? "'" : '"'
+    const setSrc = (v: string) => { t = t.replace(m[0], ` src=${quote}${v}${quote}`) }
+    if (/^cid:/i.test(src)) {
+      const hit = byCid.get(src.slice(4).trim())
+      if (hit) setSrc(`data:${hit.contentType};base64,${hit.base64}`)
+      else setSrc(MAIL_IMG_PLACEHOLDER)
+      return t
+    }
+    if (/^https?:\/\//i.test(src)) {
+      remoteCount += 1
+      if (showRemote) return t
+      setSrc(MAIL_IMG_PLACEHOLDER)
+      const tail = t.endsWith('/>') ? '/>' : '>'
+      return `${t.slice(0, t.length - tail.length)} data-blocked="1" data-remote-src=${quote}${src}${quote}${tail}`
+    }
+    if (/^data:/i.test(src)) return t
+    setSrc(MAIL_IMG_PLACEHOLDER)
+    return t
+  })
+  return { html: out, remoteCount }
 }
 
 // ---------------- 桌面传输（Tauri invoke → Rust IMAP） ----------------

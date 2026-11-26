@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   MAIL_PLATFORMS, mailPlatform, extractVerifyCode, classifyMessage, decodeEncodedWords,
   parseListFolders, parseFetchHeaders, parseSearchUids, resolveDeleteMode, parseMimeMessage,
-  htmlToText, sanitizeMailHtml, loadMailVisibility, saveMailVisibility, isAccountVisible,
+  htmlToText, sanitizeMailHtml, prepareMailHtml, htmlHasVisibleText, MAIL_IMG_PLACEHOLDER, loadMailVisibility, saveMailVisibility, isAccountVisible,
   buildOAuthUrl, raceTimeout, mailConnectTimeoutMs, MAIL_CONNECT_TIMEOUT_MS,
   mailInvoke, mailStepTimeoutMs, displayMailError, isMailInternalError, shouldSuggestCredentialCheck,
   OAUTH_REGISTER_GUIDES, describeOAuthCallbackError, mailOAuthAuthorize, OAUTH_CANCELLED,
@@ -191,6 +191,96 @@ describe('MIME 正文解析', () => {
     expect(clean).not.toContain('script')
     expect(clean).not.toContain('onclick')
     expect(clean).not.toContain('javascript:')
+  })
+})
+
+describe('阅读页正文呈现（v0.1.449）', () => {
+  const pngB64 = Buffer.from('PNGDATA').toString('base64')
+  const emlRelated = [
+    'From: a@b.c',
+    'Subject: photo',
+    'Content-Type: multipart/related; boundary="REL"',
+    '',
+    '--REL',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    '<html><body><p>照片在下面</p><img src="cid:photo1@acm" alt="照片"></body></html>',
+    '--REL',
+    'Content-Type: image/png; name="photo.png"',
+    'Content-Disposition: inline; filename="photo.png"',
+    'Content-Transfer-Encoding: base64',
+    'Content-ID: <photo1@acm>',
+    '',
+    pngB64,
+    '--REL--',
+    '',
+  ].join('\r\n')
+
+  it('cid 内嵌图被单独收集，不进附件列表', () => {
+    const body = parseMimeMessage(new TextEncoder().encode(emlRelated))
+    expect(body.inlineImages.length).toBe(1)
+    expect(body.inlineImages[0].cid).toBe('photo1@acm')
+    expect(body.inlineImages[0].contentType).toBe('image/png')
+    expect(body.inlineImages[0].base64).toBe(pngB64)
+    expect(body.attachments.length).toBe(0)
+    expect(body.html).toContain('cid:photo1@acm')
+  })
+
+  it('prepareMailHtml：cid 换 data: URL', () => {
+    const body = parseMimeMessage(new TextEncoder().encode(emlRelated))
+    const out = prepareMailHtml(body.html, body.inlineImages, false)
+    expect(out.html).toContain(`data:image/png;base64,${pngB64}`)
+    expect(out.html).not.toContain('cid:')
+    expect(out.remoteCount).toBe(0)
+  })
+
+  it('prepareMailHtml：远程图默认占位（存原地址、剥 srcset），点后才放行', () => {
+    const html = '<p>大促</p><img src="https://cdn.example.com/a.png" srcset="https://cdn.example.com/a2x.png 2x" width="600">'
+    const blocked = prepareMailHtml(html, [], false)
+    expect(blocked.remoteCount).toBe(1)
+    expect(blocked.html).toContain(MAIL_IMG_PLACEHOLDER)
+    expect(blocked.html).toContain('data-remote-src="https://cdn.example.com/a.png"')
+    expect(blocked.html).not.toContain('srcset')
+    expect(blocked.html).not.toMatch(/\ssrc="https:/)
+    const shown = prepareMailHtml(html, [], true)
+    expect(shown.remoteCount).toBe(1)
+    expect(shown.html).toContain('src="https://cdn.example.com/a.png"')
+  })
+
+  it('prepareMailHtml：净化仍生效；解析不到的 cid 与相对地址换占位', () => {
+    const out = prepareMailHtml('<script>bad</script><img src="cid:missing@x"><img src="/rel.png">', [], false)
+    expect(out.html).not.toContain('script')
+    expect(out.html).not.toContain('cid:missing@x')
+    expect(out.html).not.toContain('/rel.png')
+    expect(out.html.split(MAIL_IMG_PLACEHOLDER).length - 1).toBe(2)
+  })
+
+  it('htmlHasVisibleText：只有图片的 HTML 无可见文字（回落纯文本的判据）', () => {
+    expect(htmlHasVisibleText('<html><body><img src="https://x/logo.png" alt=""></body></html>')).toBe(false)
+    expect(htmlHasVisibleText('<p>你好</p>')).toBe(true)
+    expect(htmlHasVisibleText('')).toBe(false)
+  })
+
+  it('Meta 形态：HTML 只有图、正文全在 text/plain → 解析后判据成立可回落', () => {
+    const eml = [
+      'From: Meta <noreply@facebookmail.com>',
+      'Subject: code',
+      'Content-Type: multipart/alternative; boundary="ALT"',
+      '',
+      '--ALT',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      '你的验证码是 654321。如果你没有请求此验证码，请立即修改密码。',
+      '--ALT',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      '<html><body><table><tr><td><img src="https://static.example.com/logo.png" alt=""></td></tr></table></body></html>',
+      '--ALT--',
+      '',
+    ].join('\r\n')
+    const body = parseMimeMessage(new TextEncoder().encode(eml))
+    expect(body.text).toContain('请立即修改密码')
+    expect(htmlHasVisibleText(body.html)).toBe(false)
   })
 })
 
