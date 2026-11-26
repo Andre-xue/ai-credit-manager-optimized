@@ -467,11 +467,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .health-badge.skipped .health-dot{background:#b6b0c8}
 
 /* ===== A 批新增：全局搜索 / 日历 / 审计 / 分段控件 ===== */
-.cmdk-trigger{display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);color:var(--text-3);font-size:12.5px;cursor:pointer;width:calc(100% - 24px)}
-.cmdk-trigger:hover{border-color:var(--border-strong);color:var(--text-2)}
-.cmdk-trigger kbd{margin-left:auto;font-size:10.5px;border:1px solid var(--border);border-radius:5px;padding:1px 5px;background:var(--panel)}
-.sidebar-collapsed .cmdk-trigger{justify-content:center;padding:8px 0}
-.sidebar-collapsed .cmdk-trigger .cmdk-trigger-label,.sidebar-collapsed .cmdk-trigger kbd{display:none}
+/* v0.1.481：全局搜索入口移位——侧栏底部搜索框（旧 .cmdk-trigger）已撤，改主区右上角纯图标按钮。
+   非 AI 页用这个独立胶囊按钮（与 AI 页顶栏胶囊同款式），fixed 钉在窗口右上角、与侧栏折叠状态无关；
+   AI 页不渲染它（按钮在 AIView 顶栏胶囊内、宫格按钮左侧）。 */
+.global-search-btn{position:fixed;top:10px;right:12px;z-index:45;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid var(--border);background:var(--panel);box-shadow:0 4px 14px rgba(16,24,40,.07);color:var(--text-2);cursor:pointer}
+.global-search-btn:hover{border-color:var(--border-strong);color:var(--text)}
+/* 手机壳：落在非 AI 页顶部预留的 62px 带内（与 AI 页顶栏胶囊同高同位），不压内容 */
+.phone-shell .global-search-btn{top:calc(env(safe-area-inset-top, 0px) + 10px);right:12px;width:36px;height:36px}
+/* 桌面非 AI 页：内容顶部留 56px 带给右上角按钮——否则 Key 页工具栏的「添加账户」等第一行右侧控件会被按钮压住
+   （无头 1400 宽实测改前重叠 30×16px）。AI 页不用（胶囊层自理），手机壳不用（已有预留带）。 */
+.app-shell:not(.phone-shell) .main .content:not(.content-ai){padding-top:56px}
 .cmdk-overlay{align-items:flex-start;padding-top:12vh}
 .cmdk-panel{width:min(560px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden}
 .cmdk-input-row{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);color:var(--text-3)}
@@ -566,7 +571,6 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 :root[data-theme="dark"] .catalog-news-bar button{background:var(--panel-2);color:var(--primary);border-color:var(--border-strong)}
 :root[data-theme="dark"] .cal-cell{background:var(--panel-2)}
 :root[data-theme="dark"] .cal-cell.selected{background:var(--primary-soft)}
-:root[data-theme="dark"] .cmdk-trigger{background:var(--panel-2)}
 
 /* ===== 深色模式修复：变量实际作用域在 .claude-ui 上（claude-ui.css 与 redesign 前段都在此重定义），
    且多处表面用字面色 + !important 绘制，必须在同一作用域以更高优先级覆盖 ===== */

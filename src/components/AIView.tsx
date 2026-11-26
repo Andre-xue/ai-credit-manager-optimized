@@ -148,13 +148,15 @@ function saveSessionStore(store: { sessions: ChatSession[]; activeId: string }):
   } catch { /* 忽略 */ }
 }
 
-export function AIView({ notify, accounts, settings, serviceController, prompts, onPromptsChange }: {
+export function AIView({ notify, accounts, settings, serviceController, prompts, onPromptsChange, onOpenSearch }: {
   notify: (m: string) => void
   accounts: Account[]
   settings?: import('../core/types').AppSettings
   serviceController?: import('../core/useServiceController').ServiceController
   prompts?: PromptTemplate[]
   onPromptsChange?: (p: PromptTemplate[]) => void
+  /** v0.1.481：顶栏胶囊内的全局搜索按钮（打开 App 的命令面板，与 ⌘K 同一个） */
+  onOpenSearch?: () => void
 }) {
   const [sessionStore, setSessionStore] = useState<{ sessions: ChatSession[]; activeId: string }>(loadSessionStore)
   const [messages, setMessages] = useState<ChatMessage[]>(() => sessionStore.sessions.find(s => s.id === sessionStore.activeId)?.messages ?? [])
@@ -1624,6 +1626,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {/* 顶部栏：朗读开关 / 电话 / 刷新，靠右间距适中 */}
         <div className="ai-topbar">
           <div className="ai-top-actions" ref={toolsRef}>
+            {/* v0.1.481：全局搜索移位到右上角——纯放大镜图标，排在宫格（全部功能）按钮左侧，与 ⌘K 打开同一个面板 */}
+            <button className="ai-icon-btn" onClick={() => onOpenSearch?.()} data-tip={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+              <Search size={17} />
+            </button>
             <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip={t('全部功能')}>
               <LayoutGrid size={17} />
             </button>

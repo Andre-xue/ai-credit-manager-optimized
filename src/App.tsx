@@ -1401,11 +1401,6 @@ function App() {
             )
           })}
         </nav>
-        <button className="cmdk-trigger" onClick={() => setPaletteOpen(true)} title={t('全局搜索（Ctrl/⌘ + K）')}>
-          <Search size={15} />
-          <span className="cmdk-trigger-label">{t('搜索页面 / 账户 / 工具')}</span>
-          <kbd>⌘K</kbd>
-        </button>
         <button
           className="sync-status-bar"
           onClick={() => {
@@ -1472,7 +1467,7 @@ function App() {
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
           <Suspense fallback={<div style={{ padding: 32, color: 'var(--text-3)', fontSize: 13 }}>{t('加载中…')}</div>}>
-          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} />}
+          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} onOpenSearch={() => setPaletteOpen(true)} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
             <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title={t('不再显示')}><X size={15} /></button>
@@ -1969,6 +1964,13 @@ function App() {
         }}
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
+      {/* v0.1.481：全局搜索入口移位——侧栏底部搜索框撤掉，改主区右上角纯图标按钮（与原搜索框、⌘K 打开同一个面板）。
+          AI 页的按钮在 AIView 顶栏胶囊内、宫格按钮左侧；其余页面用这个同款胶囊按钮钉在右上角，与侧栏折叠状态无关。 */}
+      {tab !== 'ai' && (
+        <button className="global-search-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+          <Search size={17} />
+        </button>
+      )}
       {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
       <UpdateReadyPrompt />
