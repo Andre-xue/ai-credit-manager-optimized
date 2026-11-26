@@ -17,6 +17,7 @@ import {
   getInvalidTranslatorShortcutFields, TRANSLATOR_SETTINGS_KEY,
   parseTranslatorPermissions, noteTranslatorDiag,
   translationMaxTokens, showTranslatorInput, showTranslatorPop, updateTranslatorPop,
+  humanizeTranslateError,
 } from './translator'
 
 beforeEach(() => { ;(localStorage as any).clear() })
@@ -210,5 +211,82 @@ describe('v0.1.473 小窗 invoke 契约（字段名与 Rust 命令逐字对齐�
     expect(calls[0].cmd).toBe('translator_update_pop')
     expect(calls[0].args.streaming).toBe(false)
     expect(calls[0].args.translated).toBe('你好')
+  })
+  it('showTranslatorPop 带 errorDetail/errorHint 时透传给 Rust（v0.1.480 错误态）', async () => {
+    await showTranslatorPop({
+      source: 'Hello', translated: '', targetLang: '简体中文', error: '免费额度已用完',
+      ops: 'both', x: 1, y: 2, errorDetail: '{"error":{"name":"FreeUsageLimitError"}}', errorHint: '换一家服务商',
+    })
+    expect(calls[0].args.errorDetail).toContain('FreeUsageLimitError')
+    expect(calls[0].args.errorHint).toBe('换一家服务商')
+  })
+})
+
+describe('v0.1.480 humanizeTranslateError（报错人话化）', () => {
+  it('Zen 429 原始 JSON → 「免费额度已用完」，原文完整保留在 detail', () => {
+    const raw = 'Zen 接口返回 429：{"error":{"name":"FreeUsageLimitError","message":"Free usage limit exceeded","code":429}}'
+    const h = humanizeTranslateError(raw)
+    expect(h.title).toBe('免费额度已用完')
+    expect(h.hint).toContain('换一家')
+    expect(h.detail).toBe(raw)
+    expect(h.title).not.toContain('FreeUsageLimitError')
+  })
+  it('400 model_not_found → 「这个模型不可用」，不许误报成额度/限流', () => {
+    const h = humanizeTranslateError('接口返回 400：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint."}}')
+    expect(h.title).toBe('这个模型不可用')
+  })
+  it('401/无效 Key → 「密钥无效或没有权限」', () => {
+    expect(humanizeTranslateError('401 Unauthorized: invalid api key').title).toBe('密钥无效或没有权限')
+  })
+  it('402/余额不足 → 「额度或余额不足」；普通 429 → 「请求太频繁，被限流了」', () => {
+    expect(humanizeTranslateError('402 insufficient balance').title).toBe('额度或余额不足')
+    expect(humanizeTranslateError('429 Too Many Requests').title).toBe('请求太频繁，被限流了')
+  })
+  it('超时 → 「翻译超时」；网络失败 → 「网络连接失败」', () => {
+    expect(humanizeTranslateError('翻译超时：模型通道 45 秒没有响应').title).toBe('翻译超时')
+    expect(humanizeTranslateError('Failed to fetch').title).toBe('网络连接失败')
+  })
+  it('无特征的整段 JSON → 标题只给「翻译失败」，不把 JSON 当标题', () => {
+    const h = humanizeTranslateError('{"error":{"message":"something odd"}}')
+    expect(h.title).toBe('翻译失败')
+    expect(h.detail).toContain('something odd')
+  })
+  it('本身就是人话的短错误原样作标题（如 OCR/权限类提示）', () => {
+    const h = humanizeTranslateError('框选区域里没有识别到文字，换个区域试试')
+    expect(h.title).toBe('框选区域里没有识别到文字，换个区域试试')
+    expect(h.hint).toBe('')
+  })
+})
+
+describe('v0.1.480 Rust 侧不变量（主窗不许被翻译路径拉前台 / 拖拽权限）', () => {
+  it('translator.rs：set_focus 只许出现在 translator_show_input（输入窗要打字）；框选层 start_capture 不许 set_focus', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../../desktop/src-tauri/src/translator.rs', import.meta.url), 'utf8')
+    const inputStart = src.indexOf('pub fn translator_show_input')
+    const inputEnd = src.indexOf('#[tauri::command]', inputStart + 10)
+    const focusAt: number[] = []
+    let i = -1
+    while ((i = src.indexOf('set_focus', i + 1)) >= 0) focusAt.push(i)
+    expect(focusAt.length).toBeGreaterThan(0)
+    for (const at of focusAt) {
+      // 注释里提到 set_focus 不算调用：只统计代码行（非 // 开头）
+      const lineStart = src.lastIndexOf('\n', at) + 1
+      const line = src.slice(lineStart, src.indexOf('\n', at))
+      if (line.trimStart().startsWith('//')) continue
+      expect(at).toBeGreaterThan(inputStart)
+      expect(at).toBeLessThan(inputEnd)
+    }
+    const capStart = src.indexOf('fn start_capture')
+    const capEnd = src.indexOf('pub fn translator_start_capture', capStart)
+    expect(src.slice(capStart, capEnd)).not.toContain('.set_focus()')
+    // 代码行（剔除注释）里不许出现 show_main_window：翻译路径永远不许碰主窗显隐
+    const codeOnly = src.split('\n').filter(l => !l.trimStart().startsWith('//')).join('\n')
+    expect(codeOnly).not.toContain('show_main_window')
+  })
+  it('capabilities 含 core:window:allow-start-dragging（小窗拖拽的 ACL 前提）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const cap = readFileSync(new URL('../../desktop/src-tauri/capabilities/default.json', import.meta.url), 'utf8')
+    expect(cap).toContain('core:window:allow-start-dragging')
+    expect(cap).toContain('translator-pop')
   })
 })

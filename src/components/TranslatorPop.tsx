@@ -31,6 +31,9 @@ interface PopPayload {
   /** v0.1.477：本次翻译真实耗时（毫秒）与实际服务商名，译完显示在按钮下方 */
   elapsedMs?: number | null
   usedLabel?: string
+  /** v0.1.480：报错原文与人话建议（error 只放人话标题，原文收进可展开详情） */
+  errorDetail?: string
+  errorHint?: string
 }
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
@@ -70,6 +73,7 @@ export function TranslatorPop() {
   const [providers, setProviders] = useState<TranslatorProviderSummary[] | null>(null)
   const [providerKey, setProviderKey] = useState('')
   const [elapsed, setElapsed] = useState<{ ms: number; label: string } | null>(null)
+  const [showErrDetail, setShowErrDetail] = useState(false)
   const stateRef = useRef({ draft: '', targetSel: '简体中文', sourceSel: '', providerKey: '' })
   stateRef.current = { draft, targetSel, sourceSel, providerKey }
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -129,6 +133,7 @@ export function TranslatorPop() {
     let unlisten: (() => void) | undefined
     const apply = (p: PopPayload) => {
       applyAtRef.current = Date.now()
+      setShowErrDetail(false)
       setPayload(p)
       const provs = parseProviders(p.providersJson)
       if (provs !== null) setProviders(provs)
@@ -168,6 +173,21 @@ export function TranslatorPop() {
     return () => { unlisten?.(); window.removeEventListener('keydown', onKey) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 拖动（v0.1.480）：477 用声明式 data-tauri-drag-region，真机纹丝不动——
+  // 根因是 core:window:default 权限集不含 allow-start-dragging，drag-region
+  // 的内部调用被 ACL 拒（已在 capabilities 补上）。这里再加显式兜底：标题
+  // 栏按下（避开按钮等交互元素）直接调 startDragging，不依赖声明式机制。
+  const onHeadMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    if ((e.target as HTMLElement).closest('button, select, input, textarea, a')) return
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        await getCurrentWindow().startDragging()
+      } catch { /* 非 Tauri/无头环境忽略 */ }
+    })()
+  }
 
   const close = async () => {
     // v0.1.473 面包屑：输入模式的关闭与 Rust 的 input-show 成对落盘
@@ -267,7 +287,7 @@ export function TranslatorPop() {
 
   return (
     <div className={`trs-pop ${theme === 'dark' ? 'dark' : ''}`}>
-      <div className="trs-pop-head" data-tauri-drag-region>
+      <div className="trs-pop-head" onMouseDown={onHeadMouseDown}>
         <span className="trs-pop-title"><GripHorizontal size={13} className="trs-pop-grip" /><Languages size={13} /> 翻译</span>
         <span className="trs-pop-head-btns">
           <button className="trs-pop-x static" onClick={clearAll} title="清空原文与译文" disabled={!draft && !dst}>
@@ -284,8 +304,45 @@ export function TranslatorPop() {
       </div>
 
       {!payload && <div className="trs-pop-loading">翻译中…</div>}
+      {/* 错误态（v0.1.480 并入新小窗）：标题是宿主提炼的人话，原文收进可
+          展开详情；带原文时可直接换一家服务商重试（换下拉即重译），不再
+          是 477 那种旧样式独立报错窗、更不把原始 JSON 糊在界面上 */}
       {payload?.error && (
-        <div className="trs-pop-error"><AlertTriangle size={15} /> <span>{payload.error}</span></div>
+        <div className="trs-pop-errview">
+          <div className="trs-pop-error"><AlertTriangle size={15} /> <span>{payload.error}</span></div>
+          {payload.errorHint && <p className="trs-pop-errhint">{payload.errorHint}</p>}
+          {payload.source && (
+            <p className="trs-pop-errsrc">原文：{payload.source.length > 90 ? `${payload.source.slice(0, 90)}…` : payload.source}</p>
+          )}
+          {payload.source && providers && providers.length > 0 && (
+            <div className="trs-pop-errrow">
+              <select className="trs-pop-provider" value={providerKey} title="换一家服务商重试"
+                onChange={e => changeProvider(e.target.value)}>
+                {providers.map(p => (
+                  <option key={p.key} value={p.key}>
+                    {p.label} · {typeof p.ms === 'number' ? formatDurationMs(p.ms) : '未测速'}
+                  </option>
+                ))}
+              </select>
+              <button className="trs-pop-errretry" disabled={busy} onClick={() => void retranslate()}>
+                {busy ? <Loader2 size={13} className="spin" /> : null} 重试
+              </button>
+            </div>
+          )}
+          {payload.source && noProviders && (
+            <button className="trs-pop-open-settings" onClick={() => void openTranslatorSettings()}>
+              <Settings2 size={14} /> 打开翻译设置
+            </button>
+          )}
+          {(payload.errorDetail || payload.error) && (
+            <>
+              <button className="trs-pop-errtoggle" onClick={() => setShowErrDetail(v => !v)}>
+                {showErrDetail ? '收起原始错误' : '查看原始错误'}
+              </button>
+              {showErrDetail && <pre className="trs-pop-errdetail">{payload.errorDetail || payload.error}</pre>}
+            </>
+          )}
+        </div>
       )}
 
       {payload && !payload.error && noProviders && (

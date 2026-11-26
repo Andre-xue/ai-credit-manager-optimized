@@ -15,9 +15,11 @@ import type { Account } from './types'
 import type { WorkshopRouteData } from './workshopChat'
 import {
   buildProviderInfos, pickTranslatorEngine, enabledProviderSummaries,
-  formatDurationMs, loadProviderPrefs, saveProviderPref,
+  formatDurationMs, loadProviderPrefs, saveProviderPref, saveProviderModelPref,
   loadTranslatorEngineKey, saveTranslatorEngineKey,
-  TRANSLATOR_PROVIDERS_KEY, TRANSLATOR_ENGINE_KEY,
+  loadGroupPrefs, saveGroupPref, providerGroupOf, isTranslatableModel,
+  withProviderEnabled, withGroupEnabled, withModelEnabled, withProviderModel, withModelMs,
+  TRANSLATOR_PROVIDERS_KEY, TRANSLATOR_ENGINE_KEY, TRANSLATOR_GROUPS_KEY,
 } from './translatorProviders'
 
 function acct(id: string, providerId: string, label: string): Account {
@@ -131,6 +133,129 @@ describe('v0.1.477 enabledProviderSummaries（小窗下拉过滤）', () => {
     expect(sums.map(s => s.key)).toEqual(['free:cloud:m1', 'acct:a1', 'acct:a2', 'wbpool'])
     expect(sums.find(s => s.key === 'acct:a1')!.ms).toBe(900)
     expect(sums.find(s => s.key === 'free:cloud:m1')!.ms).toBeUndefined()
+  })
+})
+
+describe('v0.1.480 大分组归属（按 Key 管理备注分类）', () => {
+  it('providerGroupOf：账号池/免费路线定组，自有账户看备注分类', () => {
+    expect(providerGroupOf('wbpool')).toBe('pool')
+    expect(providerGroupOf('free')).toBe('free')
+    expect(providerGroupOf('account', '通用型')).toBe('general')
+    expect(providerGroupOf('account', '免费')).toBe('free')
+    expect(providerGroupOf('account', '对话型')).toBe('chat')
+    expect(providerGroupOf('account', '未分类')).toBe('chat')
+    expect(providerGroupOf('account', undefined)).toBe('chat')
+  })
+
+  it('buildProviderInfos 按账户备注分到大组：MoMA[通用型]→通用、DeepSeek[对话型]→对话', () => {
+    const { data } = fixture()
+    const accounts = [
+      { ...acct('a1', 'deepseek', 'DeepSeek 官方'), note: '[对话型] 日常' },
+      { ...acct('a2', 'moma', 'MoMA'), note: '[通用型] 聚合' },
+    ]
+    const infos = buildProviderInfos(data, accounts, {})
+    expect(infos.find(i => i.key === 'acct:a2')!.group).toBe('general')
+    expect(infos.find(i => i.key === 'acct:a1')!.group).toBe('chat')
+    expect(infos.find(i => i.key === 'wbpool')!.group).toBe('pool')
+    expect(infos.find(i => i.key === 'free:zen:m2')!.group).toBe('free')
+  })
+})
+
+describe('v0.1.480 组总开关：关组整体隐匿、引擎回落、全关零启用', () => {
+  it('关掉对话组：DeepSeek 不进摘要、引擎回落到其他组最快者', () => {
+    const { data, accounts } = fixture()
+    const infos = buildProviderInfos(data, accounts, {
+      'acct:a1': { ms: 100 }, 'free:zen:m2': { ms: 800 }, 'free:cloud:m1': { ms: 2400 },
+    }, { chat: false })
+    const ds = infos.find(i => i.key === 'acct:a1')!
+    expect(ds.groupEnabled).toBe(false)
+    expect(ds.listed).toBe(false)
+    expect(ds.enabled).toBe(true) // 组内单开关状态保留，不被组开关改写
+    expect(enabledProviderSummaries(infos).map(s => s.key)).not.toContain('acct:a1')
+    expect(pickTranslatorEngine(infos, 'acct:a1')!.key).toBe('free:zen:m2')
+  })
+
+  it('全部组都关：摘要为空、引擎为 null（小窗走零启用提示态）', () => {
+    const { data, accounts } = fixture()
+    const infos = buildProviderInfos(data, accounts, {}, { free: false, pool: false, general: false, chat: false })
+    expect(enabledProviderSummaries(infos)).toEqual([])
+    expect(pickTranslatorEngine(infos, '')).toBeNull()
+  })
+
+  it('组开关偏好存取：缺省全开、关后读回', () => {
+    localStorage.clear()
+    expect(loadGroupPrefs()).toEqual({})
+    saveGroupPref('general', false)
+    expect(loadGroupPrefs()).toEqual({ general: false })
+    expect(JSON.parse(localStorage.getItem(TRANSLATOR_GROUPS_KEY)!)).toEqual({ general: false })
+  })
+})
+
+describe('v0.1.480 只展示能翻译的模型（469 分类口径）', () => {
+  it('isTranslatableModel：对话模型可见，视觉/生图/语音/向量/重排/安全不可见', () => {
+    expect(isTranslatableModel('deepseek-chat')).toBe(true)
+    expect(isTranslatableModel('jiutian-35b-256k-chat')).toBe(true)
+    expect(isTranslatableModel('gpt-4o-mini')).toBe(true)
+    expect(isTranslatableModel('Qwen3-VL-8B-Instruct')).toBe(false)
+    expect(isTranslatableModel('qwen-image')).toBe(false)
+    expect(isTranslatableModel('cosyvoice-v2')).toBe(false)
+    expect(isTranslatableModel('sensevoice-small')).toBe(false)
+    expect(isTranslatableModel('text-embedding-v4')).toBe(false)
+    expect(isTranslatableModel('bge-reranker-v2')).toBe(false)
+    expect(isTranslatableModel('jiutian-safe-40b')).toBe(false)
+    expect(isTranslatableModel('doubao-seedance-1-0')).toBe(false)
+  })
+
+  it('逐模型偏好：关掉全部模型 → 平台不 listed；关掉选定模型 → 回落下一个可用模型', () => {
+    const { data, accounts } = fixture()
+    const first = buildProviderInfos(data, accounts, {})
+    const ds = first.find(i => i.key === 'acct:a1')!
+    const allOff = Object.fromEntries(ds.modelOptions.map(id => [id, { enabled: false }]))
+    const infos = buildProviderInfos(data, accounts, { 'acct:a1': { models: allOff } })
+    const ds2 = infos.find(i => i.key === 'acct:a1')!
+    expect(ds2.listed).toBe(false)
+    expect(enabledProviderSummaries(infos).map(s => s.key)).not.toContain('acct:a1')
+
+    const selOff = buildProviderInfos(data, accounts, {
+      'acct:a1': { modelId: ds.modelOptions[0], models: { [ds.modelOptions[0]]: { enabled: false } } },
+    })
+    const ds3 = selOff.find(i => i.key === 'acct:a1')!
+    expect(ds3.modelId).not.toBe(ds.modelOptions[0])
+    expect(ds3.models.find(m => m.id === ds3.modelId)!.enabled).toBe(true)
+    expect(ds3.listed).toBe(true)
+  })
+
+  it('逐模型耗时：saveProviderModelPref 深合并、buildProviderInfos 回填到模型行', () => {
+    localStorage.clear()
+    saveProviderModelPref('acct:a1', 'deepseek-v4-pro', { ms: 777 })
+    saveProviderPref('acct:a1', { enabled: false })
+    const prefs = loadProviderPrefs()
+    expect(prefs['acct:a1'].models).toEqual({ 'deepseek-v4-pro': { ms: 777 } })
+    expect(prefs['acct:a1'].enabled).toBe(false)
+    const { data, accounts } = fixture()
+    const infos = buildProviderInfos(data, accounts, prefs)
+    const ds = infos.find(i => i.key === 'acct:a1')!
+    expect(ds.models.find(m => m.id === 'deepseek-v4-pro')!.ms).toBe(777)
+    expect(ds.models.every(m => m.visible)).toBe(true) // DeepSeek 目录全是对话模型，无隐藏
+    expect(ds.hiddenCount).toBe(0)
+  })
+})
+
+describe('v0.1.480 本地补丁助手（界面即时重算口径）', () => {
+  it('withGroupEnabled/withModelEnabled/withProviderModel/withModelMs 口径与 build 一致', () => {
+    const { data, accounts } = fixture()
+    const infos = buildProviderInfos(data, accounts, { 'acct:a1': { ms: 100 }, 'free:zen:m2': { ms: 800 } })
+    const ds = infos.find(i => i.key === 'acct:a1')!
+    expect(withGroupEnabled(ds, false).listed).toBe(false)
+    expect(withGroupEnabled(ds, false).enabled).toBe(true)
+    const allOff = ds.modelOptions.reduce((acc, id) => withModelEnabled(acc, id, false), ds)
+    expect(allOff.listed).toBe(false)
+    const picked = withProviderModel(ds, ds.modelOptions[1])
+    expect(picked.modelId).toBe(ds.modelOptions[1])
+    expect(picked.route.kind === 'account' && picked.route.modelId).toBe(ds.modelOptions[1])
+    const measured = withModelMs(ds, ds.modelOptions[0], 432)
+    expect(measured.models.find(m => m.id === ds.modelOptions[0])!.ms).toBe(432)
+    expect(withProviderEnabled(ds, false).listed).toBe(false)
   })
 })
 

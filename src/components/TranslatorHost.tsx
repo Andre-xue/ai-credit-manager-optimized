@@ -4,13 +4,13 @@ import { isDesktopApp } from '../core/openExternal'
 import {
   loadTranslatorSettings, applyTranslatorShortcuts, getSelectedText, showTranslatorPop,
   updateTranslatorPop, showTranslatorInput, openTranslatorSettings,
-  noteTranslatorDiag,
+  noteTranslatorDiag, humanizeTranslateError,
   preprocessText, translateWithRoutes, translateToTarget, sourceLangLabel, writeClipboard,
   TRANSLATOR_SETTINGS_EVENT, type PopProviderArgs,
 } from '../core/translator'
 import {
   loadTranslatorProviders, enabledProviderSummaries, pickTranslatorEngine,
-  loadTranslatorEngineKey, saveTranslatorEngineKey, saveProviderPref,
+  loadTranslatorEngineKey, saveTranslatorEngineKey, saveProviderPref, saveProviderModelPref,
 } from '../core/translatorProviders'
 
 /**
@@ -73,16 +73,27 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       }).catch(() => { ctxRef.current.notify('还没有启用的翻译服务商：请到翻译助手设置里启用至少一家') })
     }
     const isNoProvidersError = (msg: string) => msg.includes('还没有启用的翻译服务商')
-    const showError = (message: string, x: number, y: number) => {
+    const showError = (message: string, x: number, y: number, sourceText = '') => {
       const s = loadTranslatorSettings()
       lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
       // v0.1.465 流水线面包屑：错误小窗已请求弹出；连错误小窗都弹失败时
       // 退回主窗口 toast，绝不让失败静默无结果
       void noteTranslatorDiag('pop-error-show')
-      void showTranslatorPop({
-        source: '', translated: '', targetLang: s.targetLang, error: message,
-        ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
-      }).catch(() => { ctxRef.current.notify(message) })
+      // v0.1.480：报错并入新小窗错误态——error 只放人话标题，原文进
+      // errorDetail 供展开；同时带上服务商上下文（已启用列表 + 当前引擎），
+      // 小窗里能直接换一家重试。原文一并带上，重试就用它。
+      const human = humanizeTranslateError(message)
+      void popCtx().then(ctx => showTranslatorPop({
+        source: sourceText, translated: '', targetLang: s.targetLang,
+        error: human.title, errorDetail: human.detail, errorHint: human.hint,
+        ops: s.opsDisplay, x: lastPos.x, y: lastPos.y, ...ctx,
+      })).catch(() => { ctxRef.current.notify(message) })
+    }
+    // v0.1.480：真实翻译耗时回填——服务商级（小窗下拉/设置页摘要）与逐
+    // 模型（设置页模型行）各记一份
+    const recordElapsed = (providerKey: string, modelId: string, ms: number) => {
+      saveProviderPref(providerKey, { ms })
+      if (modelId) saveProviderModelPref(providerKey, modelId, { ms })
     }
 
     const translateAndShow = async (rawText: string, x: number, y: number) => {
@@ -160,7 +171,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
           }),
         ])
         const elapsedMs = Math.round(performance.now() - tCall)
-        saveProviderPref(out.providerKey, { ms: elapsedMs })
+        recordElapsed(out.providerKey, out.modelId, elapsedMs)
         void noteTranslatorDiag(`translate-ok ms=${Math.round(performance.now() - t0)}`)
         // 最终载荷的服务商上下文重算一次，让下拉里的耗时与刚回填的实测一致
         const ctx = await popCtx()
@@ -193,7 +204,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
         const msg = e instanceof Error ? e.message : '翻译失败'
         void noteTranslatorDiag(`translate-fail ${msg}`)
         if (isNoProvidersError(msg)) showNoProviders(x, y)
-        else showError(msg, x, y)
+        else showError(msg, x, y, text)
       }
     }
 
@@ -214,7 +225,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
           onChainNote: msg => nf(msg),
         })
         const elapsedMs = Math.round(performance.now() - tCall)
-        saveProviderPref(out.providerKey, { ms: elapsedMs })
+        recordElapsed(out.providerKey, out.modelId, elapsedMs)
         await showTranslatorPop({
           source: text, translated: out.translated, targetLang: out.targetLang,
           sourceLang: p.sourceLang || sourceLangLabel(text), error: null,
@@ -224,7 +235,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       } catch (e) {
         const msg = e instanceof Error ? e.message : '翻译失败'
         if (isNoProvidersError(msg)) showNoProviders(lastPos.x - s.offsetX, lastPos.y - s.offsetY)
-        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY, text)
       }
     }
 
@@ -282,7 +293,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
           }),
         ])
         const elapsedMs = Math.round(performance.now() - tCall)
-        saveProviderPref(out.providerKey, { ms: elapsedMs })
+        recordElapsed(out.providerKey, out.modelId, elapsedMs)
         await showTranslatorPop({
           source: text, translated: out.translated, targetLang: out.targetLang,
           sourceLang: sourceLangLabel(text), error: null,
@@ -294,7 +305,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
         const msg = e instanceof Error ? e.message : '翻译失败'
         void noteTranslatorDiag(`input-result-fail ${msg}`)
         if (isNoProvidersError(msg)) showNoProviders(lastPos.x - s.offsetX, lastPos.y - s.offsetY)
-        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY, text)
       }
     }
 

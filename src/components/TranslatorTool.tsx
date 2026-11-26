@@ -9,15 +9,17 @@ import {
   loadTranslatorSettings, saveTranslatorSettings, applyTranslatorShortcuts,
   getTranslatorPermissions, requestAccessibility, requestScreenCapture, openPermissionSettings,
   preprocessText, pickTargetLang, translateWithRoutes, speakLangOf, writeClipboard,
-  noteTranslatorDiag,
+  noteTranslatorDiag, humanizeTranslateError,
   getInvalidTranslatorShortcutFields,
   TRANSLATOR_LANGS, type TranslatorSettings, type TranslatorPermissions, type OpsDisplay,
   type TranslatorShortcutField,
 } from '../core/translator'
 import {
-  loadTranslatorProviders, saveProviderPref, pickTranslatorEngine, loadTranslatorEngineKey,
+  loadTranslatorProviders, saveProviderPref, saveProviderModelPref, saveGroupPref, loadGroupPrefs,
+  pickTranslatorEngine, loadTranslatorEngineKey,
   measureProviderMs, formatDurationMs, TRANSLATOR_OPEN_SETTINGS_KEY,
-  type TranslatorProviderInfo,
+  TRANSLATOR_GROUPS, withProviderEnabled, withGroupEnabled, withModelEnabled, withProviderModel, withModelMs,
+  type TranslatorProviderInfo, type TranslatorGroupId,
 } from '../core/translatorProviders'
 import type { FreeAiOption } from '../core/freeAi'
 import { acceleratorFromEvent } from '../core/hotkey'
@@ -161,11 +163,25 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
     } catch { /* 忽略 */ }
   }, [])
 
-  // ---------------- 翻译服务商（v0.1.477 两段式的供给侧） ----------------
+  // ---------------- 翻译服务商（v0.1.480 三层管理：大组→平台→模型） ----------------
   const [providers, setProviders] = useState<TranslatorProviderInfo[]>([])
   const [provFreeOptions, setProvFreeOptions] = useState<FreeAiOption[]>([])
   const [testingKey, setTestingKey] = useState('')
   const [testMsg, setTestMsg] = useState<Record<string, { ok: boolean; text: string }>>({})
+  const [groupPrefs, setGroupPrefs] = useState<Record<string, boolean>>(loadGroupPrefs)
+  const [groupTab, setGroupTabState] = useState<TranslatorGroupId>(() => {
+    try {
+      const v = localStorage.getItem('acm.translator.providerGroupTab.v1')
+      return v === 'pool' || v === 'general' || v === 'chat' ? v : 'free'
+    } catch { return 'free' }
+  })
+  const setGroupTab = (v: TranslatorGroupId) => {
+    setGroupTabState(v)
+    try { localStorage.setItem('acm.translator.providerGroupTab.v1', v) } catch { /* 忽略 */ }
+  }
+  const [selProviderKey, setSelProviderKey] = useState('')
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
+  const [rightCollapsed, setRightCollapsed] = useState(false)
   const reloadProviders = useCallback(() => {
     void loadTranslatorProviders(accounts).then(r => {
       setProviders(r.providers)
@@ -174,32 +190,62 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   }, [accounts])
   useEffect(() => { reloadProviders() }, [reloadProviders])
 
-  const patchProvider = useCallback((key: string, patch: Partial<TranslatorProviderInfo>) => {
-    setProviders(prev => prev.map(p => (p.key === key ? { ...p, ...patch } : p)))
+  const replaceProvider = useCallback((next: TranslatorProviderInfo) => {
+    setProviders(prev => prev.map(p => (p.key === next.key ? next : p)))
+  }, [])
+  const toggleGroup = useCallback((group: TranslatorGroupId, v: boolean) => {
+    saveGroupPref(group, v)
+    setGroupPrefs(loadGroupPrefs())
+    setProviders(prev => prev.map(p => (p.group === group ? withGroupEnabled(p, v) : p)))
   }, [])
   const toggleProvider = useCallback((info: TranslatorProviderInfo, v: boolean) => {
     saveProviderPref(info.key, { enabled: v })
-    patchProvider(info.key, { enabled: v })
-  }, [patchProvider])
-  const changeProviderModel = useCallback((info: TranslatorProviderInfo, modelId: string) => {
+    replaceProvider(withProviderEnabled(info, v))
+  }, [replaceProvider])
+  const toggleModel = useCallback((info: TranslatorProviderInfo, modelId: string, v: boolean) => {
+    saveProviderModelPref(info.key, modelId, { enabled: v })
+    replaceProvider(withModelEnabled(info, modelId, v))
+  }, [replaceProvider])
+  const pickModel = useCallback((info: TranslatorProviderInfo, modelId: string) => {
     saveProviderPref(info.key, { modelId })
-    patchProvider(info.key, {
-      modelId,
-      route: info.route.kind === 'account' ? { ...info.route, modelId } : info.route,
-    })
-  }, [patchProvider])
-  const testProvider = useCallback(async (info: TranslatorProviderInfo) => {
-    setTestingKey(info.key)
-    setTestMsg(prev => ({ ...prev, [info.key]: { ok: true, text: '测速中…' } }))
+    replaceProvider(withProviderModel(info, modelId))
+  }, [replaceProvider])
+  const testModel = useCallback(async (info: TranslatorProviderInfo, modelId: string) => {
+    const tk = `${info.key}|${modelId}`
+    setTestingKey(tk)
+    setTestMsg(prev => ({ ...prev, [tk]: { ok: true, text: '测速中…' } }))
     try {
-      const ms = await measureProviderMs({ accounts, sessionPwd, provider: info, freeOptions: provFreeOptions })
-      patchProvider(info.key, { ms })
-      setTestMsg(prev => ({ ...prev, [info.key]: { ok: true, text: `实测 ${formatDurationMs(ms)}` } }))
+      const ms = await measureProviderMs({ accounts, sessionPwd, provider: info, freeOptions: provFreeOptions, modelId })
+      replaceProvider(withModelMs(info, modelId, ms))
+      setTestMsg(prev => ({ ...prev, [tk]: { ok: true, text: `实测 ${formatDurationMs(ms)}` } }))
     } catch (e) {
-      setTestMsg(prev => ({ ...prev, [info.key]: { ok: false, text: e instanceof Error ? e.message : '测速失败' } }))
+      setTestMsg(prev => ({ ...prev, [tk]: { ok: false, text: e instanceof Error ? e.message : '测速失败' } }))
     } finally { setTestingKey('') }
-  }, [accounts, sessionPwd, provFreeOptions, patchProvider])
+  }, [accounts, sessionPwd, provFreeOptions, replaceProvider])
   const currentEngine = pickTranslatorEngine(providers, loadTranslatorEngineKey())
+
+  // 大组/平台选择兜底：当前组没平台时落到第一个非空组；选中平台不在当前
+  // 组时落到当前引擎所在平台、再落到组内第一家
+  const groupProviders = providers.filter(p => p.group === groupTab)
+  useEffect(() => {
+    if (providers.length && groupProviders.length === 0) {
+      const first = TRANSLATOR_GROUPS.find(g => providers.some(p => p.group === g.id))
+      if (first && first.id !== groupTab) setGroupTab(first.id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers, groupTab])
+  useEffect(() => {
+    if (!groupProviders.length) return
+    if (!groupProviders.some(p => p.key === selProviderKey)) {
+      const engineInGroup = groupProviders.find(p => p.key === currentEngine?.key)
+      setSelProviderKey((engineInGroup ?? groupProviders[0]).key)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupTab, providers])
+  const selProvider = groupProviders.find(p => p.key === selProviderKey) ?? groupProviders[0]
+  const listedProviders = providers.filter(p => p.listed)
+  const listedModelCount = listedProviders.reduce(
+    (n, p) => n + p.models.filter(m => m.visible && m.enabled).length, 0)
 
   // v0.1.465：「去开启」点了必须有明确去向与反馈——先请求系统登记/提示，
   // 再直达系统设置对应面板，并留一行常驻说明写清去哪开、怎么开（464 实机
@@ -340,7 +386,20 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
             <span style={{ fontSize: 12, opacity: 0.6 }}>默认目标 {settings.targetLang}，源语言相同时自动改用 {settings.fallbackLang}</span>
           </div>
           {busy && <div className="ws-result"><Loader2 size={16} className="spin" /> 正在翻译…</div>}
-          {errText && <div className="ws-result" style={{ color: 'var(--red)' }}>{errText}</div>}
+          {errText && (() => {
+            const human = humanizeTranslateError(errText)
+            return (
+              <div className="ws-result" style={{ color: 'var(--red)' }}>
+                {human.title}{human.hint ? `——${human.hint}` : ''}
+                {human.detail && human.detail !== human.title && (
+                  <details style={{ marginTop: 6 }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 12 }}>查看原始错误</summary>
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 11, margin: '6px 0 0' }}>{human.detail}</pre>
+                  </details>
+                )}
+              </div>
+            )
+          })()}
           {result && !busy && (
             <div className="ws-result">
               <div className="ws-result-head">
@@ -438,55 +497,140 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
           </section>
           )}
 
-          {/* 翻译服务商（v0.1.477）：供给侧管理——启用/默认模型/测速都在这里，
-              小窗下拉只列已启用的；Key 只在 Key 管理维护，这里不存 Key */}
+          {/* 翻译服务商（v0.1.480 三层管理）：大组（按 Key 管理分类，带总
+              开关）→ 左平台 → 右模型；小窗下拉只列可见的（平台开+组开+
+              有启用的可翻译模型）；只展示能文本翻译的对话模型，非对话
+              模型按 469 分类口径过滤并如实标注隐藏数；Key 只在 Key 管理
+              维护，这里不存 Key */}
           {subTab === 'providers' && (
           <section className="trs-card">
             <h4><SlidersHorizontal size={15} /> 翻译服务商</h4>
             {providers.length === 0 && (
               <p className="trs-note">暂无可用来源：先在「Key 管理」添加账户，或登录云账号使用免费路线。</p>
             )}
-            {providers.map(info => (
-              <div key={info.key} className="trs-row" style={{ alignItems: 'flex-start' }}>
-                <div className="trs-row-main" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
-                  <span>
-                    {info.label}
-                    <span className="trs-note inline" style={{ marginLeft: 6 }}>
-                      {info.kind === 'free' ? '免费路线' : info.kind === 'wbpool' ? '账号池' : '自有账户'}
-                    </span>
-                    {currentEngine?.key === info.key && info.enabled && (
-                      <span className="trs-note inline" style={{ marginLeft: 6, color: 'var(--green)' }}>当前引擎</span>
-                    )}
-                  </span>
-                  {info.disabledReason && <span className="trs-note inline" style={{ color: 'var(--red)' }}>{info.disabledReason}</span>}
-                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {info.kind === 'wbpool' ? (
-                      <span className="trs-note inline">模型由账号池自动调度</span>
-                    ) : info.modelOptions.length > 1 ? (
-                      <select className="select" style={{ width: 190 }} value={info.modelId}
-                        onChange={e => changeProviderModel(info, e.target.value)}>
-                        {info.modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    ) : (
-                      <span className="trs-note inline">{info.modelId}</span>
-                    )}
-                    <button className="btn sm" disabled={testingKey === info.key}
-                      onClick={() => void testProvider(info)}>
-                      {testingKey === info.key ? <Loader2 size={13} className="spin" /> : null} 测速
-                    </button>
-                    {testMsg[info.key] ? (
-                      <span className="trs-note inline" style={testMsg[info.key].ok ? undefined : { color: 'var(--red)' }}>{testMsg[info.key].text}</span>
-                    ) : typeof info.ms === 'number' ? (
-                      <span className="trs-note inline">最近实测 {formatDurationMs(info.ms)}</span>
-                    ) : (
-                      <span className="trs-note inline">未测速</span>
-                    )}
-                  </span>
+            {providers.length > 0 && (
+              <>
+                <div className="trs-prov-groups">
+                  {TRANSLATOR_GROUPS.filter(g => providers.some(p => p.group === g.id)).map(g => {
+                    const on = groupPrefs[g.id] !== false
+                    const cnt = providers.filter(p => p.group === g.id).length
+                    return (
+                      <span key={g.id} className={`trs-prov-group ${groupTab === g.id ? 'on' : ''} ${on ? '' : 'off'}`}>
+                        <button className="trs-prov-group-btn" onClick={() => setGroupTab(g.id)}>
+                          <b>{g.label}</b><span className="trs-prov-group-cnt">{cnt} 家</span>
+                        </button>
+                        <JellyToggle checked={on} onChange={v => toggleGroup(g.id, v)} />
+                      </span>
+                    )
+                  })}
                 </div>
-                <JellyToggle checked={info.enabled} onChange={v => toggleProvider(info, v)} />
-              </div>
-            ))}
-            <p className="trs-note">关掉的服务商不会出现在小窗的下拉里；当前引擎取你在小窗里选中的那家，没选过时用已启用里实测最快的一家。测速会真实发一条短翻译请求。</p>
+                <p className="trs-prov-summary">
+                  小窗下拉当前可见：{listedProviders.length} 家平台 · {listedModelCount} 个模型
+                  {groupPrefs[groupTab] === false && <span style={{ color: 'var(--red)' }}>（「{TRANSLATOR_GROUPS.find(g => g.id === groupTab)?.label}」组总开关已关：本组在小窗里整体隐匿，这里仍可管理）</span>}
+                </p>
+                <div className="trs-prov-split">
+                  <div className={`trs-prov-left ${leftCollapsed ? 'collapsed' : ''}`}>
+                    <div className="trs-prov-lefthead">
+                      {!leftCollapsed && <span>平台</span>}
+                      <button className="trs-prov-foldbtn" title={leftCollapsed ? '展开平台列表' : '收起平台列表'}
+                        onClick={() => setLeftCollapsed(v => !v)}>{leftCollapsed ? '›' : '‹'}</button>
+                    </div>
+                    {!leftCollapsed && (
+                      <div className="trs-prov-plats">
+                        {groupProviders.map(info => {
+                          const vis = info.models.filter(m => m.visible)
+                          const en = vis.filter(m => m.enabled)
+                          const fastest = en.reduce<number | undefined>(
+                            (best, m) => (typeof m.ms === 'number' && (best === undefined || m.ms < best) ? m.ms : best), undefined)
+                          return (
+                            <button key={info.key}
+                              className={`trs-prov-plat ${selProvider?.key === info.key ? 'sel' : ''} ${info.listed ? '' : 'dim'}`}
+                              onClick={() => setSelProviderKey(info.key)}>
+                              <span className="trs-prov-plat-name">
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{info.label}</span>
+                                {currentEngine?.key === info.key && <span className="trs-prov-engine-badge">当前引擎</span>}
+                              </span>
+                              <span className="trs-prov-plat-sub">
+                                {info.kind === 'free' ? '免费路线' : info.kind === 'wbpool' ? '账号池' : '自有账户'}
+                                {info.kind !== 'wbpool' && <> · 已启用 {en.length}/{vis.length}</>}
+                                {typeof fastest === 'number' && <> · 最快 {formatDurationMs(fastest)}</>}
+                                {!info.listed && info.enabled && info.groupEnabled && info.kind !== 'wbpool' && <> · 无可用模型</>}
+                                {!info.enabled && <> · 已关闭</>}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="trs-prov-right">
+                    {selProvider && (
+                      <>
+                        <div className="trs-prov-righthead">
+                          <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {selProvider.label}
+                            <span className="trs-prov-kindtag" style={{ marginLeft: 6 }}>
+                              {selProvider.kind === 'free' ? '免费路线' : selProvider.kind === 'wbpool' ? '账号池' : '自有账户'}
+                            </span>
+                          </span>
+                          <JellyToggle checked={selProvider.enabled} onChange={v => toggleProvider(selProvider, v)} />
+                          <button className="trs-prov-foldbtn" title={rightCollapsed ? '展开模型列表' : '收起模型列表'}
+                            onClick={() => setRightCollapsed(v => !v)}>{rightCollapsed ? '▸' : '▾'}</button>
+                        </div>
+                        {!rightCollapsed && (
+                          <div>
+                            {selProvider.disabledReason && (
+                              <p className="trs-prov-note" style={{ color: 'var(--red)', opacity: 1 }}>{selProvider.disabledReason}</p>
+                            )}
+                            {selProvider.kind === 'wbpool' ? (
+                              <p className="trs-prov-note">模型由账号池自动调度，没有逐个模型开关。</p>
+                            ) : selProvider.models.filter(m => m.visible).length === 0 ? (
+                              <p className="trs-prov-note">这个平台没有能做文本翻译的对话模型。</p>
+                            ) : (
+                              selProvider.models.filter(m => m.visible).map(m => {
+                                const tk = `${selProvider.key}|${m.id}`
+                                const isCurrent = selProvider.modelId === m.id
+                                return (
+                                  <div key={m.id} className={`trs-prov-model ${m.enabled ? '' : 'dim'}`}>
+                                    {selProvider.modelOptions.length > 1 ? (
+                                      <span className="trs-prov-model-name trs-prov-model-pick" title="设为当前模型"
+                                        onClick={() => pickModel(selProvider, m.id)}>{m.id}</span>
+                                    ) : (
+                                      <span className="trs-prov-model-name">{m.id}</span>
+                                    )}
+                                    {isCurrent && <span className="trs-prov-cur">当前模型</span>}
+                                    <button className="btn sm" disabled={testingKey === tk}
+                                      onClick={() => void testModel(selProvider, m.id)}>
+                                      {testingKey === tk ? <Loader2 size={13} className="spin" /> : null} 测速
+                                    </button>
+                                    {testMsg[tk] ? (
+                                      <span className="trs-note inline" style={testMsg[tk].ok ? undefined : { color: 'var(--red)' }}>{testMsg[tk].text}</span>
+                                    ) : typeof m.ms === 'number' ? (
+                                      <span className="trs-note inline">{formatDurationMs(m.ms)}</span>
+                                    ) : (
+                                      <span className="trs-note inline">未测速</span>
+                                    )}
+                                    <JellyToggle checked={m.enabled} onChange={v => toggleModel(selProvider, m.id, v)} />
+                                  </div>
+                                )
+                              })
+                            )}
+                            {selProvider.hiddenCount > 0 && (
+                              <p className="trs-prov-note">另有 {selProvider.hiddenCount} 个非对话模型已自动隐藏（生图/语音/向量/重排等不能做文本翻译）。</p>
+                            )}
+                            {selProvider.kind !== 'wbpool' && selProvider.models.some(m => m.visible)
+                              && !selProvider.models.some(m => m.visible && m.enabled) && (
+                              <p className="trs-prov-note" style={{ color: 'var(--red)', opacity: 1 }}>模型都关掉了：这家不会出现在小窗下拉里，也不会被选为引擎。</p>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+            <p className="trs-note">大组总开关关掉后，该组在小窗下拉里整体隐匿（这里仍可管理，组内开关状态保留）；当前引擎所在组被关时，小窗自动回落到其他可见服务商里实测最快的一家。测速会真实发一条短翻译请求。</p>
           </section>
           )}
 

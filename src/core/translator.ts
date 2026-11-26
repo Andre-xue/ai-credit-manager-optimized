@@ -301,6 +301,10 @@ export interface PopProviderArgs {
   providerKey?: string
   elapsedMs?: number
   usedLabel?: string
+  /** v0.1.480：报错原文（已提炼的人话标题放在 error 里，原文收进小窗可展开详情） */
+  errorDetail?: string
+  /** v0.1.480：人话提示（「换一家或稍后再试」类一句话建议，与标题分开传） */
+  errorHint?: string
 }
 
 function popProviderArgs(p: PopProviderArgs): Record<string, unknown> {
@@ -309,7 +313,52 @@ function popProviderArgs(p: PopProviderArgs): Record<string, unknown> {
   if (p.providerKey !== undefined) out.providerKey = p.providerKey
   if (p.elapsedMs !== undefined) out.elapsedMs = p.elapsedMs
   if (p.usedLabel !== undefined) out.usedLabel = p.usedLabel
+  if (p.errorDetail !== undefined) out.errorDetail = p.errorDetail
+  if (p.errorHint !== undefined) out.errorHint = p.errorHint
   return out
+}
+
+export interface HumanizedError { title: string; hint: string; detail: string }
+
+/**
+ * 翻译报错人话化（v0.1.480，纯函数）：服务商失败常把上游原始报文（整段
+ * JSON）拼进错误文本，477 实机就把 {"error":{"name":"FreeUsageLimitError"…}}
+ * 整段糊在小窗上。这里按强特征提炼成人话标题 + 一句怎么办，原文完整保留
+ * 在 detail 里供展开查看。判定顺序有讲究：免费额度（FreeUsageLimitError
+ * 报文常同时带 429 与 quota 字样）必须最先认，模型不可用次之（沿用 464
+ * 「model 判定最先」的教训，不许误报成额度/限流）。
+ */
+export function humanizeTranslateError(raw: string): HumanizedError {
+  const detail = (raw ?? '').trim()
+  const text = detail
+  const has = (re: RegExp) => re.test(text)
+  if (has(/FreeUsageLimitError|free usage limit|免费.*额度.*(用完|耗尽|不足)|额度.*免费/i)) {
+    return { title: '免费额度已用完', hint: '这家服务商的免费额度暂时用完了，换一家服务商或稍后再试。', detail }
+  }
+  if (has(/model_not_found|model.*(?:not found|not available|does not exist|no such model)|模型(?:不存在|不可用|未找到|已下线)/i)) {
+    return { title: '这个模型不可用', hint: '所选模型在这家服务商那边不存在或已下线，换一个模型或换一家服务商再试。', detail }
+  }
+  if (has(/\b401\b|\b403\b|unauthorized|unauthenticated|invalid api key|authentication|密钥.*(无效|失效|不正确)|没有权限/i)) {
+    return { title: '密钥无效或没有权限', hint: '到「Key 管理」检查这家服务商的 Key 是否正确、是否过期。', detail }
+  }
+  if (has(/\b402\b|insufficient|余额不足|额度不足|欠费|quota exceeded/i)) {
+    return { title: '额度或余额不足', hint: '这家服务商的额度用完了，换一家服务商，或充值后再试。', detail }
+  }
+  if (has(/\b429\b|rate.?limit|too many requests|限流|请求太频繁/i)) {
+    return { title: '请求太频繁，被限流了', hint: '稍等一会儿再试，或换一家服务商。', detail }
+  }
+  if (has(/超时|timeout|timed out/i)) {
+    return { title: '翻译超时', hint: '模型通道响应太慢，稍后重试或换一家服务商。', detail }
+  }
+  if (has(/failed to fetch|network|load failed|cors|网络|连接失败|econn|socket/i)) {
+    return { title: '网络连接失败', hint: '检查网络或代理设置后重试。', detail }
+  }
+  // 兜底：像 JSON 的整段报文不许直接当标题；普通短文本本身就是人话，原样用
+  if (/^\s*\{/.test(text) || text.includes('{"')) {
+    return { title: '翻译失败', hint: '展开下方详情可查看服务商返回的原始信息。', detail }
+  }
+  const firstLine = text.split('\n')[0].trim()
+  return { title: firstLine.length > 90 ? `${firstLine.slice(0, 90)}…` : (firstLine || '翻译失败'), hint: '', detail }
 }
 
 export async function showTranslatorPop(payload: {
@@ -321,10 +370,10 @@ export async function showTranslatorPop(payload: {
 } & PopProviderArgs): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  const { providersJson, providerKey, elapsedMs, usedLabel, ...rest } = payload
+  const { providersJson, providerKey, elapsedMs, usedLabel, errorDetail, errorHint, ...rest } = payload
   await inv('translator_show_pop', {
     sourceLang: '', mode: 'result', streaming: false, ...rest,
-    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel }),
+    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel, errorDetail, errorHint }),
   } as unknown as Record<string, unknown>)
 }
 
@@ -334,10 +383,10 @@ export async function updateTranslatorPop(payload: {
 } & PopProviderArgs): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  const { providersJson, providerKey, elapsedMs, usedLabel, ...rest } = payload
+  const { providersJson, providerKey, elapsedMs, usedLabel, errorDetail, errorHint, ...rest } = payload
   await inv('translator_update_pop', {
     sourceLang: '', streaming: false, ...rest,
-    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel }),
+    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel, errorDetail, errorHint }),
   } as unknown as Record<string, unknown>)
 }
 
@@ -399,7 +448,7 @@ export async function setPopAlwaysOnTop(on: boolean): Promise<void> {
 
 // ---------------- 翻译执行（复用工坊路线 + 免费切换链） ----------------
 
-export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string; providerKey: string }
+export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string; providerKey: string; modelId: string }
 
 /**
  * 翻译请求的输出上限（v0.1.473 请求瘦身，纯函数）：译文长度与原文同量级，
@@ -440,7 +489,7 @@ async function runTranslate(opts: {
     maxTokens: translationMaxTokens(opts.text.length),
     reasoningEffort: 'minimal',
   })
-  return { translated: translated.trim(), targetLang, usedLabel: engine.label, providerKey: engine.key }
+  return { translated: translated.trim(), targetLang, usedLabel: engine.label, providerKey: engine.key, modelId: engine.modelId }
 }
 
 export async function translateWithRoutes(opts: {

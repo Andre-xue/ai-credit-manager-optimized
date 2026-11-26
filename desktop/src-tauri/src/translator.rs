@@ -200,6 +200,13 @@ pub struct PopPayload {
     /// 本次实际使用的服务商名（v0.1.477，与 elapsed_ms 成对）
     #[serde(default)]
     pub used_label: String,
+    /// 报错原文（v0.1.480）：error 放提炼后的人话标题，原文收进这里，
+    /// 小窗错误态里可展开查看，不再整段糊在界面上
+    #[serde(default)]
+    pub error_detail: String,
+    /// 人话建议（v0.1.480）：与 error（标题）分开传，小窗错误态作副文案
+    #[serde(default)]
+    pub error_hint: String,
 }
 
 static POP_PAYLOAD: Mutex<Option<PopPayload>> = Mutex::new(None);
@@ -828,6 +835,8 @@ pub fn translator_show_pop(
     provider_key: Option<String>,
     elapsed_ms: Option<f64>,
     used_label: Option<String>,
+    error_detail: Option<String>,
+    error_hint: Option<String>,
 ) -> Result<(), String> {
     let payload = PopPayload {
         source,
@@ -842,10 +851,16 @@ pub fn translator_show_pop(
         provider_key: provider_key.unwrap_or_default(),
         elapsed_ms,
         used_label: used_label.unwrap_or_default(),
+        error_detail: error_detail.unwrap_or_default(),
+        error_hint: error_hint.unwrap_or_default(),
     };
     store_pop_payload(&payload);
     let w = ensure_pop_window(&app)?;
     position_pop(&w, x, y);
+    // v0.1.480：只 show 不 set_focus——show 只 orderFront（小窗自身出现、
+    // 不激活应用），set_focus 会 activateIgnoringOtherApps 把主窗一起抬
+    // 前台（见 start_capture 的同款修复）。输入小窗需要打字、保留聚焦，
+    // 在 translator_show_input 里单独处理。
     let _ = w.show();
     // v0.1.465 流水线面包屑：小窗已 show（错误与结果都记）——实机「松手后
     // 小窗不出现」时，日志有 pop-show 就是窗口层问题，没有就是死在更前面。
@@ -877,6 +892,8 @@ pub fn translator_update_pop(
     provider_key: Option<String>,
     elapsed_ms: Option<f64>,
     used_label: Option<String>,
+    error_detail: Option<String>,
+    error_hint: Option<String>,
 ) -> Result<(), String> {
     let payload = PopPayload {
         source,
@@ -891,6 +908,8 @@ pub fn translator_update_pop(
         provider_key: provider_key.unwrap_or_default(),
         elapsed_ms,
         used_label: used_label.unwrap_or_default(),
+        error_detail: error_detail.unwrap_or_default(),
+        error_hint: error_hint.unwrap_or_default(),
     };
     store_pop_payload(&payload);
     if let Some(w) = app.get_webview_window(POP_LABEL) {
@@ -928,6 +947,8 @@ pub fn translator_show_input(
         provider_key: provider_key.unwrap_or_default(),
         elapsed_ms: None,
         used_label: String::new(),
+        error_detail: String::new(),
+        error_hint: String::new(),
     };
     store_pop_payload(&payload);
     let w = ensure_pop_window(&app)?;
@@ -993,6 +1014,9 @@ fn ensure_capture_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        // v0.1.480：首击即响应——应用未激活时用户在框选层按下鼠标就要能
+        // 直接开始拖框，不先被「激活应用」吞掉一击
+        .accept_first_mouse(true)
         .visible(false)
         .build()
         .map_err(|e| format!("创建截图框选层失败：{e}"))?;
@@ -1063,8 +1087,19 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
         let _ = w.set_size(tauri::Size::Logical(tauri::LogicalSize::new(lw, lh)));
         let _ = w.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)));
     }
+    // v0.1.480 主窗前台修复：这里曾在 show 后调 set_focus——tao 0.37.2 的
+    // macOS set_focus 除了 makeKeyAndOrderFront 还会 activateIgnoringOtherApps
+    // (YES)，把整个应用激活、连带把可见的主窗口抬到前台盖住用户正在用的
+    // 应用（477 实机录屏：截图翻译一触发主窗就扑出来、菜单栏也跟着切换）。
+    // show() 本身只 makeKeyAndOrderFront：框选层照样成为本应用的 key 窗口
+    // （Esc/鼠标事件不受影响）、以置顶层级盖住屏幕，但不激活应用、主窗不
+    // 动。面包屑记一笔当时主窗是否可见，真机复验时与录屏对照。
+    let main_visible = app
+        .get_webview_window("main")
+        .and_then(|m| m.is_visible().ok())
+        .unwrap_or(false);
+    diag("capture-main-state", &format!("main-visible={main_visible}"));
     let _ = w.show();
-    let _ = w.set_focus();
     // v0.1.465：框选层窗口是复用的（ensure 只建一次），前端组件跨会话不卸载、
     // 其 doneRef 在首会话结束后永不复位——465 实机第二次框选时 Esc 与松手
     // finish 全被 doneRef 早退吞掉、框选层关不掉只能杀进程。这里每会话发
