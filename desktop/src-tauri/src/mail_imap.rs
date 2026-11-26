@@ -44,6 +44,9 @@ struct ImapConn {
     reader: BufReader<ReadHalf<BoxStream>>,
     writer: WriteHalf<BoxStream>,
     tag_seq: u32,
+    /// v0.1.450：当前已 SELECT 的文件夹。同一文件夹的后续命令可跳过重复 SELECT，
+    /// 省一次跨境往返；需要新鲜 EXISTS 的调用方（fetch_headers / folder_counts）仍强制 SELECT。
+    selected_folder: Option<String>,
 }
 
 impl ImapConn {
@@ -278,8 +281,12 @@ fn root_store(
     Ok(roots)
 }
 
+/// v0.1.450：连接进度回调（connecting / handshaking / logging-in），
+/// mail_imap_connect 用它把验证按钮的分步文案喂给前端；其它路径传 None。
+type StepCb = Arc<dyn Fn(&str) + Send + Sync>;
+
 async fn raw_connect(host: &str, port: u16, use_tls: bool) -> Result<ImapConn, String> {
-    raw_connect_x(host, port, use_tls, None).await
+    raw_connect_x(host, port, use_tls, None, None).await
 }
 
 async fn raw_connect_x(
@@ -287,6 +294,7 @@ async fn raw_connect_x(
     port: u16,
     use_tls: bool,
     extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
+    step_cb: Option<StepCb>,
 ) -> Result<ImapConn, String> {
     // 双保险：即便某条路径没经过 lib::run() 的启动初始化，建连前也确保
     // provider 已装（Once 保证只装一次，后续调用零成本）。
@@ -299,6 +307,9 @@ async fn raw_connect_x(
     .map_err(|_| format!("连接服务器超时（{host}:{port}，{TCP_TIMEOUT_SECS} 秒内未建立 TCP 连接）"))?
     .map_err(|e| format!("连接 {host}:{port} 失败：{e}"))?;
     let stream: BoxStream = if use_tls {
+        if let Some(cb) = &step_cb {
+            cb("handshaking");
+        }
         let config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store(extra_root)?)
             .with_no_client_auth();
@@ -321,6 +332,7 @@ async fn raw_connect_x(
         reader: BufReader::new(rd),
         writer: wr,
         tag_seq: 0,
+        selected_folder: None,
     })
 }
 
@@ -334,7 +346,7 @@ async fn login_conn(
     username: &str,
     secret: &str,
 ) -> Result<(ImapConn, String), String> {
-    login_conn_x(host, port, use_tls, auth_mode, username, secret, None).await
+    login_conn_x(host, port, use_tls, auth_mode, username, secret, None, None).await
 }
 
 /// 集成测试入口（tests/mail_tls_integration.rs）：走与生产完全相同的
@@ -359,6 +371,7 @@ pub async fn login_conn_with_extra_root(
         username,
         secret,
         Some(extra_root),
+        None,
     )
     .await?;
     Ok(caps)
@@ -372,8 +385,15 @@ async fn login_conn_x(
     username: &str,
     secret: &str,
     extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
+    step_cb: Option<StepCb>,
 ) -> Result<(ImapConn, String), String> {
-    let mut conn = raw_connect_x(host, port, use_tls, extra_root).await?;
+    if let Some(cb) = &step_cb {
+        cb("connecting");
+    }
+    let mut conn = raw_connect_x(host, port, use_tls, extra_root, step_cb.clone()).await?;
+    if let Some(cb) = &step_cb {
+        cb("logging-in");
+    }
     // v0.1.445：greeting 必须带超时——436 这里是裸 read_line，服务器连上后不发问候语
     // （隐式 TLS 等待顺序错位、服务器假死、中间设备吞包）就会永久死等，界面无限转圈。
     let greet = conn
@@ -425,15 +445,22 @@ async fn get_session(account_id: &str) -> Result<Session, String> {
         .ok_or_else(|| "邮箱未连接，请先点刷新重新连接".to_string())
 }
 
-/// SELECT 文件夹并返回 EXISTS 数（每次操作都重新 SELECT，保证状态新鲜）。
-async fn select_folder(session: &Session, folder: &str) -> Result<i64, String> {
+/// SELECT 文件夹并返回 EXISTS 数。force=false 且连接已选中同一文件夹时跳过
+/// （v0.1.450：省一次往返，返回值此时无意义、调用方不使用）；
+/// 需要新鲜 EXISTS 的调用方（fetch_headers / folder_counts）必须传 force=true。
+async fn select_folder(session: &Session, folder: &str, force: bool) -> Result<i64, String> {
     let mut conn = session.conn.lock().await;
+    if !force && conn.selected_folder.as_deref() == Some(folder) {
+        return Ok(0);
+    }
     let segs = conn.command(&format!("SELECT {}", quote(folder))).await?;
+    conn.selected_folder = Some(folder.to_string());
     Ok(parse_exists(&flatten(&segs)))
 }
 
 #[tauri::command]
 pub async fn mail_imap_connect(
+    app: AppHandle,
     account_id: String,
     host: String,
     port: u16,
@@ -442,10 +469,28 @@ pub async fn mail_imap_connect(
     username: String,
     secret: String,
 ) -> Result<String, String> {
+    // v0.1.450：连接进度经事件回前端（验证按钮分步文案：正在连接/正在握手/正在登录验证）。
+    let acc_for_cb = account_id.clone();
+    let step_cb: StepCb = Arc::new(move |step: &str| {
+        let _ = app.emit(
+            "mail_connect_step",
+            serde_json::json!({ "accountId": acc_for_cb, "step": step }),
+        );
+    });
     // v0.1.445：登录跑在独立任务里并登记 AbortHandle，前端可取消；
     // 再套一层总时长上限兜底（各步超时之和 ≤ 55 秒，总上限 60 秒）。
     let task = tokio::spawn(async move {
-        login_conn(&host, port, use_tls, &auth_mode, &username, &secret).await
+        login_conn_x(
+            &host,
+            port,
+            use_tls,
+            &auth_mode,
+            &username,
+            &secret,
+            None,
+            Some(step_cb),
+        )
+        .await
     });
     let abort = task.abort_handle();
     globals()
@@ -523,7 +568,7 @@ pub async fn mail_imap_fetch_headers(
     limit: u32,
 ) -> Result<String, String> {
     let session = get_session(&account_id).await?;
-    let exists = select_folder(&session, &folder).await?;
+    let exists = select_folder(&session, &folder, true).await?;
     if exists <= 0 {
         return Ok(format!("* 0 EXISTS\r\n"));
     }
@@ -545,7 +590,7 @@ pub async fn mail_imap_fetch_message(
     uid: u32,
 ) -> Result<String, String> {
     let session = get_session(&account_id).await?;
-    select_folder(&session, &folder).await?;
+    select_folder(&session, &folder, false).await?;
     let mut conn = session.conn.lock().await;
     let segs = conn
         .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
@@ -557,6 +602,94 @@ pub async fn mail_imap_fetch_message(
         }
     }
     Err("服务器未返回邮件正文".to_string())
+}
+
+/// v0.1.450：只取邮件结构（BODYSTRUCTURE），前端据此决定要拉哪几段正文，
+/// 避免打开正文时把附件也整封拉回来（旧 fetch_message 的 BODY.PEEK[] 全文）。
+#[tauri::command]
+pub async fn mail_imap_fetch_structure(
+    account_id: String,
+    folder: String,
+    uid: u32,
+) -> Result<String, String> {
+    let session = get_session(&account_id).await?;
+    select_folder(&session, &folder, false).await?;
+    let mut conn = session.conn.lock().await;
+    let segs = conn
+        .command(&format!("UID FETCH {uid} (BODYSTRUCTURE)"))
+        .await?;
+    Ok(flatten(&segs))
+}
+
+/// 从一行响应文本里找最后一个 BODY[<label>] 标记（fetch_sections 配对字面量用）。
+fn last_body_label(line: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+    let mut rest = line;
+    while let Some(i) = rest.find("BODY[") {
+        let after = &rest[i + 5..];
+        match after.find(']') {
+            Some(j) => {
+                found = Some(after[..j].to_string());
+                rest = &after[j + 1..];
+            }
+            None => break,
+        }
+    }
+    found
+}
+
+/// v0.1.450：按段取数——一次命令拉多个 BODY.PEEK[section]，逐段按响应里的
+/// BODY[<label>] 标记配对字面量并 base64（与 fetch_message 同样保字节），
+/// 返回 JSON { "<section>": "<base64>" }。段标记只允许字母/数字/点，防命令注入。
+#[tauri::command]
+pub async fn mail_imap_fetch_sections(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    sections: Vec<String>,
+) -> Result<String, String> {
+    if sections.is_empty() {
+        return Ok("{}".to_string());
+    }
+    for s in &sections {
+        if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            return Err(format!("非法的正文段标记：{s}"));
+        }
+    }
+    let session = get_session(&account_id).await?;
+    select_folder(&session, &folder, false).await?;
+    let items = sections
+        .iter()
+        .map(|s| format!("BODY.PEEK[{s}]"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut conn = session.conn.lock().await;
+    let segs = conn
+        .command(&format!("UID FETCH {uid} ({items})"))
+        .await?;
+    let mut map = serde_json::Map::new();
+    let mut pending: Option<String> = None;
+    for s in &segs {
+        match s {
+            Seg::Line(l) => {
+                if let Some(label) = last_body_label(l) {
+                    pending = Some(label);
+                }
+            }
+            Seg::Bytes(b) => {
+                if let Some(label) = pending.take() {
+                    use base64::Engine;
+                    map.insert(
+                        label,
+                        serde_json::json!(
+                            base64::engine::general_purpose::STANDARD.encode(b)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    Ok(serde_json::Value::Object(map).to_string())
 }
 
 #[tauri::command]
@@ -574,7 +707,7 @@ pub async fn mail_imap_store_flags(
         return Ok(());
     }
     let session = get_session(&account_id).await?;
-    select_folder(&session, &folder).await?;
+    select_folder(&session, &folder, false).await?;
     let csv = uids
         .iter()
         .map(|u| u.to_string())
@@ -597,7 +730,7 @@ pub async fn mail_imap_delete_messages(
         return Ok(0);
     }
     let session = get_session(&account_id).await?;
-    select_folder(&session, &folder).await?;
+    select_folder(&session, &folder, false).await?;
     let csv = uids
         .iter()
         .map(|u| u.to_string())
@@ -628,7 +761,7 @@ pub async fn mail_imap_folder_counts(
     let session = get_session(&account_id).await?;
     let mut map = serde_json::Map::new();
     for f in &folders {
-        let n = select_folder(&session, f).await?;
+        let n = select_folder(&session, f, true).await?;
         map.insert(f.clone(), serde_json::json!(n));
     }
     Ok(serde_json::Value::Object(map).to_string())
@@ -640,7 +773,7 @@ pub async fn mail_imap_search_all(
     folder: String,
 ) -> Result<String, String> {
     let session = get_session(&account_id).await?;
-    select_folder(&session, &folder).await?;
+    select_folder(&session, &folder, false).await?;
     let mut conn = session.conn.lock().await;
     let segs = conn.command("UID SEARCH ALL").await?;
     Ok(flatten(&segs))

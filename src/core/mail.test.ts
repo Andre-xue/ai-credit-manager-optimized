@@ -10,7 +10,9 @@ import {
   OAUTH_REGISTER_GUIDES, describeOAuthCallbackError, mailOAuthAuthorize, OAUTH_CANCELLED,
   loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
   loadMailReauthFlags, setMailReauthFlag, clearMailReauthFlag,
-  type MailFolder,
+  parseBodyStructure, assembleBodyFromParts, bytesToBase64,
+  loadCachedBody, saveCachedBody, dropCachedBodies, MAIL_CONNECT_STEP_LABELS,
+  type MailFolder, type MailBodyResult,
 } from './mail'
 import { initVault } from './crypto'
 
@@ -525,5 +527,76 @@ describe('浏览器授权编排（446）', () => {
       return null
     })
     await expect(mailOAuthAuthorize('google', 'cid-1', 'sec-1')).rejects.toThrow('OAuth 换令牌失败（400）')
+  })
+})
+
+describe('v0.1.450 BODYSTRUCTURE 解析', () => {
+  it('单段纯文本：section 为 TEXT，带 charset/encoding/size', () => {
+    const raw = '* 1 FETCH (UID 11 BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 123 4))\r\n'
+    const parts = parseBodyStructure(raw)
+    expect(parts).toEqual([{ section: 'TEXT', contentType: 'text/plain', charset: 'UTF-8', encoding: '7BIT', size: 123, filename: undefined, cid: undefined, disposition: undefined }])
+  })
+
+  it('mixed 嵌 alternative + 内嵌图 + pdf 附件：段号与元信息齐全', () => {
+    const alt = '(("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "BASE64" 100 3) ("TEXT" "HTML" ("CHARSET" "UTF-8") NIL NIL "QUOTED-PRINTABLE" 200 5) "ALTERNATIVE" NIL NIL NIL)'
+    const img = '("IMAGE" "PNG" ("NAME" "logo.png") "<cid-1@local>" NIL "BASE64" 999)'
+    const pdf = '("APPLICATION" "PDF" ("NAME" "bill.pdf") NIL NIL "BASE64" 5000 NIL ("ATTACHMENT" ("FILENAME" "bill.pdf")) NIL NIL)'
+    const rawFull = `* 3 FETCH (UID 33 BODYSTRUCTURE (${alt} ${img} ${pdf} "MIXED" NIL NIL NIL))\r\n`
+    const parts = parseBodyStructure(rawFull)
+    const bySection = Object.fromEntries(parts.map(p => [p.section, p]))
+    expect(Object.keys(bySection).sort()).toEqual(['1.1', '1.2', '2', '3'])
+    expect(bySection['1.1'].contentType).toBe('text/plain')
+    expect(bySection['1.2'].contentType).toBe('text/html')
+    expect(bySection['1.2'].encoding).toBe('QUOTED-PRINTABLE')
+    expect(bySection['2'].contentType).toBe('image/png')
+    expect(bySection['2'].cid).toBe('cid-1@local')
+    expect(bySection['3'].contentType).toBe('application/pdf')
+    expect(bySection['3'].disposition).toBe('attachment')
+    expect(bySection['3'].filename).toBe('bill.pdf')
+    expect(bySection['3'].size).toBe(5000)
+  })
+
+  it('垃圾报文返回空数组（调用方据此回落全文拉取）', () => {
+    expect(parseBodyStructure('')).toEqual([])
+    expect(parseBodyStructure('* 1 FETCH (UID 1 FLAGS (\\Seen))')).toEqual([])
+    expect(parseBodyStructure('* 1 FETCH (UID 1 BODYSTRUCTURE (BROKEN')).toEqual([])
+  })
+})
+
+describe('v0.1.450 按段组装正文', () => {
+  it('文本段解码、cid 图进 inlineImages、附件只记元信息', () => {
+    const bs = '(("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "BASE64" 10 1) ("TEXT" "HTML" ("CHARSET" "UTF-8") NIL NIL "7BIT" 20 1) ("IMAGE" "PNG" ("NAME" "a.png") "img1@x" NIL "BASE64" 4) ("APPLICATION" "PDF" NIL NIL NIL "BASE64" 5000 NIL ("ATTACHMENT" ("FILENAME" "bill.pdf"))) "MIXED")'
+    const parts = parseBodyStructure(`* 1 FETCH (UID 7 BODYSTRUCTURE ${bs})`)
+    const enc = (s: string) => new TextEncoder().encode(s)
+    const data = new Map<string, Uint8Array>([
+      ['1', enc(Buffer.from('你好正文', 'utf-8').toString('base64'))],
+      ['2', enc('<p>你好 <b>HTML</b></p>')],
+      ['3', enc(Buffer.from([1, 2, 3]).toString('base64'))],
+      // 段 4（附件）不取数：data 里没有它
+    ])
+    const body = assembleBodyFromParts(parts, data)
+    expect(body.text).toBe('你好正文')
+    expect(body.html).toBe('<p>你好 <b>HTML</b></p>')
+    expect(body.inlineImages).toEqual([{ cid: 'img1@x', contentType: 'image/png', base64: bytesToBase64(new Uint8Array([1, 2, 3])) }])
+    expect(body.attachments).toEqual([{ filename: 'bill.pdf', contentType: 'application/pdf', size: 5000, section: '4', encoding: 'BASE64' }])
+  })
+})
+
+describe('v0.1.450 正文缓存与连接步骤文案', () => {
+  const sample: MailBodyResult = { text: '正文', html: '', attachments: [], inlineImages: [], code: null }
+  it('存取与按 key 删除', () => {
+    saveCachedBody('a|INBOX|1', sample)
+    expect(loadCachedBody('a|INBOX|1')?.text).toBe('正文')
+    dropCachedBodies(['a|INBOX|1'])
+    expect(loadCachedBody('a|INBOX|1')).toBeNull()
+  })
+  it('超大正文不进缓存（避免撑爆 localStorage）', () => {
+    saveCachedBody('a|INBOX|2', { ...sample, text: 'x'.repeat(1_100_000) })
+    expect(loadCachedBody('a|INBOX|2')).toBeNull()
+  })
+  it('连接步骤三段文案齐全', () => {
+    expect(MAIL_CONNECT_STEP_LABELS.connecting).toContain('正在连接')
+    expect(MAIL_CONNECT_STEP_LABELS.handshaking).toContain('握手')
+    expect(MAIL_CONNECT_STEP_LABELS['logging-in']).toContain('登录验证')
   })
 })

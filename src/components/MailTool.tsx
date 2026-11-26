@@ -17,6 +17,7 @@ import {
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
   mailDeleteAllPreview, mailDeleteAll,
   mailEnsureConnected, mailCancelConnect, prepareMailHtml, htmlHasVisibleText, MAIL_IMG_PLACEHOLDER,
+  mailVerifyAccount, MAIL_CONNECT_STEP_LABELS, loadCachedBody, mailFetchAttachment,
   OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
   loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
   saveMailSecret, mailForgetSession,
@@ -25,6 +26,7 @@ import {
   type MailBodyContent, type MailDeleteAllReport,
 } from '../core/mail'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
+import { getBiometricPassword } from '../core/crypto'
 
 function JellyToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
@@ -86,7 +88,10 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   const [pwdInput, setPwdInput] = useState('')
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const syncingRef = useRef<Set<string>>(new Set())
-  const pwd = sessionPwd
+  // v0.1.450：与其它工具一致——有指纹密码副本就直接进，不单独弹解锁页；
+  // 两个都没有才显示解锁页（onUnlock 仍回写全局 sessionPwd）。子组件（MailReader/
+  // MailAddAccount/MailSettings）都从这个 pwd 派生，不再有来源分叉。
+  const pwd = getBiometricPassword() || sessionPwd
 
   const cache = useMemo(() => loadMailCache(), [cacheVersion])
   const refreshCache = useCallback(() => setCacheVersion(v => v + 1), [])
@@ -465,6 +470,10 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
 }) {
   const [body, setBody] = useState<(MailBodyContent & { code: string | null }) | null>(null)
   const [bodyError, setBodyError] = useState('')
+  // v0.1.450：加载阶段文案（连接/取正文）+ 命中缓存时的后台校验提示 + 附件按需拉取状态
+  const [loadStage, setLoadStage] = useState<'connecting' | 'fetching'>('connecting')
+  const [cacheChecking, setCacheChecking] = useState(false)
+  const [savingAtt, setSavingAtt] = useState(-1)
   const [showImages, setShowImages] = useState(false)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const [routeData, setRouteData] = useState<WorkshopRouteData | null>(null)
@@ -483,10 +492,29 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
     setBodyError('')
     setShowImages(false)
     setSummary('')
+    setLoadStage('connecting')
+    setCacheChecking(false)
     if (!account) { setBodyError('账户已被删除'); return }
+    // v0.1.450：先查本机正文缓存——命中就秒显，后台再取一次校验更新；
+    // 未命中才走网络，加载文案分「正在连接邮箱服务器 / 正在从服务器取正文」两段。
+    const cached = loadCachedBody(msg.key)
+    if (cached) {
+      setBody(cached)
+      setCacheChecking(true)
+      void (async () => {
+        try {
+          await mailEnsureConnected(account, sessionPwd)
+          const fresh = await mailFetchBody(account, msg)
+          if (!dead) setBody(fresh)
+        } catch { /* 校验失败不影响已显示的缓存正文 */ }
+        if (!dead) setCacheChecking(false)
+      })()
+      return () => { dead = true }
+    }
     void (async () => {
       try {
         await mailEnsureConnected(account, sessionPwd)
+        if (!dead) setLoadStage('fetching')
         const content = await mailFetchBody(account, msg)
         if (!dead) setBody(content)
       } catch (e) {
@@ -610,7 +638,8 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
       </div>
 
       {bodyError && <div className="mail-error-box"><AlertTriangle size={15} /> 正文加载失败：{bodyError}</div>}
-      {!body && !bodyError && <div className="mail-loading"><Loader2 size={16} className="spin" /> 正在从服务器取正文…</div>}
+      {!body && !bodyError && <div className="mail-loading"><Loader2 size={16} className="spin" /> {loadStage === 'fetching' ? '正在从服务器取正文…' : '正在连接邮箱服务器…'}</div>}
+      {body && cacheChecking && <div className="mail-cache-note">已显示本机缓存，正在后台校验最新内容…</div>}
       {body && (
         <>
           {renderHtml
@@ -634,7 +663,22 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
                 <div key={i} className="mail-attachment-row">
                   <span className="mail-attachment-name">{a.filename}</span>
                   <span className="mail-attachment-size">{a.contentType} · {(a.size / 1024).toFixed(1)} KB</span>
-                  <button className="btn sm" onClick={() => void mailSaveAttachment(a.filename, a.base64).then(p => notify(`已保存到 ${p}`)).catch(e => notify(`保存失败：${e instanceof Error ? e.message : String(e)}`))}>保存</button>
+                  <button className="btn sm" disabled={savingAtt === i} onClick={() => {
+                    // v0.1.450：附件数据不在正文里，点保存时才按段现拉（a.base64 有值说明已随正文拿到）
+                    void (async () => {
+                      try {
+                        let b64 = a.base64
+                        if (!b64) {
+                          if (!account) throw new Error('账户已被删除')
+                          setSavingAtt(i)
+                          b64 = await mailFetchAttachment(account, msg, a)
+                        }
+                        const p = await mailSaveAttachment(a.filename, b64)
+                        notify(`已保存到 ${p}`)
+                      } catch (e) { notify(`保存失败：${e instanceof Error ? e.message : String(e)}`) }
+                      setSavingAtt(-1)
+                    })()
+                  }}>{savingAtt === i ? '正在取附件…' : '保存'}</button>
                 </div>
               ))}
             </div>
@@ -851,36 +895,44 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
     if (id) await mailCancelConnect(id)
   }
 
-  const finishWithSyncTest = async (metaNoId: Omit<MailAccountMeta, 'id'>, secret: MailSecret) => {
+  // v0.1.450：验证只做连通+登录+能力快速校验（分步文案由连接进度事件驱动），
+  // 文件夹枚举与拉取留给回到收件箱后的首次同步，不再全压在验证按钮上。
+  const finishWithVerify = async (metaNoId: Omit<MailAccountMeta, 'id'>, secret: MailSecret) => {
     const flow = flowRef.current
     const meta = await addMailAccount(metaNoId, secret, pwd)
     activeAccountRef.current = meta.id
     if (flow !== flowRef.current) return // 保存期间已被取消：不再发起连接
-    const outcome = await mailSyncAccount(meta, pwd)
-    if (flow !== flowRef.current) return // 已取消：迟到的结果不再改界面
-    activeAccountRef.current = ''
-    if (outcome.ok) {
-      notify(`「${meta.email}」连接成功，已同步 ${(loadMailCache()[meta.id]?.messages ?? []).length} 封邮件`)
-      onAdded()
-    } else {
+    try {
+      await mailVerifyAccount(meta, pwd, step => {
+        if (flow === flowRef.current) setBusy(MAIL_CONNECT_STEP_LABELS[step])
+      })
+    } catch (e) {
+      if (flow !== flowRef.current) return // 已取消：迟到的结果不再改界面
+      activeAccountRef.current = ''
+      const msg = displayMailError(e instanceof Error ? e.message : String(e))
       // v0.1.447：「请检查服务器/授权码」只对服务器/凭据类错误拼；
       // panic 等内部错误拼这句只会误导（与授权码无关）。
-      setError(shouldSuggestCredentialCheck(outcome.error ?? '')
-        ? `账户已保存，但连接失败：${outcome.error}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
-        : `账户已保存，但连接失败：${outcome.error}。可在收件箱点「刷新」重试。`)
+      setError(shouldSuggestCredentialCheck(msg)
+        ? `账户已保存，但连接失败：${msg}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
+        : `账户已保存，但连接失败：${msg}。可在收件箱点「刷新」重试。`)
       setBusy('')
+      return
     }
+    if (flow !== flowRef.current) return // 已取消：迟到的结果不再改界面
+    activeAccountRef.current = ''
+    notify(`「${meta.email}」连接成功，邮件会在收件箱后台同步`)
+    onAdded()
   }
 
   const saveWithCode = async () => {
     if (!email.includes('@')) { setError('请填写完整的邮箱地址'); return }
     if (!secretInput) { setError(`请填写${preset.secretLabel}`); return }
     if (platformId === 'custom' && !customHost) { setError('请填写 IMAP 服务器地址'); return }
-    setBusy('正在连接服务器验证…')
+    setBusy('正在连接服务器…')
     setError('')
     const flow = flowRef.current
     try {
-      await finishWithSyncTest(
+      await finishWithVerify(
         {
           platformId, email: email.trim(),
           label: email.trim(),
@@ -914,7 +966,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
       if (flow !== flowRef.current) return // 授权期间已被取消
       await creds.persist() // 客户端凭据加密存本机，下次同平台免填
       setBusy('授权成功，正在连接邮箱…')
-      await finishWithSyncTest(
+      await finishWithVerify(
         { platformId, email: email.trim(), label: email.trim(), host: preset.imapHost, port: preset.imapPort },
         secret,
       )

@@ -136,6 +136,7 @@ interface StoredAccount extends MailAccountMeta {
 const ACCOUNTS_KEY = 'acm.mail.accounts.v1'
 const VIS_KEY = 'acm.mail.visibility.v1'
 const CACHE_KEY = 'acm.mail.cache.v1'
+const BODIES_KEY = 'acm.mail.bodies.v1'
 const OVERRIDE_KEY = 'acm.mail.catOverrides.v1'
 export const MAIL_CHANGED_EVENT = 'acm-mail-changed'
 
@@ -178,6 +179,7 @@ export function removeMailAccount(id: string): void {
   const cache = readJson<Record<string, MailAccountCache>>(CACHE_KEY, {})
   delete cache[id]
   writeJson(CACHE_KEY, cache)
+  dropCachedBodies(Object.keys(readJson<Record<string, CachedBody>>(BODIES_KEY, {})).filter(k => k.startsWith(`${id}|`)))
 }
 
 export async function loadMailSecret(id: string, pwd: string): Promise<MailSecret | null> {
@@ -494,7 +496,11 @@ export interface MailAttachment {
   filename: string
   contentType: string
   size: number
-  base64: string
+  /** v0.1.450：按段取数时附件不随正文一起拉，base64 缺省、点保存时按 section 现拉 */
+  base64?: string
+  section?: string
+  /** 按段拉回的附件段是传输编码形态，保存前要按这个编码解码（base64/qp） */
+  encoding?: string
 }
 
 export interface MailInlineImage {
@@ -608,6 +614,156 @@ export function parseMimeMessage(bytes: Uint8Array): MailBodyContent {
   }
 
   walk(raw)
+  return result
+}
+
+// ---------------- BODYSTRUCTURE 解析与按段组装（v0.1.450 正文提速） ----------------
+
+export interface MailPartInfo {
+  /** IMAP 段标记：multipart 子段为 '1'、'1.2'…；整封单段正文为 'TEXT' */
+  section: string
+  contentType: string
+  charset?: string
+  encoding: string
+  size: number
+  filename?: string
+  cid?: string
+  disposition?: string
+}
+
+type SExp = string | null | SExp[]
+
+/** 极简 s-表达式解析（BODYSTRUCTURE 用）：括号 / 带转义的引号串 / 原子；NIL → null */
+function parseSExpAt(s: string, start: number): { value: SExp; next: number } | null {
+  let i = start
+  const skipWs = () => { while (i < s.length && s[i] === ' ') i++ }
+  skipWs()
+  if (i >= s.length) return null
+  if (s[i] === '(') {
+    i++
+    const list: SExp[] = []
+    for (;;) {
+      skipWs()
+      if (i >= s.length) return null
+      if (s[i] === ')') { i++; return { value: list, next: i } }
+      const item = parseSExpAt(s, i)
+      if (!item) return null
+      list.push(item.value)
+      i = item.next
+    }
+  }
+  if (s[i] === '"') {
+    i++
+    let out = ''
+    while (i < s.length && s[i] !== '"') {
+      if (s[i] === '\\' && i + 1 < s.length) { out += s[i + 1]; i += 2 } else { out += s[i]; i++ }
+    }
+    if (i >= s.length) return null
+    return { value: out, next: i + 1 }
+  }
+  let j = i
+  while (j < s.length && s[j] !== ' ' && s[j] !== '(' && s[j] !== ')') j++
+  if (j === i) return null
+  const atom = s.slice(i, j)
+  return { value: atom.toUpperCase() === 'NIL' ? null : atom, next: j }
+}
+
+function sexpParams(node: SExp | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!Array.isArray(node)) return out
+  for (let i = 0; i + 1 < node.length; i += 2) {
+    const k = node[i]
+    const v = node[i + 1]
+    if (typeof k === 'string' && typeof v === 'string') out[k.toLowerCase()] = v
+  }
+  return out
+}
+
+function walkBodyStructure(node: SExp, prefix: string, out: MailPartInfo[]): void {
+  if (!Array.isArray(node) || !node.length) return
+  if (Array.isArray(node[0])) {
+    // multipart：开头的连续子表是各子段，段号按位置编号
+    let i = 0
+    while (i < node.length && Array.isArray(node[i])) {
+      walkBodyStructure(node[i] as SExp, prefix ? `${prefix}.${i + 1}` : `${i + 1}`, out)
+      i++
+    }
+    return
+  }
+  const type = String(node[0] ?? '').toLowerCase()
+  const subtype = String(node[1] ?? '').toLowerCase()
+  const params = sexpParams(node[2])
+  const cidRaw = typeof node[3] === 'string' ? node[3].replace(/^</, '').replace(/>$/, '').trim() : ''
+  const encoding = typeof node[5] === 'string' ? node[5].toUpperCase() : '7BIT'
+  const size = typeof node[6] === 'string' ? parseInt(node[6], 10) || 0 : 0
+  if (type === 'message' && subtype === 'rfc822' && Array.isArray(node[8])) {
+    // 内嵌整封邮件：其正文段挂在本段号下面，继续下钻（node[7] 是 envelope）
+    walkBodyStructure(node[8], prefix, out)
+    return
+  }
+  // disposition 在扩展字段里位置不固定：扫 size 之后第一个「(字符串 参数表)」形态的元素
+  let disposition: string | undefined
+  let dispParams: Record<string, string> = {}
+  for (let i = 7; i < node.length; i++) {
+    const el = node[i]
+    if (Array.isArray(el) && typeof el[0] === 'string' && (Array.isArray(el[1]) || el[1] === null)) {
+      disposition = (el[0] as string).toLowerCase()
+      dispParams = sexpParams(el[1] as SExp)
+      break
+    }
+  }
+  const filename = dispParams.filename ?? params.name
+  out.push({
+    section: prefix || 'TEXT',
+    contentType: `${type}/${subtype}`,
+    charset: params.charset,
+    encoding,
+    size,
+    filename: filename ? decodeEncodedWords(filename) : undefined,
+    cid: cidRaw || undefined,
+    disposition,
+  })
+}
+
+/** 解析 UID FETCH 的 BODYSTRUCTURE 响应 → 叶子段清单；解析不出返回空数组（调用方回落全文拉取） */
+export function parseBodyStructure(raw: string): MailPartInfo[] {
+  if (!raw) return []
+  const at = raw.indexOf('BODYSTRUCTURE')
+  if (at < 0) return []
+  const open = raw.indexOf('(', at)
+  if (open < 0) return []
+  const parsed = parseSExpAt(raw, open)
+  if (!parsed || !Array.isArray(parsed.value)) return []
+  const out: MailPartInfo[] = []
+  walkBodyStructure(parsed.value, '', out)
+  return out
+}
+
+function decodeTransferBytes(bytes: Uint8Array, encoding: string): Uint8Array {
+  const enc = (encoding || '').toLowerCase()
+  if (enc === 'base64' || enc === 'quoted-printable') return decodeTransfer(bytesToBinaryString(bytes), enc)
+  return bytes
+}
+
+/** 按段组装正文：文本段解码成 text/html，cid 段进 inlineImages，附件只记元信息不带数据 */
+export function assembleBodyFromParts(parts: MailPartInfo[], data: Map<string, Uint8Array>): MailBodyContent {
+  const result: MailBodyContent = { text: '', html: '', attachments: [], inlineImages: [] }
+  for (const p of parts) {
+    const isText = p.contentType === 'text/plain' || p.contentType === 'text/html'
+    const bytes = data.get(p.section)
+    if (p.cid && !isText) {
+      if (bytes) result.inlineImages.push({ cid: p.cid, contentType: p.contentType, base64: bytesToBase64(decodeTransferBytes(bytes, p.encoding)) })
+      continue
+    }
+    if (!isText || p.disposition === 'attachment') {
+      result.attachments.push({ filename: p.filename || '附件', contentType: p.contentType, size: p.size, section: p.section, encoding: p.encoding })
+      continue
+    }
+    if (!bytes) continue
+    const str = decodeBytes(decodeTransferBytes(bytes, p.encoding), p.charset ?? 'utf-8')
+    if (p.contentType === 'text/html') { if (!result.html) result.html = str }
+    else result.text = result.text ? `${result.text}\n${str}` : str
+  }
   return result
 }
 
@@ -768,6 +924,8 @@ const MAIL_STEP_TIMEOUT_MS: Record<string, number> = {
   mail_imap_list_folders: 30_000,
   mail_imap_fetch_headers: 45_000,
   mail_imap_fetch_message: 45_000,
+  mail_imap_fetch_structure: 30_000,
+  mail_imap_fetch_sections: 45_000,
   mail_imap_folder_counts: 30_000,
   mail_imap_search_all: 30_000,
   mail_imap_store_flags: 30_000,
@@ -847,14 +1005,34 @@ async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, 
   return next
 }
 
-/** 确保账户已连接（必要时刷新 OAuth 令牌）；返回能力串 */
-export async function mailEnsureConnected(account: MailAccountMeta, pwd: string): Promise<LiveSession> {
+/** v0.1.450：连接进度步骤（Rust 侧 mail_connect_step 事件回告），验证按钮据此分步显示 */
+export type MailConnectStep = 'connecting' | 'handshaking' | 'logging-in'
+
+export const MAIL_CONNECT_STEP_LABELS: Record<MailConnectStep, string> = {
+  connecting: '正在连接服务器…',
+  handshaking: '正在加密握手…',
+  'logging-in': '正在登录验证…',
+}
+
+export const MAIL_CONNECT_STEP_EVENT = 'mail_connect_step'
+
+/** 确保账户已连接（必要时刷新 OAuth 令牌）；返回能力串。onStep 收到连接进度步骤（尽力而为，事件通道不可用时不回调） */
+export async function mailEnsureConnected(account: MailAccountMeta, pwd: string, onStep?: (step: MailConnectStep) => void): Promise<LiveSession> {
   const existing = liveSessions.get(account.id)
   if (existing) return existing
   let secret = await loadMailSecret(account.id, pwd)
   if (!secret) throw new Error('保险箱里没有这个账户的凭据，请删除后重新添加')
   secret = await refreshOAuthSecret(account, secret, pwd)
   const timeoutMs = mailConnectTimeoutMs()
+  let unlisten: (() => void) | undefined
+  if (onStep) {
+    try {
+      const { listen } = await import('@tauri-apps/api/event')
+      unlisten = await listen<{ accountId: string; step: MailConnectStep }>(MAIL_CONNECT_STEP_EVENT, e => {
+        if (e.payload?.accountId === account.id && e.payload.step) onStep(e.payload.step)
+      })
+    } catch { /* 网页/测试环境无事件通道：步骤文案保持当前值，不阻断连接 */ }
+  }
   let caps: string
   try {
     caps = await raceTimeout(
@@ -874,11 +1052,22 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string)
     // 超时或失败都请后端掐掉可能还在途的连接，避免留下一条僵尸连接
     if (e instanceof Error && e.message.includes('连接验证超时')) void mailCancelConnect(account.id)
     throw e
+  } finally {
+    unlisten?.()
   }
   const session: LiveSession = { secret, caps }
   liveSessions.set(account.id, session)
   clearMailReauthFlag(account.id) // v0.1.446：连上了就说明授权有效，清掉可能残留的重新授权标记
   return session
+}
+
+/**
+ * 添加账户时的快速验证（v0.1.450）：只做连通 + 登录 + CAPABILITY，
+ * 文件夹枚举/计数/拉头部全部留给回到收件箱后的首次同步，不再压在验证按钮上。
+ */
+export async function mailVerifyAccount(account: MailAccountMeta, pwd: string, onStep?: (step: MailConnectStep) => void): Promise<string> {
+  const session = await mailEnsureConnected(account, pwd, onStep)
+  return session.caps
 }
 
 export async function mailDisconnect(accountId: string): Promise<void> {
@@ -926,6 +1115,8 @@ export async function mailSyncAccount(account: MailAccountMeta, pwd: string, hea
       secret: secret.kind === 'oauth' ? secret.accessTok : secret.secret,
       folder: idleFolder.name,
     }).catch(() => { /* IDLE 起不来不阻断同步，状态会显示为手动刷新 */ })
+    // v0.1.450：后台预取最新几封正文进本机缓存（不阻塞同步结果），打开这些邮件时秒显
+    void prefetchMailBodies(account, messages)
     return { accountId: account.id, ok: true, newKeys, caps: session.caps, idleSupported: session.caps.includes('IDLE') }
   } catch (e) {
     mailForgetSession(account.id)
@@ -963,6 +1154,7 @@ export async function mailMoveMessages(account: MailAccountMeta, msgs: MailMessa
     }, '移动邮件（COPY/删除）')
     const destRole = loadMailCache()[account.id]?.folders.find(f => f.name === destFolder)?.role ?? 'other'
     void destRole
+    dropCachedBodies(list.map(m => m.key)) // 移动后 key 变了，旧 key 的正文缓存作废
     patchCacheMessages(account.id, all => all.map(m => (list.some(x => x.key === m.key) ? { ...m, folder: destFolder, key: `${account.id}|${destFolder}|${m.uid}` } : m)))
   }
 }
@@ -981,17 +1173,110 @@ export async function mailDeleteMessages(account: MailAccountMeta, msgs: MailMes
       accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: decision.trashFolder ?? null,
     }, '删除邮件')
     const keys = new Set(list.map(m => m.key))
+    dropCachedBodies(list.map(m => m.key))
     patchCacheMessages(account.id, all => all.filter(m => !keys.has(m.key)))
   }
   return mode
 }
 
-export async function mailFetchBody(account: MailAccountMeta, msg: MailMessage): Promise<MailBodyContent & { code: string | null }> {
-  const b64 = await mailInvoke<string>('mail_imap_fetch_message', { accountId: account.id, folder: msg.folder, uid: msg.uid }, '拉取邮件正文（FETCH）')
-  const bytes = b64ToBytes(b64)
-  const body = parseMimeMessage(bytes)
+// ---------------- 正文缓存（v0.1.450：打开邮件先秒显缓存，后台再校验） ----------------
+
+export type MailBodyResult = MailBodyContent & { code: string | null }
+
+interface CachedBody {
+  at: number
+  body: MailBodyResult
+}
+
+const BODY_CACHE_MAX = 40
+const BODY_CACHE_MAX_CHARS = 1_000_000
+/** 同步时预取正文的封数（最新优先）：打开这些邮件直接命中缓存 */
+export const MAIL_PREFETCH_COUNT = 8
+
+export function loadCachedBody(key: string): MailBodyResult | null {
+  const all = readJson<Record<string, CachedBody>>(BODIES_KEY, {})
+  return all[key]?.body ?? null
+}
+
+export function saveCachedBody(key: string, body: MailBodyResult): void {
+  try {
+    if (JSON.stringify(body).length > BODY_CACHE_MAX_CHARS) return // 巨型内嵌图等不进缓存
+    const all = readJson<Record<string, CachedBody>>(BODIES_KEY, {})
+    all[key] = { at: Date.now(), body }
+    const kept = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, BODY_CACHE_MAX)
+    writeJson(BODIES_KEY, Object.fromEntries(kept))
+  } catch { /* 缓存可再生，失败静默 */ }
+}
+
+export function dropCachedBodies(keys: string[]): void {
+  if (!keys.length) return
+  const all = readJson<Record<string, CachedBody>>(BODIES_KEY, {})
+  let changed = false
+  for (const k of keys) if (all[k]) { delete all[k]; changed = true }
+  if (changed) writeJson(BODIES_KEY, all)
+}
+
+/**
+ * 拉一封邮件的正文（v0.1.450 提速）：先取 BODYSTRUCTURE，只按段拉文本段与 cid 内嵌图，
+ * 附件只记元信息不拉数据（点保存时 mailFetchAttachment 现拉）——带大附件的邮件
+ * 不再整封全文过网。结构取不到/解析不出时回落旧全文拉取（结果一致，只是慢）。
+ * 成功后写入正文缓存，阅读页下次打开先显缓存。
+ */
+export async function mailFetchBody(account: MailAccountMeta, msg: MailMessage): Promise<MailBodyResult> {
+  let body: MailBodyContent | null = null
+  try {
+    const structRaw = await mailInvoke<string>('mail_imap_fetch_structure', { accountId: account.id, folder: msg.folder, uid: msg.uid }, '读取邮件结构（FETCH）')
+    const parts = structRaw ? parseBodyStructure(structRaw) : []
+    const want = parts.filter(p => {
+      const isText = p.contentType === 'text/plain' || p.contentType === 'text/html'
+      if (p.cid && !isText) return true
+      return isText && p.disposition !== 'attachment'
+    })
+    if (parts.length && want.length) {
+      const json = await mailInvoke<string>('mail_imap_fetch_sections', {
+        accountId: account.id, folder: msg.folder, uid: msg.uid, sections: want.map(p => p.section),
+      }, '拉取邮件正文（FETCH）')
+      const obj = JSON.parse(json) as Record<string, string>
+      const data = new Map<string, Uint8Array>()
+      for (const p of want) {
+        const b64 = obj[p.section]
+        if (b64) data.set(p.section, b64ToBytes(b64))
+      }
+      body = assembleBodyFromParts(parts, data)
+    }
+  } catch { body = null }
+  if (!body) {
+    const b64 = await mailInvoke<string>('mail_imap_fetch_message', { accountId: account.id, folder: msg.folder, uid: msg.uid }, '拉取邮件正文（FETCH）')
+    if (!b64) throw new Error('服务器未返回邮件正文')
+    body = parseMimeMessage(b64ToBytes(b64))
+  }
   const code = extractVerifyCode(`${msg.subject}\n${body.text || htmlToText(body.html)}`)
-  return { ...body, code }
+  const out: MailBodyResult = { ...body, code }
+  saveCachedBody(msg.key, out)
+  return out
+}
+
+/** 同步后预取最新 MAIL_PREFETCH_COUNT 封正文（逐封串行、失败不影响同步，mailFetchBody 自带写缓存） */
+async function prefetchMailBodies(account: MailAccountMeta, messages: MailMessage[]): Promise<void> {
+  const newest = [...messages].sort((a, b) => b.date - a.date).slice(0, MAIL_PREFETCH_COUNT)
+  for (const m of newest) {
+    if (loadCachedBody(m.key)) continue
+    try { await mailFetchBody(account, m) } catch { /* 预取失败不影响同步，用户打开时再正常拉取 */ }
+  }
+}
+
+/** 附件按需拉取（v0.1.450）：正文阶段没拉附件数据，保存时按段现拉这一段 */
+export async function mailFetchAttachment(account: MailAccountMeta, msg: MailMessage, att: MailAttachment): Promise<string> {
+  if (att.base64) return att.base64
+  if (!att.section) throw new Error('这封邮件的附件缺少段信息，请刷新后重试')
+  const json = await mailInvoke<string>('mail_imap_fetch_sections', {
+    accountId: account.id, folder: msg.folder, uid: msg.uid, sections: [att.section],
+  }, '拉取附件（FETCH）')
+  const obj = JSON.parse(json) as Record<string, string>
+  const rawB64 = obj[att.section]
+  if (!rawB64) throw new Error('服务器未返回附件内容')
+  // 段数据是传输编码形态（附件多为 base64 文本本身），解码后重新编码才是文件内容
+  return bytesToBase64(decodeTransferBytes(b64ToBytes(rawB64), att.encoding ?? ''))
 }
 
 export async function mailSaveAttachment(filename: string, base64: string): Promise<string> {
