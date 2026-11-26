@@ -399,6 +399,21 @@ pub mod ffi_probe {
             false
         }
     }
+
+    /// v0.1.468：Vision OCR 核心入口——与 --acm-ocr 子进程（run_ocr_cli）走的
+    /// 是同一个生产函数（mac::vision_ocr_path），CI 集成测试 t08 用它对已知
+    /// 文字 PNG 真跑 OCR，子进程与测试共用一份实现，不许测试里另写一份。
+    pub fn ocr_png(path: &std::path::Path) -> Result<String, String> {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::vision_ocr_path(path)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            Err("OCR 仅支持 macOS".to_string())
+        }
+    }
 }
 
 // ---------------- 全局快捷键 ----------------
