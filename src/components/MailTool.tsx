@@ -22,7 +22,10 @@ import {
   loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
   saveMailSecret, loadMailSecret, mailForgetSession,
   displayMailError, shouldSuggestCredentialCheck,
+  loadMailAutoRefresh, saveMailAutoRefresh, MAIL_AUTO_REFRESH_INTERVALS,
+  loadMailListPrefs, saveMailListPrefs, MAIL_PAGE_SIZES, mailPageWindow,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
+  type MailAutoRefresh, type MailDensity,
   type MailBodyContent, type MailDeleteAllReport, type MailDeleteAllPreviewEntry, type MailDeleteCancelToken,
 } from '../core/mail'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
@@ -58,6 +61,18 @@ function fmtTime(ts: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** v0.1.467：自动刷新间隔文案（60 秒及以下按秒、以上按分钟，与定案状态行一致） */
+function intervalLabel(sec: number): string {
+  return sec <= 60 ? `${sec} 秒` : `${sec / 60} 分钟`
+}
+
+/** v0.1.467：账户栏平台圆点色（平台固有识别色，未知平台用中性灰） */
+const PLATFORM_DOT_COLORS: Record<string, string> = {
+  gmail: '#d93025', outlook: '#0072c6', qq: '#2b7de9', icloud: '#6e6e73',
+  net163: '#d71918', net126: '#2e9e4f', sina: '#e6162d', aliyun: '#ff6a00', custom: '#8a8f98',
+}
+const platformDot = (platformId: string) => PLATFORM_DOT_COLORS[platformId] ?? '#8a8f98'
+
 type SyncState = 'idle' | 'syncing' | 'live' | 'poll' | 'error'
 interface AccountSync { state: SyncState; message?: string }
 
@@ -90,6 +105,17 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   const [deleteOneTarget, setDeleteOneTarget] = useState<MailAccountMeta | null>(null)
   const [batchBusy, setBatchBusy] = useState('')
   const syncingRef = useRef<Set<string>>(new Set())
+  // v0.1.467：自动刷新偏好（仅本机）+ 上次刷新时间 + 账户栏综合方案状态 + 分页/密度
+  const [autoRefresh, setAutoRefreshState] = useState<MailAutoRefresh>(() => loadMailAutoRefresh())
+  const [listPrefs, setListPrefsState] = useState(() => loadMailListPrefs())
+  const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null)
+  const [barOpen, setBarOpen] = useState(false)
+  const [barTab, setBarTab] = useState<string>('all')
+  const [page, setPage] = useState(1)
+  const [endHint, setEndHint] = useState(false)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const setAutoRefresh = useCallback((v: MailAutoRefresh) => { setAutoRefreshState(v); saveMailAutoRefresh(v) }, [])
+  const setListPrefs = useCallback((v: { density: MailDensity; pageSize: number }) => { setListPrefsState(v); saveMailListPrefs(v) }, [])
   // v0.1.450：与其它工具一致——有指纹密码副本就直接进，不单独弹解锁页；
   // 两个都没有才显示解锁页（onUnlock 仍回写全局 sessionPwd）。子组件（MailReader/
   // MailAddAccount/MailSettings）都从这个 pwd 派生，不再有来源分叉。
@@ -139,6 +165,49 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
     return list
   }, [allMessages, accountFilter, category, quick, query])
 
+  // v0.1.467：分页（filtered 已按日期倒序，最新永远在最前）
+  const pageSize = listPrefs.pageSize
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pageCount)
+  const pageItems = useMemo(
+    () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filtered, safePage, pageSize],
+  )
+  const totalUnread = useMemo(
+    () => Object.values(unreadByAccount).reduce((a, b) => a + b, 0),
+    [unreadByAccount],
+  )
+  // 切换账户/分类/快捷筛选/搜索 → 回第 1 页；数据刷新（同步/自动刷新）不重置页码
+  useEffect(() => { setPage(1) }, [accountFilter, category, quick, query])
+  useEffect(() => { if (page > pageCount) setPage(pageCount) }, [page, pageCount])
+  // 翻页后列表滚回顶部（自动刷新不改页码，不会触发）
+  const prevPageRef = useRef(1)
+  useEffect(() => {
+    if (prevPageRef.current !== safePage) {
+      prevPageRef.current = safePage
+      setEndHint(false)
+      if (listRef.current) listRef.current.scrollTop = 0
+    }
+  }, [safePage])
+  useEffect(() => {
+    if (!endHint) return
+    const t = window.setTimeout(() => setEndHint(false), 2200)
+    return () => window.clearTimeout(t)
+  }, [endHint])
+  // 在当前页滚到底 → 自动进下一页；已是最后一页 → 轻提示后停住。
+  // 页切后 400ms 内的残留 scroll 事件忽略，防止连跳两页。
+  const lastAdvanceRef = useRef(0)
+  const onListScroll = useCallback(() => {
+    const el = listRef.current
+    if (!el) return
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - 4) return
+    if (Date.now() - lastAdvanceRef.current < 400) return
+    if (safePage < pageCount) {
+      lastAdvanceRef.current = Date.now()
+      setPage(safePage + 1)
+    } else if (filtered.length > 0) setEndHint(true)
+  }, [safePage, pageCount, filtered.length])
+
   const categoryCounts = useMemo(() => {
     const base = accountFilter === 'all' ? allMessages : allMessages.filter(m => m.accountId === accountFilter)
     const counts: Record<string, number> = { all: base.length }
@@ -173,9 +242,15 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
     for (const a of visibleMetas) void syncOne(a, silent)
   }, [visibleMetas, syncOne])
 
+  // v0.1.467：带时间戳的同步入口（手动刷新/初次进入/自动刷新共用，状态行显示上次刷新时间）
+  const syncAllStamped = useCallback((silent = false) => {
+    syncAll(silent)
+    setLastRefreshAt(Date.now())
+  }, [syncAll])
+
   // 进入工具/解锁后：同步全部可见账户
   useEffect(() => {
-    if (pwd && visibleMetas.length) syncAll(true)
+    if (pwd && visibleMetas.length) syncAllStamped(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pwd, metas.length])
 
@@ -211,6 +286,29 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
     }, 180_000)
     return () => window.clearInterval(t)
   }, [visibleMetas, syncMap, syncOne])
+
+  // v0.1.467：自动刷新（统一兜底）——邮箱页打开且开关开启时，按间隔走与手动刷新
+  // 同一入口全账户同步；有同步在途则跳过本轮。IDLE 实时推送与上面的 poll 轮询
+  // 通道保持不动。刷新只换数据与未读计数：不重置页码、不动列表滚动位置、
+  // 不关正在读的邮件（用户在第 1 页时新邮件自然置顶）。
+  useEffect(() => {
+    if (!pwd || !autoRefresh.enabled) return
+    const t = window.setInterval(() => {
+      if (syncingRef.current.size > 0) return
+      syncAllStamped(true)
+    }, autoRefresh.intervalSec * 1000)
+    return () => window.clearInterval(t)
+  }, [pwd, autoRefresh, syncAllStamped])
+
+  // v0.1.467：账户栏展开面板的平台分组（按平台预设顺序，只列有账户的平台）
+  const platformGroups = useMemo(() => {
+    const groups: { platformId: string; name: string; accounts: MailAccountMeta[] }[] = []
+    for (const p of MAIL_PLATFORMS) {
+      const list = visibleMetas.filter(a => a.platformId === p.id)
+      if (list.length) groups.push({ platformId: p.id, name: p.name, accounts: list })
+    }
+    return groups
+  }, [visibleMetas])
 
   const aggregate = useMemo((): { text: string; cls: string } => {
     const states = visibleMetas.map(a => syncMap[a.id]?.state ?? 'idle')
@@ -312,43 +410,94 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   }
 
   return (
-    <div className="mail-tool">
+    <div className={`mail-tool ${view === 'inbox' ? 'mail-tool-inbox' : ''}`}>
       {view === 'inbox' && (
         <>
           <div className="mail-topbar">
             <span className={`mail-sync-dot ${aggregate.cls}`} />
             <span className="mail-sync-text">{aggregate.text}</span>
+            {lastRefreshAt && (
+              <span className="mail-refresh-note">
+                上次刷新 {new Date(lastRefreshAt).toTimeString().slice(0, 5)}
+                {autoRefresh.enabled ? ` · 每 ${intervalLabel(autoRefresh.intervalSec)}自动刷新` : ''}
+              </span>
+            )}
             <span className="mail-topbar-spacer" />
-            <button className="btn sm ghost" onClick={() => syncAll()} title="刷新全部账户"><RefreshCw size={14} /> 刷新</button>
+            <button className="btn sm ghost" onClick={() => syncAllStamped()} title="刷新全部账户"><RefreshCw size={14} /> 刷新</button>
             <button className="btn sm ghost" onClick={() => setView('add')}><Plus size={14} /> 添加账户</button>
             <button className="btn sm ghost" onClick={() => setView('settings')}><Settings size={14} /> 账户设置</button>
             <button className="btn sm danger-ghost" disabled={!metas.length} onClick={() => setDeleteAllOpen(true)}><Trash2 size={14} /> 一键删除全部邮件</button>
           </div>
 
-          <div className="mail-account-bar">
-            <button className={`mail-chip ${accountFilter === 'all' ? 'active' : ''}`} onClick={() => setAccountFilter('all')}>
-              全部账户
-              {Object.values(unreadByAccount).reduce((a, b) => a + b, 0) > 0 && <span className="mail-badge">{Object.values(unreadByAccount).reduce((a, b) => a + b, 0)}</span>}
-            </button>
-            {visibleMetas.map(a => (
-              <button key={a.id} className={`mail-chip ${accountFilter === a.id ? 'active' : ''}`} onClick={() => setAccountFilter(a.id)} title={a.email}>
-                <span className="mail-chip-platform">{mailPlatform(a.platformId).name}</span> {a.email}
-                {(unreadByAccount[a.id] ?? 0) > 0 && <span className="mail-badge">{unreadByAccount[a.id]}</span>}
-                {syncMap[a.id]?.state === 'error' && <span className="mail-chip-err" title={syncMap[a.id]?.message}>同步失败</span>}
+          {/* v0.1.467：账户栏综合方案——默认收起一行紧凑条（平台圆点+当前选中项+其未读徽标，
+              右侧总未读+展开按钮）；展开滑出面板：平台页签 + 等宽网格卡，点卡选中并自动收起，
+              再次展开停留在上次页签。466 的单账户两按钮（全选/删除本账户）留在紧凑条右侧。 */}
+          <div className="mail-acctbar">
+            <div className="mail-acctbar-row">
+              {(() => {
+                const cur = accountFilter !== 'all' ? visibleMetas.find(a => a.id === accountFilter) : undefined
+                return cur ? (
+                  <span className="mail-acct-current" title={cur.email}>
+                    <span className="mail-acct-dot" style={{ background: platformDot(cur.platformId) }} />
+                    <span className="mail-acct-current-name">{cur.email}</span>
+                    {(unreadByAccount[cur.id] ?? 0) > 0 && <span className="mail-badge">{unreadByAccount[cur.id]}</span>}
+                    {syncMap[cur.id]?.state === 'error' && <span className="mail-chip-err">同步失败</span>}
+                  </span>
+                ) : (
+                  <span className="mail-acct-current">
+                    <span className="mail-acct-dot all" />
+                    <span className="mail-acct-current-name">全部账户</span>
+                    {totalUnread > 0 && <span className="mail-badge">{totalUnread}</span>}
+                  </span>
+                )
+              })()}
+              {accountFilter !== 'all' && (() => {
+                const target = visibleMetas.find(a => a.id === accountFilter)
+                if (!target) return null
+                return (
+                  <>
+                    <button className="btn sm ghost" onClick={() => selectAllOfAccount(target.id)}>全选本账户邮件</button>
+                    <button className="btn sm danger-ghost" onClick={() => setDeleteOneTarget(target)}><Trash2 size={14} /> 删除本账户全部邮件</button>
+                  </>
+                )
+              })()}
+              <span className="mail-topbar-spacer" />
+              <span className="mail-acct-total">总未读 {totalUnread}</span>
+              <button className="btn sm ghost" onClick={() => setBarOpen(o => !o)} aria-expanded={barOpen}>
+                {barOpen ? '收起账户' : '展开账户'}
+                <ChevronDown size={14} style={{ transform: barOpen ? 'rotate(180deg)' : undefined, transition: 'transform .2s' }} />
               </button>
-            ))}
-            {/* v0.1.466：单账户视图的专属操作——全选本账户已同步邮件 / 删除本账户全部邮件（走全局同款弹窗，范围锁单账户） */}
-            {accountFilter !== 'all' && (() => {
-              const target = visibleMetas.find(a => a.id === accountFilter)
-              if (!target) return null
-              return (
-                <>
-                  <span className="mail-topbar-spacer" />
-                  <button className="btn sm ghost" onClick={() => selectAllOfAccount(target.id)}>全选本账户邮件</button>
-                  <button className="btn sm danger-ghost" onClick={() => setDeleteOneTarget(target)}><Trash2 size={14} /> 删除本账户全部邮件</button>
-                </>
-              )
-            })()}
+            </div>
+            {barOpen && (
+              <div className="mail-acct-panel">
+                <div className="mail-acct-tabs">
+                  <button className={barTab === 'all' ? 'active' : ''} onClick={() => setBarTab('all')}>全部账户 {visibleMetas.length}</button>
+                  {platformGroups.map(g => (
+                    <button key={g.platformId} className={barTab === g.platformId ? 'active' : ''} onClick={() => setBarTab(g.platformId)}>
+                      {g.name} {g.accounts.length}
+                    </button>
+                  ))}
+                </div>
+                <div className="mail-acct-grid">
+                  {barTab === 'all' && (
+                    <button className={`mail-acct-card ${accountFilter === 'all' ? 'active' : ''}`} onClick={() => { setAccountFilter('all'); setBarOpen(false) }}>
+                      <span className="mail-acct-card-name"><span className="mail-acct-dot all" />全部账户</span>
+                      <span className="mail-acct-card-sub">{visibleMetas.length} 个账户合计</span>
+                      {totalUnread > 0 && <span className="mail-badge">{totalUnread}</span>}
+                    </button>
+                  )}
+                  {(barTab === 'all' ? visibleMetas : platformGroups.find(g => g.platformId === barTab)?.accounts ?? []).map(a => (
+                    <button key={a.id} className={`mail-acct-card ${accountFilter === a.id ? 'active' : ''}`} title={a.email}
+                      onClick={() => { setAccountFilter(a.id); setBarOpen(false) }}>
+                      <span className="mail-acct-card-name"><span className="mail-acct-dot" style={{ background: platformDot(a.platformId) }} />{mailPlatform(a.platformId).name}</span>
+                      <span className="mail-acct-card-sub">{a.email}</span>
+                      {syncMap[a.id]?.state === 'error' && <span className="mail-chip-err">同步失败</span>}
+                      {(unreadByAccount[a.id] ?? 0) > 0 && <span className="mail-badge">{unreadByAccount[a.id]}</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
@@ -380,6 +529,12 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
                 {([['all', '全部'], ['unread', '未读'], ['starred', '星标'], ['attach', '附件']] as [QuickFilter, string][]).map(([k, label]) => (
                   <button key={k} className={`mail-filter-chip ${quick === k ? 'active' : ''}`} onClick={() => setQuick(k)}>{label}</button>
                 ))}
+                <span className="mail-topbar-spacer" />
+                {/* v0.1.467：密度切换（仅本机偏好） */}
+                <div className="mail-density" role="group" aria-label="列表密度">
+                  <button className={listPrefs.density === 'comfortable' ? 'active' : ''} onClick={() => setListPrefs({ ...listPrefs, density: 'comfortable' })}>舒适</button>
+                  <button className={listPrefs.density === 'compact' ? 'active' : ''} onClick={() => setListPrefs({ ...listPrefs, density: 'compact' })}>紧凑</button>
+                </div>
               </div>
               {selected.size > 0 && (
                 <div className="mail-batch-bar">
@@ -395,27 +550,40 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
                     )}
                 </div>
               )}
-              <div className="mail-list">
+              <div className="mail-list" ref={listRef} onScroll={onListScroll}>
                 {filtered.length === 0 && <div className="mail-list-empty">没有符合条件的邮件，点「刷新」从服务器同步最新邮件。</div>}
-                {filtered.map(m => {
+                {pageItems.map(m => {
                   const unread = !m.flags.includes('\\Seen')
                   const starred = m.flags.includes('\\Flagged')
+                  const compact = listPrefs.density === 'compact'
                   return (
-                    <div key={m.key} className={`mail-row ${unread ? 'unread' : ''} ${freshKeys.has(m.key) ? 'fresh' : ''}`}
+                    <div key={m.key} className={`mail-row ${compact ? 'compact' : ''} ${unread ? 'unread' : ''} ${freshKeys.has(m.key) ? 'fresh' : ''}`}
                       onClick={() => openMessage(m)}>
                       <input type="checkbox" className="mail-row-check" checked={selected.has(m.key)}
                         onClick={e => e.stopPropagation()} onChange={() => toggleSelect(m.key)} aria-label="选择邮件" />
                       <span className="mail-row-dot">{unread && <i />}</span>
                       <div className="mail-row-main">
-                        <div className="mail-row-line1">
-                          <span className="mail-row-from">{m.from}</span>
-                          <span className="mail-row-account">{mailPlatform(metaOf(m.accountId)?.platformId ?? 'custom').name}</span>
-                          <span className={`mail-cat-tag cat-${m.category}`}>{MAIL_CATEGORY_LABELS[m.category]}</span>
-                          {m.hasAttach && <Paperclip size={12} className="mail-row-clip" />}
-                          <span className="mail-row-time">{fmtTime(m.date)}</span>
-                        </div>
-                        <div className="mail-row-subject">{m.subject}</div>
-                        <div className="mail-row-snippet">{m.snippet}</div>
+                        {compact ? (
+                          <div className="mail-row-compactline">
+                            <span className="mail-row-from">{m.from}</span>
+                            <span className="mail-row-subject-inline">{m.subject}</span>
+                            <span className={`mail-cat-tag cat-${m.category}`}>{MAIL_CATEGORY_LABELS[m.category]}</span>
+                            {m.hasAttach && <Paperclip size={12} className="mail-row-clip" />}
+                            <span className="mail-row-time">{fmtTime(m.date)}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="mail-row-line1">
+                              <span className="mail-row-from">{m.from}</span>
+                              <span className="mail-row-account">{mailPlatform(metaOf(m.accountId)?.platformId ?? 'custom').name}</span>
+                              <span className={`mail-cat-tag cat-${m.category}`}>{MAIL_CATEGORY_LABELS[m.category]}</span>
+                              {m.hasAttach && <Paperclip size={12} className="mail-row-clip" />}
+                              <span className="mail-row-time">{fmtTime(m.date)}</span>
+                            </div>
+                            <div className="mail-row-subject">{m.subject}</div>
+                            <div className="mail-row-snippet">{m.snippet}</div>
+                          </>
+                        )}
                       </div>
                       <div className="mail-row-actions" onClick={e => e.stopPropagation()}>
                         <button title={starred ? '取消星标' : '星标'} className={starred ? 'on' : ''} onClick={() => void toggleStar(m)}><Star size={15} fill={starred ? 'currentColor' : 'none'} /></button>
@@ -426,6 +594,24 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
                   )
                 })}
               </div>
+              {/* v0.1.467：分页条（钉在列表下方不滚） */}
+              {filtered.length > 0 && (
+                <div className="mail-pager">
+                  <button className="btn sm ghost" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}><ChevronLeft size={13} /> 上一页</button>
+                  {mailPageWindow(safePage, pageCount).map((p, i) => p === -1
+                    ? <span key={`gap-${i}`} className="mail-pager-gap">…</span>
+                    : <button key={p} className={`mail-pager-num ${p === safePage ? 'active' : ''}`} onClick={() => setPage(p)}>{p}</button>)}
+                  <button className="btn sm ghost" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}>下一页 <ChevronRight size={13} /></button>
+                  <span className="mail-pager-info">共 {filtered.length} 封 · 第 {safePage}/{pageCount} 页</span>
+                  {endHint && <span className="mail-pager-end">已是最后一页</span>}
+                  <span className="mail-topbar-spacer" />
+                  <label className="mail-pager-size">每页
+                    <select value={pageSize} onChange={e => setListPrefs({ ...listPrefs, pageSize: Number(e.target.value) })}>
+                      {MAIL_PAGE_SIZES.map(s => <option key={s} value={s}>{s} 封</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
             </>
           )}
         </>
@@ -464,6 +650,8 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           onAdd={() => setView('add')}
           onRemove={async a => { await removeMailAccount(a.id); setMetas(listMailAccounts()); refreshCache(); notify(`已删除账户 ${a.email}（含本机凭据）`) }}
           onDeleteAll={() => setDeleteAllOpen(true)}
+          autoRefresh={autoRefresh}
+          onAutoRefresh={setAutoRefresh}
         />
       )}
 
@@ -749,7 +937,7 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
 
 // ---------------- 设置页（管账户：平台总开关 / 账户副开关） ----------------
 
-function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, missingSecrets, onReauth, onBack, onVisibility, onAdd, onRemove, onDeleteAll }: {
+function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, missingSecrets, onReauth, onBack, onVisibility, onAdd, onRemove, onDeleteAll, autoRefresh, onAutoRefresh }: {
   metas: MailAccountMeta[]
   visibility: ReturnType<typeof loadMailVisibility>
   syncMap: Record<string, AccountSync>
@@ -763,6 +951,9 @@ function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, missingS
   onAdd: () => void
   onRemove: (a: MailAccountMeta) => Promise<void>
   onDeleteAll: () => void
+  /** v0.1.467：自动刷新偏好（仅本机） */
+  autoRefresh: MailAutoRefresh
+  onAutoRefresh: (v: MailAutoRefresh) => void
 }) {
   const [confirmRemoveId, setConfirmRemoveId] = useState('')
   const platformsWithAccounts = MAIL_PLATFORMS.filter(p => metas.some(a => a.platformId === p.id))
@@ -780,6 +971,25 @@ function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, missingS
         <ShieldCheck size={14} /> 凭据（授权码 / OAuth 令牌）用保险箱主密码加密，只存本机、不同步。
         关掉平台或账户开关后，它在主页收件箱里隐匿（不删数据），打开即恢复。
       </p>
+      {/* v0.1.467：自动刷新（仅本机偏好） */}
+      <div className="mail-settings-platform">
+        <div className="mail-settings-platform-head">
+          <span className="mail-settings-platform-name">自动刷新</span>
+          <span className="mail-settings-platform-count">邮箱页打开时按间隔自动同步全部账户</span>
+          <span className="mail-topbar-spacer" />
+          <span className="mail-settings-switch-label">{autoRefresh.enabled ? '已开启' : '已关闭'}</span>
+          <JellyToggle checked={autoRefresh.enabled} onChange={v => onAutoRefresh({ ...autoRefresh, enabled: v })} label="自动刷新开关" />
+        </div>
+        {autoRefresh.enabled && (
+          <div className="mail-autorefresh-row">
+            <span>刷新间隔</span>
+            <select value={autoRefresh.intervalSec} onChange={e => onAutoRefresh({ ...autoRefresh, intervalSec: Number(e.target.value) })}>
+              {MAIL_AUTO_REFRESH_INTERVALS.map(s => <option key={s} value={s}>{intervalLabel(s)}</option>)}
+            </select>
+            <span className="mail-settings-sub">支持实时推送（IDLE）的账户仍是来信即达，此刷新是统一兜底；刷新不会打断正在读的邮件。</span>
+          </div>
+        )}
+      </div>
       {platformsWithAccounts.length === 0 && <div className="mail-list-empty">还没有账户，点右上角添加。</div>}
       {platformsWithAccounts.map(p => {
         const platformOn = visibility.platforms[p.id] !== false

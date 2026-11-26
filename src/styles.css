@@ -2615,6 +2615,58 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .mail-chip-platform { font-weight: 600; }
 .mail-chip-err { color: var(--red); font-size: 11.5px; }
 .mail-chip.active .mail-chip-err { color: #fca5a5; }
+/* v0.1.467：收件箱固定框架——整页高度撑满，工具区不滚、只有邮件列表区独立滚动 */
+.mail-tool-inbox { height: calc(100dvh - 180px); min-height: 460px; }
+.mail-tool-inbox > * { flex-shrink: 0; }
+.mail-tool-inbox > .mail-list { flex: 1 1 auto; flex-shrink: 1; min-height: 0; overflow-y: auto; }
+.mail-refresh-note { font-size: 12px; color: var(--text-3); }
+/* v0.1.467：账户栏综合方案（收起一行 + 展开面板：平台页签 + 等宽网格卡） */
+.mail-acctbar { display: flex; flex-direction: column; gap: 8px; }
+.mail-acctbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mail-acct-current { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); font-weight: 550; min-width: 0; }
+.mail-acct-current-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+.mail-acct-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
+.mail-acct-dot.all { background: var(--text); }
+.mail-acct-total { font-size: 12.5px; color: var(--text-3); }
+.mail-acct-panel { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 10px; display: flex; flex-direction: column; gap: 10px; animation: mail-slide-in .22s ease; }
+.mail-acct-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.mail-acct-tabs button { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.mail-acct-tabs button.active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.mail-acct-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mail-acct-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 9px 34px 9px 11px; cursor: pointer; text-align: left; min-width: 0; }
+.mail-acct-card:hover { border-color: var(--border-strong); }
+.mail-acct-card.active { background: #21344a; border-color: #21344a; color: #fff; }
+.mail-acct-card-name { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+.mail-acct-card.active .mail-acct-card-name { color: #fff; }
+.mail-acct-card-sub { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.mail-acct-card.active .mail-acct-card-sub { color: #b9c6d4; }
+.mail-acct-card .mail-badge { position: absolute; top: 8px; right: 8px; }
+.mail-acct-card .mail-chip-err { font-size: 11.5px; }
+@media (max-width: 720px) { .mail-acct-grid { grid-template-columns: repeat(2, 1fr); } }
+/* v0.1.467：密度切换 + 紧凑行（单行约 32px） */
+.mail-density { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.mail-density button { padding: 5px 12px; font-size: 12.5px; background: var(--panel); color: var(--text-2); border: none; cursor: pointer; }
+.mail-density button.active { background: var(--text); color: #fff; font-weight: 600; }
+.mail-row.compact { align-items: center; height: 32px; padding-top: 0; padding-bottom: 0; }
+.mail-row.compact .mail-row-check { margin-top: 0; }
+.mail-row.compact .mail-row-dot { padding-top: 0; }
+.mail-row-compactline { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mail-row-compactline .mail-row-from { flex-shrink: 0; max-width: 180px; }
+.mail-row-subject-inline { flex: 1; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-row.unread .mail-row-subject-inline { font-weight: 600; }
+/* v0.1.467：分页条（钉在列表下方，不随列表滚） */
+.mail-pager { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mail-pager-num { min-width: 28px; height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.mail-pager-num:hover { border-color: var(--border-strong); }
+.mail-pager-num.active { background: #21344a; border-color: #21344a; color: #fff; font-weight: 600; }
+.mail-pager-gap { color: var(--text-3); font-size: 12.5px; }
+.mail-pager-info { font-size: 12.5px; color: var(--text-3); margin-left: 4px; }
+.mail-pager-end { font-size: 12.5px; color: var(--amber); }
+.mail-pager-size { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.mail-pager-size select { height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12.5px; }
+/* v0.1.467：设置页自动刷新行 */
+.mail-autorefresh-row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; font-size: 13px; color: var(--text-2); flex-wrap: wrap; }
+.mail-autorefresh-row select { height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12.5px; }
 .mail-badge { background: var(--red); color: #fff; font-size: 11px; min-width: 18px; height: 18px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; font-weight: 600; }
 .mail-empty { text-align: center; color: var(--text-2); padding: 56px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .mail-empty h4 { color: var(--text); margin: 6px 0 0; font-size: 16px; }

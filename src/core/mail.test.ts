@@ -19,6 +19,7 @@ import {
   mapGraphFolder, mapGraphMessage, hashGraphId, graphListFolders, graphErrorDetail,
   mailSyncAccount, addMailAccount, listMailAccounts, loadMailCache,
   mailDeleteAll, mailDeleteAllPreview, mailDeleteAllSnapshot, saveMailCache,
+  loadMailAutoRefresh, saveMailAutoRefresh, loadMailListPrefs, saveMailListPrefs, mailPageWindow,
   type MailSecret, type MailDeleteAllProgressEvent, type MailMessage,
 } from './mail'
 import { initVault } from './crypto'
@@ -305,6 +306,34 @@ describe('显示开关', () => {
     v2.accounts.a1 = false
     saveMailVisibility(v2)
     expect(isAccountVisible(loadMailVisibility(), { id: 'a1', platformId: 'qq', email: 'x@qq.com', label: '', host: '', port: 993 })).toBe(false)
+  })
+})
+
+describe('邮箱体验偏好（467）', () => {
+  it('自动刷新默认开、默认 60 秒；保存后读回一致', () => {
+    expect(loadMailAutoRefresh()).toEqual({ enabled: true, intervalSec: 60 })
+    saveMailAutoRefresh({ enabled: false, intervalSec: 300 })
+    expect(loadMailAutoRefresh()).toEqual({ enabled: false, intervalSec: 300 })
+  })
+  it('自动刷新间隔不在允许档位时回落 60 秒', () => {
+    localStorage.setItem('acm.mail.autoRefresh.v1', JSON.stringify({ enabled: true, intervalSec: 45 }))
+    expect(loadMailAutoRefresh().intervalSec).toBe(60)
+  })
+  it('列表偏好默认舒适、每页 5 封；保存后读回一致', () => {
+    expect(loadMailListPrefs()).toEqual({ density: 'comfortable', pageSize: 5 })
+    saveMailListPrefs({ density: 'compact', pageSize: 20 })
+    expect(loadMailListPrefs()).toEqual({ density: 'compact', pageSize: 20 })
+  })
+  it('列表偏好非法值回落默认（密度 comfortable、每页 5）', () => {
+    localStorage.setItem('acm.mail.listPrefs.v1', JSON.stringify({ density: 'wide', pageSize: 7 }))
+    expect(loadMailListPrefs()).toEqual({ density: 'comfortable', pageSize: 5 })
+  })
+  it('页码窗口：少页全列、多页首尾+当前邻域+省略号', () => {
+    expect(mailPageWindow(1, 1)).toEqual([1])
+    expect(mailPageWindow(3, 5)).toEqual([1, 2, 3, 4, 5])
+    expect(mailPageWindow(1, 12)).toEqual([1, 2, -1, 12])
+    expect(mailPageWindow(5, 12)).toEqual([1, -1, 4, 5, 6, -1, 12])
+    expect(mailPageWindow(12, 12)).toEqual([1, -1, 11, 12])
   })
 })
 

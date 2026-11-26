@@ -299,6 +299,66 @@ export function isAccountVisible(v: MailVisibility, a: MailAccountMeta): boolean
   return isPlatformVisible(v, a.platformId) && v.accounts[a.id] !== false
 }
 
+// ---------------- 邮箱体验偏好（v0.1.467：自动刷新 / 列表密度与分页，仅本机） ----------------
+
+const AUTO_REFRESH_KEY = 'acm.mail.autoRefresh.v1'
+const LIST_PREFS_KEY = 'acm.mail.listPrefs.v1'
+
+export interface MailAutoRefresh {
+  enabled: boolean
+  intervalSec: number
+}
+
+export const MAIL_AUTO_REFRESH_INTERVALS = [30, 60, 180, 300, 600]
+
+export function loadMailAutoRefresh(): MailAutoRefresh {
+  const v = readJson<Partial<MailAutoRefresh>>(AUTO_REFRESH_KEY, {})
+  return {
+    enabled: v.enabled !== false,
+    intervalSec: MAIL_AUTO_REFRESH_INTERVALS.includes(v.intervalSec ?? 0) ? (v.intervalSec as number) : 60,
+  }
+}
+
+export function saveMailAutoRefresh(v: MailAutoRefresh): void {
+  writeJson(AUTO_REFRESH_KEY, v)
+}
+
+export type MailDensity = 'comfortable' | 'compact'
+
+export interface MailListPrefs {
+  density: MailDensity
+  pageSize: number
+}
+
+export const MAIL_PAGE_SIZES = [5, 10, 20, 50]
+
+export function loadMailListPrefs(): MailListPrefs {
+  const v = readJson<Partial<MailListPrefs>>(LIST_PREFS_KEY, {})
+  return {
+    density: v.density === 'compact' ? 'compact' : 'comfortable',
+    pageSize: MAIL_PAGE_SIZES.includes(v.pageSize ?? 0) ? (v.pageSize as number) : 5,
+  }
+}
+
+export function saveMailListPrefs(v: MailListPrefs): void {
+  writeJson(LIST_PREFS_KEY, v)
+}
+
+/** 分页页码条要显示的页码序列：首尾 + 当前页邻域，中间断档用 -1 表示省略号 */
+export function mailPageWindow(page: number, pageCount: number): number[] {
+  if (pageCount <= 7) return Array.from({ length: Math.max(1, pageCount) }, (_, i) => i + 1)
+  const keep = new Set([1, pageCount, page - 1, page, page + 1])
+  const out: number[] = []
+  let prev = 0
+  for (let p = 1; p <= pageCount; p++) {
+    if (!keep.has(p)) continue
+    if (prev && p - prev > 1) out.push(-1)
+    out.push(p)
+    prev = p
+  }
+  return out
+}
+
 // ---------------- 邮件数据与缓存 ----------------
 
 export interface MailFolder {
