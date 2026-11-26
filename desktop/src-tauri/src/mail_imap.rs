@@ -216,6 +216,15 @@ struct Session {
 
 struct OAuthSlot {
     result: Arc<StdMutex<Option<OAuthResult>>>,
+    /// v0.1.446：记住监听端口，取消/重开时能主动唤醒还堵在 accept 上的旧线程，避免线程泄漏。
+    port: u16,
+}
+
+/// 唤醒堵在指定端口 accept 上的 OAuth 回调监听线程：自连一次让它收下（假）请求后自然退出。
+fn wake_oauth_listener(port: u16) {
+    std::thread::spawn(move || {
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    });
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -855,10 +864,14 @@ pub fn mail_oauth_listen_start() -> Result<u16, String> {
         .port();
     let slot = OAuthSlot {
         result: Arc::new(StdMutex::new(None)),
+        port,
     };
     let result_ref = slot.result.clone();
     if let Ok(mut g) = globals().oauth.lock() {
-        *g = Some(slot);
+        // 上一轮监听若还堵在 accept（如用户取消后又重新授权），先唤醒它退出，别留僵尸线程
+        if let Some(old) = g.replace(slot) {
+            wake_oauth_listener(old.port);
+        }
     }
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
@@ -883,6 +896,15 @@ pub fn mail_oauth_listen_start() -> Result<u16, String> {
         }
     });
     Ok(port)
+}
+
+/// v0.1.446：取消/超时时真正终止回调监听（取出 slot 并唤醒堵在 accept 上的线程）。
+#[tauri::command]
+pub fn mail_oauth_listen_stop() {
+    let old = if let Ok(mut g) = globals().oauth.lock() { g.take() } else { None };
+    if let Some(slot) = old {
+        wake_oauth_listener(slot.port);
+    }
 }
 
 #[tauri::command]

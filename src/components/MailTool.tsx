@@ -5,8 +5,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Mail, RefreshCw, Settings, Plus, Trash2, Star, Archive, Search, Lock, X, ChevronLeft, ChevronRight,
-  Paperclip, Copy, Sparkles, AlertTriangle, CheckCircle2, Loader2, FolderInput, ShieldCheck,
+  Mail, RefreshCw, Settings, Plus, Trash2, Star, Archive, Search, Lock, X, ChevronLeft, ChevronRight, ChevronDown,
+  Paperclip, Copy, Sparkles, AlertTriangle, CheckCircle2, Loader2, FolderInput, ShieldCheck, Globe, KeyRound,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
@@ -15,14 +15,16 @@ import {
   loadMailVisibility, saveMailVisibility, isAccountVisible,
   loadMailCache, applyCategoryOverrides, setCategoryOverride,
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
-  mailDeleteAllPreview, mailDeleteAll, mailOAuthListenStart, mailOAuthListenResult, mailOAuthExchange,
-  mailEnsureConnected, mailCancelConnect, sanitizeMailHtml, buildOAuthUrl,
+  mailDeleteAllPreview, mailDeleteAll,
+  mailEnsureConnected, mailCancelConnect, sanitizeMailHtml,
+  OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
+  loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
+  saveMailSecret, mailForgetSession,
   displayMailError, shouldSuggestCredentialCheck,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
   type MailBodyContent, type MailDeleteAllReport,
 } from '../core/mail'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
-import { openExternal } from '../core/openExternal'
 
 function JellyToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
@@ -71,6 +73,9 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   const [visibility, setVisibility] = useState(loadMailVisibility)
   const [cacheVersion, setCacheVersion] = useState(0)
   const [syncMap, setSyncMap] = useState<Record<string, AccountSync>>({})
+  // v0.1.446：OAuth 令牌失效（invalid_grant）的账户标记 + 重新授权弹窗目标
+  const [reauthFlags, setReauthFlags] = useState<Record<string, string>>(() => loadMailReauthFlags())
+  const [reauthTarget, setReauthTarget] = useState<MailAccountMeta | null>(null)
   const [accountFilter, setAccountFilter] = useState<string>('all')
   const [category, setCategory] = useState<'all' | MailCategory>('all')
   const [quick, setQuick] = useState<QuickFilter>('all')
@@ -140,6 +145,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
       setSyncMap(prev => ({ ...prev, [account.id]: { state: 'error', message: outcome.error } }))
       if (!silent) notify(`「${account.email}」同步失败：${outcome.error}`)
     }
+    setReauthFlags(loadMailReauthFlags())
     refreshCache()
   }, [pwd, notify, refreshCache])
 
@@ -303,7 +309,9 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
 
           {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
           {visibleMetas.filter(a => syncMap[a.id]?.state === 'error').map(a => (
-            <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{displayMailError(syncMap[a.id]?.message ?? '')}</div>
+            <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{displayMailError(syncMap[a.id]?.message ?? '')}
+              {reauthFlags[a.id] && <button className="btn sm mail-error-action" onClick={() => setReauthTarget(a)}>重新授权</button>}
+            </div>
           ))}
 
           {!metas.length ? (
@@ -398,6 +406,8 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           visibility={visibility}
           syncMap={syncMap}
           cache={cache}
+          reauthFlags={reauthFlags}
+          onReauth={a => setReauthTarget(a)}
           onBack={() => setView('inbox')}
           onVisibility={v => { setVisibility(v); saveMailVisibility(v) }}
           onAdd={() => setView('add')}
@@ -412,6 +422,16 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           notify={notify}
           onBack={() => setView('inbox')}
           onAdded={() => { setMetas(listMailAccounts()); setView('inbox') }}
+        />
+      )}
+
+      {reauthTarget && (
+        <MailReauthModal
+          account={reauthTarget}
+          pwd={pwd}
+          notify={notify}
+          onClose={() => setReauthTarget(null)}
+          onDone={() => { const a = reauthTarget; setReauthTarget(null); setReauthFlags(loadMailReauthFlags()); void syncOne(a) }}
         />
       )}
 
@@ -586,11 +606,13 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
 
 // ---------------- 设置页（管账户：平台总开关 / 账户副开关） ----------------
 
-function MailSettings({ metas, visibility, syncMap, cache, onBack, onVisibility, onAdd, onRemove, onDeleteAll }: {
+function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, onReauth, onBack, onVisibility, onAdd, onRemove, onDeleteAll }: {
   metas: MailAccountMeta[]
   visibility: ReturnType<typeof loadMailVisibility>
   syncMap: Record<string, AccountSync>
   cache: ReturnType<typeof loadMailCache>
+  reauthFlags: Record<string, string>
+  onReauth: (a: MailAccountMeta) => void
   onBack: () => void
   onVisibility: (v: ReturnType<typeof loadMailVisibility>) => void
   onAdd: () => void
@@ -639,8 +661,14 @@ function MailSettings({ metas, visibility, syncMap, cache, onBack, onVisibility,
                       未读 {unread} · {sync?.state === 'error' ? `同步失败：${sync.message ?? ''}` : sync?.state === 'live' ? '实时推送中' : sync?.state === 'poll' ? '轮询同步' : '已缓存'}
                       {!effective && ' · 主页已隐匿'}
                     </span>
+                    {reauthFlags[a.id] && (
+                      <span className="mail-settings-sub mail-reauth-note">授权已失效，需要重新授权（{reauthFlags[a.id]}）</span>
+                    )}
                   </div>
                   <span className="mail-topbar-spacer" />
+                  {reauthFlags[a.id] && (
+                    <button className="btn sm" onClick={() => onReauth(a)}><RefreshCw size={13} /> 重新授权</button>
+                  )}
                   {confirmRemoveId === a.id ? (
                     <>
                       <span className="mail-remove-confirm">删除账户与本机凭据？</span>
@@ -668,6 +696,87 @@ function MailSettings({ metas, visibility, syncMap, cache, onBack, onVisibility,
   )
 }
 
+// ---------------- OAuth 客户端凭据（添加账户 / 重新授权共用，v0.1.446） ----------------
+
+/** 按平台加载已保存的客户端凭据：有则预填并收起表单，没有则展开步骤卡+表单 */
+function useOAuthClientCreds(provider: 'google' | 'microsoft' | undefined, pwd: string) {
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [hasSaved, setHasSaved] = useState(false)
+  const [editing, setEditing] = useState(true)
+  useEffect(() => {
+    let dead = false
+    setClientId(''); setClientSecret(''); setHasSaved(false); setEditing(true)
+    if (!provider || !pwd) return
+    void loadOAuthClientCreds(provider, pwd).then(c => {
+      if (dead) return
+      if (c) { setClientId(c.clientId); setClientSecret(c.clientSecret); setHasSaved(true); setEditing(false) }
+    })
+    return () => { dead = true }
+  }, [provider, pwd])
+  const persist = useCallback(async () => {
+    if (!provider) return
+    await saveOAuthClientCreds(provider, { clientId: clientId.trim(), clientSecret: clientSecret.trim() }, pwd)
+    setHasSaved(true)
+    setEditing(false)
+  }, [provider, clientId, clientSecret, pwd])
+  const clearSaved = useCallback(() => {
+    if (!provider) return
+    clearOAuthClientCreds(provider)
+    setHasSaved(false); setEditing(true); setClientId(''); setClientSecret('')
+  }, [provider])
+  return { clientId, setClientId, clientSecret, setClientSecret, hasSaved, editing, setEditing, persist, clearSaved }
+}
+
+function OAuthGuideCard({ provider }: { provider: 'google' | 'microsoft' }) {
+  const guide = OAUTH_REGISTER_GUIDES[provider]
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="mail-oauth-guide">
+      <button type="button" className="mail-oauth-guide-head" onClick={() => setOpen(o => !o)}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        还没有自己的 OAuth 客户端？按这几步免费注册（约 5 分钟）
+      </button>
+      {open && (
+        <>
+          <ol className="mail-oauth-steps">
+            {guide.steps.map((s, i) => <li key={i}>{s}</li>)}
+          </ol>
+          <p className="mail-oauth-note">{guide.callbackNote}</p>
+        </>
+      )}
+    </div>
+  )
+}
+
+function OAuthClientSection({ provider, creds }: {
+  provider: 'google' | 'microsoft'
+  creds: ReturnType<typeof useOAuthClientCreds>
+}) {
+  const guide = OAUTH_REGISTER_GUIDES[provider]
+  if (creds.hasSaved && !creds.editing) {
+    return (
+      <div className="mail-oauth-saved">
+        <ShieldCheck size={14} />
+        <span>已保存该平台的 OAuth 客户端凭据（Client ID：{creds.clientId.slice(0, 10)}…，保险箱加密、只存本机）。直接点下方「连接并授权」即可。</span>
+        <span className="mail-topbar-spacer" />
+        <button type="button" className="btn sm ghost" onClick={() => creds.setEditing(true)}>更换</button>
+        <button type="button" className="btn sm ghost" onClick={() => creds.clearSaved()}>清除</button>
+      </div>
+    )
+  }
+  return (
+    <>
+      <OAuthGuideCard provider={provider} />
+      <label>OAuth Client ID<input className="input" placeholder={provider === 'google' ? 'Google Cloud 里创建的「桌面应用」客户端 ID' : 'Azure 应用注册「概述」页的应用程序(客户端) ID'} value={creds.clientId} onChange={e => creds.setClientId(e.target.value)} /></label>
+      {guide.needsSecret && (
+        <label>OAuth Client Secret<input className="input" placeholder="与 Client ID 同时生成的那串 Secret" value={creds.clientSecret} onChange={e => creds.setClientSecret(e.target.value)} /></label>
+      )}
+      <p className="mail-form-hint">授权成功后，这组客户端凭据会加密保存在本机（与邮箱令牌同等待遇、不同步），下次添加同平台账户免填；授权令牌也只存本机。</p>
+    </>
+  )
+}
+
 // ---------------- 添加账户 ----------------
 
 function MailAddAccount({ pwd, notify, onBack, onAdded }: {
@@ -683,8 +792,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
   const [customHost, setCustomHost] = useState('')
   const [customPort, setCustomPort] = useState('993')
   const [authMethod, setAuthMethod] = useState<'oauth' | 'code'>('oauth')
-  const [clientId, setClientId] = useState('')
-  const [clientSecret, setClientSecret] = useState('')
+  const creds = useOAuthClientCreds(preset.oauthProvider, pwd)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   // v0.1.445：验证流程代号 + 在途账户 id，支撑「取消验证」真正中断并让迟到的结果作废
@@ -749,32 +857,29 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
 
   const saveWithOAuth = async () => {
     if (!email.includes('@')) { setError('请填写完整的邮箱地址'); return }
-    if (!clientId) { setError('请先填 OAuth Client ID（见下方说明）'); return }
     if (!preset.oauthProvider) { setError('该平台不支持 OAuth'); return }
-    setBusy('已打开浏览器，请在浏览器里完成授权…（最长等 3 分钟）')
+    if (!creds.clientId.trim()) { setError('请先填 OAuth Client ID（没有的话，按上方步骤卡免费注册一个）'); return }
+    if (OAUTH_REGISTER_GUIDES[preset.oauthProvider].needsSecret && !creds.clientSecret.trim()) {
+      setError('请填 OAuth Client Secret（与 Client ID 同时生成，见步骤卡第 4 步）'); return
+    }
+    setBusy('正在打开浏览器…')
     setError('')
     const flow = flowRef.current
     try {
-      const port = await mailOAuthListenStart()
-      await openExternal(buildOAuthUrl(preset.oauthProvider, clientId.trim(), port))
-      const deadline = Date.now() + 180_000
-      let code = ''
-      while (Date.now() < deadline) {
-        if (flow !== flowRef.current) return // 已取消验证
-        await new Promise(r => setTimeout(r, 800))
-        const res = await mailOAuthListenResult()
-        if (res?.error) throw new Error(`授权被拒绝：${res.error}`)
-        if (res?.code) { code = res.code; break }
-      }
-      if (!code) throw new Error('等待授权超时，请重试')
-      setBusy('授权成功，正在换取令牌并连接…')
-      const secret = await mailOAuthExchange(preset.oauthProvider, code, clientId.trim(), clientSecret.trim(), port)
+      const secret = await mailOAuthAuthorize(preset.oauthProvider, creds.clientId.trim(), creds.clientSecret.trim(), {
+        onStatus: s => { if (flow === flowRef.current) setBusy(s) },
+        isCancelled: () => flow !== flowRef.current,
+      })
+      if (flow !== flowRef.current) return // 授权期间已被取消
+      await creds.persist() // 客户端凭据加密存本机，下次同平台免填
+      setBusy('授权成功，正在连接邮箱…')
       await finishWithSyncTest(
         { platformId, email: email.trim(), label: email.trim(), host: preset.imapHost, port: preset.imapPort },
         secret,
       )
     } catch (e) {
       if (flow !== flowRef.current) return // 已取消，界面已由 cancelVerify 复位
+      if (e instanceof Error && e.message === OAUTH_CANCELLED) { setBusy(''); return }
       setError(e instanceof Error ? e.message : String(e))
       setBusy('')
     }
@@ -808,19 +913,19 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
           </>
         )}
         {preset.auth === 'oauth' && (
-          <div className="mail-auth-method">
-            <button className={authMethod === 'oauth' ? 'active' : ''} onClick={() => setAuthMethod('oauth')}>OAuth 授权（推荐）</button>
-            <button className={authMethod === 'code' ? 'active' : ''} onClick={() => setAuthMethod('code')}>{preset.secretLabel}</button>
+          <div className="mail-method-cards" role="radiogroup" aria-label="添加方式">
+            <button type="button" className={`mail-method-card ${authMethod === 'oauth' ? 'active' : ''}`} onClick={() => setAuthMethod('oauth')}>
+              <span className="mail-method-head"><Globe size={15} /> 浏览器授权登录 <span className="mail-method-badge">推荐</span></span>
+              <span className="mail-method-desc">不用把密码或专用密码交给 App：点按钮后在浏览器里打开 {preset.name} 官方页面，登录并点「允许」即可。令牌只加密存本机，你随时能在账户后台单独撤销这份授权。需要一个你自己的 OAuth 客户端（免费注册，下方有步骤卡）。</span>
+            </button>
+            <button type="button" className={`mail-method-card ${authMethod === 'code' ? 'active' : ''}`} onClick={() => setAuthMethod('code')}>
+              <span className="mail-method-head"><KeyRound size={15} /> {preset.secretLabel}</span>
+              <span className="mail-method-desc">去 {preset.name} 账户后台生成一个{preset.secretLabel}填进来，不用注册开发者应用；但它相当于一把钥匙，要像密码一样保管，泄露了要去后台作废重发。</span>
+            </button>
           </div>
         )}
-        {useOAuth ? (
-          <>
-            <label>OAuth Client ID<input className="input" placeholder="你自己的 OAuth 客户端 ID" value={clientId} onChange={e => setClientId(e.target.value)} /></label>
-            {preset.oauthProvider === 'google' && (
-              <label>OAuth Client Secret<input className="input" placeholder="Google 桌面客户端的 Secret" value={clientSecret} onChange={e => setClientSecret(e.target.value)} /></label>
-            )}
-            <p className="mail-form-hint">授权在本机浏览器完成，回调只走 127.0.0.1；令牌加密存本机保险箱，不上传。</p>
-          </>
+        {useOAuth && preset.oauthProvider ? (
+          <OAuthClientSection provider={preset.oauthProvider} creds={creds} />
         ) : (
           <label>{preset.secretLabel}<input className="input" placeholder={`不是登录密码，是${preset.secretLabel}`} value={secretInput} onChange={e => setSecretInput(e.target.value)} /></label>
         )}
@@ -828,11 +933,92 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
         <div className="mail-form-actions">
           <button className="btn ghost" onClick={() => { if (busy) void cancelVerify(); onBack() }}>取消</button>
           {busy && (
-            <button className="btn" onClick={() => void cancelVerify()}>取消验证</button>
+            <button className="btn" onClick={() => void cancelVerify()}>{useOAuth ? '取消授权' : '取消验证'}</button>
           )}
           <button className="btn primary" disabled={!!busy} onClick={() => void (useOAuth ? saveWithOAuth() : saveWithCode())}>
-            {busy ? <Loader2 size={14} className="spin" /> : <FolderInput size={14} />} {busy || '连接并保存'}
+            {busy ? <Loader2 size={14} className="spin" /> : <FolderInput size={14} />} {busy || (useOAuth ? '连接并授权' : '连接并保存')}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------- 重新授权（OAuth 令牌失效时，v0.1.446） ----------------
+
+function MailReauthModal({ account, pwd, notify, onClose, onDone }: {
+  account: MailAccountMeta
+  pwd: string
+  notify: (msg: string) => void
+  onClose: () => void
+  onDone: () => void
+}) {
+  const preset = mailPlatform(account.platformId)
+  const provider = preset.oauthProvider
+  const creds = useOAuthClientCreds(provider, pwd)
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const flowRef = useRef(0)
+
+  const cancel = () => {
+    flowRef.current += 1
+    setBusy('')
+    setError('已取消授权。')
+  }
+
+  const run = async () => {
+    if (!provider) { setError('该平台不支持 OAuth 授权'); return }
+    if (!creds.clientId.trim()) { setError('请先填 OAuth Client ID（没有的话，按上方步骤卡免费注册一个）'); return }
+    if (OAUTH_REGISTER_GUIDES[provider].needsSecret && !creds.clientSecret.trim()) {
+      setError('请填 OAuth Client Secret（与 Client ID 同时生成，见步骤卡第 4 步）'); return
+    }
+    setBusy('正在打开浏览器…')
+    setError('')
+    const flow = flowRef.current
+    try {
+      const secret = await mailOAuthAuthorize(provider, creds.clientId.trim(), creds.clientSecret.trim(), {
+        onStatus: s => { if (flow === flowRef.current) setBusy(s) },
+        isCancelled: () => flow !== flowRef.current,
+      })
+      if (flow !== flowRef.current) return // 已取消
+      await saveMailSecret(account.id, secret, pwd)
+      await creds.persist()
+      clearMailReauthFlag(account.id)
+      mailForgetSession(account.id) // 丢掉用旧令牌建的会话，下次同步用新令牌重连
+      notify(`「${account.email}」已重新授权，正在重新同步`)
+      onDone()
+    } catch (e) {
+      if (flow !== flowRef.current) return // 已取消，界面已由 cancel 复位
+      if (e instanceof Error && e.message === OAUTH_CANCELLED) { setBusy(''); return }
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy('')
+    }
+  }
+
+  return (
+    <div className="mail-modal-backdrop" onClick={busy ? undefined : onClose}>
+      <div className="mail-modal" onClick={e => e.stopPropagation()}>
+        <div className="mail-modal-head">
+          <KeyRound size={18} />
+          <h4>重新授权</h4>
+          <span className="mail-topbar-spacer" />
+          {!busy && <button className="btn sm ghost" onClick={onClose}><X size={14} /></button>}
+        </div>
+        <p className="mail-modal-desc">
+          「{account.email}」的授权令牌已失效（常见原因：你在 {preset.name} 后台撤销过授权、改过密码，或刷新令牌到期）。
+          重新走一遍浏览器授权就能恢复，不用删账户，邮件与本机缓存都在。
+        </p>
+        <div className="mail-form">
+          {provider
+            ? <OAuthClientSection provider={provider} creds={creds} />
+            : <div className="mail-error-box"><AlertTriangle size={15} /> 该平台不支持 OAuth，请删除账户后用授权码方式重新添加。</div>}
+          {error && <div className="mail-error-box"><AlertTriangle size={15} /> {displayMailError(error)}</div>}
+          <div className="mail-form-actions">
+            <button className="btn ghost" onClick={busy ? cancel : onClose}>{busy ? '取消授权' : '取消'}</button>
+            <button className="btn primary" disabled={!!busy || !provider} onClick={() => void run()}>
+              {busy ? <Loader2 size={14} className="spin" /> : <Globe size={14} />} {busy || '连接并授权'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

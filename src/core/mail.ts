@@ -5,7 +5,7 @@
 // 同步方式如实标注：服务器支持 IDLE → 实时推送；不支持 → 轮询；连接失败显示服务器原文。
 
 import { encryptSecret, decryptSecret } from './crypto'
-import { isDesktopApp } from './openExternal'
+import { isDesktopApp, openExternal } from './openExternal'
 import { pluginHttpDesktop } from './plugins'
 
 // ---------------- 类型与平台预设 ----------------
@@ -31,8 +31,7 @@ export const MAIL_PLATFORMS: MailPlatformPreset[] = [
     id: 'gmail', name: 'Gmail', imapHost: 'imap.gmail.com', imapPort: 993, auth: 'oauth', oauthProvider: 'google',
     secretLabel: '应用专用密码',
     guide: [
-      '推荐走 OAuth 授权（不保存密码）；也可以用应用专用密码：先在 Google 账户开启两步验证，再到「应用专用密码」生成一个 16 位密码填进来。',
-      'OAuth 授权需要你自己的 Google Cloud OAuth 客户端（桌面应用类型），把 Client ID 与 Client Secret 填到授权表单里；令牌只加密存在本机。',
+      '两种添加方式：①浏览器授权登录（推荐）：不交出密码，在浏览器里登录 Google 点允许即可；需要先按下方步骤卡免费注册一个你自己的 OAuth 客户端（约 5 分钟）。②应用专用密码：先在 Google 账户开启两步验证，再到「应用专用密码」生成一个 16 位密码填进来。',
       '确认 Gmail 设置 → 转发和 POP/IMAP 里已开启 IMAP。',
     ],
   },
@@ -40,8 +39,8 @@ export const MAIL_PLATFORMS: MailPlatformPreset[] = [
     id: 'outlook', name: 'Outlook', imapHost: 'outlook.office365.com', imapPort: 993, auth: 'oauth', oauthProvider: 'microsoft',
     secretLabel: '应用密码',
     guide: [
-      '推荐走 OAuth 授权（不保存密码）。OAuth 需要你自己的 Azure 应用注册（个人账户类型），把 Client ID 填到授权表单里；令牌只加密存在本机。',
-      'Outlook.com 已逐步关闭基础密码登录；若密码登录被拒，请改用 OAuth。',
+      '两种添加方式：①浏览器授权登录（推荐）：不交出密码，在浏览器里登录微软账户点允许即可；需要先按下方步骤卡在 Azure 免费注册一个应用（约 5 分钟）。②应用密码：在微软账户的安全页里生成应用密码填进来。',
+      'Outlook.com 已逐步关闭基础密码登录；若密码登录被拒，请改用浏览器授权登录。',
     ],
   },
   {
@@ -755,6 +754,13 @@ async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, 
     : 'https://oauth2.googleapis.com/token'
   const res = await pluginHttpDesktop(url, 'POST', { 'Content-Type': 'application/x-www-form-urlencoded' }, form.toString())
   if (res.status < 200 || res.status >= 300) {
+    // v0.1.446：invalid_grant = 刷新令牌被撤销/过期，光重试没用，标记该账户需要重新授权，
+    // 界面会标红并给出「重新授权」入口；其它失败（限流/服务器错误）仍只报原文，不误标。
+    if ((res.status === 400 || res.status === 401) && res.text.includes('invalid_grant')) {
+      const msg = '授权令牌已被撤销或失效，需要重新授权'
+      setMailReauthFlag(account.id, msg)
+      throw new Error(`${msg}（服务器返回 ${res.status} invalid_grant）：${res.text.slice(0, 200)}`)
+    }
     throw new Error(`OAuth 令牌刷新失败（${res.status}）：${res.text.slice(0, 300)}`)
   }
   const data = JSON.parse(res.text) as Record<string, unknown>
@@ -799,6 +805,7 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string)
   }
   const session: LiveSession = { secret, caps }
   liveSessions.set(account.id, session)
+  clearMailReauthFlag(account.id) // v0.1.446：连上了就说明授权有效，清掉可能残留的重新授权标记
   return session
 }
 
@@ -1083,4 +1090,168 @@ export async function mailOAuthListenResult(): Promise<{ code?: string; error?: 
   const r = await tauriInvoke<{ code: string | null; error: string | null } | null>('mail_oauth_listen_result', {})
   if (!r) return null
   return { code: r.code ?? undefined, error: r.error ?? undefined }
+}
+
+/** v0.1.446：真正终止本机回调监听（取消授权/超时时调用，不留僵尸监听线程） */
+export async function mailOAuthListenStop(): Promise<void> {
+  try { await tauriInvoke('mail_oauth_listen_stop', {}) } catch { /* 网页环境无此命令，忽略 */ }
+}
+
+// ---------------- OAuth 客户端注册引导（v0.1.446，与上面的实现口径逐项对齐） ----------------
+// 实现口径（buildOAuthUrl / mailOAuthExchange）：redirect_uri = http://127.0.0.1:<随机端口>；
+// Google scope=https://mail.google.com/（桌面应用客户端，需 ID+Secret）；
+// Microsoft scope=https://outlook.office.com/IMAP.AccessAsUser.All + offline_access（公共客户端，只需 ID）。
+
+export interface OAuthRegisterGuide {
+  /** 表单是否需要 Client Secret 输入框：Google 桌面客户端需要，微软公共客户端不需要 */
+  needsSecret: boolean
+  steps: string[]
+  callbackNote: string
+}
+
+export const OAUTH_REGISTER_GUIDES: Record<'google' | 'microsoft', OAuthRegisterGuide> = {
+  google: {
+    needsSecret: true,
+    steps: [
+      '打开 Google Cloud 控制台（console.cloud.google.com），用你的 Google 账号登录，新建一个项目（名字随意）。',
+      '进「API 和服务 → 库」，搜索 Gmail API，点「启用」',
+      '进「API 和服务 → OAuth 同意屏幕」：用户类型选「外部」，填应用名和你的联系邮箱并保存；如果状态显示「测试」，再到「测试用户」里把你自己的 Gmail 地址加进去（不加会报未授权）。',
+      '进「API 和服务 → 凭据」→「创建凭据」→「OAuth 客户端 ID」，应用类型选「桌面应用」，创建后会得到 Client ID 和 Client Secret。',
+      '把 Client ID 和 Client Secret 粘到下面两个输入框，点「连接并授权」，浏览器会打开 Google 官方页面，登录并点允许即可。',
+    ],
+    callbackNote: '回调地址不用填：应用类型选「桌面应用」时 Google 不要求预填回调地址——App 用本机回环地址 http://127.0.0.1 的随机端口接收回调，桌面应用对任意回环端口自动放行。若控制台某处要求你填，就填 http://127.0.0.1（不要带端口）。',
+  },
+  microsoft: {
+    needsSecret: false,
+    steps: [
+      '打开 Azure 门户（portal.azure.com），用你的微软账户登录，进「应用注册」，点「新注册」',
+      '名字随意；「支持的账户类型」选「任何组织目录中的账户和个人 Microsoft 账户」（只用个人 Outlook 邮箱也可以选仅个人账户），点「注册」',
+      '进新应用的「身份验证」页 →「添加平台」→ 选「移动和桌面应用程序」，在重定向 URI 里填 http://127.0.0.1（见下方回调说明），保存。',
+      '回到「概述」页，复制「应用程序(客户端) ID」，粘到下面输入框，点「连接并授权」，浏览器会打开微软官方页面，登录并点允许即可。',
+    ],
+    callbackNote: '重定向 URI 填 http://127.0.0.1，不要带端口：App 实际用 http://127.0.0.1 的随机端口接收回调，Azure 对本机回环地址不校验端口，与你填的这条一致。另外这是「公共客户端」，微软不发 Client Secret，所以本表单没有密码输入框——只填 ID 是对的。',
+  },
+}
+
+// ---------------- OAuth 客户端凭据（用户自备；加密存保险箱同等待遇，仅本机不同步） ----------------
+
+const OAUTH_CLIENTS_KEY = 'acm.mail.oauthClients.v1'
+
+export interface OAuthClientCreds {
+  clientId: string
+  clientSecret: string
+}
+
+export async function loadOAuthClientCreds(provider: 'google' | 'microsoft', pwd: string): Promise<OAuthClientCreds | null> {
+  const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
+  const cipher = all[provider]
+  if (!cipher) return null
+  try {
+    const parsed = JSON.parse(await decryptSecret(cipher, pwd)) as Partial<OAuthClientCreds>
+    if (!parsed.clientId) return null
+    return { clientId: String(parsed.clientId), clientSecret: String(parsed.clientSecret ?? '') }
+  } catch { return null }
+}
+
+export async function saveOAuthClientCreds(provider: 'google' | 'microsoft', creds: OAuthClientCreds, pwd: string): Promise<void> {
+  const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
+  all[provider] = await encryptSecret(JSON.stringify({ clientId: creds.clientId, clientSecret: creds.clientSecret }), pwd)
+  writeJson(OAUTH_CLIENTS_KEY, all)
+}
+
+export function clearOAuthClientCreds(provider: 'google' | 'microsoft'): void {
+  const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
+  delete all[provider]
+  writeJson(OAUTH_CLIENTS_KEY, all)
+}
+
+// ---------------- 需要重新授权标记（v0.1.446，仅本机） ----------------
+
+const REAUTH_KEY = 'acm.mail.reauth.v1'
+
+export function loadMailReauthFlags(): Record<string, string> {
+  return readJson<Record<string, string>>(REAUTH_KEY, {})
+}
+
+export function setMailReauthFlag(accountId: string, message: string): void {
+  const all = loadMailReauthFlags()
+  if (all[accountId] === message) return
+  all[accountId] = message
+  writeJson(REAUTH_KEY, all)
+}
+
+export function clearMailReauthFlag(accountId: string): void {
+  const all = loadMailReauthFlags()
+  if (!(accountId in all)) return
+  delete all[accountId]
+  writeJson(REAUTH_KEY, all)
+}
+
+// ---------------- 浏览器授权编排（v0.1.446：监听→开浏览器→等回调→换令牌） ----------------
+
+/** 授权被用户取消时抛出的标记错误（界面静默复位，不当失败展示） */
+export const OAUTH_CANCELLED = 'OAUTH_CANCELLED'
+
+/** 等待浏览器回调的超时（默认 3 分钟；无头验收可用 window 覆盖缩短） */
+export function mailOAuthTimeoutMs(): number {
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __ACM_MAIL_OAUTH_TIMEOUT_MS__?: unknown }
+    const v = w.__ACM_MAIL_OAUTH_TIMEOUT_MS__
+    if (typeof v === 'number' && v > 0) return v
+  }
+  return 180_000
+}
+
+/** 回调带回的 error 参数翻成人话：用户拒绝与其它失败分开说 */
+export function describeOAuthCallbackError(error: string): string {
+  if (error === 'access_denied') return '你在浏览器里拒绝了授权（access_denied），没有拿到令牌，账户未添加。想继续的话重新点「连接并授权」，并在官方页面点「允许」'
+  if (error === 'consent_required' || error === 'interaction_required') return `授权还差一步确认（${error}），请重新授权并在浏览器里完成确认`
+  if (error === 'invalid_client') return '客户端凭据被官方拒绝（invalid_client）：多半是 Client ID / Secret 填错了，或 Google 客户端类型没选「桌面应用」'
+  return `授权没有完成，官方返回：${error}`
+}
+
+/**
+ * 完整授权流程：起本机回调监听 → 系统浏览器打开官方授权页 → 轮询回调 → 换令牌。
+ * 超时/取消都会真正终止监听；每一步失败都抛带真实原因的 Error（拒绝/超时/换令牌被拒分开）。
+ */
+export async function mailOAuthAuthorize(
+  provider: 'google' | 'microsoft',
+  clientId: string,
+  clientSecret: string,
+  opts: { onStatus?: (s: string) => void; isCancelled?: () => boolean } = {},
+): Promise<MailSecret> {
+  const port = await mailOAuthListenStart()
+  const opened = await openExternal(buildOAuthUrl(provider, clientId, port))
+  if (!opened) {
+    void mailOAuthListenStop()
+    throw new Error('没能打开系统浏览器，请手动检查默认浏览器设置后重试')
+  }
+  opts.onStatus?.('已打开浏览器，请在浏览器里登录并点「允许」完成授权…')
+  const timeoutMs = mailOAuthTimeoutMs()
+  const deadline = Date.now() + timeoutMs
+  let code = ''
+  while (Date.now() < deadline) {
+    if (opts.isCancelled?.()) {
+      void mailOAuthListenStop()
+      throw new Error(OAUTH_CANCELLED)
+    }
+    await new Promise(r => setTimeout(r, 800))
+    if (opts.isCancelled?.()) {
+      void mailOAuthListenStop()
+      throw new Error(OAUTH_CANCELLED)
+    }
+    let res: { code?: string; error?: string } | null = null
+    try { res = await mailOAuthListenResult() } catch { res = null }
+    if (res?.error) {
+      void mailOAuthListenStop()
+      throw new Error(describeOAuthCallbackError(res.error))
+    }
+    if (res?.code) { code = res.code; break }
+  }
+  if (!code) {
+    void mailOAuthListenStop()
+    throw new Error(`等待浏览器授权超时（${Math.round(timeoutMs / 1000)} 秒内没有等到回调），账户未添加；请确认浏览器打开了授权页并完成登录后重试`)
+  }
+  opts.onStatus?.('授权成功，正在换取令牌…')
+  return mailOAuthExchange(provider, code, clientId, clientSecret, port)
 }

@@ -7,8 +7,12 @@ import {
   htmlToText, sanitizeMailHtml, loadMailVisibility, saveMailVisibility, isAccountVisible,
   buildOAuthUrl, raceTimeout, mailConnectTimeoutMs, MAIL_CONNECT_TIMEOUT_MS,
   mailInvoke, mailStepTimeoutMs, displayMailError, isMailInternalError, shouldSuggestCredentialCheck,
+  OAUTH_REGISTER_GUIDES, describeOAuthCallbackError, mailOAuthAuthorize, OAUTH_CANCELLED,
+  loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
+  loadMailReauthFlags, setMailReauthFlag, clearMailReauthFlag,
   type MailFolder,
 } from './mail'
+import { initVault } from './crypto'
 
 class MemStorage {
   private m = new Map<string, string>()
@@ -298,5 +302,138 @@ describe('错误文本显示清洗与后缀决策（447）', () => {
     expect(shouldSuggestCredentialCheck('a1 NO Login failed: authentication rejected')).toBe(true)
     expect(shouldSuggestCredentialCheck('等待服务器问候语超时（10 秒内服务器没有响应）')).toBe(false)
     expect(shouldSuggestCredentialCheck('')).toBe(false)
+  })
+})
+
+describe('OAuth 注册引导与实现一致性（446）', () => {
+  it('Google：需要 Secret、步骤含桌面应用类型、回调说明与回环实现一致', () => {
+    const g = OAUTH_REGISTER_GUIDES.google
+    expect(g.needsSecret).toBe(true)
+    expect(g.steps.length).toBeGreaterThanOrEqual(4)
+    expect(g.steps.join('')).toContain('桌面应用')
+    expect(g.steps.join('')).toContain('Gmail API')
+    expect(g.callbackNote).toContain('127.0.0.1')
+  })
+  it('Microsoft：公共客户端不需要 Secret、步骤含移动和桌面平台与回环 URI', () => {
+    const m = OAUTH_REGISTER_GUIDES.microsoft
+    expect(m.needsSecret).toBe(false)
+    expect(m.steps.length).toBeGreaterThanOrEqual(4)
+    expect(m.steps.join('')).toContain('移动和桌面应用程序')
+    expect(m.steps.join('')).toContain('http://127.0.0.1')
+    expect(m.callbackNote).toContain('127.0.0.1')
+  })
+  it('回调 error 翻译：拒绝与凭据错误分开说', () => {
+    expect(describeOAuthCallbackError('access_denied')).toContain('拒绝了授权')
+    expect(describeOAuthCallbackError('invalid_client')).toContain('客户端凭据')
+    expect(describeOAuthCallbackError('server_error')).toContain('server_error')
+  })
+})
+
+describe('OAuth 客户端凭据存储（446）', () => {
+  it('加密往返：localStorage 里没有明文、读回一致、清除后读不到', async () => {
+    await initVault('test1234')
+    await saveOAuthClientCreds('google', { clientId: 'cid-xyz', clientSecret: 'sec-xyz' }, 'test1234')
+    const raw = localStorage.getItem('acm.mail.oauthClients.v1') ?? ''
+    expect(raw).not.toContain('cid-xyz')
+    expect(raw).not.toContain('sec-xyz')
+    await expect(loadOAuthClientCreds('google', 'test1234')).resolves.toEqual({ clientId: 'cid-xyz', clientSecret: 'sec-xyz' })
+    await expect(loadOAuthClientCreds('google', 'wrong-pass')).resolves.toBeNull()
+    await expect(loadOAuthClientCreds('microsoft', 'test1234')).resolves.toBeNull()
+    clearOAuthClientCreds('google')
+    await expect(loadOAuthClientCreds('google', 'test1234')).resolves.toBeNull()
+  })
+})
+
+describe('重新授权标记（446）', () => {
+  it('set/load/clear 往返', () => {
+    expect(loadMailReauthFlags()).toEqual({})
+    setMailReauthFlag('a1', '授权令牌已被撤销或失效，需要重新授权')
+    expect(loadMailReauthFlags()['a1']).toContain('重新授权')
+    clearMailReauthFlag('a1')
+    expect(loadMailReauthFlags()).toEqual({})
+  })
+})
+
+describe('浏览器授权编排（446）', () => {
+  const g = globalThis as unknown as { window?: unknown }
+  let calls: { cmd: string; args?: Record<string, unknown> }[]
+  const stubOAuthWindow = (handler: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>, timeoutMs?: number) => {
+    calls = []
+    g.window = {
+      ...(timeoutMs ? { __ACM_MAIL_OAUTH_TIMEOUT_MS__: timeoutMs } : {}),
+      __TAURI_INTERNALS__: {
+        invoke: (cmd: string, args?: Record<string, unknown>) => { calls.push({ cmd, args }); return handler(cmd, args) },
+      },
+    }
+  }
+  afterEach(() => { delete g.window })
+
+  const tokenOk = JSON.stringify({
+    status: 200,
+    body: JSON.stringify({ access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 }),
+    headers: {},
+  })
+
+  it('顺利路径：开浏览器 URL 参数正确 → 回调 code → 换令牌成功', async () => {
+    let polls = 0
+    stubOAuthWindow(async cmd => {
+      if (cmd === 'mail_oauth_listen_start') return 18765
+      if (cmd === 'mail_oauth_listen_result') { polls += 1; return polls < 2 ? null : { code: 'code-1', error: null } }
+      if (cmd === 'plugin_http') return tokenOk
+      return null
+    })
+    const secret = await mailOAuthAuthorize('google', 'cid-1', 'sec-1')
+    expect(secret.kind).toBe('oauth')
+    if (secret.kind === 'oauth') {
+      expect(secret.accessTok).toBe('at-1')
+      expect(secret.refreshTok).toBe('rt-1')
+      expect(secret.clientId).toBe('cid-1')
+    }
+    const openCall = calls.find(c => c.cmd === 'open_url')
+    const url = String(openCall?.args?.url ?? '')
+    expect(url).toContain('accounts.google.com')
+    expect(url).toContain('response_type=code')
+    expect(url).toContain('client_id=cid-1')
+    expect(url).toContain('127.0.0.1%3A18765')
+  })
+
+  it('用户在浏览器拒绝：报「拒绝了授权」并终止监听', async () => {
+    stubOAuthWindow(async cmd => {
+      if (cmd === 'mail_oauth_listen_start') return 18766
+      if (cmd === 'mail_oauth_listen_result') return { code: null, error: 'access_denied' }
+      return null
+    })
+    await expect(mailOAuthAuthorize('microsoft', 'cid-2', '')).rejects.toThrow('拒绝了授权')
+    expect(calls.map(c => c.cmd)).toContain('mail_oauth_listen_stop')
+  })
+
+  it('回调超时：报超时并终止监听', async () => {
+    stubOAuthWindow(async cmd => {
+      if (cmd === 'mail_oauth_listen_start') return 18767
+      if (cmd === 'mail_oauth_listen_result') return null
+      return null
+    }, 100)
+    await expect(mailOAuthAuthorize('google', 'cid-1', 'sec-1')).rejects.toThrow('等待浏览器授权超时')
+    expect(calls.map(c => c.cmd)).toContain('mail_oauth_listen_stop')
+  })
+
+  it('取消：抛 OAUTH_CANCELLED 并终止监听', async () => {
+    stubOAuthWindow(async cmd => {
+      if (cmd === 'mail_oauth_listen_start') return 18768
+      if (cmd === 'mail_oauth_listen_result') return null
+      return null
+    })
+    await expect(mailOAuthAuthorize('google', 'cid-1', 'sec-1', { isCancelled: () => true })).rejects.toThrow(OAUTH_CANCELLED)
+    expect(calls.map(c => c.cmd)).toContain('mail_oauth_listen_stop')
+  })
+
+  it('换令牌被拒：透传服务器真实原因', async () => {
+    stubOAuthWindow(async cmd => {
+      if (cmd === 'mail_oauth_listen_start') return 18769
+      if (cmd === 'mail_oauth_listen_result') return { code: 'bad-code', error: null }
+      if (cmd === 'plugin_http') return JSON.stringify({ status: 400, body: '{"error":"invalid_grant","error_description":"Bad Request"}', headers: {} })
+      return null
+    })
+    await expect(mailOAuthAuthorize('google', 'cid-1', 'sec-1')).rejects.toThrow('OAuth 换令牌失败（400）')
   })
 })
