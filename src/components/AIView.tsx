@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
-  Send, Square, Plus, ChevronDown, ChevronUp, Copy, Volume2, VolumeX,
+  Send, Square, Plus, ChevronDown, ChevronUp, ChevronRight, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
   Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock,
 } from 'lucide-react'
@@ -30,7 +30,12 @@ import { detectModelCapability, capabilityChatCapable } from '../core/modelCapab
 import { inferbaseGate } from '../core/inferbase'
 import { oneAiGate, ONEAI_SMOKE_MODEL } from '../core/oneai'
 import { anyApiGate, getAnyApiSmokeModel } from '../core/anyapi'
-import { momaGate, isMomaChatCandidate, orderMomaProbeModels, momaModelBillingNote, MOMA_PROVIDER_ID } from '../core/moma'
+import {
+  momaGate, isMomaChatCandidate, orderMomaProbeModels, momaModelBillingNote, MOMA_PROVIDER_ID,
+  isMomaSelfOperated, isMomaAutoTestable, groupMomaModels, loadMomaModelTests, saveMomaModelTest,
+  loadMomaFreeOnly, saveMomaFreeOnly, MOMA_CATEGORY_LABEL,
+  type MomaModelCategory, type MomaModelTest,
+} from '../core/moma'
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { t, locale } from '../core/i18n'
@@ -66,7 +71,7 @@ import { AttachmentPicker } from './AttachmentPicker'
 import { ServiceSwitch } from './ServiceSwitch'
 import {
   enginesFor, enginesFromRemote, hasCatalog, isChatProbeCandidate, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
-  type ReasoningLevel,
+  type ReasoningLevel, type Engine,
 } from '../data/engines'
 
 /** 根据系统时间生成问候语（ Claude 式动态称呼） */
@@ -1226,6 +1231,119 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     setProbing(false)
     notify(t('引擎探测完成（共 {n} 个）', { n: targets.length }))
   }
+  // ---- MoMA 模型列表治理（v0.1.469） ----
+  // 打开面板先显示本地缓存的实测结果，再后台轮测九天自营对话模型（真实 chat
+  // 冒烟、走 2500 万免费试用额度），逐个测完逐个回填界面与缓存。合作对话模型
+  // ping 一次就是一次按量调用：不自动测、不进批量，只能逐个点「测试」并在弹窗
+  // 里确认可能扣费后才发。非对话模型只按功能分类展示、永不 ping（沿用 464 口径）。
+  const isMomaAccount = currentAccount?.providerId === MOMA_PROVIDER_ID
+  const [momaTests, setMomaTests] = useState<Record<string, MomaModelTest>>({})
+  const [momaTesting, setMomaTesting] = useState<ReadonlySet<string>>(new Set())
+  const [momaSweeping, setMomaSweeping] = useState(false)
+  const [momaSweepNote, setMomaSweepNote] = useState('')
+  const [momaFreeOnly, setMomaFreeOnly] = useState<boolean>(() => loadMomaFreeOnly())
+  const [momaCollapsed, setMomaCollapsed] = useState<ReadonlySet<MomaModelCategory>>(new Set())
+  const [momaConfirmId, setMomaConfirmId] = useState<string | null>(null)
+  const momaSweepKeyRef = useRef('')
+  const momaSweepingRef = useRef(false)
+  const pingMomaModel = async (account: Account, apiKey: string, modelId: string): Promise<MomaModelTest> => {
+    setMomaTesting(prev => new Set(prev).add(modelId))
+    const t0 = Date.now()
+    let result: MomaModelTest
+    try {
+      const r = await callByCategory(account, apiKey, selectedOption?.category ?? '通用型', [{ role: 'user', content: 'ping' }], modelId, undefined)
+      result = r.ok
+        ? { ok: true, ms: Date.now() - t0, testedAt: Date.now() }
+        : { ok: false, ms: Date.now() - t0, error: (r.error ?? t('调用失败')).slice(0, 200), testedAt: Date.now() }
+    } catch (err) {
+      result = { ok: false, ms: Date.now() - t0, error: ((err as Error)?.message ?? t('调用失败')).slice(0, 200), testedAt: Date.now() }
+    }
+    saveMomaModelTest(account, modelId, result)
+    setMomaTests(prev => ({ ...prev, [modelId]: result }))
+    setMomaTesting(prev => { const next = new Set(prev); next.delete(modelId); return next })
+    return result
+  }
+  const runMomaSweep = async (targets: string[]) => {
+    const account = currentAccount
+    if (!account?.encryptedKey || momaSweepingRef.current) return
+    const pwd = resolvePwd()
+    if (!pwd) { setMomaSweepNote(t('保险箱未解锁，无法后台轮测；解锁后重新打开列表或点「重新测试」')); return }
+    let apiKey = ''
+    try { apiKey = await decryptSecret(account.encryptedKey, pwd) } catch { setMomaSweepNote(t('Key 解密失败，无法轮测')); return }
+    if (!targets.length) return
+    momaSweepingRef.current = true
+    setMomaSweeping(true)
+    setMomaSweepNote('')
+    const queue = [...targets]
+    const worker = async () => {
+      for (let id = queue.shift(); id; id = queue.shift()) {
+        await pingMomaModel(account, apiKey, id)
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+    momaSweepingRef.current = false
+    setMomaSweeping(false)
+  }
+  // 面板打开 + 引擎列表就绪 → 先上缓存、再后台刷新（同账户同列表只自动跑一次；手动「重新测试」不限）
+  useEffect(() => {
+    if (!enginePanelOpen || !isMomaAccount || !currentAccount || loadingEngines || !engines.length) return
+    const key = `${currentAccount.id}:${currentAccount.keyFingerprint ?? ''}:${engines.length}`
+    if (momaSweepKeyRef.current === key) return
+    momaSweepKeyRef.current = key
+    setMomaTests(loadMomaModelTests(currentAccount))
+    void runMomaSweep(engines.map(e => e.id).filter(isMomaAutoTestable))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enginePanelOpen, isMomaAccount, currentAccount?.id, loadingEngines, engines.length])
+  const testMomaPartnerModel = async (modelId: string) => {
+    setMomaConfirmId(null)
+    const account = currentAccount
+    if (!account?.encryptedKey) { notify(t('当前账户未配置 Key，无法测试')); return }
+    const pwd = resolvePwd()
+    if (!pwd) { notify(t('请先解锁保险箱，再测试模型')); return }
+    let apiKey = ''
+    try { apiKey = await decryptSecret(account.encryptedKey, pwd) } catch { notify(t('Key 解密失败，无法测试')); return }
+    const r = await pingMomaModel(account, apiKey, modelId)
+    notify(r.ok
+      ? t('「{name}」测试通过（{ms}ms）', { name: modelId, ms: r.ms })
+      : t('「{name}」测试失败：{error}', { name: modelId, error: r.error ?? '' }))
+  }
+  const toggleMomaGroup = (cat: MomaModelCategory) => {
+    setMomaCollapsed(prev => { const next = new Set(prev); if (next.has(cat)) next.delete(cat); else next.add(cat); return next })
+  }
+  const renderMomaItem = (e: Engine, category: MomaModelCategory) => {
+    const test = momaTests[e.id]
+    const isChat = category === 'chat'
+    const partnerChat = isChat && !isMomaSelfOperated(e.id)
+    const untestedPartner = partnerChat && !test && !momaTesting.has(e.id)
+    return (
+      <div key={e.id} role="button" tabIndex={0}
+        className={`engine-item ${engineId === e.id ? 'active' : ''}`}
+        onClick={() => { setEngineId(e.id); notify(t('已选引擎：{name}', { name: e.name })) }}
+        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setEngineId(e.id) } }}>
+        <span className="engine-icon">{e.reasoning ? '🧠' : '⚡'}</span>
+        <span className="engine-info">
+          <span className="engine-name">{e.name}
+            {e.tag && <em className={`engine-tag ${e.tag === '夜间折扣' ? 'discount' : e.tag === '订阅优先' ? 'sub' : ''}`}>{t(e.tag)}</em>}
+          </span>
+          <span className="engine-id">{e.id}</span>
+          <span className="engine-billing-note">{untestedPartner ? t('未测试（自动测试可能扣按量费）') : t(momaModelBillingNote(e.id))}</span>
+        </span>
+        <span className="engine-multi">{e.multiplier.toFixed(2)}x</span>
+        {!isChat && <span className="engine-probe skip">{t('○ 非对话模型')}</span>}
+        {isChat && (momaTesting.has(e.id)
+          ? <span className="engine-probe skip">{t('测试中…')}</span>
+          : test
+            ? <span className={`engine-probe ${test.ok ? 'ok' : 'fail'}`} title={test.error ?? ''}>{test.ok ? `● ${test.ms}ms` : t('● 不可用')}</span>
+            : partnerChat
+              ? <span className="moma-untested">
+                  <span className="engine-probe skip">{t('未测试')}</span>
+                  <button className="btn sm moma-test-btn" onClick={ev => { ev.stopPropagation(); setMomaConfirmId(e.id) }}>{t('测试')}</button>
+                </span>
+              : <span className="engine-probe skip">{t('待测试')}</span>)}
+        {engineId === e.id && <span className="engine-check">✓</span>}
+      </div>
+    )
+  }
   // ---- 顶栏工具显隐（设置「AI 助手工具栏」逐个开关，缺省显示） ----
   const tbShow = (k: keyof AiToolbarPrefs) => settings?.aiToolbar?.[k] !== false
   // 工具顺序：设置页可调序，菜单按此顺序渲染（CSS order）
@@ -1815,12 +1933,49 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               </div>
               <button className="icon-btn" onClick={() => setEnginePanelOpen(false)}><X size={17} /></button>
             </div>
-            <div className="engine-probe-bar">
-              <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? t('探测中…') : t('探测可用性')}</button>
-              <span>{t('只给对话模型发一条极短消息验证真能出话（非对话模型自动跳过，最多 12 个，会消耗极少量额度）')}</span>
-            </div>
+            {isMomaAccount ? (
+              <>
+                <div className="engine-probe-bar">
+                  <button className="btn sm" disabled={momaSweeping} onClick={() => {
+                    setMomaTests(loadMomaModelTests(currentAccount))
+                    void runMomaSweep(engines.map(e => e.id).filter(isMomaAutoTestable))
+                  }}>{momaSweeping ? t('轮测中…') : t('重新测试')}</button>
+                  <span>{t('打开列表时自动轮测九天自营对话模型（走 2500 万免费试用额度）；合作模型自动测可能扣按量费，不自动测，可逐个手动测试')}</span>
+                </div>
+                <div className="moma-free-bar">
+                  <label className="moma-free-toggle">
+                    <input type="checkbox" checked={momaFreeOnly} onChange={ev => { setMomaFreeOnly(ev.target.checked); saveMomaFreeOnly(ev.target.checked) }} />
+                    {t('只显示免费通道（仅九天自营）')}
+                  </label>
+                  {momaFreeOnly && engines.some(e => !isMomaSelfOperated(e.id)) && (
+                    <span className="moma-hidden-note">{t('已隐藏 {n} 个合作模型', { n: engines.filter(e => !isMomaSelfOperated(e.id)).length })}</span>
+                  )}
+                </div>
+                {momaSweepNote && <div className="moma-sweep-note">{momaSweepNote}</div>}
+              </>
+            ) : (
+              <div className="engine-probe-bar">
+                <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? t('探测中…') : t('探测可用性')}</button>
+                <span>{t('只给对话模型发一条极短消息验证真能出话（非对话模型自动跳过，最多 12 个，会消耗极少量额度）')}</span>
+              </div>
+            )}
             <div className="engine-list">
-              {engines.map(e => (
+              {isMomaAccount ? (() => {
+                const visible = momaFreeOnly ? engines.filter(e => isMomaSelfOperated(e.id)) : engines
+                const byId = new Map(visible.map(e => [e.id, e]))
+                const groups = groupMomaModels(visible.map(e => e.id), momaTests)
+                if (!loadingEngines && visible.length === 0) return <div className="engine-empty">{t('没有符合条件的模型')}</div>
+                return groups.map(g => (
+                  <div key={g.category} className="engine-group">
+                    <button className="engine-group-head" onClick={() => toggleMomaGroup(g.category)}>
+                      {momaCollapsed.has(g.category) ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                      <span>{t(MOMA_CATEGORY_LABEL[g.category])}</span>
+                      <span className="engine-group-count">{g.ids.length}</span>
+                    </button>
+                    {!momaCollapsed.has(g.category) && g.ids.map(id => renderMomaItem(byId.get(id)!, g.category))}
+                  </div>
+                ))
+              })() : engines.map(e => (
                 <button key={e.id} className={`engine-item ${engineId === e.id ? 'active' : ''}`}
                   onClick={() => { setEngineId(e.id); notify(t('已选引擎：{name}', { name: e.name })) }}>
                   <span className="engine-icon">{e.reasoning ? '🧠' : '⚡'}</span>
@@ -1853,6 +2008,20 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               <Info size={12} /> {t('倍率为参考值，用于排序；实际计费以官方账单为准。部分引擎需订阅或支持推理等级。')}
             </div>
           </aside>
+          {momaConfirmId && (
+            <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setMomaConfirmId(null) }}>
+              <div className="modal" style={{ maxWidth: 420 }}>
+                <div className="modal-head"><h3 style={{ margin: 0 }}>{t('测试合作模型')}</h3><button className="icon-btn" onClick={() => setMomaConfirmId(null)}><X size={18} /></button></div>
+                <div className="modal-body">
+                  <p style={{ fontSize: 13, lineHeight: 1.6, margin: 0 }}>{t('测试会真实调用一次「{name}」，可能扣按量费（该模型不在 2500 万免费试用覆盖范围内）。确定测试？', { name: momaConfirmId })}</p>
+                </div>
+                <div className="modal-foot">
+                  <button className="btn" onClick={() => setMomaConfirmId(null)}>{t('取消')}</button>
+                  <button className="btn primary" onClick={() => void testMomaPartnerModel(momaConfirmId)}>{t('确认测试')}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 

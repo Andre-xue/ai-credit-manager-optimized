@@ -320,6 +320,131 @@ export function pickMomaSmokeModel(models: string[]): string | undefined {
   return ids[0]
 }
 
+// ---------------- 模型列表治理（v0.1.469：全量分类 / 后台轮测 / 免费通道开关） ----------------
+
+/**
+ * 全量功能分类（九组）：对话组与 464 的 isMomaChatCandidate 严格一致（同一判定，
+ * 不另立口径）；非对话部分再按模型名特征细分。分类只决定「怎么展示、要不要 ping」：
+ * 非对话模型只分类展示、永不发聊天请求（沿用 464 口径）。
+ */
+export type MomaModelCategory = 'chat' | 'vision' | 'image' | 'tts' | 'asr' | 'embedding' | 'rerank' | 'safety' | 'other'
+
+export const MOMA_CATEGORY_ORDER: MomaModelCategory[] = ['chat', 'vision', 'image', 'tts', 'asr', 'embedding', 'rerank', 'safety', 'other']
+
+export const MOMA_CATEGORY_LABEL: Record<MomaModelCategory, string> = {
+  chat: '对话', vision: '视觉', image: '生图', tts: '语音合成', asr: '语音识别',
+  embedding: '向量', rerank: '重排', safety: '安全', other: '其他',
+}
+
+export function classifyMomaModel(id: string): MomaModelCategory {
+  if (isMomaChatCandidate(id)) return 'chat'
+  if (/guard|jiutian-safe/i.test(id)) return 'safety'
+  if (/rerank/i.test(id)) return 'rerank'
+  if (/embedding|bge/i.test(id)) return 'embedding'
+  if (/asr|sensevoice/i.test(id)) return 'asr'
+  if (/tts|cosyvoice/i.test(id)) return 'tts'
+  if (/image|flux/i.test(id)) return 'image'
+  if (/-vl-|qwen\d?-vl|gui-plus/i.test(id)) return 'vision'
+  return 'other' // 视频（seedance/wan/happyhorse/video）、omni/realtime、翻译（qwen-mt/livetranslate）等
+}
+
+/**
+ * 可自动轮测的模型：只有九天自营对话模型。自动测试 = 真实 chat 调用、会产生
+ * 消耗——九天走 2500 万免费试用额度（官方口径仅自营可抵扣），所以自动轮测
+ * 只许碰这一组；合作对话模型 ping 一次就是一次按量调用，不许自动测、不许进
+ * 任何批量入口，只能由用户逐个点「测试」并确认后才发（见界面确认弹窗）。
+ */
+export function isMomaAutoTestable(id: string): boolean {
+  return isMomaSelfOperated(id) && classifyMomaModel(id) === 'chat'
+}
+
+// ---------------- 模型实测结果缓存（仅本机，按账户 + Key 指纹隔离） ----------------
+
+export interface MomaModelTest { ok: boolean; ms: number; error?: string; testedAt: number }
+
+const MODEL_TESTS_KEY = 'acm.moma.modelTests.v1'
+
+interface MomaModelTestStore { fingerprint?: string; results: Record<string, MomaModelTest> }
+
+function loadModelTestStore(accountId: string): MomaModelTestStore | undefined {
+  try {
+    const raw = localStorage.getItem(MODEL_TESTS_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const store = parsed && typeof parsed === 'object' ? (parsed as Record<string, MomaModelTestStore>)[accountId] : undefined
+    return store && typeof store === 'object' && store.results && typeof store.results === 'object' ? store : undefined
+  } catch { return undefined }
+}
+
+/** 读某账户的模型实测缓存；Key 指纹对不上（换过 Key）→ 视作无缓存（旧结果不许冒充新 Key 的实测） */
+export function loadMomaModelTests(account: Pick<Account, 'id' | 'keyFingerprint'>): Record<string, MomaModelTest> {
+  const store = loadModelTestStore(account.id)
+  if (!store || (store.fingerprint ?? undefined) !== (account.keyFingerprint ?? undefined)) return {}
+  return store.results
+}
+
+/** 记一条模型实测结果（逐个落盘：轮测中途关窗也不丢已测的） */
+export function saveMomaModelTest(account: Pick<Account, 'id' | 'keyFingerprint'>, modelId: string, result: MomaModelTest): void {
+  try {
+    const raw = localStorage.getItem(MODEL_TESTS_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const map: Record<string, MomaModelTestStore> = parsed && typeof parsed === 'object' ? parsed : {}
+    const prev = loadMomaModelTests(account)
+    map[account.id] = { fingerprint: account.keyFingerprint ?? undefined, results: { ...prev, [modelId]: result } }
+    localStorage.setItem(MODEL_TESTS_KEY, JSON.stringify(map))
+  } catch { /* 存储不可用时只是不缓存，不影响本次界面显示 */ }
+}
+
+// ---------------- 「只显示免费通道」开关（仅本机偏好） ----------------
+
+const FREE_ONLY_KEY = 'acm.moma.freeOnly.v1'
+
+/** 默认开：只显示九天自营（免费试用覆盖范围），合作模型整组隐藏 */
+export function loadMomaFreeOnly(): boolean {
+  try { return localStorage.getItem(FREE_ONLY_KEY) !== '0' } catch { return true }
+}
+
+export function saveMomaFreeOnly(v: boolean): void {
+  try { localStorage.setItem(FREE_ONLY_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+}
+
+// ---------------- 分组与排序（纯函数，界面与单测共用） ----------------
+
+export interface MomaModelGroup { category: MomaModelCategory; ids: string[] }
+
+/**
+ * 按功能分组（组序按 MOMA_CATEGORY_ORDER，空组不返回）：
+ * - 对话组：已测的按测速 ms 从快到慢（可用与不可用都按实测耗时排，失败原因在
+ *   条目上如实标注），未测的排后面按名称；
+ * - 其他组：一律按名称排。
+ */
+export function groupMomaModels(ids: string[], tests: Record<string, MomaModelTest>): MomaModelGroup[] {
+  const byCat = new Map<MomaModelCategory, string[]>()
+  for (const id of ids) {
+    const cat = classifyMomaModel(id)
+    const arr = byCat.get(cat) ?? []
+    arr.push(id)
+    byCat.set(cat, arr)
+  }
+  const groups: MomaModelGroup[] = []
+  for (const cat of MOMA_CATEGORY_ORDER) {
+    const arr = byCat.get(cat)
+    if (!arr?.length) continue
+    if (cat === 'chat') {
+      arr.sort((a, b) => {
+        const ta = tests[a]; const tb = tests[b]
+        if (ta && tb) return ta.ms - tb.ms || a.localeCompare(b)
+        if (ta) return -1
+        if (tb) return 1
+        return a.localeCompare(b)
+      })
+    } else {
+      arr.sort((a, b) => a.localeCompare(b))
+    }
+    groups.push({ category: cat, ids: arr })
+  }
+  return groups
+}
+
 // ---------------- 启用门槛（冒烟验证记录，仅本机） ----------------
 
 const VERIFY_KEY = 'acm.moma.verification.v1'

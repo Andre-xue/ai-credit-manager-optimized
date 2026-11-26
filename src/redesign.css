@@ -917,6 +917,17 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .engine-probe.skip { color: var(--text-3); }
 .engine-billing-note { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
 
+/* MoMA 模型列表治理（v0.1.469）：功能分组 / 免费通道开关 / 合作模型逐个测试 */
+.engine-group-head { display: flex; align-items: center; gap: 5px; width: 100%; padding: 10px 10px 4px; background: none; border: none; color: var(--text-2); font-size: 11.5px; font-weight: 650; cursor: pointer; text-align: left; }
+.engine-group-count { color: var(--text-3); font-weight: 400; }
+.moma-free-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 14px; border-bottom: 1px solid var(--border); }
+.moma-free-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); cursor: pointer; }
+.moma-hidden-note { font-size: 11px; color: var(--text-3); }
+.moma-sweep-note { padding: 7px 14px; font-size: 11px; line-height: 1.5; color: #b45309; border-bottom: 1px solid var(--border); }
+.moma-untested { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.moma-test-btn { padding: 2px 8px; font-size: 11px; }
+.engine-item[role="button"] { cursor: pointer; }
+
 /* 多会话列表 */
 .ai-sessions-panel { border-bottom: 1px solid var(--border); padding: 10px 14px; display: grid; gap: 6px; max-height: 300px; overflow-y: auto; }
 .ai-sessions-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }

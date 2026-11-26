@@ -15,6 +15,8 @@ import {
   recordMomaLocalUsage, loadMomaLocalUsage, momaEstimateText, momaLimitsText,
   pickMomaSmokeModel, getMomaSmokeModel, isMomaChatCandidate,
   isMomaSelfOperated, momaModelBillingNote, orderMomaProbeModels,
+  classifyMomaModel, isMomaAutoTestable, groupMomaModels,
+  loadMomaModelTests, saveMomaModelTest, loadMomaFreeOnly, saveMomaFreeOnly,
   MOMA_BASE, MOMA_RATE_COOLDOWN_MS, MOMA_QUOTA_COOLDOWN_MS,
 } from './moma'
 import { CHAIN_KIND_ORDER } from './freeChain'
@@ -359,5 +361,116 @@ describe('MoMA 工坊路线门槛（v0.1.456）', () => {
     })
     expect(chain.some(r => r.key === 'acct:mm1')).toBe(false)
     expect(resolveWorkshopModel(account)).toBe('JIUTIAN-75B-8K-Chat')
+  })
+})
+
+describe('MoMA 模型列表治理（v0.1.469）', () => {
+  beforeEach(() => { ;(localStorage as any).clear() })
+  // 2026-11-27 实拉的公开目录全量 172 条（GET /v1/models 无 Key 200）
+  const REAL_172: string[] = [
+  "qwen/qwen4-max", "Qwen3Guard-Gen-8B", "qwen2.5-coder-32b-Instruct", "Qwen2.5-14B-Instruct-1M",
+  "qwen3-vl-32b-instruct", "JIUTIAN-75B-32K", "glm-4-9b", "CosyVoice",
+  "SenseVoice", "Qwen3-235B-A22B", "deepseek-r1-128k", "Flux.1-dev",
+  "Qwen2-VL-72B-Instruct", "Qwen2-VL-7B-Instruct", "JIUTIAN-75B-8K-Chat", "DeepSeek-V2",
+  "DeepSeek-R1-Distill-Qwen-7B", "Glm-4-9B-Chat", "bjcm/minimax-m2.5", "jscm/deepseek-v4-flash",
+  "yby/deepseek-v4-pro-0813", "deepseek-v4.1-flash-1017", "kimi/kimi-k3.1-pro", "doubao-seedance-2.5",
+  "tencentcloud/hy3", "minimax/minimax-m3.1-flash", "hncm/qwen-image-2512", "hncm/wan2.2-ti2v-5b-diffusers",
+  "hncm/qwen3-vl-32b-instruct", "hncm/glm-5.3-flash", "hncm/glm-5.3", "nmcm/minimax-h3",
+  "hacm/minimax-h3", "fjcm/deepseek-v4-flash", "aitc-minimax-m2.5", "aitc-qwen3-asr-1.7b",
+  "ahcm/deepseek-v4-flash-0731", "qwen/qwen-image-3.0-pro", "qwen/qwen-image-3.0", "jiutian-safe-40b",
+  "jiutian-ict-35b-256k", "ykd/minimax-m2.5", "cmiot/kitchen-video-detection-model", "jiutian-236b-256k-chat",
+  "jiutian-35b-256k-chat", "gscm/deepseek-v4-flash-0731", "jscm/kimi-k3", "deepseek-v4.1-flash",
+  "cqcm/qwen3.6-27b", "cqcm/glm-5.2", "glm-5.3-flash", "minimax/minimax-h3-max",
+  "qwen/qwen-audio-3.0-asr-flash", "qwen/qwen-audio-3.0-tts-flash", "qwen/text-embedding-v4-29042da26e0e", "glm-5.3",
+  "fjcm/deepseek-v4-flash-0731", "qwen/text-embedding-v4", "qwen/qwen3.5-35b-a3b-29042da26e0e", "qwen3-vl-235b-a22b-instruct",
+  "minimax-h3", "hacm/deepseek-v4-flash-0731", "jxcm/deepseek-v4-flash-0731", "hacm/qwen3.5-35b-a3b",
+  "hacm/qwen2.5-vl-32b-instruct", "sycl/minimax-m3", "qwen/qwen-audio-3.0-asr-flash-streaming", "ykd/deepseek-v3.2",
+  "zhipu/glm-5.3-flash", "hacm/deepseek-v3.2", "qwen3.5-397b-a17b", "gzdj/deepseek-v4-flash",
+  "szsjb/deepseek-v4-flash", "gzdj/deepseek-v4-pro", "szsjb/deepseek-v4-pro", "szdx/deepseek-v4-pro",
+  "gzho/deepseek-v3.2", "szsjb/deepseek-v3.2", "szym/deepseek-v3.2", "szdx/deepseek-v3.2",
+  "qwen/qwen3.5-omni-plus", "nmcm/deepseek-v3.2", "zhipu/glm-5.3", "glm-5.2",
+  "qwen/qwen3.5-omni-plus-realtime", "qwen/qwen3.5-omni-flash-realtime", "qwen/qwen3.5-omni-flash", "gnxx/deepseek-v3.2",
+  "szym/deepseek-v4-pro", "qwen/qwen3.8-max", "qwen3.5-35b-a3b", "hacm/minimax-m2.5",
+  "nmcm/deepseek-v4-flash", "qwen/deepseek-v4-pro", "qwen/glm-5.2", "minimax/minimax-h3",
+  "szym/deepseek-v4-flash", "qwen/qwen3-asr-flash", "deepseek-r1-distill-qwen-32b", "qwen/fun-asr",
+  "qwen/cosyvoice-v3.5-flash", "cqcm/deepseek-v4-flash", "bjcm/deepseek-v4-flash", "hlcm/glm-5",
+  "hecm/minimax-m2.5", "zjcm/deepseek-v4-flash", "qwen/qwen3-tts-flash", "qwen/fun-asr-realtime",
+  "hncm/minimax-m2.5", "aitc-deepseek-v4-flash", "qwen2.5-vl-7b-instruct", "qwen1.5-14b-chat",
+  "deepseek-r1-64k", "bge-reranker-v2-m3", "bge-base-zh-v1.5", "gdmz/doubao-seedance-2.0",
+  "jtxx/glm-5.2", "jszq/glm-5.2", "sycl/glm-5.2", "qwen3.5-27b",
+  "qwen3.5-9b", "kimi/kimi-k3", "qwen/happyhorse-1.1-i2v", "qwen/happyhorse-1.1-t2v",
+  "qwen/happyhorse-1.1-r2v", "qwen/happyhorse-1.0-video-edit", "qwen/qwen3.5-flash", "qwen/qwen3.7-plus",
+  "qwen/qwen3.6-flash", "Qwen/Fun-ASR-Flash-8k-Realtime", "Qwen/Qwen3-ASR-Flash-Realtime", "Qwen/Qwen3-LiveTranslate-Flash",
+  "aitc-qwen3.5-35b", "qwen3.5-4b", "kimi/kimi-k2.7-code", "kimi/kimi-k2.6",
+  "qwen3.5-4b-awq", "zhipu/glm-5.2", "zhipu/glm-5.1", "qwen/qwen3.7-max",
+  "minimax/MiniMax-M2.7-highspeed", "minimax/minimax-m2.7", "minimax/minimax-m3", "qwen/qwen3.6-plus",
+  "qwen/qwen3-vl-plus", "qwen/qwen-mt-plus", "qwen/qwen3-omni-flash", "qwen/gui-plus",
+  "qwen/qwen-mt-flash", "glm-5.1", "qwen/qwen3.5-plus", "deepseek-v3.2",
+  "minimax-m2.5", "qwen2.5-7b-instruct", "qwen2.5-14b-instruct", "qwen2.5-32b-instruct",
+  "qwen2.5-72b-instruct", "deepseek-r1-distill-qwen-14b", "deepseek-r1", "deepseek-r1-distill-llama-8b",
+  "deepseek-v3", "deepseek-r1-distill-llama-70b", "deepseek-v2-lite-chat", "qwq-32b",
+  "bge-m3", "deepseek-r1-0528", "qwen2.5-vl-32b-instruct", "qwen2.5-vl-72b-instruct",
+  "deepseek-v3-0324", "qwen2.5-72b-instruct-64k", "qwen3-32b", "deepseek-v3.1",
+  ]
+  it('全量 172 条都有分类，且对话组与 464 的 isMomaChatCandidate 严格一致', () => {
+    expect(REAL_172.length).toBe(172)
+    const counts: Record<string, number> = {}
+    for (const id of REAL_172) {
+      const cat = classifyMomaModel(id)
+      counts[cat] = (counts[cat] ?? 0) + 1
+      expect(cat === 'chat', id).toBe(isMomaChatCandidate(id))
+    }
+    expect(counts).toEqual({ chat: 122, vision: 10, image: 4, tts: 4, asr: 9, embedding: 4, rerank: 1, safety: 2, other: 16 })
+  })
+  it('关键成员分类正确（九天对话/安全、视频与翻译落其他、VL 落视觉）', () => {
+    expect(classifyMomaModel('jiutian-236b-256k-chat')).toBe('chat')
+    expect(classifyMomaModel('JIUTIAN-75B-32K')).toBe('chat')
+    expect(classifyMomaModel('jiutian-safe-40b')).toBe('safety')
+    expect(classifyMomaModel('Qwen3Guard-Gen-8B')).toBe('safety')
+    expect(classifyMomaModel('qwen3-vl-32b-instruct')).toBe('vision')
+    expect(classifyMomaModel('qwen/qwen-image-3.0')).toBe('image')
+    expect(classifyMomaModel('CosyVoice')).toBe('tts')
+    expect(classifyMomaModel('SenseVoice')).toBe('asr')
+    expect(classifyMomaModel('qwen/text-embedding-v4')).toBe('embedding')
+    expect(classifyMomaModel('bge-reranker-v2-m3')).toBe('rerank')
+    expect(classifyMomaModel('doubao-seedance-2.5')).toBe('other')
+    expect(classifyMomaModel('qwen/qwen-mt-plus')).toBe('other')
+    expect(classifyMomaModel('qwen/qwen3.5-omni-plus')).toBe('other')
+  })
+  it('自动轮测只许九天自营对话模型（合作与非对话一律不进批量）', () => {
+    const auto = REAL_172.filter(isMomaAutoTestable)
+    expect(auto).toEqual(expect.arrayContaining(['JIUTIAN-75B-32K', 'JIUTIAN-75B-8K-Chat', 'jiutian-ict-35b-256k', 'jiutian-236b-256k-chat', 'jiutian-35b-256k-chat']))
+    expect(auto.length).toBe(5)
+    expect(isMomaAutoTestable('jiutian-safe-40b')).toBe(false)
+    expect(isMomaAutoTestable('jscm/deepseek-v4-flash')).toBe(false)
+    expect(isMomaAutoTestable('deepseek-v3')).toBe(false)
+  })
+  it('分组：组序固定、空组省略、对话组已测按 ms 升序在前未测在后、其他组按名称', () => {
+    const ids = ['qwen3-vl-32b-instruct', 'deepseek-v3', 'JIUTIAN-75B-8K-Chat', 'CosyVoice', 'jiutian-35b-256k-chat', 'bge-m3']
+    const tests = {
+      'jiutian-35b-256k-chat': { ok: true, ms: 900, testedAt: 1 },
+      'JIUTIAN-75B-8K-Chat': { ok: false, ms: 300, error: '模型不可用', testedAt: 1 },
+    }
+    const groups = groupMomaModels(ids, tests)
+    expect(groups.map(g => g.category)).toEqual(['chat', 'vision', 'tts', 'embedding'])
+    expect(groups[0].ids).toEqual(['JIUTIAN-75B-8K-Chat', 'jiutian-35b-256k-chat', 'deepseek-v3'])
+    expect(groups[1].ids).toEqual(['qwen3-vl-32b-instruct'])
+  })
+  it('实测缓存：逐条落盘可回读，按账户隔离，换 Key 指纹后旧结果作废', () => {
+    saveMomaModelTest(acct, 'jiutian-35b-256k-chat', { ok: true, ms: 1234, testedAt: 100 })
+    saveMomaModelTest(acct, 'JIUTIAN-75B-32K', { ok: false, ms: 800, error: 'The requested model is not available on this endpoint.', testedAt: 101 })
+    const loaded = loadMomaModelTests(acct)
+    expect(loaded['jiutian-35b-256k-chat']).toEqual({ ok: true, ms: 1234, testedAt: 100 })
+    expect(loaded['JIUTIAN-75B-32K'].ok).toBe(false)
+    expect(loaded['JIUTIAN-75B-32K'].error).toContain('not available')
+    expect(loadMomaModelTests({ ...acct, id: 'other' })).toEqual({})
+    expect(loadMomaModelTests({ ...acct, keyFingerprint: 'fp2' })).toEqual({})
+  })
+  it('只显示免费通道：默认开，存 0 后关，开/关往返一致', () => {
+    expect(loadMomaFreeOnly()).toBe(true)
+    saveMomaFreeOnly(false)
+    expect(loadMomaFreeOnly()).toBe(false)
+    saveMomaFreeOnly(true)
+    expect(loadMomaFreeOnly()).toBe(true)
   })
 })
