@@ -40,7 +40,16 @@ async function bootstrap() {
     )
     return
   }
-  // 翻译助手小窗 / 截图框选层也是独立窗口（v0.1.440）：只渲染各自轻量组件
+  // 翻译助手小窗 / 截图框选层也是独立窗口（v0.1.440）：只渲染各自轻量组件。
+  // v0.1.451：这两个窗口必须真透明——index.html 的内联样式与全局 CSS 都给
+  // html/body 涂了不透明底色（#f4f4f8 / var(--bg)），440 只清了 body，html 的
+  // 底色仍铺满整个窗口，框选层实机就是一整块不透明灰幕。这里在首帧渲染前
+  // 给 html 打标记（CSS 以 !important 兜底）并直接清掉 html/body 的内联底色。
+  if (typeof window !== 'undefined' && (location.hash.includes('/translator-pop') || location.hash.includes('/translator-capture'))) {
+    document.documentElement.classList.add('trs-window')
+    document.documentElement.style.background = 'transparent'
+    document.body.style.background = 'transparent'
+  }
   if (typeof window !== 'undefined' && location.hash.includes('/translator-pop')) {
     const { TranslatorPop } = await import('./components/TranslatorPop')
     ReactDOM.createRoot(document.getElementById('root')!).render(

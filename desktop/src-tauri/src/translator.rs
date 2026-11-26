@@ -22,6 +22,53 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 pub const POP_LABEL: &str = "translator-pop";
 pub const CAPTURE_LABEL: &str = "translator-capture";
 
+// ---------------- 本机诊断日志（v0.1.451） ----------------
+// ~/.ai-credit-manager/translator/diag.log：每次快捷键触发、框选、截图、OCR
+// 子进程的节点位与结果都记一行。全局快捷键/真机 OCR 无头验不了，Ethan 再
+// 复现时靠这份日志定位断点。只记事件与长度/退出码，不记译文与原文内容。
+
+fn diag_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join(".ai-credit-manager").join("translator").join("diag.log"))
+}
+
+fn utc_stamp(secs: u64) -> String {
+    // unix 秒 → UTC YYYY-MM-DD HH:MM:SS（civil-from-days 算法，无外部依赖）
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z",
+        year, m, d,
+        tod / 3600, (tod % 3600) / 60, tod % 60
+    )
+}
+
+pub fn diag(event: &str, detail: &str) {
+    let Some(path) = diag_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("{} {} {}\n", utc_stamp(secs), event, detail.replace('\n', " "));
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 // ---------------- 共享状态 ----------------
 
 struct HotkeyConfig {
@@ -32,11 +79,15 @@ static CONFIG: Mutex<HotkeyConfig> = Mutex::new(HotkeyConfig { disable_fullscree
 static TRANSLATOR_SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PopPayload {
     pub source: String,
     pub translated: String,
     #[serde(default)]
     pub target_lang: String,
+    /// 识别出的源语言显示名（小窗语言行展示，如「英语」；v0.1.451 新增）
+    #[serde(default)]
+    pub source_lang: String,
     pub error: Option<String>,
     pub ops: String,
 }
@@ -176,15 +227,20 @@ pub fn translator_shortcuts_apply(
         if v.trim().is_empty() {
             return Ok(());
         }
-        let sc: Shortcut = v
-            .parse()
-            .map_err(|e| format!("快捷键格式无效（{v}）：{e}"))?;
+        // 不拼上游解析原文：muda 的英文报错含仓库链接，不给用户看（451 实机教训）
+        let sc: Shortcut = v.parse().map_err(|_| {
+            diag("shortcut-parse-fail", &format!("kind={kind} value={v}"));
+            format!("「{v}」不是有效的快捷键组合，请重新录入")
+        })?;
         let h = app.clone();
+        let hv = v.clone();
         gs.on_shortcut(sc, move |_app, _s, event| {
             if event.state != ShortcutState::Pressed {
                 return;
             }
+            diag("hotkey-fired", &format!("kind={kind} value={hv}"));
             if fullscreen_guard() {
+                diag("hotkey-blocked", "fullscreen-guard");
                 return;
             }
             match kind {
@@ -201,7 +257,11 @@ pub fn translator_shortcuts_apply(
                 }
             }
         })
-        .map_err(|e| format!("注册快捷键失败（{v}，可能被其他应用占用）：{e}"))?;
+        .map_err(|_| {
+            diag("shortcut-register-fail", &format!("kind={kind} value={v}"));
+            format!("快捷键「{v}」注册失败，可能已被其他应用占用，换个组合试试")
+        })?;
+        diag("shortcut-registered", &format!("kind={kind} value={v}"));
         registered.push(sc);
         Ok(())
     };
@@ -254,8 +314,14 @@ pub fn translator_get_selection() -> SelectionOutcome {
             };
         }
         match mac::grab_selection() {
-            Ok(text) => SelectionOutcome { text: Some(text), error: None, x, y },
-            Err(e) => SelectionOutcome { text: None, error: Some(e), x, y },
+            Ok(text) => {
+                diag("selection-ok", &format!("chars={}", text.chars().count()));
+                SelectionOutcome { text: Some(text), error: None, x, y }
+            }
+            Err(e) => {
+                diag("selection-fail", &e);
+                SelectionOutcome { text: None, error: Some(e), x, y }
+            }
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -280,6 +346,19 @@ pub fn translator_clipboard_write(text: String) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = text;
+        Err("仅支持 macOS".to_string())
+    }
+}
+
+/// 读剪贴板（小窗「粘贴并翻译」用）。
+#[tauri::command]
+pub fn translator_clipboard_read() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::clipboard_read_pub().ok_or_else(|| "读取剪贴板失败".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
         Err("仅支持 macOS".to_string())
     }
 }
@@ -341,12 +420,20 @@ pub fn translator_show_pop(
     source: String,
     translated: String,
     target_lang: String,
+    source_lang: Option<String>,
     error: Option<String>,
     ops: String,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
-    let payload = PopPayload { source, translated, target_lang, error, ops };
+    let payload = PopPayload {
+        source,
+        translated,
+        target_lang,
+        source_lang: source_lang.unwrap_or_default(),
+        error,
+        ops,
+    };
     if let Ok(mut g) = POP_PAYLOAD.lock() {
         *g = Some(payload.clone());
     }
@@ -386,6 +473,15 @@ pub fn translator_hide_pop(app: AppHandle) {
     }
 }
 
+/// 小窗置顶开关（小窗图钉按钮）。
+#[tauri::command]
+pub fn translator_pop_set_on_top(app: AppHandle, on: bool) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(POP_LABEL) {
+        w.set_always_on_top(on).map_err(|e| format!("设置小窗置顶失败：{e}"))?;
+    }
+    Ok(())
+}
+
 // ---------------- 截图框选 + OCR ----------------
 
 fn ensure_capture_window(app: &AppHandle) -> Result<WebviewWindow, String> {
@@ -417,6 +513,7 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if !mac::screen_ok() {
+            diag("capture-blocked", "screen-permission-missing");
             // 先触发系统授权请求（应用会被登记进录屏列表），再把用户直达设置面板
             let _ = mac::screen_request();
             let _ = translator_open_settings("screen".to_string());
@@ -434,6 +531,7 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
     }
     let _ = w.show();
     let _ = w.set_focus();
+    diag("capture-shown", "overlay-visible");
     Ok(())
 }
 
@@ -449,8 +547,14 @@ pub fn translator_capture_cancel(app: AppHandle) {
     }
 }
 
-/// 框选完成：收起框选层 → screencapture 截取选区（逻辑点）→ Vision 本地 OCR →
+/// 框选完成：收起框选层 → screencapture 截取选区（逻辑点）→ 子进程 Vision OCR →
 /// 结果以 translator-shot-text 事件发给主窗口宿主继续翻译；失败发 translator-error。
+///
+/// v0.1.451：OCR 不再在主进程里跑。440 的 Vision FFI（libobjc msgSend 直调）实机
+/// 在松手后把整个 App 带崩（段错误 catch_unwind 也拦不住）。现在截图仍在本进程
+/// （screencapture 本身是外部命令），OCR 改为以当前 exe 的 --acm-ocr 隐藏模式
+/// 自启子进程执行：子进程崩了只回一个非零退出码，主 App 弹「识别失败」小窗、
+/// 不受影响。整段再套 catch_unwind，普通 panic 也只变错误提示。
 #[tauri::command]
 pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
     if let Some(win) = app.get_webview_window(CAPTURE_LABEL) {
@@ -458,30 +562,146 @@ pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64)
     }
     let cx = x + w / 2.0;
     let bottom = y + h;
+    diag("capture-finish", &format!("rect={x:.0},{y:.0} {w:.0}x{h:.0}"));
     std::thread::spawn(move || {
-        #[cfg(target_os = "macos")]
-        {
-            match mac::capture_and_ocr(x, y, w, h) {
-                Ok(text) if !text.trim().is_empty() => {
-                    emit_to_main(&app, "translator-shot-text", serde_json::json!({ "text": text, "x": cx, "y": bottom }));
-                }
-                Ok(_) => {
-                    emit_to_main(&app, "translator-error", serde_json::json!({
-                        "message": "框选区域里没有识别到文字，换个区域试试", "x": cx, "y": bottom
-                    }));
-                }
-                Err(e) => {
-                    emit_to_main(&app, "translator-error", serde_json::json!({ "message": e, "x": cx, "y": bottom }));
-                }
+        let app2 = app.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<String, String> {
+            #[cfg(target_os = "macos")]
+            let out = {
+                let png = mac::capture_shot(x, y, w, h)?;
+                let text = ocr_via_subprocess(&png);
+                let _ = std::fs::remove_file(&png);
+                text
+            };
+            #[cfg(not(target_os = "macos"))]
+            let out = Err("截图翻译仅支持 macOS 桌面端".to_string());
+            out
+        }));
+        match result {
+            Ok(Ok(text)) if !text.trim().is_empty() => {
+                diag("ocr-ok", &format!("chars={}", text.chars().count()));
+                emit_to_main(&app2, "translator-shot-text", serde_json::json!({ "text": text, "x": cx, "y": bottom }));
+            }
+            Ok(Ok(_)) => {
+                diag("ocr-empty", "no-text");
+                emit_to_main(&app2, "translator-error", serde_json::json!({
+                    "message": "框选区域里没有识别到文字，换个区域试试", "x": cx, "y": bottom
+                }));
+            }
+            Ok(Err(e)) => {
+                diag("ocr-fail", &e);
+                emit_to_main(&app2, "translator-error", serde_json::json!({ "message": e, "x": cx, "y": bottom }));
+            }
+            Err(_) => {
+                diag("ocr-fail", "panic-caught");
+                emit_to_main(&app2, "translator-error", serde_json::json!({
+                    "message": "截图识别出了问题（内部错误已拦下），再试一次；反复出现请把诊断日志发给开发者", "x": cx, "y": bottom
+                }));
             }
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            emit_to_main(&app, "translator-error", serde_json::json!({
-                "message": "截图翻译仅支持 macOS 桌面端", "x": cx, "y": bottom
-            }));
-        }
     });
+}
+
+/// 以当前 exe 自启 OCR 子进程（--acm-ocr 隐藏模式，见 main.rs 的拦截）：
+/// 25 秒超时强杀；子进程崩溃/非零退出只变成 Err，绝不影响主进程。
+fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| format!("识别失败：找不到程序本体（{e}）"))?;
+    diag("ocr-spawn", &format!("exe={}", exe.display()));
+    let mut child = Command::new(&exe)
+        .arg("--acm-ocr")
+        .arg("--image")
+        .arg(png)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("识别失败：无法启动识别子进程（{e}）"))?;
+    // stdout/stderr 各开一个线程读完，避免管道写满把子进程堵死
+    let mut out_pipe = child.stdout.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut err_pipe = child.stderr.take();
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if std::time::Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    diag("ocr-fail", "subprocess-timeout-25s");
+                    return Err("识别超时：框选区域太大或系统繁忙，缩小区域再试".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("识别失败：等待子进程出错（{e}）")),
+        }
+    };
+    let out = out_thread.join().unwrap_or_default();
+    let errb = err_thread.join().unwrap_or_default();
+    if status.success() {
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&errb).trim().to_string();
+        let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "信号终止".to_string());
+        diag("ocr-fail", &format!("exit={code} stderr={}", stderr.chars().take(200).collect::<String>()));
+        Err(if stderr.is_empty() {
+            format!("本地 OCR 识别失败（识别进程异常退出，码 {code}），再试一次")
+        } else {
+            format!("本地 OCR 识别失败：{}", stderr.chars().take(120).collect::<String>())
+        })
+    }
+}
+
+/// OCR 子进程入口（main.rs 在 Tauri builder 之前拦截 --acm-ocr 走这里）：
+/// 对 --image 指定的 PNG 跑 Vision OCR，识别文本写 stdout，错误写 stderr。
+/// 返回进程退出码：0 成功，1 识别失败，2 参数/平台问题。
+pub fn run_ocr_cli(args: &[String]) -> i32 {
+    let mut image: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--image" {
+            image = it.next().cloned();
+        }
+    }
+    let Some(image) = image else {
+        eprintln!("缺少 --image 参数");
+        return 2;
+    };
+    let _ = &image; // 非 macOS 分支不用它，消 unused 警告
+    #[cfg(target_os = "macos")]
+    {
+        match mac::vision_ocr_path(std::path::Path::new(&image)) {
+            Ok(text) => {
+                use std::io::Write;
+                let _ = std::io::stdout().write_all(text.as_bytes());
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("OCR 仅支持 macOS");
+        2
+    }
 }
 
 // ---------------- macOS FFI ----------------
@@ -933,9 +1153,16 @@ mod mac {
         });
     }
 
-    // ---- 截图 + Vision OCR ----
+    pub fn clipboard_read_pub() -> Option<String> {
+        clipboard_read()
+    }
 
-    pub fn capture_and_ocr(x: f64, y: f64, w: f64, h: f64) -> Result<String, String> {
+    // ---- 截图 + Vision OCR ----
+    // v0.1.451 起两者分工：capture_shot 只负责截图（留在主进程，screencapture 是
+    // 外部命令）；vision_ocr_path 只在 --acm-ocr 子进程里被调用（见 run_ocr_cli），
+    // 主进程不再碰 Vision FFI——440 实机它曾把主进程带崩。
+
+    pub fn capture_shot(x: f64, y: f64, w: f64, h: f64) -> Result<std::path::PathBuf, String> {
         let path = std::env::temp_dir().join(format!(
             "acm-translator-{}-{}.png",
             std::process::id(),
@@ -953,9 +1180,11 @@ mod mac {
         if !out.status.success() || !path.exists() {
             return Err("截图失败：请确认已授予录屏权限（系统设置 → 隐私与安全性 → 录屏与系统录音）".to_string());
         }
-        let text = vision_ocr(&path);
-        let _ = std::fs::remove_file(&path);
-        text
+        Ok(path)
+    }
+
+    pub fn vision_ocr_path(png_path: &std::path::Path) -> Result<String, String> {
+        vision_ocr(png_path)
     }
 
     fn vision_ocr(png_path: &std::path::Path) -> Result<String, String> {
@@ -1053,9 +1282,16 @@ mod mac {
     /// 问 VNRecognizeTextRequest 本人支持哪些语言（revision 2），与期望列表取交集。
     unsafe fn supported_languages(req_cls: Id, _arr_cls: Id) -> Vec<String> {
         let want = ["zh-Hans", "zh-Hant", "en-US"];
+        // 老系统上该类方法不存在时直接调会抛 NSException 让进程 abort：
+        // 先问 respondsToSelector:，没有就返回空（调用方据此不设语言、用系统默认集）
+        let target = sel("supportedRecognitionLanguagesForTextRequestRevision:error:");
+        let responds: extern "C" fn(Id, Sel, Sel) -> bool = std::mem::transmute(objc_msgSend as usize);
+        if !responds(req_cls, sel("respondsToSelector:"), target) {
+            return Vec::new();
+        }
         let mut err: Id = std::ptr::null_mut();
         // +supportedRecognitionLanguagesForTextRequestRevision:error:（revision 2 = macOS 11+）
-        let list = msg_supported_langs(req_cls, sel("supportedRecognitionLanguagesForTextRequestRevision:error:"), 2, &mut err);
+        let list = msg_supported_langs(req_cls, target, 2, &mut err);
         if list.is_null() {
             return vec!["en-US".to_string()];
         }

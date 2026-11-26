@@ -3,7 +3,7 @@ import type { Account } from '../core/types'
 import { isDesktopApp } from '../core/openExternal'
 import {
   loadTranslatorSettings, applyTranslatorShortcuts, getSelectedText, showTranslatorPop,
-  preprocessText, translateWithRoutes, writeClipboard,
+  preprocessText, translateWithRoutes, translateToTarget, sourceLangLabel, writeClipboard,
   TRANSLATOR_SETTINGS_EVENT, setPendingTranslatorTab,
 } from '../core/translator'
 
@@ -32,11 +32,14 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
     const onSettings = () => applyShortcuts()
     window.addEventListener(TRANSLATOR_SETTINGS_EVENT, onSettings)
 
+    // 小窗最近一次弹出位置：小窗里切换语言重译时原地刷新，不跳位
+    const lastPos = { x: 120, y: 120 }
     const showError = (message: string, x: number, y: number) => {
       const s = loadTranslatorSettings()
+      lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
       void showTranslatorPop({
         source: '', translated: '', targetLang: s.targetLang, error: message,
-        ops: s.opsDisplay, x: x + s.offsetX, y: y + s.offsetY,
+        ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
       }).catch(() => {})
     }
 
@@ -51,9 +54,11 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
           onChainNote: msg => nf(msg),
         })
         if (s.popEnabled) {
+          lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
           await showTranslatorPop({
-            source: text, translated: out.translated, targetLang: out.targetLang, error: null,
-            ops: s.opsDisplay, x: x + s.offsetX, y: y + s.offsetY,
+            source: text, translated: out.translated, targetLang: out.targetLang,
+            sourceLang: sourceLangLabel(text), error: null,
+            ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
           })
         } else {
           await writeClipboard(out.translated)
@@ -61,6 +66,29 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
         }
       } catch (e) {
         showError(e instanceof Error ? e.message : '翻译失败', x, y)
+      }
+    }
+
+    // 小窗内重译（切换目标/源语言、粘贴并翻译、智能删换行、改原文后手动翻译）
+    const doRetranslate = async (p: { source: string; targetLang: string; sourceLang?: string }) => {
+      const { accounts: acc, sessionPwd: pwd, notify: nf } = ctxRef.current
+      const s = loadTranslatorSettings()
+      const text = (p.source ?? '').slice(0, 8000)
+      if (!text.trim()) return
+      try {
+        const out = await translateToTarget({
+          accounts: acc, sessionPwd: pwd, text,
+          targetLang: p.targetLang || s.targetLang,
+          sourceLangName: p.sourceLang,
+          onChainNote: msg => nf(msg),
+        })
+        await showTranslatorPop({
+          source: text, translated: out.translated, targetLang: out.targetLang,
+          sourceLang: p.sourceLang || sourceLangLabel(text), error: null,
+          ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+        })
+      } catch (e) {
+        showError(e instanceof Error ? e.message : '翻译失败', lastPos.x - s.offsetX, lastPos.y - s.offsetY)
       }
     }
 
@@ -90,6 +118,9 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
         unlistens.push(await listen<{ message: string; x?: number; y?: number }>('translator-error', e => {
           if (typeof e.payload.x === 'number' && typeof e.payload.y === 'number') showError(e.payload.message, e.payload.x, e.payload.y)
           else ctxRef.current.notify(e.payload.message)
+        }))
+        unlistens.push(await listen<{ source: string; targetLang: string; sourceLang?: string }>('translator-retranslate', e => {
+          void doRetranslate(e.payload)
         }))
       } catch { /* 非 Tauri 环境忽略 */ }
     })()

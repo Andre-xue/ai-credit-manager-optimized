@@ -10,9 +10,11 @@ import {
   loadTranslatorSettings, saveTranslatorSettings, applyTranslatorShortcuts,
   getTranslatorPermissions, requestAccessibility, requestScreenCapture, openPermissionSettings,
   preprocessText, pickTargetLang, translateWithRoutes, speakLangOf, writeClipboard,
-  saveTranslatorRouteKey, takePendingTranslatorTab,
+  saveTranslatorRouteKey, takePendingTranslatorTab, getInvalidTranslatorShortcutFields,
   TRANSLATOR_LANGS, type TranslatorSettings, type TranslatorPermissions, type OpsDisplay,
+  type TranslatorShortcutField,
 } from '../core/translator'
+import { acceleratorFromEvent } from '../core/hotkey'
 
 // 果冻开关（与设置页 Toggle 同款 jelly 动画，本地复制一份避免跨文件耦合）
 function JellyToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -48,32 +50,29 @@ function fmtAccel(a: string): string {
   }).join('+')
 }
 
-/** 快捷键录入框（借鉴 Manggo：点框后按键录入、带清除；交互规则与全局设置页一致） */
-function ShortcutRecorder({ value, onChange, others, notify }: {
-  value: string; onChange: (v: string) => void; others: string[]; notify: (m: string) => void
+/** 快捷键录入框（借鉴 Manggo：点框后按键录入、带清除；交互规则与全局设置页一致）。
+ * v0.1.451：录入按物理键位 e.code 折算（core/hotkey），不再用 e.key——macOS 上
+ * Option 组合会把 e.key 改成特殊字符（Œ），440 就是这样存出无效组合的。
+ * invalid=true 表示旧版本存过坏值、已按未注册处理，提示重新录入。 */
+function ShortcutRecorder({ value, onChange, others, notify, invalid }: {
+  value: string; onChange: (v: string) => void; others: string[]; notify: (m: string) => void; invalid?: boolean
 }) {
   const [recording, setRecording] = useState(false)
   useEffect(() => {
     if (!recording) return
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault(); e.stopPropagation()
-      if (e.key === 'Escape') { setRecording(false); return }
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return
-      const mods: string[] = []
-      if (e.ctrlKey || e.metaKey) mods.push('CommandOrControl')
-      if (e.altKey) mods.push('Alt')
-      if (e.shiftKey) mods.push('Shift')
-      if (mods.length === 0) { notify('组合键需至少带一个修饰键（Ctrl/⌘/Alt/Shift）'); return }
-      let key = e.key
-      if (key === ' ') key = 'Space'
-      else if (key.length === 1) key = key.toUpperCase()
-      else if (/^f\d{1,2}$/i.test(key)) key = key.toUpperCase()
-      else { notify(`主键「${key}」暂不支持，请用字母、数字、空格或 F 键`); return }
-      const accel = [...mods, key].join('+')
-      if (others.includes(accel)) { notify('与另一个快捷键冲突，换个组合'); return }
-      onChange(accel)
+      if (e.code === 'Escape') { setRecording(false); return }
+      const r = acceleratorFromEvent(e)
+      if (!r.ok) {
+        if (r.reason === 'no-modifier') notify('组合键需至少带一个修饰键（Ctrl/⌘/Alt/Shift）')
+        else if (r.reason === 'unsupported') notify('这个主键暂不支持，请用字母、数字、方向键、空格或 F 键')
+        return // modifier-only：继续等主键
+      }
+      if (others.includes(r.accel)) { notify('与另一个快捷键冲突，换个组合'); return }
+      onChange(r.accel)
       setRecording(false)
-      notify(`已设为 ${fmtAccel(accel)}`)
+      notify(`已设为 ${fmtAccel(r.accel)}`)
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -81,7 +80,7 @@ function ShortcutRecorder({ value, onChange, others, notify }: {
   return (
     <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
       <button className={`btn sm trs-recorder ${recording ? 'rec' : ''}`} onClick={() => setRecording(true)}>
-        <Keyboard size={13} /> {recording ? '请按下组合键…（Esc 取消）' : fmtAccel(value)}
+        <Keyboard size={13} /> {recording ? '请按下组合键…（Esc 取消）' : (value ? fmtAccel(value) : (invalid ? '未注册（请重新录入）' : '未注册'))}
       </button>
       {value && !recording && (
         <button className="btn sm ghost" title="清除快捷键" onClick={() => onChange('')}><X size={13} /></button>
@@ -113,6 +112,8 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
 }) {
   const [tab, setTab] = useState<'input' | 'settings'>('input')
   const [settings, setSettings] = useState<TranslatorSettings>(loadTranslatorSettings)
+  // 旧版本存下的无效快捷键字段：录入框显示「未注册（请重新录入）」；重录出合法值即消
+  const [invalidFields, setInvalidFields] = useState<TranslatorShortcutField[]>(() => getInvalidTranslatorShortcutFields())
   const { perms, refresh: refreshPerms } = usePermissions()
   const { data, routeKey, setRouteKey } = useRouteData(accounts)
 
@@ -126,6 +127,11 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
       return next
     })
   }, [])
+
+  const setShortcut = useCallback((field: TranslatorShortcutField, v: string) => {
+    if (v) setInvalidFields(prev => prev.filter(f => f !== field))
+    update({ [field]: v } as Partial<TranslatorSettings>)
+  }, [update])
 
   // 设置变化 → 重新下发快捷键注册（注册失败把真实原因报出来，如被其他应用占用）
   const applyTimer = useRef(0)
@@ -320,17 +326,20 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
             <div className="trs-row">
               <div className="trs-row-main"><span>划词翻译</span></div>
               <ShortcutRecorder value={settings.shortcutSelection} others={[settings.shortcutScreenshot, settings.shortcutInput]}
-                onChange={v => update({ shortcutSelection: v })} notify={notify} />
+                invalid={invalidFields.includes('shortcutSelection')}
+                onChange={v => setShortcut('shortcutSelection', v)} notify={notify} />
             </div>
             <div className="trs-row">
               <div className="trs-row-main"><span>截图翻译</span></div>
               <ShortcutRecorder value={settings.shortcutScreenshot} others={[settings.shortcutSelection, settings.shortcutInput]}
-                onChange={v => update({ shortcutScreenshot: v })} notify={notify} />
+                invalid={invalidFields.includes('shortcutScreenshot')}
+                onChange={v => setShortcut('shortcutScreenshot', v)} notify={notify} />
             </div>
             <div className="trs-row">
               <div className="trs-row-main"><span>打开输入翻译</span></div>
               <ShortcutRecorder value={settings.shortcutInput} others={[settings.shortcutSelection, settings.shortcutScreenshot]}
-                onChange={v => update({ shortcutInput: v })} notify={notify} />
+                invalid={invalidFields.includes('shortcutInput')}
+                onChange={v => setShortcut('shortcutInput', v)} notify={notify} />
             </div>
             <div className="trs-row">
               <div className="trs-row-main"><span>在全屏应用中禁用快捷键</span></div>

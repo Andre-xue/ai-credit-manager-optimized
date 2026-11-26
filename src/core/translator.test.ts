@@ -12,8 +12,9 @@ class MemStorage {
 ;(globalThis as any).window = globalThis
 
 import {
-  detectSourceLang, pickTargetLang, preprocessText,
+  detectSourceLang, pickTargetLang, preprocessText, removeSmartNewlines, sourceLangLabel,
   loadTranslatorSettings, saveTranslatorSettings, DEFAULT_TRANSLATOR_SETTINGS,
+  getInvalidTranslatorShortcutFields, TRANSLATOR_SETTINGS_KEY,
 } from './translator'
 
 beforeEach(() => { ;(localStorage as any).clear() })
@@ -75,5 +76,45 @@ describe('settings 存取', () => {
   it('坏 JSON 时回退默认值', () => {
     localStorage.setItem('acm.translator.settings.v1', '{oops')
     expect(loadTranslatorSettings()).toEqual(DEFAULT_TRANSLATOR_SETTINGS)
+  })
+})
+
+describe('v0.1.451 坏快捷键值识别', () => {
+  it('440 存下的 Alt+Œ 读出为空（按未注册处理）并记下字段名', () => {
+    localStorage.setItem(TRANSLATOR_SETTINGS_KEY, JSON.stringify({ shortcutScreenshot: 'Alt+Œ' }))
+    const s = loadTranslatorSettings()
+    expect(s.shortcutScreenshot).toBe('')
+    expect(getInvalidTranslatorShortcutFields()).toContain('shortcutScreenshot')
+  })
+  it('合法值原样保留、不记无效', () => {
+    localStorage.setItem(TRANSLATOR_SETTINGS_KEY, JSON.stringify({ shortcutSelection: 'Ctrl+Shift+D' }))
+    const s = loadTranslatorSettings()
+    expect(s.shortcutSelection).toBe('Ctrl+Shift+D')
+    expect(getInvalidTranslatorShortcutFields()).not.toContain('shortcutSelection')
+  })
+  it('三个字段各自独立判定', () => {
+    localStorage.setItem(TRANSLATOR_SETTINGS_KEY, JSON.stringify({
+      shortcutSelection: 'Alt+Œ', shortcutScreenshot: 'Alt+S', shortcutInput: 'garbage',
+    }))
+    const s = loadTranslatorSettings()
+    expect(s.shortcutSelection).toBe('')
+    expect(s.shortcutScreenshot).toBe('Alt+S')
+    expect(s.shortcutInput).toBe('')
+    const bad = getInvalidTranslatorShortcutFields()
+    expect(bad).toContain('shortcutSelection')
+    expect(bad).toContain('shortcutInput')
+    expect(bad).not.toContain('shortcutScreenshot')
+  })
+})
+
+describe('removeSmartNewlines / sourceLangLabel', () => {
+  it('英文断行拼接补空格、段落保留', () => {
+    expect(removeSmartNewlines('hello\nworld')).toBe('hello world')
+    expect(removeSmartNewlines('第一段\n\n第二段')).toBe('第一段\n\n第二段')
+  })
+  it('源语言标签', () => {
+    expect(sourceLangLabel('Hello world, this is a test')).toBe('英语')
+    expect(sourceLangLabel('你好世界')).toBe('中文')
+    expect(sourceLangLabel('12345')).toBe('自动检测')
   })
 })

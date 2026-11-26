@@ -40,6 +40,7 @@ import {
 } from './core/store'
 import { HoldToConfirm } from './components/HoldToConfirm'
 import { TranslatorHost } from './components/TranslatorHost'
+import { acceleratorFromEvent, isValidAccelerator } from './core/hotkey'
 import {
   AGENT_TOOLS, CHECKIN_TOOLS, CATEGORY_TAGS, PLATFORM_TAGS,
   type AgentTool,
@@ -974,8 +975,9 @@ function App() {
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (c: string, a?: Record<string, unknown>) => Promise<unknown> } }
     void w.__TAURI_INTERNALS__?.invoke?.('shortcuts_apply', {
       enabled: state.settings.shortcutsEnabled ?? true,
-      ai: state.settings.shortcutAi ?? 'CommandOrControl+Shift+A',
-      mini: state.settings.shortcutMini ?? 'CommandOrControl+Shift+M',
+      // v0.1.451：旧录入（e.key）可能存下坏值（如 Alt+Œ），下发前校验，坏值回退默认组合
+      ai: isValidAccelerator(state.settings.shortcutAi ?? '') ? state.settings.shortcutAi : 'CommandOrControl+Shift+A',
+      mini: isValidAccelerator(state.settings.shortcutMini ?? '') ? state.settings.shortcutMini : 'CommandOrControl+Shift+M',
     }).catch(() => { /* 旧版本桌面壳没有此命令时忽略，壳内默认快捷键仍生效 */ })
   }, [state.settings.shortcutsEnabled, state.settings.shortcutAi, state.settings.shortcutMini])
 
@@ -5311,26 +5313,24 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   }
   // ---- 全局快捷键自定义（桌面端）：组合存 settings，App 壳下发 Tauri 动态注册 ----
   const [recording, setRecording] = useState<'ai' | 'mini' | null>(null)
-  const accelAi = s.shortcutAi ?? 'CommandOrControl+Shift+A'
-  const accelMini = s.shortcutMini ?? 'CommandOrControl+Shift+M'
+  // v0.1.451：旧版本存下的坏值（Alt+Œ 等）显示与生效都按默认组合，重录即覆盖
+  const accelAi = isValidAccelerator(s.shortcutAi ?? '') ? s.shortcutAi! : 'CommandOrControl+Shift+A'
+  const accelMini = isValidAccelerator(s.shortcutMini ?? '') ? s.shortcutMini! : 'CommandOrControl+Shift+M'
   const fmtAccel = (a: string) => a.split('+').map(p => (p === 'CommandOrControl' ? shortcutMod : p)).join('+')
   useEffect(() => {
     if (!recording) return
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault(); e.stopPropagation()
-      if (e.key === 'Escape') { setRecording(null); return }
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return // 只按了修饰键，继续等主键
-      const mods: string[] = []
-      if (e.ctrlKey || e.metaKey) mods.push('CommandOrControl')
-      if (e.altKey) mods.push('Alt')
-      if (e.shiftKey) mods.push('Shift')
-      if (mods.length === 0) { notify('组合键需至少带一个修饰键（Ctrl/⌘/Alt/Shift）'); return }
-      let key = e.key
-      if (key === ' ') key = 'Space'
-      else if (key.length === 1) key = key.toUpperCase()
-      else if (/^f\d{1,2}$/i.test(key)) key = key.toUpperCase()
-      else { notify(t('主键「{key}」暂不支持，请用字母、数字、空格或 F 键', { key })); return }
-      const accel = [...mods, key].join('+')
+      if (e.code === 'Escape') { setRecording(null); return }
+      // v0.1.451：按物理键位 e.code 折算（core/hotkey），不用 e.key——macOS 上
+      // Option 组合会把 e.key 改成特殊字符（Œ），曾存出无法注册的坏组合
+      const r = acceleratorFromEvent(e)
+      if (!r.ok) {
+        if (r.reason === 'no-modifier') notify('组合键需至少带一个修饰键（Ctrl/⌘/Alt/Shift）')
+        else if (r.reason === 'unsupported') notify('这个主键暂不支持，请用字母、数字、方向键、空格或 F 键')
+        return // modifier-only：继续等主键
+      }
+      const accel = r.accel
       if ((recording === 'ai' ? accelMini : accelAi) === accel) { notify('与另一个快捷键冲突，换个组合'); return }
       onChange(recording === 'ai' ? { shortcutAi: accel } : { shortcutMini: accel })
       setRecording(null)

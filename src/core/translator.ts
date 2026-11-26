@@ -6,6 +6,7 @@
 
 import type { Account } from './types'
 import { loadWorkshopRoutes, runWorkshopChat } from './workshopChat'
+import { isValidAccelerator, humanizeShortcutError } from './hotkey'
 
 export const TRANSLATOR_SETTINGS_KEY = 'acm.translator.settings.v1'
 export const TRANSLATOR_ROUTE_KEY = 'acm.translator.routeKey.v1'
@@ -62,12 +63,34 @@ export const TRANSLATOR_LANGS = [
   '简体中文', '繁体中文', '英语', '日语', '韩语', '法语', '德语', '西班牙语', '俄语', '葡萄牙语', '意大利语',
 ] as const
 
+export type TranslatorShortcutField = 'shortcutSelection' | 'shortcutScreenshot' | 'shortcutInput'
+const SHORTCUT_FIELDS: TranslatorShortcutField[] = ['shortcutSelection', 'shortcutScreenshot', 'shortcutInput']
+const invalidShortcutFields = new Set<TranslatorShortcutField>()
+
+/** 上次读设置时发现的无效快捷键字段（旧版本存的坏值，如「Alt+Œ」）：设置页据此显示「未注册（请重新录入）」 */
+export function getInvalidTranslatorShortcutFields(): TranslatorShortcutField[] {
+  return [...invalidShortcutFields]
+}
+
 export function loadTranslatorSettings(): TranslatorSettings {
   try {
     const raw = localStorage.getItem(TRANSLATOR_SETTINGS_KEY)
     if (!raw) return { ...DEFAULT_TRANSLATOR_SETTINGS }
     const parsed = JSON.parse(raw) as Partial<TranslatorSettings>
-    return { ...DEFAULT_TRANSLATOR_SETTINGS, ...parsed }
+    const merged = { ...DEFAULT_TRANSLATOR_SETTINGS, ...parsed }
+    // v0.1.451：旧版本用 e.key 录入存下过坏值（Alt+Œ），Tauri 解析不了、每次
+    // 启动都注册失败。读时识别为无效：字段按未注册处理（不再下发注册），
+    // 并记下字段名让设置页提示重新录入；用户重录后新值合法即自动恢复正常。
+    for (const f of SHORTCUT_FIELDS) {
+      const v = merged[f]
+      if (v && !isValidAccelerator(v)) {
+        invalidShortcutFields.add(f)
+        merged[f] = ''
+      } else if (v) {
+        invalidShortcutFields.delete(f)
+      }
+    }
+    return merged
   } catch { return { ...DEFAULT_TRANSLATOR_SETTINGS } }
 }
 
@@ -117,6 +140,15 @@ export function pickTargetLang(text: string, s: TranslatorSettings): string {
   return s.targetLang
 }
 
+const SOURCE_LANG_LABEL: Record<LangFamily, string> = {
+  zh: '中文', ja: '日语', ko: '韩语', ru: '俄语', en: '英语', other: '自动检测',
+}
+
+/** 小窗语言行展示的源语言名（自动检测的结果，如「英语」；认不出给「自动检测」） */
+export function sourceLangLabel(text: string): string {
+  return SOURCE_LANG_LABEL[detectSourceLang(text)]
+}
+
 // ---------------- 原文预处理 ----------------
 
 const CJK_RE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/
@@ -126,14 +158,9 @@ const CJK_RE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/
  * kebab-case）为带空格的词组；②智能删除换行——单换行按两侧字符拼接（CJK 两侧
  * 直接相连，其余补空格），空行段落保留。
  */
-export function preprocessText(text: string, enabled: boolean): string {
-  if (!enabled) return text
-  let out = text
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/([A-Za-z0-9])_([A-Za-z0-9])/g, '$1 $2')
-    .replace(/([A-Za-z0-9])-([A-Za-z0-9])/g, '$1 $2')
-  const lines = out.split('\n')
+/** 智能删换行（小窗操作行同款）：单换行按两侧字符拼接，空行段落保留 */
+export function removeSmartNewlines(text: string): string {
+  const lines = text.split('\n')
   const joined: string[] = []
   for (const line of lines) {
     const prev = joined[joined.length - 1]
@@ -143,6 +170,16 @@ export function preprocessText(text: string, enabled: boolean): string {
     joined[joined.length - 1] = prev + glue + line
   }
   return joined.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export function preprocessText(text: string, enabled: boolean): string {
+  if (!enabled) return text
+  const split = text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Za-z0-9])_([A-Za-z0-9])/g, '$1 $2')
+    .replace(/([A-Za-z0-9])-([A-Za-z0-9])/g, '$1 $2')
+  return removeSmartNewlines(split)
 }
 
 // ---------------- Tauri 封装 ----------------
@@ -189,21 +226,24 @@ export async function openPermissionSettings(kind: 'accessibility' | 'screen'): 
   try { await inv('translator_open_settings', { kind }) } catch { /* 忽略 */ }
 }
 
-/** 把当前设置下发 Rust 注册全局快捷键（功能关掉的传空，Rust 只注销自己管的那批） */
+/** 把当前设置下发 Rust 注册全局快捷键（功能关掉的传空，Rust 只注销自己管的那批）。
+ * 无效值（旧版本存的坏值）在这一层就滤掉、不下发，免得每次启动反复注册失败；
+ * 注册真失败时把原因转成人话再报，不透上游英文原文与链接。 */
 export async function applyTranslatorShortcuts(s: TranslatorSettings): Promise<string | null> {
   const inv = tauriInvoke()
   if (!inv) return null
+  const valid = (v: string) => (v && isValidAccelerator(v) ? v : null)
   try {
     await inv('translator_shortcuts_apply', {
-      selection: s.selectionEnabled && s.shortcutSelection ? s.shortcutSelection : null,
-      screenshot: s.screenshotEnabled && s.shortcutScreenshot ? s.shortcutScreenshot : null,
-      input: s.shortcutInput ? s.shortcutInput : null,
+      selection: s.selectionEnabled ? valid(s.shortcutSelection) : null,
+      screenshot: s.screenshotEnabled ? valid(s.shortcutScreenshot) : null,
+      input: valid(s.shortcutInput),
       disableFullscreen: s.disableInFullscreen,
       doubleClick: s.selectionEnabled && s.doubleClick,
     })
     return null
   } catch (e) {
-    return e instanceof Error ? e.message : String(e ?? '快捷键注册失败')
+    return humanizeShortcutError(e instanceof Error ? e.message : String(e ?? '快捷键注册失败'))
   }
 }
 
@@ -222,11 +262,11 @@ export async function getSelectedText(): Promise<SelectionOutcome> {
 }
 
 export async function showTranslatorPop(payload: {
-  source: string; translated: string; targetLang: string; error: string | null; ops: OpsDisplay; x: number; y: number
+  source: string; translated: string; targetLang: string; sourceLang?: string; error: string | null; ops: OpsDisplay; x: number; y: number
 }): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  await inv('translator_show_pop', payload as unknown as Record<string, unknown>)
+  await inv('translator_show_pop', { sourceLang: '', ...payload } as unknown as Record<string, unknown>)
 }
 
 export async function writeClipboard(text: string): Promise<void> {
@@ -235,9 +275,49 @@ export async function writeClipboard(text: string): Promise<void> {
   try { await navigator.clipboard?.writeText(text) } catch { /* 忽略 */ }
 }
 
+/** 读剪贴板（小窗「粘贴并翻译」用；桌面端走 Rust pbpaste） */
+export async function readClipboard(): Promise<string> {
+  const inv = tauriInvoke()
+  if (inv) {
+    try { return await inv('translator_clipboard_read') as string } catch { /* 落到浏览器剪贴板 */ }
+  }
+  try { return await navigator.clipboard?.readText() ?? '' } catch { return '' }
+}
+
+/** 小窗置顶开关（对齐 Manggo 小窗的图钉） */
+export async function setPopAlwaysOnTop(on: boolean): Promise<void> {
+  const inv = tauriInvoke()
+  if (!inv) return
+  try { await inv('translator_pop_set_on_top', { on }) } catch { /* 忽略 */ }
+}
+
 // ---------------- 翻译执行（复用工坊路线 + 免费切换链） ----------------
 
 export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string }
+
+async function runTranslate(opts: {
+  accounts: Account[]
+  sessionPwd: string
+  text: string
+  targetLang: string
+  sourceLangName?: string
+  onChainNote?: (msg: string) => void
+}): Promise<TranslateOutcome> {
+  const { accounts, sessionPwd, targetLang } = opts
+  const data = await loadWorkshopRoutes(accounts)
+  if (!data.routes.length) throw new Error('没有可用模型：先在 AI 助手登录云账号或添加账户')
+  const savedKey = loadTranslatorRouteKey()
+  const route = data.routes.find(r => r.key === savedKey) ?? data.routes[0]
+  if (route.kind === 'account' && route.disabledReason) throw new Error(route.disabledReason)
+  const hint = opts.sourceLangName && opts.sourceLangName !== '自动检测' ? `源语言是${opts.sourceLangName}。` : ''
+  const translated = await runWorkshopChat({
+    route, freeOptions: data.freeOptions, accounts, sessionPwd,
+    system: `你是专业翻译。${hint}把用户给出的文本翻译成${targetLang}。只输出译文，不要解释、不要加引号、不要保留原文。保留原有的段落与换行结构。`,
+    user: opts.text.slice(0, 8000),
+    onChainNote: opts.onChainNote,
+  })
+  return { translated: translated.trim(), targetLang, usedLabel: route.label }
+}
 
 export async function translateWithRoutes(opts: {
   accounts: Account[]
@@ -246,20 +326,23 @@ export async function translateWithRoutes(opts: {
   settings: TranslatorSettings
   onChainNote?: (msg: string) => void
 }): Promise<TranslateOutcome> {
-  const { accounts, sessionPwd, settings } = opts
-  const targetLang = pickTargetLang(opts.text, settings)
-  const data = await loadWorkshopRoutes(accounts)
-  if (!data.routes.length) throw new Error('没有可用模型：先在 AI 助手登录云账号或添加账户')
-  const savedKey = loadTranslatorRouteKey()
-  const route = data.routes.find(r => r.key === savedKey) ?? data.routes[0]
-  if (route.kind === 'account' && route.disabledReason) throw new Error(route.disabledReason)
-  const translated = await runWorkshopChat({
-    route, freeOptions: data.freeOptions, accounts, sessionPwd,
-    system: `你是专业翻译。把用户给出的文本翻译成${targetLang}。只输出译文，不要解释、不要加引号、不要保留原文。保留原有的段落与换行结构。`,
-    user: opts.text.slice(0, 8000),
-    onChainNote: opts.onChainNote,
+  const targetLang = pickTargetLang(opts.text, opts.settings)
+  return runTranslate({
+    accounts: opts.accounts, sessionPwd: opts.sessionPwd, text: opts.text,
+    targetLang, onChainNote: opts.onChainNote,
   })
-  return { translated: translated.trim(), targetLang, usedLabel: route.label }
+}
+
+/** 小窗里切换目标语言/改原文后的重译：目标语言由用户显式选定，不走撞车改备用规则 */
+export async function translateToTarget(opts: {
+  accounts: Account[]
+  sessionPwd: string
+  text: string
+  targetLang: string
+  sourceLangName?: string
+  onChainNote?: (msg: string) => void
+}): Promise<TranslateOutcome> {
+  return runTranslate(opts)
 }
 
 /** 语言显示名 → speechSynthesis 的 BCP47 代码（朗读用） */
