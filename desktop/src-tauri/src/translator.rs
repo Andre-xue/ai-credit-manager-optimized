@@ -162,6 +162,13 @@ pub struct TranslatorPermissions {
 
 #[tauri::command]
 pub fn translator_permissions() -> TranslatorPermissions {
+    permissions_snapshot()
+}
+
+/// 权限预检实际执行体：命令本体与 CI 的 macOS FFI 集成测试共用同一份
+/// （仿 447 mail_tls_integration 调生产函数的先例），保证被测的就是真机跑的。
+#[doc(hidden)]
+pub fn permissions_snapshot() -> TranslatorPermissions {
     #[cfg(target_os = "macos")]
     {
         let accessibility = mac::ax_trusted();
@@ -230,6 +237,88 @@ pub fn translator_open_settings(kind: String) -> Result<(), String> {
     {
         let _ = kind;
         Err("仅支持 macOS".to_string())
+    }
+}
+
+// ---------------- FFI 探针（v0.1.462，CI 集成测试专用） ----------------
+// tests/translator_ffi_integration.rs 在 macOS runner 上逐个真跑这些预检类
+// FFI（进程内调用）：哪个函数有段错误，测试进程就死在哪个测试上。背景：
+// translator_permissions 是全 App 只有翻译页会调的命令，453 给它加的两个
+// 交叉核对（ax_trusted_opts / screen_names_visible）从未在真机被证实跑通，
+// 而无头 stub 验不到真 FFI——本模块把它们拉出来逐个过堂。生产代码不走这里
+// （命令走 permissions_snapshot 与各命令本体），探针只做同一函数的转发。
+#[doc(hidden)]
+pub mod ffi_probe {
+    /// AXIsProcessTrusted
+    pub fn ax() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::ax_trusted()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// AXIsProcessTrustedWithOptions（空字典，objc 拼 NSMutableDictionary）
+    pub fn ax_opts() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::ax_trusted_opts()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// CGPreflightScreenCaptureAccess
+    pub fn screen() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::screen_ok()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// CGWindowList 窗口名功能探针（CF 数组/字典迭代 + objc UTF8String）
+    pub fn names_visible() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::screen_names_visible()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// CGEventCreate + CGEventGetLocation
+    pub fn mouse() -> (f64, f64) {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::mouse_location()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            (0.0, 0.0)
+        }
+    }
+
+    /// CGDisplayBounds + CGWindowList 前景窗口全屏判定
+    pub fn frontmost_fullscreen() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::frontmost_app_fullscreen()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
     }
 }
 

@@ -107,3 +107,53 @@ jobs:
       - name: Run mail TLS integration test
         working-directory: desktop/src-tauri
         run: cargo test --test mail_tls_integration -- --nocapture
+
+  # v0.1.462 新增：翻译助手 macOS 预检 FFI 集成测试
+  # （tests/translator_ffi_integration.rs）。Ethan 实机点开翻译助手整个 App
+  # 闪退，而打开翻译页才会走的原生代码只有 translator_permissions 命令里
+  # 的预检 FFI（453 加的 ax_trusted_opts / screen_names_visible 从未在真机
+  # 被证实跑通，无头 stub 验不到）。本 job 在 macOS（arm64，与 Ethan 的 M1
+  # 同架构）runner 上进程内逐个真跑这批 FFI：哪个段错误，测试进程就死在
+  # 哪个测试上。此后每个版本都会被它守住。
+  rust-translator-ffi:
+    name: Rust translator FFI test (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: 'desktop/src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend (tauri-build 需要 frontendDist)
+        run: npm run build
+
+      # 与 rust-mail-tls 同款：裸 cargo test 没有 Tauri CLI 注入的合并配置，
+      # macos-private-api 特征校验需要这一项，在 CI 工作区内补上（不提交回仓库）。
+      - name: Inject macOSPrivateApi for plain cargo build
+        run: |
+          python3 - <<'EOF'
+          import json
+          p = 'desktop/src-tauri/tauri.conf.json'
+          d = json.load(open(p))
+          d.setdefault('app', {})['macOSPrivateApi'] = True
+          json.dump(d, open(p, 'w'), indent=2)
+          print('macOSPrivateApi injected for cargo test build')
+          EOF
+
+      - name: Run translator FFI integration test
+        working-directory: desktop/src-tauri
+        run: cargo test --test translator_ffi_integration -- --nocapture --test-threads=1
