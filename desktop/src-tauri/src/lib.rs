@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::OnceLock;
 
 mod dlna;
-mod mail_imap;
+pub mod mail_imap;
 
 /// 进程级共享 HTTP Client：复用 TLS 连接池，避免每次调用重新握手（性能）。
 /// v0.1.285 起禁用重定向：云端请求带会话令牌/自定义头，reqwest 跟随重定向时不会剥离

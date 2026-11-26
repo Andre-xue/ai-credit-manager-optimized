@@ -242,7 +242,42 @@ fn globals() -> &'static MailGlobals {
     })
 }
 
+/// v0.1.447：进程级安装 rustls CryptoProvider。
+/// lib::run() 首行与本模块建连前都会调用；集成测试调用同一个函数，
+/// 保证测试与生产走同一条初始化路径。
+pub fn ensure_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // 修复在此落点：install_default(ring provider)。
+        // 复现提交里此处为空——ClientConfig::builder() 随即 panic，与真机一致。
+    });
+}
+
+/// TLS 根证书库：生产用 webpki 系统根；集成测试可额外注入一张本地自签证书
+/// （tests/mail_tls_integration.rs），其余建连代码与生产完全一致。
+fn root_store(
+    extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
+) -> Result<rustls::RootCertStore, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(cert) = extra_root {
+        roots
+            .add(cert)
+            .map_err(|e| format!("注入额外根证书失败：{e}"))?;
+    }
+    Ok(roots)
+}
+
 async fn raw_connect(host: &str, port: u16, use_tls: bool) -> Result<ImapConn, String> {
+    raw_connect_x(host, port, use_tls, None).await
+}
+
+async fn raw_connect_x(
+    host: &str,
+    port: u16,
+    use_tls: bool,
+    extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
+) -> Result<ImapConn, String> {
     let tcp = tokio::time::timeout(
         std::time::Duration::from_secs(TCP_TIMEOUT_SECS),
         TcpStream::connect((host, port)),
@@ -251,10 +286,8 @@ async fn raw_connect(host: &str, port: u16, use_tls: bool) -> Result<ImapConn, S
     .map_err(|_| format!("连接服务器超时（{host}:{port}，{TCP_TIMEOUT_SECS} 秒内未建立 TCP 连接）"))?
     .map_err(|e| format!("连接 {host}:{port} 失败：{e}"))?;
     let stream: BoxStream = if use_tls {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
+            .with_root_certificates(root_store(extra_root)?)
             .with_no_client_auth();
         let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
@@ -288,7 +321,46 @@ async fn login_conn(
     username: &str,
     secret: &str,
 ) -> Result<(ImapConn, String), String> {
-    let mut conn = raw_connect(host, port, use_tls).await?;
+    login_conn_x(host, port, use_tls, auth_mode, username, secret, None).await
+}
+
+/// 集成测试入口（tests/mail_tls_integration.rs）：走与生产完全相同的
+/// TCP → TLS 握手 → greeting → LOGIN → CAPABILITY 代码，只额外信任一张
+/// 本地自签证书；返回 CAPABILITY 串。436/445 的无头验收全靠 stub，从未跑过
+/// 真 Rust TLS——本入口就是为 v0.1.447 的 CI 真握手测试补的课。
+#[doc(hidden)]
+pub async fn login_conn_with_extra_root(
+    host: &str,
+    port: u16,
+    use_tls: bool,
+    auth_mode: &str,
+    username: &str,
+    secret: &str,
+    extra_root: rustls::pki_types::CertificateDer<'static>,
+) -> Result<String, String> {
+    let (_conn, caps) = login_conn_x(
+        host,
+        port,
+        use_tls,
+        auth_mode,
+        username,
+        secret,
+        Some(extra_root),
+    )
+    .await?;
+    Ok(caps)
+}
+
+async fn login_conn_x(
+    host: &str,
+    port: u16,
+    use_tls: bool,
+    auth_mode: &str,
+    username: &str,
+    secret: &str,
+    extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
+) -> Result<(ImapConn, String), String> {
+    let mut conn = raw_connect_x(host, port, use_tls, extra_root).await?;
     // v0.1.445：greeting 必须带超时——436 这里是裸 read_line，服务器连上后不发问候语
     // （隐式 TLS 等待顺序错位、服务器假死、中间设备吞包）就会永久死等，界面无限转圈。
     let greet = conn

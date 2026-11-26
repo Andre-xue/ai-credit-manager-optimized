@@ -52,3 +52,44 @@ jobs:
           curl -f http://localhost:8080/health
           curl -f http://localhost:8080/ > /dev/null
           docker rm -f acm-test
+
+  # v0.1.447 新增：真 Rust TLS 集成测试（tests/mail_tls_integration.rs）。
+  # 436/445 的无头验收全靠前端 stub，从未跑过真 TLS，导致 rustls
+  # CryptoProvider 未安装的总根源漏网。本 job 用 App 自身的 mail_imap
+  # 连接代码对本地假 TLS IMAP 服务器完成握手+LOGIN+CAPABILITY，
+  # 此后每个版本都会被它守住。
+  rust-mail-tls:
+    name: Rust mail TLS integration test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y webkit2gtk-4.1 libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: 'desktop/src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend (tauri-build 需要 frontendDist)
+        run: npm run build
+
+      - name: Run mail TLS integration test
+        working-directory: desktop/src-tauri
+        run: cargo test --test mail_tls_integration -- --nocapture

@@ -12,6 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# 仅测试用（不进正式二进制）：mail_tls_integration 集成测试需要 tokio 宏与运行时。
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "macos-private-api", "protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
