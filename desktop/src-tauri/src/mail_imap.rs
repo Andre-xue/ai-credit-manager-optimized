@@ -248,8 +248,9 @@ fn globals() -> &'static MailGlobals {
 pub fn ensure_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // 修复在此落点：install_default(ring provider)。
-        // 复现提交里此处为空——ClientConfig::builder() 随即 panic，与真机一致。
+        // ring 已在依赖树里（Cargo.toml 显式启用 rustls 的 ring feature），
+        // 不引入 aws-lc-rs 的额外体积。install 失败只可能是已装过，忽略即可。
+        let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
 
@@ -278,6 +279,9 @@ async fn raw_connect_x(
     use_tls: bool,
     extra_root: Option<rustls::pki_types::CertificateDer<'static>>,
 ) -> Result<ImapConn, String> {
+    // 双保险：即便某条路径没经过 lib::run() 的启动初始化，建连前也确保
+    // provider 已装（Once 保证只装一次，后续调用零成本）。
+    ensure_crypto_provider();
     let tcp = tokio::time::timeout(
         std::time::Duration::from_secs(TCP_TIMEOUT_SECS),
         TcpStream::connect((host, port)),

@@ -4380,6 +4380,11 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
 }
 
 pub fn run() {
+    // v0.1.447：进程级安装 rustls CryptoProvider（ring）。不装的话任何
+    // ClientConfig::builder() 都 panic（邮箱 TLS 握手真机必崩的总根源）；
+    // 装一次全局生效：邮箱 IMAP、reqwest、tokio-tungstenite 等所有走
+    // rustls 的路径都受益。必须赶在任何 TLS 使用之前，故放 run() 首行。
+    mail_imap::ensure_crypto_provider();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

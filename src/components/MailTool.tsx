@@ -17,6 +17,7 @@ import {
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
   mailDeleteAllPreview, mailDeleteAll, mailOAuthListenStart, mailOAuthListenResult, mailOAuthExchange,
   mailEnsureConnected, mailCancelConnect, sanitizeMailHtml, buildOAuthUrl,
+  displayMailError, shouldSuggestCredentialCheck,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
   type MailBodyContent, type MailDeleteAllReport,
 } from '../core/mail'
@@ -302,7 +303,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
 
           {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
           {visibleMetas.filter(a => syncMap[a.id]?.state === 'error').map(a => (
-            <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{syncMap[a.id]?.message}</div>
+            <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{displayMailError(syncMap[a.id]?.message ?? '')}</div>
           ))}
 
           {!metas.length ? (
@@ -713,7 +714,11 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
       notify(`「${meta.email}」连接成功，已同步 ${(loadMailCache()[meta.id]?.messages ?? []).length} 封邮件`)
       onAdded()
     } else {
-      setError(`账户已保存，但连接失败：${outcome.error}。请检查服务器/授权码后，在收件箱点「刷新」重试。`)
+      // v0.1.447：「请检查服务器/授权码」只对服务器/凭据类错误拼；
+      // panic 等内部错误拼这句只会误导（与授权码无关）。
+      setError(shouldSuggestCredentialCheck(outcome.error ?? '')
+        ? `账户已保存，但连接失败：${outcome.error}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
+        : `账户已保存，但连接失败：${outcome.error}。可在收件箱点「刷新」重试。`)
       setBusy('')
     }
   }
@@ -819,7 +824,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
         ) : (
           <label>{preset.secretLabel}<input className="input" placeholder={`不是登录密码，是${preset.secretLabel}`} value={secretInput} onChange={e => setSecretInput(e.target.value)} /></label>
         )}
-        {error && <div className="mail-error-box"><AlertTriangle size={15} /> {error}</div>}
+        {error && <div className="mail-error-box"><AlertTriangle size={15} /> {displayMailError(error)}</div>}
         <div className="mail-form-actions">
           <button className="btn ghost" onClick={() => { if (busy) void cancelVerify(); onBack() }}>取消</button>
           {busy && (
@@ -894,7 +899,7 @@ function DeleteAllModal({ metas, pwd, notify, onClose, onDone }: {
                 <div key={account.id} className="mail-modal-row">
                   <span className="mail-modal-email">{mailPlatform(account.platformId).name} · {account.email}</span>
                   {error
-                    ? <span className="mail-modal-err">连接失败：{error}</span>
+                    ? <span className="mail-modal-err">连接失败：{displayMailError(error)}</span>
                     : <span className="mail-modal-count">{total} 封 · {modeText(mode)}</span>}
                 </div>
               ))}

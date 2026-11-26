@@ -655,6 +655,35 @@ export function raceTimeout<T>(p: Promise<T>, ms: number, label: string): Promis
   })
 }
 
+/**
+ * v0.1.447：后端错误文本的显示清洗。Rust 侧 panic 原文经任务错误格式化后，
+ * 换行会变成字面量「\n」两字符（Ethan 实机截图里整段报错带着 \n 显示），
+ * 这里把字面 \n / \r / \" 还原，再把连续空白压成单个空格，保证错误条里可读。
+ */
+export function displayMailError(raw: string): string {
+  return raw
+    .replace(/\\r\\n|\\n|\\r/g, ' ')
+    .replace(/\\"/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * v0.1.447：内部错误（程序自身故障，如 rustls CryptoProvider panic）与
+ * 服务器/凭据类错误分开。前者拼「请检查服务器/授权码」只会误导用户
+ * （Ethan 实机原话：跟授权码没关系），只对后者拼那句通用后缀。
+ */
+export function isMailInternalError(raw: string): boolean {
+  return /panicked|CryptoProvider|连接任务异常结束|内部错误/i.test(raw)
+}
+
+export function shouldSuggestCredentialCheck(raw: string): boolean {
+  if (!raw || isMailInternalError(raw)) return false
+  // 超时类错误已有分步说明（卡在哪一步），再拼「检查服务器/授权码」是噪音
+  if (/超时|timeout/i.test(raw)) return false
+  return true
+}
+
 /** 取消进行中的连接验证（v0.1.445）：通知 Rust abort 在途登录，并断开已建会话 */
 export async function mailCancelConnect(accountId: string): Promise<void> {
   try { await tauriInvoke('mail_imap_cancel_connect', { accountId }) } catch { /* 命令不存在（旧后端）则忽略 */ }
@@ -821,7 +850,7 @@ export async function mailSyncAccount(account: MailAccountMeta, pwd: string, hea
     return { accountId: account.id, ok: true, newKeys, caps: session.caps, idleSupported: session.caps.includes('IDLE') }
   } catch (e) {
     mailForgetSession(account.id)
-    return { accountId: account.id, ok: false, error: e instanceof Error ? e.message : String(e), newKeys: [], caps: '', idleSupported: false }
+    return { accountId: account.id, ok: false, error: displayMailError(e instanceof Error ? e.message : String(e)), newKeys: [], caps: '', idleSupported: false }
   }
 }
 
@@ -926,7 +955,7 @@ export async function mailDeleteAllPreview(accounts: MailAccountMeta[], pwd: str
       perAccount.push({ account, total: sum, mode })
       total += sum
     } catch (e) {
-      perAccount.push({ account, total: 0, mode: 'permanent', error: e instanceof Error ? e.message : String(e) })
+      perAccount.push({ account, total: 0, mode: 'permanent', error: displayMailError(e instanceof Error ? e.message : String(e)) })
     }
   }
   return { perAccount, total }
@@ -981,7 +1010,7 @@ export async function mailDeleteAll(
         saveMailCache(cache)
       }
     } catch (e) {
-      report.error = e instanceof Error ? e.message : String(e)
+      report.error = displayMailError(e instanceof Error ? e.message : String(e))
     }
     reports.push(report)
   }

@@ -6,7 +6,8 @@ import {
   parseListFolders, parseFetchHeaders, parseSearchUids, resolveDeleteMode, parseMimeMessage,
   htmlToText, sanitizeMailHtml, loadMailVisibility, saveMailVisibility, isAccountVisible,
   buildOAuthUrl, raceTimeout, mailConnectTimeoutMs, MAIL_CONNECT_TIMEOUT_MS,
-  mailInvoke, mailStepTimeoutMs, type MailFolder,
+  mailInvoke, mailStepTimeoutMs, displayMailError, isMailInternalError, shouldSuggestCredentialCheck,
+  type MailFolder,
 } from './mail'
 
 class MemStorage {
@@ -270,5 +271,32 @@ describe('OAuth URL', () => {
     const m = buildOAuthUrl('microsoft', 'cid-2', 18766)
     expect(m).toContain('login.microsoftonline.com')
     expect(m).toContain('IMAP.AccessAsUser.All')
+  })
+})
+
+describe('错误文本显示清洗与后缀决策（447）', () => {
+  // Ethan 实机截图原文形态：panic 信息带着字面 \n 显示
+  const panicText = '连接任务异常结束：task 112 panicked with message "\\nCould not automatically determine the process-level CryptoProvider from Rustls crate features.\\nCall CryptoProvider::install_default() before this point"'
+
+  it('字面 \\n / \\" 还原为空格与引号，不再显示转义符', () => {
+    const out = displayMailError(panicText)
+    expect(out).not.toContain('\\n')
+    expect(out).toContain('Could not automatically determine the process-level CryptoProvider')
+    expect(out).toContain('task 112 panicked')
+  })
+
+  it('普通多行错误压成单行可读文本', () => {
+    expect(displayMailError('a1 NO  Login   failed')).toBe('a1 NO Login failed')
+  })
+
+  it('panic / CryptoProvider 属内部错误，不拼「请检查服务器/授权码」', () => {
+    expect(isMailInternalError(panicText)).toBe(true)
+    expect(shouldSuggestCredentialCheck(panicText)).toBe(false)
+  })
+
+  it('服务器登录失败拼后缀；超时类不拼', () => {
+    expect(shouldSuggestCredentialCheck('a1 NO Login failed: authentication rejected')).toBe(true)
+    expect(shouldSuggestCredentialCheck('等待服务器问候语超时（10 秒内服务器没有响应）')).toBe(false)
+    expect(shouldSuggestCredentialCheck('')).toBe(false)
   })
 })
