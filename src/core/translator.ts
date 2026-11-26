@@ -222,6 +222,16 @@ export async function getTranslatorPermissions(): Promise<TranslatorPermissions>
   } catch { return { macos: false, accessibility: false, screenCapture: false } }
 }
 
+/** 打开路径面包屑（v0.1.462）：把前端节点（页面挂载、首轮权限返回、快捷键
+ * 下发结果）写进 Rust 侧 diag.log，与 perm-open / apply 步骤行拼成时间线；
+ * 再闪退时看日志尾部就知道死在哪两步之间。非 Tauri 环境静默跳过，
+ * 失败绝不影响功能（全程吞错）。 */
+export async function noteTranslatorDiag(note: string): Promise<void> {
+  const inv = tauriInvoke()
+  if (!inv) return
+  try { await inv('translator_diag_note', { note }) } catch { /* 忽略 */ }
+}
+
 /** 触发辅助功能系统授权请求（系统会把 App 登记进辅助功能列表并弹窗） */
 export async function requestAccessibility(): Promise<boolean> {
   const inv = tauriInvoke()

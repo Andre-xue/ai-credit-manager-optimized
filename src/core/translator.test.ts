@@ -15,7 +15,7 @@ import {
   detectSourceLang, pickTargetLang, preprocessText, removeSmartNewlines, sourceLangLabel,
   loadTranslatorSettings, saveTranslatorSettings, DEFAULT_TRANSLATOR_SETTINGS,
   getInvalidTranslatorShortcutFields, TRANSLATOR_SETTINGS_KEY,
-  parseTranslatorPermissions,
+  parseTranslatorPermissions, noteTranslatorDiag,
 } from './translator'
 
 beforeEach(() => { ;(localStorage as any).clear() })
@@ -142,5 +142,11 @@ describe('removeSmartNewlines / sourceLangLabel', () => {
     expect(sourceLangLabel('Hello world, this is a test')).toBe('英语')
     expect(sourceLangLabel('你好世界')).toBe('中文')
     expect(sourceLangLabel('12345')).toBe('自动检测')
+  })
+})
+
+describe('noteTranslatorDiag（v0.1.462 打开路径面包屑）', () => {
+  it('无 Tauri 环境时静默跳过、不抛错', async () => {
+    await expect(noteTranslatorDiag('tool-mount')).resolves.toBeUndefined()
   })
 })

@@ -85,6 +85,63 @@ static TRANSLATOR_SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 // 再带 current_exe 路径——运行的若不是 /Applications 里的正本，一眼可见。
 static LAST_PERM_DIAG: Mutex<Option<((bool, bool, bool, bool), u64)>> = Mutex::new(None);
 
+// 权限命令调用计数（v0.1.462）：打开路径面包屑只详记前 5 次调用，避免 2.5 秒
+// 轮询把 diag.log 刷爆；崩溃发生在第一次打开时，前 5 次足够定位。
+static PERM_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 诊断探针的 panic 隔离（v0.1.462）：探针是纯诊断用途，其内部 Rust 级
+/// panic 只落一行 perm-probe-panic 并回 false，不许带走命令乃至整个进程。
+/// （段错误 catch_unwind 拦不住——那靠 perm-open 的 step 面包屑定位。）
+fn probe_unwind(name: &str, f: fn() -> bool) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => {
+            diag("perm-probe-panic", &format!("probe={name}"));
+            false
+        }
+    }
+}
+
+/// 进程级 panic 落盘钩子（v0.1.462，lib.rs 的 run() 开头安装）：任何线程的
+/// Rust panic 先把位置与消息写进本 diag.log，再链回默认钩子保持原行为。
+/// 若「打开翻译助手闪退」源于某处 panic，下次看日志尾部的 panic 行即知断点。
+/// 钩子内只做忽略错误的追加写（diag 本身从不 panic），消息截断 200 字。
+pub fn install_diag_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "?".to_string());
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "(no message)".to_string()
+        };
+        diag(
+            "panic",
+            &format!("at={loc} msg={}", msg.chars().take(200).collect::<String>()),
+        );
+        prev(info);
+    }));
+}
+
+/// 前端面包屑落盘（v0.1.462）：翻译页挂载、首轮权限返回、快捷键下发结果等
+/// 前端节点经此写进 diag.log，与 Rust 侧 perm-open / apply 步骤行拼成完整
+/// 的打开路径时间线——再闪退，看日志最后几行就知道死在哪两步之间。
+/// 只记节点名，内容清洗为单行并截断。
+#[tauri::command]
+pub fn translator_diag_note(note: String) {
+    let clean: String = note
+        .chars()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .take(120)
+        .collect();
+    diag("fe-note", &clean);
+}
+
 fn diag_perm(ax: bool, ax_opts: bool, screen: bool, names_visible: bool) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -171,17 +228,36 @@ pub fn translator_permissions() -> TranslatorPermissions {
 pub fn permissions_snapshot() -> TranslatorPermissions {
     #[cfg(target_os = "macos")]
     {
+        // v0.1.462 打开路径面包屑：本命令全 App 只有翻译页会调（挂载即调），
+        // 前 5 次调用逐步落盘（step 行写在每步 FFI 之前——崩在哪一步，日志就
+        // 停在哪一步的前一行）。diag 是同步 write 系统调用，进程崩了也留得住。
+        let call = PERM_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let trace = call <= 5;
+        if trace {
+            diag("perm-open", &format!("call={call} step=ax"));
+        }
         let accessibility = mac::ax_trusted();
+        if trace {
+            diag("perm-open", &format!("call={call} step=screen ax={accessibility}"));
+        }
         let screen_capture = mac::screen_ok();
+        if trace {
+            diag("perm-open", &format!("call={call} step=ax-opts screen={screen_capture}"));
+        }
         // v0.1.453 交叉核对 + 落盘原始读数：axOpts 是 WithOptions（空字典、不弹窗）
         // 的第二读数，namesVisible 是「窗口名可见」功能探针（不依赖录屏 preflight）。
         // 返回给前端的仍是官方两 API 的读数，交叉读数只进 diag.log 供定性。
-        diag_perm(
-            accessibility,
-            mac::ax_trusted_opts(),
-            screen_capture,
-            mac::screen_names_visible(),
-        );
+        // v0.1.462：两个探针是纯诊断用途，套 catch_unwind——它们内部的 Rust 级
+        // panic 不许再带走命令乃至进程（panic 发生时全局钩子也会落盘 perm 行）。
+        let ax_opts = probe_unwind("ax-opts", mac::ax_trusted_opts);
+        if trace {
+            diag("perm-open", &format!("call={call} step=names axOpts={ax_opts}"));
+        }
+        let names_visible = probe_unwind("names", mac::screen_names_visible);
+        if trace {
+            diag("perm-open", &format!("call={call} step=done names={names_visible}"));
+        }
+        diag_perm(accessibility, ax_opts, screen_capture, names_visible);
         TranslatorPermissions { macos: true, accessibility, screen_capture }
     }
     #[cfg(not(target_os = "macos"))]
@@ -335,6 +411,17 @@ pub fn translator_shortcuts_apply(
     disable_fullscreen: bool,
     double_click: bool,
 ) -> Result<(), String> {
+    // v0.1.462 打开路径面包屑：本命令在启动（宿主）与打开翻译页（300ms 后）
+    // 都会被调，begin/end 成对出现才算走完；缺 end 即死在本命令内部。
+    diag(
+        "apply-begin",
+        &format!(
+            "sel={} shot={} input={} dc={double_click}",
+            selection.is_some(),
+            screenshot.is_some(),
+            input.is_some()
+        ),
+    );
     if let Ok(mut c) = CONFIG.lock() {
         c.disable_fullscreen = disable_fullscreen;
     }
@@ -352,6 +439,7 @@ pub fn translator_shortcuts_apply(
             let _ = gs.unregister(sc);
         }
     }
+    diag("apply-step", "unregistered-old");
     let mut registered: Vec<Shortcut> = Vec::new();
     let mut register = |raw: &Option<String>, kind: &'static str| -> Result<(), String> {
         let Some(v) = raw else { return Ok(()) };
@@ -405,6 +493,7 @@ pub fn translator_shortcuts_apply(
     if let Ok(mut store) = TRANSLATOR_SHORTCUTS.lock() {
         *store = registered;
     }
+    diag("apply-end", if r.is_ok() { "ok" } else { "err" });
     r
 }
 
@@ -1296,6 +1385,7 @@ mod mac {
             return;
         }
         std::thread::spawn(move || {
+            super::diag("dc-thread-start", "polling-loop-entered");
             let mut last_down: Option<(Instant, f64, f64)> = None;
             let mut was_down = false;
             loop {

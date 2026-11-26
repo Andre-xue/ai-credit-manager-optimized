@@ -10,6 +10,7 @@ import {
   loadTranslatorSettings, saveTranslatorSettings, applyTranslatorShortcuts,
   getTranslatorPermissions, requestAccessibility, requestScreenCapture, openPermissionSettings,
   preprocessText, pickTargetLang, translateWithRoutes, speakLangOf, writeClipboard,
+  noteTranslatorDiag,
   saveTranslatorRouteKey, takePendingTranslatorTab, getInvalidTranslatorShortcutFields,
   TRANSLATOR_LANGS, type TranslatorSettings, type TranslatorPermissions, type OpsDisplay,
   type TranslatorShortcutField,
@@ -91,7 +92,17 @@ function ShortcutRecorder({ value, onChange, others, notify, invalid }: {
 
 function usePermissions(): { perms: TranslatorPermissions; refresh: () => void } {
   const [perms, setPerms] = useState<TranslatorPermissions>({ macos: false, accessibility: false, screenCapture: false })
-  const refresh = useCallback(() => { void getTranslatorPermissions().then(setPerms) }, [])
+  // v0.1.462 面包屑：挂载与首轮权限返回各落一行（与 Rust 的 perm-open 对照）
+  const notedFirst = useRef(false)
+  const refresh = useCallback(() => {
+    void getTranslatorPermissions().then(p => {
+      setPerms(p)
+      if (!notedFirst.current) {
+        notedFirst.current = true
+        void noteTranslatorDiag(`tool-perms-first macos=${p.macos} ax=${p.accessibility} screen=${p.screenCapture}`)
+      }
+    })
+  }, [])
   useEffect(() => {
     refresh()
     // 实时监测真实状态：定时轮询 + 窗口聚焦时刷新（去系统设置改完切回来立刻同步）
@@ -118,6 +129,9 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   const { data, routeKey, setRouteKey } = useRouteData(accounts)
 
   useEffect(() => { takePendingTranslatorTab() }, [])
+  // v0.1.462 面包屑：页面挂载落一行——若闪退时日志里连这行都没有，问题在
+  // 组件挂载之前；有这行没 perm-open，就是死在首次 invoke 的路上。
+  useEffect(() => { void noteTranslatorDiag('tool-mount') }, [])
   useEffect(() => { saveTranslatorRouteKey(routeKey) }, [routeKey])
 
   const update = useCallback((patch: Partial<TranslatorSettings>) => {
@@ -138,7 +152,10 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   useEffect(() => {
     window.clearTimeout(applyTimer.current)
     applyTimer.current = window.setTimeout(() => {
-      void applyTranslatorShortcuts(settings).then(err => { if (err) notify(`快捷键注册失败：${err}`) })
+      void applyTranslatorShortcuts(settings).then(err => {
+        if (err) notify(`快捷键注册失败：${err}`)
+        void noteTranslatorDiag(err ? 'tool-apply-err' : 'tool-apply-ok')
+      })
     }, 300)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.shortcutSelection, settings.shortcutScreenshot, settings.shortcutInput, settings.selectionEnabled, settings.screenshotEnabled, settings.disableInFullscreen, settings.doubleClick])

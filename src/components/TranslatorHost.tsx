@@ -3,6 +3,7 @@ import type { Account } from '../core/types'
 import { isDesktopApp } from '../core/openExternal'
 import {
   loadTranslatorSettings, applyTranslatorShortcuts, getSelectedText, showTranslatorPop,
+  noteTranslatorDiag,
   preprocessText, translateWithRoutes, translateToTarget, sourceLangLabel, writeClipboard,
   TRANSLATOR_SETTINGS_EVENT, setPendingTranslatorTab,
 } from '../core/translator'
@@ -27,7 +28,12 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
     let dead = false
     const unlistens: (() => void)[] = []
 
-    const applyShortcuts = () => { void applyTranslatorShortcuts(loadTranslatorSettings()) }
+    // v0.1.462 面包屑：启动下发结果落盘，与打开翻译页时的 tool-apply 对照——
+    // 启动这行 ok、开页后死在 apply，就能把范围缩到「第二次下发」的差异上。
+    const applyShortcuts = () => {
+      void applyTranslatorShortcuts(loadTranslatorSettings())
+        .then(err => noteTranslatorDiag(err ? 'host-apply-err' : 'host-apply-ok'))
+    }
     applyShortcuts()
     const onSettings = () => applyShortcuts()
     window.addEventListener(TRANSLATOR_SETTINGS_EVENT, onSettings)
