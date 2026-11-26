@@ -134,6 +134,25 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   useEffect(() => { void noteTranslatorDiag('tool-mount') }, [])
   useEffect(() => { saveTranslatorRouteKey(routeKey) }, [routeKey])
 
+  // v0.1.465：「去开启」点了必须有明确去向与反馈——先请求系统登记/提示，
+  // 再直达系统设置对应面板，并留一行常驻说明写清去哪开、怎么开（464 实机
+  // 划词那颗点了无弹窗无变化、用户无从下手；辅助功能最终也始终没授上）。
+  // 权限轮询感知到两个都开启后自动收起说明。
+  const [permHint, setPermHint] = useState('')
+  useEffect(() => {
+    if (perms.accessibility && perms.screenCapture) setPermHint('')
+  }, [perms.accessibility, perms.screenCapture])
+  const goEnable = useCallback((kind: 'accessibility' | 'screen') => {
+    if (kind === 'accessibility') {
+      void requestAccessibility().then(() => refreshPerms())
+      setPermHint('已打开系统设置 → 隐私与安全性 → 辅助功能：请把「AI Cube」的开关打开；若列表里没有它，点列表下方的 + 号、从「应用程序」里把它添加进来。打开后回到本页会自动变「已开启」。')
+    } else {
+      void requestScreenCapture().then(() => refreshPerms())
+      setPermHint('已打开系统设置 → 隐私与安全性 → 录屏与系统录音：请把「AI Cube」的开关打开。注意录屏授权对已经在运行的程序不生效，打开后请完全退出并重开本 App。')
+    }
+    void openPermissionSettings(kind)
+  }, [refreshPerms])
+
   const update = useCallback((patch: Partial<TranslatorSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch }
@@ -220,17 +239,16 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
             <StatusDot ok={it.state.cls === 'ok'} warn={it.state.cls === 'warn'} />
             {it.label}：{it.state.text}
             {it.state.cls === 'warn' && (
-              <button className="btn sm" onClick={() => {
-                if (it.kind === 'accessibility') void requestAccessibility().then(() => refreshPerms())
-                else void requestScreenCapture().then(() => refreshPerms())
-                void openPermissionSettings(it.kind)
-              }}>去开启</button>
+              <button className="btn sm" onClick={() => goEnable(it.kind)}>去开启</button>
             )}
           </span>
         )) : (
           <span className="trs-banner-item"><ShieldAlert size={14} /> 划词与截图翻译需要 macOS 桌面端；输入翻译不受影响。</span>
         )}
       </div>
+      {permHint && perms.macos && (
+        <p className="trs-note" style={{ margin: '6px 0 0' }}>{permHint}</p>
+      )}
 
       <div className="ws-chips" style={{ marginTop: 4 }}>
         <button className={`chip-btn ${tab === 'input' ? 'on' : ''}`} onClick={() => setTab('input')}><Languages size={13} /> 输入翻译</button>
@@ -289,7 +307,7 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
                 </span>
               </div>
               {!perms.accessibility && perms.macos && (
-                <button className="btn sm" onClick={() => { void requestAccessibility().then(() => refreshPerms()); void openPermissionSettings('accessibility') }}>去开启</button>
+                <button className="btn sm" onClick={() => goEnable('accessibility')}>去开启</button>
               )}
             </div>
             <div className="trs-row">
@@ -307,7 +325,7 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
                 </span>
               </div>
               {!perms.screenCapture && perms.macos && (
-                <button className="btn sm" onClick={() => { void requestScreenCapture().then(() => refreshPerms()); void openPermissionSettings('screen') }}>去开启</button>
+                <button className="btn sm" onClick={() => goEnable('screen')}>去开启</button>
               )}
             </div>
             <p className="trs-note">权限状态实时读取系统真实值：在系统设置里关掉，这里立刻变「未开启」；功能开着但缺权限会显示「待授权」，不会假装可用。</p>

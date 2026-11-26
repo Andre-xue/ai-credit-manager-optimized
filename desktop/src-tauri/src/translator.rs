@@ -53,6 +53,13 @@ fn utc_stamp(secs: u64) -> String {
     )
 }
 
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub fn diag(event: &str, detail: &str) {
     let Some(path) = diag_path() else { return };
     if let Some(dir) = path.parent() {
@@ -253,7 +260,13 @@ pub fn permissions_snapshot() -> TranslatorPermissions {
 pub fn translator_request_accessibility() -> bool {
     #[cfg(target_os = "macos")]
     {
-        mac::ax_trusted_with_prompt()
+        // v0.1.465 请求路径面包屑：464 修完检查路径后，实机点「去开启」进程
+        // 仍消失过一次；本命令进出成对落盘（同步写），begin 有 end 无即死在
+        // 本命令内，end 里的 trusted 是系统当时的真实读数。
+        diag("req-ax", "begin");
+        let trusted = mac::ax_trusted_with_prompt();
+        diag("req-ax", &format!("end trusted={trusted}"));
+        trusted
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -266,7 +279,12 @@ pub fn translator_request_accessibility() -> bool {
 pub fn translator_request_screen() -> bool {
     #[cfg(target_os = "macos")]
     {
-        mac::screen_request()
+        // v0.1.465：与 req-ax 同口径面包屑（本命令走纯 C 的
+        // CGRequestScreenCaptureAccess，465 实机该路径已证明可用）。
+        diag("req-screen", "begin");
+        let granted = mac::screen_request();
+        diag("req-screen", &format!("end granted={granted}"));
+        granted
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -324,6 +342,33 @@ pub mod ffi_probe {
         #[cfg(target_os = "macos")]
         {
             super::mac::screen_ok()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// v0.1.465：prompt 选项字典构造+释放（纯 CFDictionaryCreate，无弹窗、
+    /// 不调 WithOptions）——旧手拼 msgSend 字典正是这一步在真机段错误
+    pub fn ax_prompt_dict() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::ax_prompt_dict_roundtrip()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// v0.1.465：「去开启」走的完整 prompt 请求路径（生产函数本体）。
+    /// runner 上调用会把测试进程登记进辅助功能列表并触发系统提示（异步、
+    /// 不阻塞调用），测试只断言不崩、返回值可读。
+    pub fn ax_prompt() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::mac::ax_trusted_with_prompt()
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -635,6 +680,14 @@ pub fn translator_show_pop(
         let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px.max(edge), py.max(edge))));
     }
     let _ = w.show();
+    // v0.1.465 流水线面包屑：小窗已 show（错误与结果都记）——实机「松手后
+    // 小窗不出现」时，日志有 pop-show 就是窗口层问题，没有就是死在更前面。
+    diag("pop-show", &format!(
+        "kind={} src-chars={} dst-chars={} at={x:.0},{y:.0}",
+        if payload.error.is_some() { "error" } else { "result" },
+        payload.source.chars().count(),
+        payload.translated.chars().count(),
+    ));
     let _ = w.emit("translator-pop-data", payload);
     Ok(())
 }
@@ -661,6 +714,23 @@ pub fn translator_pop_set_on_top(app: AppHandle, on: bool) -> Result<(), String>
 }
 
 // ---------------- 截图框选 + OCR ----------------
+
+/// 框选会话编号（v0.1.465）：每次 start_capture 自增，capture-start /
+/// capture-cancel / capture-end 三行同号成对——实机「第二次 Esc 退不出」
+/// 时看日志即知卡在第几会话、取消有没有到 Rust。
+static CAPTURE_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 单会话约束状态（v0.1.465）：SESSION_ACTIVE = 框选层会话进行中（start 置
+/// 位、cancel/finish 入口清位）；OCR_RUNNING + OCR_SINCE = 上一会话的 OCR
+/// 子进程还在跑（finish 线程置位、线程结束清位）。两者任一成立时热键不开
+/// 新会话（见 start_capture）。
+static CAPTURE_SESSION_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OCR_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OCR_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn capture_session_now() -> u64 {
+    CAPTURE_SESSION.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 fn ensure_capture_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(w) = app.get_webview_window(CAPTURE_LABEL) {
@@ -698,7 +768,40 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
             return Err("需要录屏权限：已为你打开系统设置，在「录屏与系统录音」里给 AI 魔方打勾后重试".to_string());
         }
     }
-    let w = ensure_capture_window(app)?;
+    // v0.1.465 单会话约束：同一时刻只许一个捕获会话——框选层开着、或上一
+    // 会话的 OCR 还在跑时，热键一律忽略并落 capture-busy（464 实机日志：
+    // 首会话 OCR 25 秒未回期间热键又连开两次框选层，会话叠死、第二次起
+    // Esc 失效）。忙标志残留（框选层已不可见、OCR 标记超过 45 秒未清）
+    // 则自愈放行，不许把截图翻译永久锁死。
+    {
+        use std::sync::atomic::Ordering::SeqCst;
+        let ocr_running = OCR_RUNNING.load(SeqCst);
+        let ocr_stale = ocr_running && unix_secs().saturating_sub(OCR_SINCE.load(SeqCst)) > 45;
+        if ocr_stale {
+            OCR_RUNNING.store(false, SeqCst);
+            diag("capture-busy", "ocr-stale-cleared");
+        }
+        let overlay_visible = app
+            .get_webview_window(CAPTURE_LABEL)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        if overlay_visible || (ocr_running && !ocr_stale) {
+            diag("capture-busy", &format!("n={} ignored", capture_session_now()));
+            return Ok(());
+        }
+        if CAPTURE_SESSION_ACTIVE.swap(true, SeqCst) {
+            diag("capture-busy", "stale-flag-cleared");
+        }
+    }
+    let session = CAPTURE_SESSION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    diag("capture-start", &format!("n={session}"));
+    let w = match ensure_capture_window(app) {
+        Ok(w) => w,
+        Err(e) => {
+            CAPTURE_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(e);
+        }
+    };
     // 铺满主显示器（逻辑点坐标，与前端 clientX/Y 同系）
     if let Ok(Some(monitor)) = w.primary_monitor() {
         let scale = monitor.scale_factor();
@@ -709,7 +812,12 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
     }
     let _ = w.show();
     let _ = w.set_focus();
-    diag("capture-shown", "overlay-visible");
+    // v0.1.465：框选层窗口是复用的（ensure 只建一次），前端组件跨会话不卸载、
+    // 其 doneRef 在首会话结束后永不复位——465 实机第二次框选时 Esc 与松手
+    // finish 全被 doneRef 早退吞掉、框选层关不掉只能杀进程。这里每会话发
+    // begin 事件，前端据此复位全部会话状态并重启兜底自关计时。
+    let _ = w.emit("translator-capture-begin", serde_json::json!({ "session": session }));
+    diag("capture-shown", &format!("overlay-visible n={session}"));
     Ok(())
 }
 
@@ -720,6 +828,9 @@ pub fn translator_start_capture(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn translator_capture_cancel(app: AppHandle) {
+    // v0.1.465 会话面包屑：与 capture-start 同号即取消命令真到了 Rust
+    diag("capture-cancel", &format!("n={}", capture_session_now()));
+    CAPTURE_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(CAPTURE_LABEL) {
         let _ = w.hide();
     }
@@ -735,6 +846,12 @@ pub fn translator_capture_cancel(app: AppHandle) {
 /// 不受影响。整段再套 catch_unwind，普通 panic 也只变错误提示。
 #[tauri::command]
 pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    // v0.1.465 会话面包屑：松手 finish 真到了 Rust 才会有这行；会话到此结束、
+    // 接力的是 OCR 进行中标记（线程结束清位），期间热键仍被单会话约束拦下
+    diag("capture-end", &format!("n={}", capture_session_now()));
+    CAPTURE_SESSION_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    OCR_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
+    OCR_SINCE.store(unix_secs(), std::sync::atomic::Ordering::SeqCst);
     if let Some(win) = app.get_webview_window(CAPTURE_LABEL) {
         let _ = win.hide();
     }
@@ -747,6 +864,11 @@ pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64)
             #[cfg(target_os = "macos")]
             let out = {
                 let png = mac::capture_shot(x, y, w, h)?;
+                // v0.1.465 流水线面包屑：截图落盘与 OCR 启动分开记——「松手后
+                // 没下文」时看缺哪一行就知道死在截图还是识别
+                let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+                diag("capture-done", &format!("png-bytes={bytes}"));
+                diag("ocr-start", "subprocess");
                 let text = ocr_via_subprocess(&png);
                 let _ = std::fs::remove_file(&png);
                 text
@@ -777,11 +899,14 @@ pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64)
                 }));
             }
         }
+        // v0.1.465：OCR 接力结束，清进行中标记（单会话约束据此放行新会话）
+        OCR_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        OCR_SINCE.store(0, std::sync::atomic::Ordering::SeqCst);
     });
 }
 
 /// 以当前 exe 自启 OCR 子进程（--acm-ocr 隐藏模式，见 main.rs 的拦截）：
-/// 25 秒超时强杀；子进程崩溃/非零退出只变成 Err，绝不影响主进程。
+/// 30 秒超时强杀（v0.1.465 起，旧为 25 秒）；子进程崩溃/非零退出只变成 Err，绝不影响主进程。
 fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
@@ -813,7 +938,9 @@ fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
         }
         buf
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    // v0.1.465：时限 25→30 秒（给 Vision 冷启动留量），且超时文案只许写真实
+    // 原因——464 实机 97×36 的小选区也挂满超时，旧文案甩锅「区域太大」是误导
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
@@ -821,8 +948,8 @@ fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
                 if std::time::Instant::now() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    diag("ocr-fail", "subprocess-timeout-25s");
-                    return Err("识别超时：框选区域太大或系统繁忙，缩小区域再试".to_string());
+                    diag("ocr-fail", "subprocess-timeout-30s");
+                    return Err("识别超时：本地识别进程 30 秒内没有返回结果，请重试；反复出现请把诊断日志发给开发者".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -848,7 +975,19 @@ fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
 /// OCR 子进程入口（main.rs 在 Tauri builder 之前拦截 --acm-ocr 走这里）：
 /// 对 --image 指定的 PNG 跑 Vision OCR，识别文本写 stdout，错误写 stderr。
 /// 返回进程退出码：0 成功，1 识别失败，2 参数/平台问题。
+/// v0.1.465 子进程面包屑：父进程只看得到 spawn 与超时，子进程内部三行
+/// （ocr-child-start / ocr-child-ocr-done / ocr-child-exit）把下次超时拆开
+/// 定性——没有 start = 死在进程启动/拦截之前；有 start 没 ocr-done = 卡在
+/// Vision 调用内；有 ocr-done 没 exit = 卡在回传/退出。464 实机子进程挂满
+/// 25 秒被强杀时，这三行一行都没有（旧版子进程不写日志），无从定性。
 pub fn run_ocr_cli(args: &[String]) -> i32 {
+    diag("ocr-child-start", &format!("args={}", args.len()));
+    let code = run_ocr_cli_inner(args);
+    diag("ocr-child-exit", &format!("code={code}"));
+    code
+}
+
+fn run_ocr_cli_inner(args: &[String]) -> i32 {
     let mut image: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -865,11 +1004,13 @@ pub fn run_ocr_cli(args: &[String]) -> i32 {
     {
         match mac::vision_ocr_path(std::path::Path::new(&image)) {
             Ok(text) => {
+                diag("ocr-child-ocr-done", &format!("chars={}", text.chars().count()));
                 use std::io::Write;
                 let _ = std::io::stdout().write_all(text.as_bytes());
                 0
             }
             Err(e) => {
+                diag("ocr-child-ocr-done", &format!("err={}", e.chars().take(120).collect::<String>()));
                 eprintln!("{e}");
                 1
             }
@@ -915,6 +1056,9 @@ mod mac {
     extern "C" {
         fn AXIsProcessTrusted() -> bool;
         fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        // kAXTrustedCheckOptionPrompt：官方导出的 CFStringRef 常量（选项字典的
+        // key），v0.1.465 起正规声明取用，不再用 NSString 手拼同名串。
+        static kAXTrustedCheckOptionPrompt: *const c_void;
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -932,6 +1076,27 @@ mod mac {
         fn CGDisplayBounds(display: u32) -> CGRectF;
     }
 
+    // CFDictionaryCreate 的回调结构体：本模块只取官方常量
+    // kCFTypeDictionaryKeyCallBacks / kCFTypeDictionaryValueCallBacks 的地址
+    // 传给 CFDictionaryCreate，从不按值读写，字段布局按官方头文件声明即可。
+    #[repr(C)]
+    struct CfDictKeyCallbacks {
+        version: isize,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+        equal: *const c_void,
+        hash: *const c_void,
+    }
+    #[repr(C)]
+    struct CfDictValueCallbacks {
+        version: isize,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+        equal: *const c_void,
+    }
+
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CFRelease(cf: *const c_void);
@@ -940,6 +1105,18 @@ mod mac {
         fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
         fn CFNumberGetValue(num: *const c_void, the_type: i32, value_ptr: *mut c_void) -> bool;
         fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const c_char, encoding: u32) -> *const c_void;
+        // v0.1.465：prompt 选项字典改走正规 CF 接口构造（见 ax_prompt_options_dict）
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        static kCFBooleanTrue: *const c_void;
+        static kCFTypeDictionaryKeyCallBacks: CfDictKeyCallbacks;
+        static kCFTypeDictionaryValueCallBacks: CfDictValueCallbacks;
     }
 
     // Vision / Foundation 只经 libobjc 动态消息调用，没有链接期符号；
@@ -1053,24 +1230,54 @@ mod mac {
         unsafe { AXIsProcessTrusted() }
     }
 
+    /// 构造 prompt 选项字典 { kAXTrustedCheckOptionPrompt: kCFBooleanTrue }。
+    /// v0.1.465 改法：全程正规 CoreFoundation C 接口——CFDictionaryCreate +
+    /// 官方导出的 key 常量（kAXTrustedCheckOptionPrompt）、值常量
+    /// （kCFBooleanTrue）与回调结构体（kCFTypeDictionary*CallBacks），零
+    /// objc_msgSend 手拼。背景：旧实现用 transmuted msgSend 拼
+    /// NSMutableDictionary，与 453 探针 ax_trusted_opts 同构，而后者已被实机
+    /// diag.log + 代码坐实在 Ethan 机器上段错误（464 摘除）；465 实机点
+    /// 「去开启」走的正是本函数，进程又消失一次——同构嫌疑面整体移除，不再
+    /// 在请求路径上留任何手拼字典构造。返回 +1 引用，调用方用完 CFRelease；
+    /// 构造失败返回 null。单独成函数是为 CI 集成测试把「构造+释放」与
+    /// 「真调 prompt」分开反复验证（构造正是旧实现出事的那一步）。
+    pub fn ax_prompt_options_dict() -> *const c_void {
+        unsafe {
+            let keys: [*const c_void; 1] = [kAXTrustedCheckOptionPrompt];
+            let values: [*const c_void; 1] = [kCFBooleanTrue];
+            if keys[0].is_null() || values[0].is_null() {
+                return std::ptr::null();
+            }
+            CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &kCFTypeDictionaryKeyCallBacks as *const _ as *const c_void,
+                &kCFTypeDictionaryValueCallBacks as *const _ as *const c_void,
+            )
+        }
+    }
+
+    /// CI 探针用：构造 prompt 选项字典并立刻释放，返回是否构造成功。
+    pub fn ax_prompt_dict_roundtrip() -> bool {
+        let dict = ax_prompt_options_dict();
+        if dict.is_null() {
+            return false;
+        }
+        unsafe { CFRelease(dict) };
+        true
+    }
+
     pub fn ax_trusted_with_prompt() -> bool {
         unsafe {
-            // 用 NSMutableDictionary 拼 { AXTrustedCheckOptionPrompt: true }，
-            // 避免手写 CFDictionary 的回调结构体。
-            let dict_cls = class("NSMutableDictionary");
-            let num_cls = class("NSNumber");
-            if dict_cls.is_null() || num_cls.is_null() {
+            let dict = ax_prompt_options_dict();
+            if dict.is_null() {
                 return AXIsProcessTrusted();
             }
-            let dict = msg_id(dict_cls, sel("dictionary"));
-            let key = ns_string("AXTrustedCheckOptionPrompt");
-            let f: extern "C" fn(Id, Sel, bool) -> Id = std::mem::transmute(objc_msgSend as usize);
-            let val = f(num_cls, sel("numberWithBool:"), true);
-            if !dict.is_null() && !key.is_null() && !val.is_null() {
-                let set: extern "C" fn(Id, Sel, Id, Id) = std::mem::transmute(objc_msgSend as usize);
-                set(dict, sel("setObject:forKey:"), val, key);
-            }
-            AXIsProcessTrustedWithOptions(dict as *const c_void)
+            let trusted = AXIsProcessTrustedWithOptions(dict);
+            CFRelease(dict);
+            trusted
         }
     }
 

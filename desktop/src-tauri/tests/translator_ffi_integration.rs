@@ -14,6 +14,13 @@
 //! 即死、无 panic 行，死在 ax_trusted_opts() 内部（段错误），
 //! screen_names_visible 根本没执行到。两探针非功能必需，整个摘除，其测试
 //! 随之删除；本文件只守仍在生产路径上的 FFI。
+//!
+//! v0.1.465：「去开启」走的请求路径 ax_trusted_with_prompt 旧实现与出事探针
+//! 同构（transmuted objc_msgSend 手拼 NSMutableDictionary），464 实机点
+//! 「去开启」后进程又消失一次。本版改为纯 CFDictionaryCreate 正规构造，
+//! 新增 t06（构造+释放反复跑——旧实现正是死在这一步）与 t07（完整 prompt
+//! 路径真跑；会把测试进程登记进 runner 的辅助功能列表并触发异步系统
+//! 提示，不阻塞调用，只断言不崩、返回值可读）。
 #![cfg(target_os = "macos")]
 
 use ai_credit_manager_lib::translator::{ffi_probe, permissions_snapshot};
@@ -64,5 +71,31 @@ fn t05_frontmost_fullscreen() {
     println!("t05 CGDisplayBounds + CGWindowList 全屏判定 x{ROUNDS}");
     for _ in 0..ROUNDS {
         let _ = ffi_probe::frontmost_fullscreen();
+    }
+}
+
+#[test]
+fn t06_ax_prompt_dict_roundtrip() {
+    println!("t06 CFDictionaryCreate prompt 选项字典构造+释放 x{ROUNDS}");
+    for _ in 0..ROUNDS {
+        assert!(
+            ffi_probe::ax_prompt_dict(),
+            "prompt 选项字典构造应成功（官方常量 + CFDictionaryCreate）"
+        );
+    }
+}
+
+#[test]
+fn t07_ax_trusted_with_prompt() {
+    // 完整 prompt 路径只跑少量轮：每轮都可能触发系统异步提示，没必要刷 60 次；
+    // 构造本身的反复验证在 t06。runner 上未授权是常态，返回值应为 false，
+    // 但只断言「调用返回了」（授权状态不是本测试能控制的变量）。
+    const PROMPT_ROUNDS: usize = 10;
+    println!("t07 AXIsProcessTrustedWithOptions(prompt) 完整路径 x{PROMPT_ROUNDS}");
+    for i in 0..PROMPT_ROUNDS {
+        let trusted = ffi_probe::ax_prompt();
+        if i == 0 {
+            println!("t07 首轮读数 trusted={trusted}");
+        }
     }
 }

@@ -43,10 +43,13 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
     const showError = (message: string, x: number, y: number) => {
       const s = loadTranslatorSettings()
       lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
+      // v0.1.465 流水线面包屑：错误小窗已请求弹出；连错误小窗都弹失败时
+      // 退回主窗口 toast，绝不让失败静默无结果
+      void noteTranslatorDiag('pop-error-show')
       void showTranslatorPop({
         source: '', translated: '', targetLang: s.targetLang, error: message,
         ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
-      }).catch(() => {})
+      }).catch(() => { ctxRef.current.notify(message) })
     }
 
     const translateAndShow = async (rawText: string, x: number, y: number) => {
@@ -54,24 +57,43 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
       const s = loadTranslatorSettings()
       const text = preprocessText(rawText, s.preprocess)
       if (!text.trim()) { showError('没有可翻译的文本', x, y); return }
+      // v0.1.465 流水线面包屑（translate-start / ok / fail 与 Rust 侧
+      // capture-* / ocr-* / pop-show 拼成完整时间线）
+      void noteTranslatorDiag(`translate-start chars=${text.length}`)
       try {
-        const out = await translateWithRoutes({
-          accounts: acc, sessionPwd: pwd, text, settings: s,
-          onChainNote: msg => nf(msg),
-        })
+        // 45 秒硬超时：引擎调用（尤其免费通道）挂死时不许静默无结果——
+        // 超时按失败处理、走错误小窗并落面包屑
+        const out = await Promise.race([
+          translateWithRoutes({
+            accounts: acc, sessionPwd: pwd, text, settings: s,
+            onChainNote: msg => nf(msg),
+          }),
+          new Promise<never>((_res, rej) => {
+            window.setTimeout(() => rej(new Error('翻译超时：模型通道 45 秒没有响应，换个模型或稍后重试')), 45_000)
+          }),
+        ])
+        void noteTranslatorDiag('translate-ok')
         if (s.popEnabled) {
           lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
-          await showTranslatorPop({
-            source: text, translated: out.translated, targetLang: out.targetLang,
-            sourceLang: sourceLangLabel(text), error: null,
-            ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
-          })
+          try {
+            await showTranslatorPop({
+              source: text, translated: out.translated, targetLang: out.targetLang,
+              sourceLang: sourceLangLabel(text), error: null,
+              ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+            })
+            void noteTranslatorDiag('pop-show-ok')
+          } catch (e) {
+            void noteTranslatorDiag('pop-show-fail')
+            nf(`翻译已完成，但小窗弹出失败：${e instanceof Error ? e.message : '未知错误'}`)
+          }
         } else {
           await writeClipboard(out.translated)
           nf('译文已复制到剪贴板')
         }
       } catch (e) {
-        showError(e instanceof Error ? e.message : '翻译失败', x, y)
+        const msg = e instanceof Error ? e.message : '翻译失败'
+        void noteTranslatorDiag(`translate-fail ${msg}`)
+        showError(msg, x, y)
       }
     }
 
@@ -119,9 +141,13 @@ export function TranslatorHost({ accounts, sessionPwd, notify, onOpenInput }: {
           else if (e.payload.action === 'input') { setPendingTranslatorTab('input'); ctxRef.current.onOpenInput() }
         }))
         unlistens.push(await listen<{ text: string; x: number; y: number }>('translator-shot-text', e => {
+          // v0.1.465：OCR 文本到达宿主的到达回执——日志有 ocr-ok 没这行，
+          // 就是事件没送到主窗口；有这行没 translate-ok，就是死在翻译段
+          void noteTranslatorDiag(`shot-text-received chars=${e.payload.text.length}`)
           void translateAndShow(e.payload.text, e.payload.x, e.payload.y)
         }))
         unlistens.push(await listen<{ message: string; x?: number; y?: number }>('translator-error', e => {
+          void noteTranslatorDiag('rust-error-event')
           if (typeof e.payload.x === 'number' && typeof e.payload.y === 'number') showError(e.payload.message, e.payload.x, e.payload.y)
           else ctxRef.current.notify(e.payload.message)
         }))
