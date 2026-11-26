@@ -114,6 +114,9 @@ jobs:
             KC_PWD="acm-ci-$RANDOM$RANDOM"
             P12="$RUNNER_TEMP/acm-signing.p12"
             CERT_PEM="$RUNNER_TEMP/acm-signing-cert.pem"
+            # 硬超时包装（perl alarm；macOS 无 GNU timeout）：security 家族命令
+            # 在 CI 里可能因图形授权弹窗无限挂起，凡有此风险的调用都经它执行。
+            acm_timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
             echo "$ACM_APPLE_CERT_B64" | base64 -D > "$P12"
             security create-keychain -p "$KC_PWD" "$KC"
             security unlock-keychain -p "$KC_PWD" "$KC"
@@ -125,18 +128,22 @@ jobs:
               if [ -n "$line" ]; then KCS+=("$line"); fi
             done < <(security list-keychains -d user)
             security list-keychains -d user -s "$KC" "${KCS[@]}"
-            security import "$P12" -k "$KC" -P "$ACM_APPLE_CERT_PWD" -T /usr/bin/codesign
+            acm_timeout 60 security import "$P12" -k "$KC" -P "$ACM_APPLE_CERT_PWD" -T /usr/bin/codesign
             rm -f "$P12"
-            security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PWD" "$KC"
+            acm_timeout 60 security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PWD" "$KC"
             security find-certificate -a -c "$ACM_APPLE_SIGN_ID" -p "$KC" > "$CERT_PEM"
-            # 信任逐级补：先存构建钥匙串（用户域），不够再补用户全局、Admin 域；
-            # 每步后用 find-identity -v 实测身份名是否逐字命中 valid 列表。
-            security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$CERT_PEM" || true
-            if ! security find-identity -v -p codesigning | grep -Fq "$ACM_APPLE_SIGN_ID"; then
-              security add-trusted-cert -r trustRoot -p codeSign "$CERT_PEM" || true
+            # 信任逐级补，每步后用 find-identity -v 实测身份名是否逐字命中 valid
+            # 列表。顺序要点（首跑实测教训）：用户域 add-trusted-cert 在 CI 里会
+            # 触发 SecurityAgent 图形授权弹窗、无人可点而无限挂起，故 Admin 域
+            # （sudo、root 执行不弹窗）优先，用户域两个变体垫后。所有调用已套
+            # 上面的硬超时，单级卡住最多等 60 秒就跳下一级，绝不再挂死整个 job。
+            acm_identity_valid() { security find-identity -v -p codesigning | grep -Fq "$ACM_APPLE_SIGN_ID"; }
+            acm_timeout 60 sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$CERT_PEM" || true
+            if ! acm_identity_valid; then
+              acm_timeout 60 security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$CERT_PEM" || true
             fi
-            if ! security find-identity -v -p codesigning | grep -Fq "$ACM_APPLE_SIGN_ID"; then
-              sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$CERT_PEM" || true
+            if ! acm_identity_valid; then
+              acm_timeout 60 security add-trusted-cert -r trustRoot -p codeSign "$CERT_PEM" || true
             fi
             echo "--- 诊断：security find-identity -v -p codesigning（仅 valid） ---"
             security find-identity -v -p codesigning || true
