@@ -120,8 +120,13 @@ fn t08_vision_ocr_known_text() {
     }
 }
 
-/// 用纯 C 接口（CoreGraphics + ImageIO）画一张白底黑字 PNG，供 t08 使用。
-/// 画图只是测试夹具；被测的 OCR 走生产入口，不在这里另写一份。
+/// 用纯 C 接口画一张白底黑字 PNG，供 t08 使用：CoreGraphics 位图上下文
+/// + CoreText 排字（CTLineDraw）+ ImageIO 写 PNG。
+/// 注意不能用 CGContextSelectFont + CGContextShowTextAtPoint 画这张图：
+/// 那套 Quartz 文本 API 按字形索引解释字节，画出的字形与字符码位整体
+/// 偏移——首跑 runner 上 HELLO 12345 被画成了另一串字形，OCR 如实读出
+/// 乱码，一度误判为 OCR 本身的问题。画图只是测试夹具；被测的 OCR 走
+/// 生产入口，不在这里另写一份。
 mod draw {
     use std::ffi::{c_char, c_void, CString};
 
@@ -143,12 +148,49 @@ mod draw {
         origin: CGPointF,
         size: CGSizeF,
     }
+    // 只取地址传给 CFDictionaryCreate，从不按值读写（与 translator.rs 同款声明）
+    #[repr(C)]
+    struct DictKeyCallbacks {
+        version: isize,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+        equal: *const c_void,
+        hash: *const c_void,
+    }
+    #[repr(C)]
+    struct DictValueCallbacks {
+        version: isize,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+        equal: *const c_void,
+    }
 
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CFStringCreateWithCString(alloc: *const c_void, s: *const c_char, encoding: u32) -> *const c_void;
         fn CFURLCreateWithFileSystemPath(alloc: *const c_void, path: *const c_void, style: i32, is_dir: bool) -> *const c_void;
+        fn CFAttributedStringCreate(alloc: *const c_void, string: *const c_void, attributes: *const c_void) -> *const c_void;
+        fn CFDictionaryCreate(
+            alloc: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
         fn CFRelease(cf: *const c_void);
+        static kCFTypeDictionaryKeyCallBacks: DictKeyCallbacks;
+        static kCFTypeDictionaryValueCallBacks: DictValueCallbacks;
+    }
+
+    #[link(name = "CoreText", kind = "framework")]
+    extern "C" {
+        fn CTFontCreateWithName(name: *const c_void, size: f64, matrix: *const c_void) -> *mut c_void;
+        fn CTLineCreateWithAttributedString(attr_string: *const c_void) -> *mut c_void;
+        fn CTLineDraw(line: *mut c_void, ctx: *mut c_void);
+        static kCTFontAttributeName: *const c_void;
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -168,9 +210,7 @@ mod draw {
         fn CGContextRelease(ctx: *mut c_void);
         fn CGContextSetRGBFillColor(ctx: *mut c_void, r: f64, g: f64, b: f64, a: f64);
         fn CGContextFillRect(ctx: *mut c_void, rect: CGRectF);
-        fn CGContextSelectFont(ctx: *mut c_void, name: *const c_char, size: f64, encoding: u32);
-        fn CGContextSetTextDrawingMode(ctx: *mut c_void, mode: i32);
-        fn CGContextShowTextAtPoint(ctx: *mut c_void, x: f64, y: f64, bytes: *const c_char, len: usize);
+        fn CGContextSetTextPosition(ctx: *mut c_void, x: f64, y: f64);
         fn CGImageRelease(img: *mut c_void);
     }
 
@@ -183,8 +223,6 @@ mod draw {
 
     const KCF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
     const KCG_IMAGE_ALPHA_PREMULTIPLIED_LAST: u32 = 1;
-    const KCG_ENCODING_MAC_ROMAN: u32 = 0;
-    const KCG_TEXT_FILL: i32 = 0;
 
     pub fn make_text_png(text: &str) -> Result<std::path::PathBuf, String> {
         let path = std::env::temp_dir().join("acm-t08-ocr-test.png");
@@ -216,13 +254,50 @@ mod draw {
                     size: CGSizeF { width: w as f64, height: h as f64 },
                 },
             );
-            // 黑字（Quartz 文本 API：位图上下文坐标原点在左下，y 为基线）
+            // 黑字：CoreText 排字（位图上下文坐标原点在左下，y 为基线）
             CGContextSetRGBFillColor(ctx, 0.0, 0.0, 0.0, 1.0);
-            let font = CString::new("Helvetica-Bold").unwrap();
-            CGContextSelectFont(ctx, font.as_ptr(), 130.0, KCG_ENCODING_MAC_ROMAN);
-            CGContextSetTextDrawingMode(ctx, KCG_TEXT_FILL);
-            let bytes = CString::new(text).unwrap();
-            CGContextShowTextAtPoint(ctx, 40.0, 95.0, bytes.as_ptr(), text.len());
+            let text_c = CString::new(text).unwrap();
+            let cf_text = CFStringCreateWithCString(std::ptr::null(), text_c.as_ptr(), KCF_STRING_ENCODING_UTF8);
+            let font_name_c = CString::new("Helvetica-Bold").unwrap();
+            let cf_font_name = CFStringCreateWithCString(std::ptr::null(), font_name_c.as_ptr(), KCF_STRING_ENCODING_UTF8);
+            let font = CTFontCreateWithName(cf_font_name, 130.0, std::ptr::null());
+            if font.is_null() {
+                CFRelease(cf_text);
+                CFRelease(cf_font_name);
+                CGContextRelease(ctx);
+                CGColorSpaceRelease(space);
+                return Err("CTFontCreateWithName 失败".into());
+            }
+            let keys: [*const c_void; 1] = [kCTFontAttributeName];
+            let values: [*const c_void; 1] = [font as *const c_void];
+            let attrs = CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &kCFTypeDictionaryKeyCallBacks as *const _ as *const c_void,
+                &kCFTypeDictionaryValueCallBacks as *const _ as *const c_void,
+            );
+            let attr_str = CFAttributedStringCreate(std::ptr::null(), cf_text, attrs);
+            let line = CTLineCreateWithAttributedString(attr_str);
+            if line.is_null() {
+                CFRelease(attr_str);
+                CFRelease(attrs);
+                CFRelease(font as *const c_void);
+                CFRelease(cf_text);
+                CFRelease(cf_font_name);
+                CGContextRelease(ctx);
+                CGColorSpaceRelease(space);
+                return Err("CTLineCreateWithAttributedString 失败".into());
+            }
+            CGContextSetTextPosition(ctx, 40.0, 95.0);
+            CTLineDraw(line, ctx);
+            CFRelease(line as *const c_void);
+            CFRelease(attr_str);
+            CFRelease(attrs);
+            CFRelease(font as *const c_void);
+            CFRelease(cf_text);
+            CFRelease(cf_font_name);
             let img = CGBitmapContextCreateImage(ctx);
             CGContextRelease(ctx);
             CGColorSpaceRelease(space);
