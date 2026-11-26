@@ -5,16 +5,21 @@ import {
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import { isDesktopApp } from '../core/openExternal'
-import { useRouteData, RouteSelect } from './WorkshopView'
 import {
   loadTranslatorSettings, saveTranslatorSettings, applyTranslatorShortcuts,
   getTranslatorPermissions, requestAccessibility, requestScreenCapture, openPermissionSettings,
   preprocessText, pickTargetLang, translateWithRoutes, speakLangOf, writeClipboard,
   noteTranslatorDiag,
-  saveTranslatorRouteKey, getInvalidTranslatorShortcutFields,
+  getInvalidTranslatorShortcutFields,
   TRANSLATOR_LANGS, type TranslatorSettings, type TranslatorPermissions, type OpsDisplay,
   type TranslatorShortcutField,
 } from '../core/translator'
+import {
+  loadTranslatorProviders, saveProviderPref, pickTranslatorEngine, loadTranslatorEngineKey,
+  measureProviderMs, formatDurationMs, TRANSLATOR_OPEN_SETTINGS_KEY,
+  type TranslatorProviderInfo,
+} from '../core/translatorProviders'
+import type { FreeAiOption } from '../core/freeAi'
 import { acceleratorFromEvent } from '../core/hotkey'
 
 // 果冻开关（与设置页 Toggle 同款 jelly 动画，本地复制一份避免跨文件耦合）
@@ -122,18 +127,79 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   accounts: Account[]; sessionPwd: string; notify: (m: string) => void
 }) {
   const [tab, setTab] = useState<'input' | 'settings'>('input')
+  // 设置页横向页签（v0.1.477 增量，Ethan 拍板布局）：选中页签仅本机记住
+  const [subTab, setSubTabState] = useState<'perms' | 'trans' | 'providers' | 'keys'>(() => {
+    try {
+      const v = localStorage.getItem('acm.translator.settingsTab.v1')
+      return v === 'trans' || v === 'providers' || v === 'keys' ? v : 'perms'
+    } catch { return 'perms' }
+  })
+  const setSubTab = (v: 'perms' | 'trans' | 'providers' | 'keys') => {
+    setSubTabState(v)
+    try { localStorage.setItem('acm.translator.settingsTab.v1', v) } catch { /* 忽略 */ }
+  }
   const [settings, setSettings] = useState<TranslatorSettings>(loadTranslatorSettings)
   // 旧版本存下的无效快捷键字段：录入框显示「未注册（请重新录入）」；重录出合法值即消
   const [invalidFields, setInvalidFields] = useState<TranslatorShortcutField[]>(() => getInvalidTranslatorShortcutFields())
   const { perms, refresh: refreshPerms } = usePermissions()
-  const { data, routeKey, setRouteKey } = useRouteData(accounts)
 
   // v0.1.473：旧版这里消费 pending 输入页签（Alt+E 跳页机制）——该机制已
   // 随输入小窗直开删除，takePendingTranslatorTab 一并移除，勿恢复。
   // v0.1.462 面包屑：页面挂载落一行——若闪退时日志里连这行都没有，问题在
   // 组件挂载之前；有这行没 perm-open，就是死在首次 invoke 的路上。
   useEffect(() => { void noteTranslatorDiag('tool-mount') }, [])
-  useEffect(() => { saveTranslatorRouteKey(routeKey) }, [routeKey])
+
+  // v0.1.477：小窗「打开翻译设置」置的一次性标记——挂载时消费、直落设置页签
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(TRANSLATOR_OPEN_SETTINGS_KEY) === '1') {
+        localStorage.removeItem(TRANSLATOR_OPEN_SETTINGS_KEY)
+        setTab('settings')
+        // 从小窗来就是为了启用服务商：直落「翻译服务商」页签
+        setSubTab('providers')
+      }
+    } catch { /* 忽略 */ }
+  }, [])
+
+  // ---------------- 翻译服务商（v0.1.477 两段式的供给侧） ----------------
+  const [providers, setProviders] = useState<TranslatorProviderInfo[]>([])
+  const [provFreeOptions, setProvFreeOptions] = useState<FreeAiOption[]>([])
+  const [testingKey, setTestingKey] = useState('')
+  const [testMsg, setTestMsg] = useState<Record<string, { ok: boolean; text: string }>>({})
+  const reloadProviders = useCallback(() => {
+    void loadTranslatorProviders(accounts).then(r => {
+      setProviders(r.providers)
+      setProvFreeOptions(r.freeOptions)
+    }).catch(() => { /* 路线拉取失败时保持旧列表，翻译执行会再报真实原因 */ })
+  }, [accounts])
+  useEffect(() => { reloadProviders() }, [reloadProviders])
+
+  const patchProvider = useCallback((key: string, patch: Partial<TranslatorProviderInfo>) => {
+    setProviders(prev => prev.map(p => (p.key === key ? { ...p, ...patch } : p)))
+  }, [])
+  const toggleProvider = useCallback((info: TranslatorProviderInfo, v: boolean) => {
+    saveProviderPref(info.key, { enabled: v })
+    patchProvider(info.key, { enabled: v })
+  }, [patchProvider])
+  const changeProviderModel = useCallback((info: TranslatorProviderInfo, modelId: string) => {
+    saveProviderPref(info.key, { modelId })
+    patchProvider(info.key, {
+      modelId,
+      route: info.route.kind === 'account' ? { ...info.route, modelId } : info.route,
+    })
+  }, [patchProvider])
+  const testProvider = useCallback(async (info: TranslatorProviderInfo) => {
+    setTestingKey(info.key)
+    setTestMsg(prev => ({ ...prev, [info.key]: { ok: true, text: '测速中…' } }))
+    try {
+      const ms = await measureProviderMs({ accounts, sessionPwd, provider: info, freeOptions: provFreeOptions })
+      patchProvider(info.key, { ms })
+      setTestMsg(prev => ({ ...prev, [info.key]: { ok: true, text: `实测 ${formatDurationMs(ms)}` } }))
+    } catch (e) {
+      setTestMsg(prev => ({ ...prev, [info.key]: { ok: false, text: e instanceof Error ? e.message : '测速失败' } }))
+    } finally { setTestingKey('') }
+  }, [accounts, sessionPwd, provFreeOptions, patchProvider])
+  const currentEngine = pickTranslatorEngine(providers, loadTranslatorEngineKey())
 
   // v0.1.465：「去开启」点了必须有明确去向与反馈——先请求系统登记/提示，
   // 再直达系统设置对应面板，并留一行常驻说明写清去哪开、怎么开（464 实机
@@ -258,7 +324,12 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
 
       {tab === 'input' && (
         <div>
-          <RouteSelect data={data} routeKey={routeKey} setRouteKey={setRouteKey} />
+          <p style={{ fontSize: 12, opacity: 0.65, margin: '2px 0 8px' }}>
+            翻译服务商：{currentEngine
+              ? <b>{currentEngine.label}</b>
+              : <span style={{ color: 'var(--red)' }}>还没有启用的服务商——去「设置 → 翻译服务商」里启用至少一家</span>}
+            <span style={{ marginLeft: 6 }}>（与小窗共用同一引擎，在设置里管理）</span>
+          </p>
           <textarea className="input ws-textarea" rows={5} placeholder="输入或粘贴要翻译的文本，停顿片刻自动翻译…"
             value={src} onChange={e => setSrc(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void run() }} />
@@ -290,7 +361,15 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
 
       {tab === 'settings' && (
         <div className="trs-settings">
+          {/* 横向页签（v0.1.477 增量）：点哪个页签下方只显示那一组，
+              不再纵向长卡片堆叠；样式与 App 现有横向页签同口径 */}
+          <div className="ws-chips" style={{ marginBottom: 10 }}>
+            {([['perms', '权限管理'], ['trans', '翻译设置'], ['providers', '翻译服务商'], ['keys', '快捷键']] as const).map(([v, label]) => (
+              <button key={v} className={`chip-btn ${subTab === v ? 'on' : ''}`} onClick={() => setSubTab(v)}>{label}</button>
+            ))}
+          </div>
           {/* 权限管理：功能开关与权限状态分开，开关即权威，不假开 */}
+          {subTab === 'perms' && (
           <section className="trs-card">
             <h4><ShieldCheck size={15} /> 权限管理</h4>
             <div className="trs-row">
@@ -334,8 +413,10 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
               <p className="trs-note">已在系统设置里开启、这里却仍显示未开启时，按顺序排查：①开启后请完全退出并重开本 App（录屏授权对已经在运行的进程不生效）；②刚更新版本后出现的，是系统里登记的还是旧版本——请在对应面板的列表中将「AI Cube」移除后重新添加、再打开开关并重开本 App。</p>
             )}
           </section>
+          )}
 
           {/* 翻译设置 */}
+          {subTab === 'trans' && (
           <section className="trs-card">
             <h4><Languages size={15} /> 翻译设置</h4>
             <div className="trs-row">
@@ -354,12 +435,63 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
               <div className="trs-row-main"><span>原文预处理</span><span className="trs-note inline">自动删换行、拆分驼峰/下划线/连字符命名</span></div>
               <JellyToggle checked={settings.preprocess} onChange={v => update({ preprocess: v })} />
             </div>
-            <div style={{ marginTop: 6 }}>
-              <RouteSelect data={data} routeKey={routeKey} setRouteKey={setRouteKey} />
-            </div>
           </section>
+          )}
+
+          {/* 翻译服务商（v0.1.477）：供给侧管理——启用/默认模型/测速都在这里，
+              小窗下拉只列已启用的；Key 只在 Key 管理维护，这里不存 Key */}
+          {subTab === 'providers' && (
+          <section className="trs-card">
+            <h4><SlidersHorizontal size={15} /> 翻译服务商</h4>
+            {providers.length === 0 && (
+              <p className="trs-note">暂无可用来源：先在「Key 管理」添加账户，或登录云账号使用免费路线。</p>
+            )}
+            {providers.map(info => (
+              <div key={info.key} className="trs-row" style={{ alignItems: 'flex-start' }}>
+                <div className="trs-row-main" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+                  <span>
+                    {info.label}
+                    <span className="trs-note inline" style={{ marginLeft: 6 }}>
+                      {info.kind === 'free' ? '免费路线' : info.kind === 'wbpool' ? '账号池' : '自有账户'}
+                    </span>
+                    {currentEngine?.key === info.key && info.enabled && (
+                      <span className="trs-note inline" style={{ marginLeft: 6, color: 'var(--green)' }}>当前引擎</span>
+                    )}
+                  </span>
+                  {info.disabledReason && <span className="trs-note inline" style={{ color: 'var(--red)' }}>{info.disabledReason}</span>}
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {info.kind === 'wbpool' ? (
+                      <span className="trs-note inline">模型由账号池自动调度</span>
+                    ) : info.modelOptions.length > 1 ? (
+                      <select className="select" style={{ width: 190 }} value={info.modelId}
+                        onChange={e => changeProviderModel(info, e.target.value)}>
+                        {info.modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    ) : (
+                      <span className="trs-note inline">{info.modelId}</span>
+                    )}
+                    <button className="btn sm" disabled={testingKey === info.key}
+                      onClick={() => void testProvider(info)}>
+                      {testingKey === info.key ? <Loader2 size={13} className="spin" /> : null} 测速
+                    </button>
+                    {testMsg[info.key] ? (
+                      <span className="trs-note inline" style={testMsg[info.key].ok ? undefined : { color: 'var(--red)' }}>{testMsg[info.key].text}</span>
+                    ) : typeof info.ms === 'number' ? (
+                      <span className="trs-note inline">最近实测 {formatDurationMs(info.ms)}</span>
+                    ) : (
+                      <span className="trs-note inline">未测速</span>
+                    )}
+                  </span>
+                </div>
+                <JellyToggle checked={info.enabled} onChange={v => toggleProvider(info, v)} />
+              </div>
+            ))}
+            <p className="trs-note">关掉的服务商不会出现在小窗的下拉里；当前引擎取你在小窗里选中的那家，没选过时用已启用里实测最快的一家。测速会真实发一条短翻译请求。</p>
+          </section>
+          )}
 
           {/* 快捷键设置 */}
+          {subTab === 'keys' && (
           <section className="trs-card">
             <h4><Keyboard size={15} /> 快捷键设置</h4>
             <div className="trs-row">
@@ -385,8 +517,10 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
               <JellyToggle checked={settings.disableInFullscreen} onChange={v => update({ disableInFullscreen: v })} />
             </div>
           </section>
+          )}
 
-          {/* 划词浮窗 */}
+          {/* 划词浮窗（归「翻译设置」页签：小窗呈现方式与偏移） */}
+          {subTab === 'trans' && (
           <section className="trs-card">
             <h4><MousePointer2 size={15} /> 划词浮窗</h4>
             <div className="trs-row">
@@ -414,6 +548,7 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
               <input type="range" min={-80} max={120} value={settings.offsetY} onChange={e => update({ offsetY: Number(e.target.value) })} style={{ width: 170 }} />
             </div>
           </section>
+          )}
 
           {!isDesktopApp() && <p className="trs-note">当前不是桌面端：划词/截图与全局快捷键不可用，设置仅作预览。</p>}
           <p className="trs-note"><Check size={12} /> 设置只存本机，改完立即生效。</p>

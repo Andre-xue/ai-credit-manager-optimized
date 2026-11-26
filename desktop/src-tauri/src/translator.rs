@@ -187,6 +187,19 @@ pub struct PopPayload {
     /// 译文（或「翻译中…」），最终以 streaming=false 的更新收尾。
     #[serde(default)]
     pub streaming: bool,
+    /// 已启用服务商摘要 JSON（v0.1.477）：[{key,label,ms?}]，小窗下拉数据源；
+    /// 空串 = 宿主未提供（小窗不渲染服务商行），"[]" = 明确零启用（小窗提示态）
+    #[serde(default)]
+    pub providers_json: String,
+    /// 当前翻译引擎的服务商 key（v0.1.477）
+    #[serde(default)]
+    pub provider_key: String,
+    /// 本次翻译真实耗时毫秒（v0.1.477，仅最终载荷带；小窗按钮下方小字展示）
+    #[serde(default)]
+    pub elapsed_ms: Option<f64>,
+    /// 本次实际使用的服务商名（v0.1.477，与 elapsed_ms 成对）
+    #[serde(default)]
+    pub used_label: String,
 }
 
 static POP_PAYLOAD: Mutex<Option<PopPayload>> = Mutex::new(None);
@@ -672,14 +685,80 @@ pub fn translator_paste_text(app: AppHandle, text: String) -> Result<(), String>
 
 // ---------------- 译文小窗 ----------------
 
+// ---------------- 小窗几何记忆（v0.1.477） ----------------
+// 用户拖过的位置与拉过的尺寸仅本机存 ~/.ai-credit-manager/translator/
+// pop-geom.json（逻辑点）。前端监听窗口 moved/resized 后经
+// translator_pop_geom_save 回报；Rust 建窗时按记忆尺寸、定位时优先用
+// 记忆位置（position_pop 仍负责夹回可见区），从未拖过则保持鼠标旁定位。
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PopGeom {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    user_moved: bool,
+}
+
+fn pop_geom_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join(".ai-credit-manager").join("translator").join("pop-geom.json"))
+}
+
+fn load_pop_geom() -> Option<PopGeom> {
+    let path = pop_geom_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let g: PopGeom = serde_json::from_str(&text).ok()?;
+    if !g.x.is_finite() || !g.y.is_finite() || !g.w.is_finite() || !g.h.is_finite() {
+        return None;
+    }
+    Some(g)
+}
+
+fn store_pop_geom(g: &PopGeom) {
+    let Some(path) = pop_geom_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string(g) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// 小窗几何回报（v0.1.477）：前端在窗口被拖动/缩放后调用（逻辑点）。
+/// moved=true（拖动）才把 user_moved 置真——之后打开优先回记忆位置；
+/// 只缩放（moved=false）只更新尺寸，不把偶然位置钉成记忆位置。
+#[tauri::command]
+pub fn translator_pop_geom_save(x: f64, y: f64, w: f64, h: f64, moved: bool) {
+    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+        return;
+    }
+    let prev_moved = load_pop_geom().map(|g| g.user_moved).unwrap_or(false);
+    let g = PopGeom {
+        x,
+        y,
+        w: w.clamp(360.0, 4000.0),
+        h: h.clamp(300.0, 4000.0),
+        user_moved: prev_moved || moved,
+    };
+    store_pop_geom(&g);
+    diag("pop-geom-save", &format!("at={x:.0},{y:.0} size={:.0}x{:.0} moved={moved}", g.w, g.h));
+}
+
 fn ensure_pop_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(w) = app.get_webview_window(POP_LABEL) {
         return Ok(w);
     }
+    // v0.1.477：可缩放；初始尺寸用记忆值（无记忆时 600×380，够左右对照展开）
+    let (init_w, init_h) = load_pop_geom()
+        .map(|g| (g.w.clamp(360.0, 4000.0), g.h.clamp(300.0, 4000.0)))
+        .unwrap_or((600.0, 380.0));
     let w = WebviewWindowBuilder::new(app, POP_LABEL, WebviewUrl::App("index.html#/translator-pop".into()))
         .title("翻译")
-        .inner_size(400.0, 300.0)
-        .resizable(false)
+        .inner_size(init_w, init_h)
+        .min_inner_size(360.0, 300.0)
+        .resizable(true)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -698,8 +777,14 @@ fn ensure_pop_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     Ok(w)
 }
 
-/// 小窗定位：x/y 是逻辑点（鼠标位置 + 前端已加的偏移），换算成物理像素并夹在屏幕内
+/// 小窗定位：x/y 是逻辑点（鼠标位置 + 前端已加的偏移），换算成物理像素并夹在屏幕内。
+/// v0.1.477：用户拖过窗口（pop-geom 的 user_moved）时优先用记忆位置打开，
+/// 同样夹回主屏可见区（记忆位置落在屏幕外时纠偏）；从未拖过保持鼠标旁定位。
 fn position_pop(w: &WebviewWindow, x: f64, y: f64) {
+    let (x, y) = match load_pop_geom() {
+        Some(g) if g.user_moved => (g.x, g.y),
+        _ => (x, y),
+    };
     if let Ok(Some(monitor)) = w.primary_monitor() {
         let scale = monitor.scale_factor();
         let mon_w = monitor.size().width as i32;
@@ -739,6 +824,10 @@ pub fn translator_show_pop(
     y: f64,
     mode: Option<String>,
     streaming: Option<bool>,
+    providers_json: Option<String>,
+    provider_key: Option<String>,
+    elapsed_ms: Option<f64>,
+    used_label: Option<String>,
 ) -> Result<(), String> {
     let payload = PopPayload {
         source,
@@ -749,6 +838,10 @@ pub fn translator_show_pop(
         ops,
         mode: mode.unwrap_or_else(default_pop_mode),
         streaming: streaming.unwrap_or(false),
+        providers_json: providers_json.unwrap_or_default(),
+        provider_key: provider_key.unwrap_or_default(),
+        elapsed_ms,
+        used_label: used_label.unwrap_or_default(),
     };
     store_pop_payload(&payload);
     let w = ensure_pop_window(&app)?;
@@ -780,6 +873,10 @@ pub fn translator_update_pop(
     error: Option<String>,
     ops: String,
     streaming: Option<bool>,
+    providers_json: Option<String>,
+    provider_key: Option<String>,
+    elapsed_ms: Option<f64>,
+    used_label: Option<String>,
 ) -> Result<(), String> {
     let payload = PopPayload {
         source,
@@ -790,6 +887,10 @@ pub fn translator_update_pop(
         ops,
         mode: default_pop_mode(),
         streaming: streaming.unwrap_or(false),
+        providers_json: providers_json.unwrap_or_default(),
+        provider_key: provider_key.unwrap_or_default(),
+        elapsed_ms,
+        used_label: used_label.unwrap_or_default(),
     };
     store_pop_payload(&payload);
     if let Some(w) = app.get_webview_window(POP_LABEL) {
@@ -804,7 +905,13 @@ pub fn translator_update_pop(
 /// 返回最终逻辑坐标（宿主据此在同位置回填译文结果）。失败返回 Err，
 /// 宿主转错误小窗——Alt+E 的终点必须是可见窗口或可见报错，不许静默。
 #[tauri::command]
-pub fn translator_show_input(app: AppHandle, offset_x: f64, offset_y: f64) -> Result<(f64, f64), String> {
+pub fn translator_show_input(
+    app: AppHandle,
+    offset_x: f64,
+    offset_y: f64,
+    providers_json: Option<String>,
+    provider_key: Option<String>,
+) -> Result<(f64, f64), String> {
     let (mx, my) = current_mouse(&app);
     let x = mx + offset_x;
     let y = my + offset_y;
@@ -817,6 +924,10 @@ pub fn translator_show_input(app: AppHandle, offset_x: f64, offset_y: f64) -> Re
         ops: "both".to_string(),
         mode: "input".to_string(),
         streaming: false,
+        providers_json: providers_json.unwrap_or_default(),
+        provider_key: provider_key.unwrap_or_default(),
+        elapsed_ms: None,
+        used_label: String::new(),
     };
     store_pop_payload(&payload);
     let w = ensure_pop_window(&app)?;

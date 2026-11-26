@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Copy, Replace, Volume2, X, Check, AlertTriangle, Pin, PinOff,
-  ClipboardPaste, WrapText, Languages, ArrowLeftRight, Loader2,
+  Copy, Volume2, X, Check, AlertTriangle, Pin, PinOff,
+  Languages, ArrowLeftRight, Loader2, Trash2, Moon, Sun, GripHorizontal, Settings2,
 } from 'lucide-react'
 import {
-  speakLangOf, sourceLangLabel, removeSmartNewlines, readClipboard, setPopAlwaysOnTop,
-  loadTranslatorSettings,
-  TRANSLATOR_LANGS, type OpsDisplay,
+  speakLangOf, sourceLangLabel, setPopAlwaysOnTop,
+  loadTranslatorSettings, loadPopTheme, savePopTheme, openTranslatorSettings,
+  TRANSLATOR_LANGS, type OpsDisplay, type PopTheme,
 } from '../core/translator'
+import {
+  formatDurationMs, saveTranslatorEngineKey, loadTranslatorEngineKey,
+  type TranslatorProviderSummary,
+} from '../core/translatorProviders'
 
 interface PopPayload {
   source: string
@@ -20,6 +24,13 @@ interface PopPayload {
   mode?: string
   /** v0.1.473：译文流式到达中（先行弹窗 + 增量填入） */
   streaming?: boolean
+  /** v0.1.477：已启用服务商摘要 JSON（空串=未提供、'[]'=明确零启用） */
+  providersJson?: string
+  /** v0.1.477：当前翻译引擎 key */
+  providerKey?: string
+  /** v0.1.477：本次翻译真实耗时（毫秒）与实际服务商名，译完显示在按钮下方 */
+  elapsedMs?: number | null
+  usedLabel?: string
 }
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
@@ -28,25 +39,43 @@ function inv(): InvokeFn | null {
   return w.__TAURI_INTERNALS__?.invoke ?? null
 }
 
+function parseProviders(json?: string): TranslatorProviderSummary[] | null {
+  if (!json) return null
+  try {
+    const v = JSON.parse(json) as TranslatorProviderSummary[]
+    return Array.isArray(v) ? v : null
+  } catch { return null }
+}
+
 /**
- * 划词/截图译文小窗（独立窗口 #/translator-pop），结构对齐 Manggo 小窗模式（v0.1.451）：
- * 原文区（可编辑）+ 操作行（复制原文/粘贴并翻译/智能删换行/朗读原文）
- * → 语言行（源语言自动检测/可选 ⇄ 目标语言可选，改了即重译）
- * → 译文区（朗读/复制/替换）+ 置顶/关闭。
- * 重译请求经 translator-retranslate 事件发给主窗口宿主（账户/路线都在那边），
- * 结果仍走 translator_show_pop / translator-pop-data 回来。
+ * 翻译小窗（独立窗口 #/translator-pop），v0.1.477 定版（Ethan 拍板的效果图）：
+ * 极简风 + 左右对照（原文左/译文右、窄窗自动上下排）+ 浅/深双主题一键
+ * 丝滑切换；标题栏依次 清空/主题/置顶/关闭；语言行与服务商下拉一行——
+ * 服务商只列设置里已启用的、带实测耗时，选中即翻译专用引擎；每栏顶部
+ * 复制/朗读只管本栏；底部整宽绿色大圆角「翻译」按钮，耗时显示在按钮
+ * 下方右对齐小字。窗口可拖（标题栏）可缩放（边角），几何由 Rust 记忆。
+ * 重译/提交经事件发给主窗口宿主执行（账户/服务商都在那边），结果仍走
+ * translator_show_pop / translator_update_pop 回来。
  */
 export function TranslatorPop() {
   const [payload, setPayload] = useState<PopPayload | null>(null)
   const [draft, setDraft] = useState('')
+  const [dst, setDst] = useState('')
   const [targetSel, setTargetSel] = useState('简体中文')
   const [sourceSel, setSourceSel] = useState('') // '' = 自动检测
   const [busy, setBusy] = useState(false)
   const [pinned, setPinned] = useState(true)
   const [copied, setCopied] = useState<'src' | 'dst' | null>(null)
-  const stateRef = useRef({ draft: '', targetSel: '简体中文', sourceSel: '' })
-  stateRef.current = { draft, targetSel, sourceSel }
+  const [theme, setTheme] = useState<PopTheme>(() => loadPopTheme())
+  const [providers, setProviders] = useState<TranslatorProviderSummary[] | null>(null)
+  const [providerKey, setProviderKey] = useState('')
+  const [elapsed, setElapsed] = useState<{ ms: number; label: string } | null>(null)
+  const stateRef = useRef({ draft: '', targetSel: '简体中文', sourceSel: '', providerKey: '' })
+  stateRef.current = { draft, targetSel, sourceSel, providerKey }
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  // Rust 程序化定位会触发 onMoved：载荷刚应用 600ms 内的移动不算用户拖动，
+  // 不回报几何，免得把鼠标旁定位钉成「记忆位置」
+  const applyAtRef = useRef(0)
 
   // 输入模式（v0.1.473）：窗口显形后把焦点送进输入框，能直接打字
   useEffect(() => {
@@ -56,19 +85,70 @@ export function TranslatorPop() {
     }
   }, [payload?.mode])
 
+  // 主题：深色时把窗口底衬（卡片外圈）也压暗，整窗一体；选择仅本机记住
   useEffect(() => {
-    // 窗口底色由 main.tsx 的 trs-popwin 标记 + styles.css 统一管（不透明）；
-    // 这里不再内联清底色——451 时清过头是小窗透明的原因之一（v0.1.453）。
+    document.documentElement.classList.toggle('trs-pop-dark', theme === 'dark')
+  }, [theme])
+  const toggleTheme = () => {
+    const next: PopTheme = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    savePopTheme(next)
+  }
+
+  // 几何回报（v0.1.477）：拖动/缩放后把逻辑坐标报给 Rust 存本机，
+  // 下次打开优先回记忆位置/尺寸；屏幕外纠偏在 Rust 定位时做
+  useEffect(() => {
+    let unMove: (() => void) | undefined
+    let unResize: (() => void) | undefined
+    let timer = 0
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        const win = getCurrentWindow()
+        const report = async (moved: boolean) => {
+          try {
+            const [pos, size, sf] = await Promise.all([win.outerPosition(), win.outerSize(), win.scaleFactor()])
+            await inv()?.('translator_pop_geom_save', {
+              x: pos.x / sf, y: pos.y / sf, w: size.width / sf, h: size.height / sf, moved,
+            })
+          } catch { /* 非 Tauri/无头环境忽略 */ }
+        }
+        const debounced = (moved: boolean) => {
+          window.clearTimeout(timer)
+          timer = window.setTimeout(() => { void report(moved) }, 350)
+        }
+        unMove = await win.onMoved(() => { if (Date.now() - applyAtRef.current > 600) debounced(true) })
+        unResize = await win.onResized(() => debounced(false))
+      } catch { /* 非 Tauri 环境忽略 */ }
+    })()
+    return () => { unMove?.(); unResize?.(); window.clearTimeout(timer) }
+  }, [])
+
+  useEffect(() => {
+    // 窗口底色由 main.tsx 的 trs-popwin 标记 + styles.css 统一管（不透明）
     let unlisten: (() => void) | undefined
     const apply = (p: PopPayload) => {
+      applyAtRef.current = Date.now()
       setPayload(p)
+      const provs = parseProviders(p.providersJson)
+      if (provs !== null) setProviders(provs)
+      if (p.providerKey) setProviderKey(p.providerKey)
+      else if (provs && provs.length) setProviderKey(loadTranslatorEngineKey() || provs[0].key)
       if (p.mode === 'input') {
         // 输入模式：空稿起步，目标语言取设置里的默认目标
         setDraft('')
+        setDst('')
+        setElapsed(null)
         setTargetSel(loadTranslatorSettings().targetLang)
       } else {
         setDraft(p.source ?? '')
+        setDst(p.translated ?? '')
         if (p.targetLang) setTargetSel(p.targetLang)
+        if (typeof p.elapsedMs === 'number' && p.translated) {
+          setElapsed({ ms: p.elapsedMs, label: p.usedLabel ?? '' })
+        } else if (!p.streaming) {
+          setElapsed(null)
+        }
       }
       setSourceSel('')
       setBusy(false)
@@ -86,6 +166,7 @@ export function TranslatorPop() {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') void close() }
     window.addEventListener('keydown', onKey)
     return () => { unlisten?.(); window.removeEventListener('keydown', onKey) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const close = async () => {
@@ -104,13 +185,12 @@ export function TranslatorPop() {
     setBusy(true)
     try {
       const { emit } = await import('@tauri-apps/api/event')
-      await emit('translator-input-submit', { text, targetLang: stateRef.current.targetSel })
+      await emit('translator-input-submit', {
+        text, targetLang: stateRef.current.targetSel,
+        providerKey: stateRef.current.providerKey || undefined,
+      })
     } catch { setBusy(false) }
     window.setTimeout(() => setBusy(false), 20000)
-  }
-  const pasteIntoInput = async () => {
-    const text = await readClipboard()
-    if (text) setDraft(text)
   }
 
   const retranslate = async (next?: { source?: string; targetLang?: string; sourceSel?: string }) => {
@@ -120,12 +200,14 @@ export function TranslatorPop() {
     const srcSel = next?.sourceSel ?? cur.sourceSel
     if (!source.trim()) return
     setBusy(true)
+    setElapsed(null)
     try {
       const { emit } = await import('@tauri-apps/api/event')
       await emit('translator-retranslate', {
         source,
         targetLang,
         sourceLang: srcSel || sourceLangLabel(source),
+        providerKey: cur.providerKey || undefined,
       })
     } catch { setBusy(false) }
     // 兜底：宿主没响应（主窗口不在）时别永远转圈
@@ -133,26 +215,13 @@ export function TranslatorPop() {
   }
 
   const copyText = async (text: string, which: 'src' | 'dst') => {
+    if (!text) return
     try { await inv()?.('translator_clipboard_write', { text }) } catch { /* 忽略 */ }
     setCopied(which)
     window.setTimeout(() => setCopied(null), 1200)
   }
-  const pasteAndTranslate = async () => {
-    const text = await readClipboard()
-    if (!text.trim()) return
-    setDraft(text)
-    await retranslate({ source: text })
-  }
-  const smartNewlines = async () => {
-    const cleaned = removeSmartNewlines(stateRef.current.draft)
-    setDraft(cleaned)
-    await retranslate({ source: cleaned })
-  }
-  const replace = async () => {
-    if (!payload) return
-    try { await inv()?.('translator_paste_text', { text: payload.translated }) } catch { /* 忽略 */ }
-  }
   const speak = (text: string, langName: string) => {
+    if (!text.trim()) return
     try {
       const u = new SpeechSynthesisUtterance(text)
       u.lang = speakLangOf(langName)
@@ -165,18 +234,48 @@ export function TranslatorPop() {
     setPinned(next)
     await setPopAlwaysOnTop(next)
   }
+  const clearAll = () => {
+    setDraft('')
+    setDst('')
+    setElapsed(null)
+  }
+  const changeProvider = (key: string) => {
+    setProviderKey(key)
+    saveTranslatorEngineKey(key)
+    // 结果模式下换服务商即按新引擎重译当前原文，所见即所得
+    if (payload?.mode !== 'input' && stateRef.current.draft.trim()) {
+      stateRef.current.providerKey = key
+      void retranslate()
+    }
+  }
+  const swapLangs = () => {
+    const cur = stateRef.current
+    const detectedName = payload?.sourceLang || sourceLangLabel(cur.draft)
+    const fromName = cur.sourceSel || (detectedName === '中文' ? '简体中文' : detectedName)
+    if (!(TRANSLATOR_LANGS as readonly string[]).includes(fromName)) return
+    setSourceSel(cur.targetSel)
+    setTargetSel(fromName)
+    if (payload?.mode !== 'input' && cur.draft.trim()) {
+      void retranslate({ targetLang: fromName, sourceSel: cur.targetSel })
+    }
+  }
 
-  const ops = payload?.ops ?? 'both'
-  const showIcon = ops !== 'text'
-  const showText = ops !== 'icon'
+  const noProviders = providers !== null && providers.length === 0
   const detected = payload?.sourceLang || (draft ? sourceLangLabel(draft) : '自动检测')
-  const dirty = payload && draft.trim() !== (payload.source ?? '').trim()
+  const streaming = !!payload?.streaming
+  const showElapsed = !!elapsed && !!dst && !busy && !streaming
 
   return (
-    <div className="trs-pop">
+    <div className={`trs-pop ${theme === 'dark' ? 'dark' : ''}`}>
       <div className="trs-pop-head" data-tauri-drag-region>
-        <span className="trs-pop-title"><Languages size={13} /> 翻译</span>
+        <span className="trs-pop-title"><GripHorizontal size={13} className="trs-pop-grip" /><Languages size={13} /> 翻译</span>
         <span className="trs-pop-head-btns">
+          <button className="trs-pop-x static" onClick={clearAll} title="清空原文与译文" disabled={!draft && !dst}>
+            <Trash2 size={13} />
+          </button>
+          <button className="trs-pop-x static" onClick={toggleTheme} title={theme === 'dark' ? '切换到浅色' : '切换到深色'}>
+            {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+          </button>
           <button className="trs-pop-x static" onClick={() => void togglePin()} title={pinned ? '取消置顶' : '置顶'}>
             {pinned ? <Pin size={13} /> : <PinOff size={13} />}
           </button>
@@ -188,100 +287,111 @@ export function TranslatorPop() {
       {payload?.error && (
         <div className="trs-pop-error"><AlertTriangle size={15} /> <span>{payload.error}</span></div>
       )}
-      {payload && !payload.error && payload.mode === 'input' && (
-        <>
-          <textarea
-            ref={inputRef}
-            className="trs-pop-src-edit"
-            value={draft}
-            rows={4}
-            placeholder="输入要翻译的文本（⌘/Ctrl + Enter 翻译）"
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submitInput() }}
-          />
-          <div className="trs-pop-langrow">
-            <span className="trs-pop-detected">自动检测</span>
-            <ArrowLeftRight size={13} className="trs-pop-swap" />
-            <select className="trs-pop-langsel" value={targetSel}
-              onChange={e => setTargetSel(e.target.value)}>
-              {TRANSLATOR_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
-            </select>
-            <button className="trs-pop-retranslate" disabled={busy || !draft.trim()} onClick={() => void submitInput()} title="翻译（⌘/Ctrl + Enter）">
-              {busy ? <Loader2 size={13} className="spin" /> : <Languages size={13} />} 翻译
-            </button>
-          </div>
-          <div className="trs-pop-bar">
-            <button onClick={() => void pasteIntoInput()}>
-              {showIcon && <ClipboardPaste size={14} />}{showText && <span>粘贴</span>}
-            </button>
-            <span className="trs-pop-detected">在任何应用里按快捷键呼出 · Esc 关闭</span>
-          </div>
-        </>
-      )}
-      {payload && !payload.error && payload.mode !== 'input' && (
-        <>
-          <textarea
-            className="trs-pop-src-edit"
-            value={draft}
-            rows={4}
-            placeholder="原文"
-            onChange={e => setDraft(e.target.value)}
-          />
-          <div className="trs-pop-opsrow">
-            <button onClick={() => void copyText(draft, 'src')} title="复制原文">
-              {showIcon && (copied === 'src' ? <Check size={13} /> : <Copy size={13} />)}{showText && <span>{copied === 'src' ? '已复制' : '复制原文'}</span>}
-            </button>
-            <button onClick={() => void pasteAndTranslate()} title="粘贴剪贴板内容并翻译">
-              {showIcon && <ClipboardPaste size={13} />}{showText && <span>粘贴并翻译</span>}
-            </button>
-            <button onClick={() => void smartNewlines()} title="智能删除换行">
-              {showIcon && <WrapText size={13} />}{showText && <span>智能删换行</span>}
-            </button>
-            <button onClick={() => speak(draft, sourceSel || detected)} title="朗读原文">
-              {showIcon && <Volume2 size={13} />}{showText && <span>朗读</span>}
-            </button>
-            <span className="trs-pop-detected">{sourceSel || detected}</span>
-          </div>
 
+      {payload && !payload.error && noProviders && (
+        <div className="trs-pop-empty">
+          <p>还没有启用的翻译服务商</p>
+          <p className="trs-pop-empty-sub">先去翻译助手设置里启用至少一家服务商，小窗才能选它来翻译。</p>
+          <button className="trs-pop-open-settings" onClick={() => void openTranslatorSettings()}>
+            <Settings2 size={14} /> 打开翻译设置
+          </button>
+        </div>
+      )}
+
+      {payload && !payload.error && !noProviders && (
+        <>
           <div className="trs-pop-langrow">
-            <select className="trs-pop-langsel" value={sourceSel}
-              onChange={e => { setSourceSel(e.target.value); void retranslate({ sourceSel: e.target.value }) }}>
+            <select className="trs-pop-langsel" value={sourceSel} title="源语言"
+              onChange={e => { setSourceSel(e.target.value); if (payload.mode !== 'input') void retranslate({ sourceSel: e.target.value }) }}>
               <option value="">自动检测</option>
               {TRANSLATOR_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
             </select>
-            <ArrowLeftRight size={13} className="trs-pop-swap" />
-            <select className="trs-pop-langsel" value={targetSel}
-              onChange={e => { setTargetSel(e.target.value); void retranslate({ targetLang: e.target.value }) }}>
+            <button className="trs-pop-swapbtn" onClick={swapLangs} title="交换源语言与目标语言">
+              <ArrowLeftRight size={13} />
+            </button>
+            <select className="trs-pop-langsel" value={targetSel} title="目标语言"
+              onChange={e => { setTargetSel(e.target.value); if (payload.mode !== 'input') void retranslate({ targetLang: e.target.value }) }}>
               {TRANSLATOR_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
             </select>
-            {dirty && (
-              <button className="trs-pop-retranslate" onClick={() => void retranslate()} title="按当前原文重新翻译">
-                <Languages size={13} /> 翻译
-              </button>
+            {providers && providers.length > 0 && (
+              <select className="trs-pop-provider" value={providerKey} title="翻译服务商"
+                onChange={e => changeProvider(e.target.value)}>
+                {providers.map(p => (
+                  <option key={p.key} value={p.key}>
+                    {p.label} · {typeof p.ms === 'number' ? formatDurationMs(p.ms) : '未测速'}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
 
-          <div className="trs-pop-dst">
-            {busy || (payload.streaming && !payload.translated)
-              ? <span className="trs-pop-loading"><Loader2 size={14} className="spin" /> 翻译中…</span>
-              : (
-                <>
-                  {payload.translated}
-                  {payload.streaming && <span className="trs-pop-loading" style={{ marginLeft: 6 }}><Loader2 size={12} className="spin" /></span>}
-                </>
-              )}
+          <div className="trs-pop-cols">
+            <div className="trs-pop-col">
+              <div className="trs-pop-colhead">
+                <span>原文{sourceSel || detected ? <span className="trs-pop-colhint"> · {sourceSel || detected}</span> : null}</span>
+                <span className="trs-pop-colbtns">
+                  <button onClick={() => void copyText(draft, 'src')} title="复制原文">
+                    {copied === 'src' ? <Check size={13} /> : <Copy size={13} />}
+                  </button>
+                  <button onClick={() => speak(draft, sourceSel || detected)} title="朗读原文">
+                    <Volume2 size={13} />
+                  </button>
+                </span>
+              </div>
+              <textarea
+                ref={payload.mode === 'input' ? inputRef : undefined}
+                className="trs-pop-src-edit"
+                value={draft}
+                placeholder={payload.mode === 'input' ? '输入要翻译的文本（⌘/Ctrl + Enter 翻译）' : '原文'}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    if (payload.mode === 'input') void submitInput()
+                    else void retranslate()
+                  }
+                }}
+              />
+            </div>
+            <div className="trs-pop-divider" />
+            <div className="trs-pop-col">
+              <div className="trs-pop-colhead">
+                <span>译文<span className="trs-pop-colhint"> · {targetSel}</span></span>
+                <span className="trs-pop-colbtns">
+                  <button onClick={() => void copyText(dst, 'dst')} title="复制译文">
+                    {copied === 'dst' ? <Check size={13} /> : <Copy size={13} />}
+                  </button>
+                  <button onClick={() => speak(dst, targetSel)} title="朗读译文">
+                    <Volume2 size={13} />
+                  </button>
+                </span>
+              </div>
+              <div className="trs-pop-dst">
+                {busy || (streaming && !dst)
+                  ? <span className="trs-pop-loading"><Loader2 size={14} className="spin" /> 翻译中…</span>
+                  : (
+                    <>
+                      {dst}
+                      {streaming && <span className="trs-pop-loading" style={{ marginLeft: 6 }}><Loader2 size={12} className="spin" /></span>}
+                      {!dst && !busy && <span className="trs-pop-dst-placeholder">译文会显示在这里</span>}
+                    </>
+                  )}
+              </div>
+            </div>
           </div>
-          <div className="trs-pop-bar">
-            <button onClick={() => speak(payload.translated, targetSel)}>
-              {showIcon && <Volume2 size={14} />}{showText && <span>朗读</span>}
-            </button>
-            <button onClick={() => void copyText(payload.translated, 'dst')}>
-              {showIcon && (copied === 'dst' ? <Check size={14} /> : <Copy size={14} />)}{showText && <span>{copied === 'dst' ? '已复制' : '复制译文'}</span>}
-            </button>
-            <button onClick={() => void replace()}>
-              {showIcon && <Replace size={14} />}{showText && <span>替换</span>}
-            </button>
-          </div>
+
+          <button
+            className="trs-pop-go"
+            disabled={busy || !draft.trim()}
+            onClick={() => { if (payload.mode === 'input') void submitInput(); else void retranslate() }}
+          >
+            {busy ? <><Loader2 size={15} className="spin" /> 翻译中…</> : '翻译'}
+          </button>
+          {showElapsed && (
+            <div className="trs-pop-elapsed">耗时 {formatDurationMs(elapsed.ms)}{elapsed.label ? ` · ${elapsed.label}` : ''}</div>
+          )}
+          {payload.mode === 'input' && (
+            <div className="trs-pop-inputhint">在任何应用里按快捷键呼出 · Esc 关闭</div>
+          )}
         </>
       )}
     </div>

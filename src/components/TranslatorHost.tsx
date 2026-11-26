@@ -3,11 +3,15 @@ import type { Account } from '../core/types'
 import { isDesktopApp } from '../core/openExternal'
 import {
   loadTranslatorSettings, applyTranslatorShortcuts, getSelectedText, showTranslatorPop,
-  updateTranslatorPop, showTranslatorInput,
+  updateTranslatorPop, showTranslatorInput, openTranslatorSettings,
   noteTranslatorDiag,
   preprocessText, translateWithRoutes, translateToTarget, sourceLangLabel, writeClipboard,
-  TRANSLATOR_SETTINGS_EVENT,
+  TRANSLATOR_SETTINGS_EVENT, type PopProviderArgs,
 } from '../core/translator'
+import {
+  loadTranslatorProviders, enabledProviderSummaries, pickTranslatorEngine,
+  loadTranslatorEngineKey, saveTranslatorEngineKey, saveProviderPref,
+} from '../core/translatorProviders'
 
 /**
  * 翻译助手主窗口宿主（v0.1.440）：常驻主窗口，负责——
@@ -43,6 +47,32 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
 
     // 小窗最近一次弹出位置：小窗里切换语言重译时原地刷新，不跳位
     const lastPos = { x: 120, y: 120 }
+
+    // v0.1.477 服务商上下文：小窗下拉只列已启用服务商（带实测耗时），
+    // providerKey 为当前翻译引擎。算一次要读路线（可能含网络拉取），
+    // 调用方按需决定等不等它（先行弹窗只等 400ms，见 translateAndShow）。
+    const popCtx = async (): Promise<PopProviderArgs> => {
+      try {
+        const { providers } = await loadTranslatorProviders(ctxRef.current.accounts)
+        const engine = pickTranslatorEngine(providers, loadTranslatorEngineKey())
+        return {
+          providersJson: JSON.stringify(enabledProviderSummaries(providers)),
+          providerKey: engine?.key ?? '',
+        }
+      } catch { return {} }
+    }
+    // 零启用服务商时不弹错误窗、改弹小窗的提示态（带「打开翻译设置」入口）
+    const showNoProviders = (x: number, y: number) => {
+      const s = loadTranslatorSettings()
+      lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
+      void noteTranslatorDiag('pop-no-providers')
+      void showTranslatorPop({
+        source: '', translated: '', targetLang: s.targetLang, error: null,
+        ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+        providersJson: '[]', providerKey: '',
+      }).catch(() => { ctxRef.current.notify('还没有启用的翻译服务商：请到翻译助手设置里启用至少一家') })
+    }
+    const isNoProvidersError = (msg: string) => msg.includes('还没有启用的翻译服务商')
     const showError = (message: string, x: number, y: number) => {
       const s = loadTranslatorSettings()
       lastPos.x = x + s.offsetX; lastPos.y = y + s.offsetY
@@ -72,6 +102,12 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       // v0.1.473 弹窗先行：原文一到手就把小窗亮出来（streaming 态），译文
       // 随后填入——不再等整段翻译返回才弹窗（468 实机松手到弹窗约 7 秒，
       // 其中翻译接口约占 6 秒）。先行弹窗失败不中断翻译，最终结果再试一次。
+      // v0.1.477：服务商上下文与先行弹窗并行算，只等 400ms——不能为了下拉
+      // 数据拖慢弹窗先行（473 不变量）；没算完就先不带，最终更新再补齐
+      const ctxP = popCtx()
+      const ctxFirst = await Promise.race([
+        ctxP, new Promise<null>(res => { window.setTimeout(() => res(null), 400) }),
+      ])
       let popShown = false
       if (s.popEnabled) {
         try {
@@ -79,6 +115,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
             source: text, translated: '', targetLang: s.targetLang,
             sourceLang: srcLabel, error: null,
             ops: s.opsDisplay, x: lastPos.x, y: lastPos.y, streaming: true,
+            ...(ctxFirst ?? {}),
           })
           popShown = true
           void noteTranslatorDiag(`timing pop-first=${Math.round(performance.now() - t0)}ms`)
@@ -109,6 +146,9 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       try {
         // 45 秒硬超时：引擎调用（尤其免费通道）挂死时不许静默无结果——
         // 超时按失败处理、走错误小窗并落面包屑
+        // v0.1.477：耗时只量翻译调用本身（不含 OCR/弹窗），译完回填该
+        // 服务商的「最近实测」并随最终载荷进小窗（按钮下方小字展示）
+        const tCall = performance.now()
         const out = await Promise.race([
           translateWithRoutes({
             accounts: acc, sessionPwd: pwd, text, settings: s,
@@ -119,19 +159,25 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
             window.setTimeout(() => rej(new Error('翻译超时：模型通道 45 秒没有响应，换个模型或稍后重试')), 45_000)
           }),
         ])
+        const elapsedMs = Math.round(performance.now() - tCall)
+        saveProviderPref(out.providerKey, { ms: elapsedMs })
         void noteTranslatorDiag(`translate-ok ms=${Math.round(performance.now() - t0)}`)
+        // 最终载荷的服务商上下文重算一次，让下拉里的耗时与刚回填的实测一致
+        const ctx = await popCtx()
         if (s.popEnabled) {
           try {
             if (popShown) {
               await updateTranslatorPop({
                 source: text, translated: out.translated, targetLang: out.targetLang,
                 sourceLang: srcLabel, error: null, ops: s.opsDisplay, streaming: false,
+                ...ctx, providerKey: out.providerKey, elapsedMs, usedLabel: out.usedLabel,
               })
             } else {
               await showTranslatorPop({
                 source: text, translated: out.translated, targetLang: out.targetLang,
                 sourceLang: srcLabel, error: null,
                 ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+                ...ctx, providerKey: out.providerKey, elapsedMs, usedLabel: out.usedLabel,
               })
             }
             void noteTranslatorDiag('pop-show-ok')
@@ -146,30 +192,39 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       } catch (e) {
         const msg = e instanceof Error ? e.message : '翻译失败'
         void noteTranslatorDiag(`translate-fail ${msg}`)
-        showError(msg, x, y)
+        if (isNoProvidersError(msg)) showNoProviders(x, y)
+        else showError(msg, x, y)
       }
     }
 
-    // 小窗内重译（切换目标/源语言、粘贴并翻译、智能删换行、改原文后手动翻译）
-    const doRetranslate = async (p: { source: string; targetLang: string; sourceLang?: string }) => {
+    // 小窗内重译（切换语言/服务商、改原文后点翻译按钮）
+    const doRetranslate = async (p: { source: string; targetLang: string; sourceLang?: string; providerKey?: string }) => {
       const { accounts: acc, sessionPwd: pwd, notify: nf } = ctxRef.current
       const s = loadTranslatorSettings()
       const text = (p.source ?? '').slice(0, 8000)
       if (!text.trim()) return
+      // 小窗里刚选的服务商先落盘，翻译引擎解析以它为准
+      if (p.providerKey) saveTranslatorEngineKey(p.providerKey)
       try {
+        const tCall = performance.now()
         const out = await translateToTarget({
           accounts: acc, sessionPwd: pwd, text,
           targetLang: p.targetLang || s.targetLang,
           sourceLangName: p.sourceLang,
           onChainNote: msg => nf(msg),
         })
+        const elapsedMs = Math.round(performance.now() - tCall)
+        saveProviderPref(out.providerKey, { ms: elapsedMs })
         await showTranslatorPop({
           source: text, translated: out.translated, targetLang: out.targetLang,
           sourceLang: p.sourceLang || sourceLangLabel(text), error: null,
           ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+          ...(await popCtx()), providerKey: out.providerKey, elapsedMs, usedLabel: out.usedLabel,
         })
       } catch (e) {
-        showError(e instanceof Error ? e.message : '翻译失败', lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        const msg = e instanceof Error ? e.message : '翻译失败'
+        if (isNoProvidersError(msg)) showNoProviders(lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY)
       }
     }
 
@@ -194,7 +249,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
       const s = loadTranslatorSettings()
       void noteTranslatorDiag('input-open')
       try {
-        const [px, py] = await showTranslatorInput(s.offsetX, s.offsetY)
+        const [px, py] = await showTranslatorInput(s.offsetX, s.offsetY, await popCtx())
         lastPos.x = px; lastPos.y = py
         void noteTranslatorDiag('input-show-ok')
       } catch (e) {
@@ -207,13 +262,15 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
 
     // 输入小窗提交：小窗经 translator-input-submit 事件把文本发来，宿主翻译
     // 后在同位置把小窗换成结果（showTranslatorPop），失败走错误小窗。
-    const doInputSubmit = async (p: { text: string; targetLang?: string }) => {
+    const doInputSubmit = async (p: { text: string; targetLang?: string; providerKey?: string }) => {
       const { accounts: acc, sessionPwd: pwd, notify: nf } = ctxRef.current
       const s = loadTranslatorSettings()
       const text = preprocessText((p.text ?? '').slice(0, 8000), s.preprocess)
       if (!text.trim()) return
+      if (p.providerKey) saveTranslatorEngineKey(p.providerKey)
       void noteTranslatorDiag(`input-submit chars=${text.length}`)
       try {
+        const tCall = performance.now()
         const out = await Promise.race([
           translateToTarget({
             accounts: acc, sessionPwd: pwd, text,
@@ -224,16 +281,20 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
             window.setTimeout(() => rej(new Error('翻译超时：模型通道 45 秒没有响应，换个模型或稍后重试')), 45_000)
           }),
         ])
+        const elapsedMs = Math.round(performance.now() - tCall)
+        saveProviderPref(out.providerKey, { ms: elapsedMs })
         await showTranslatorPop({
           source: text, translated: out.translated, targetLang: out.targetLang,
           sourceLang: sourceLangLabel(text), error: null,
           ops: s.opsDisplay, x: lastPos.x, y: lastPos.y,
+          ...(await popCtx()), providerKey: out.providerKey, elapsedMs, usedLabel: out.usedLabel,
         })
         void noteTranslatorDiag('input-result-ok')
       } catch (e) {
         const msg = e instanceof Error ? e.message : '翻译失败'
         void noteTranslatorDiag(`input-result-fail ${msg}`)
-        showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        if (isNoProvidersError(msg)) showNoProviders(lastPos.x - s.offsetX, lastPos.y - s.offsetY)
+        else showError(msg, lastPos.x - s.offsetX, lastPos.y - s.offsetY)
       }
     }
 
@@ -245,8 +306,11 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
           if (e.payload.action === 'selection') void doSelection()
           else if (e.payload.action === 'input') void doInput()
         }))
-        unlistens.push(await listen<{ text: string; targetLang?: string }>('translator-input-submit', e => {
+        unlistens.push(await listen<{ text: string; targetLang?: string; providerKey?: string }>('translator-input-submit', e => {
           void doInputSubmit(e.payload)
+        }))
+        unlistens.push(await listen('translator-open-settings', () => {
+          void openTranslatorSettings()
         }))
         unlistens.push(await listen<{ text: string; x: number; y: number }>('translator-shot-text', e => {
           // v0.1.465：OCR 文本到达宿主的到达回执——日志有 ocr-ok 没这行，
@@ -259,7 +323,7 @@ export function TranslatorHost({ accounts, sessionPwd, notify }: {
           if (typeof e.payload.x === 'number' && typeof e.payload.y === 'number') showError(e.payload.message, e.payload.x, e.payload.y)
           else ctxRef.current.notify(e.payload.message)
         }))
-        unlistens.push(await listen<{ source: string; targetLang: string; sourceLang?: string }>('translator-retranslate', e => {
+        unlistens.push(await listen<{ source: string; targetLang: string; sourceLang?: string; providerKey?: string }>('translator-retranslate', e => {
           void doRetranslate(e.payload)
         }))
       } catch { /* 非 Tauri 环境忽略 */ }

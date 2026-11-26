@@ -121,6 +121,15 @@ export interface WorkshopChatParams {
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
 }
 
+/**
+ * 锁定单条路线跑一次（v0.1.477 翻译服务商用）：用户在翻译小窗/设置里明确
+ * 选定的服务商必须被尊重，不走自动切换链——失败就把该家的真实原因抛出来，
+ * 不偷偷换一家（与「手动锁定」模式同口径）。
+ */
+export async function runWorkshopRouteOnce(route: WorkshopRoute, params: WorkshopChatParams): Promise<string> {
+  return runOneWorkshopRoute(route, params)
+}
+
 /** 单条路线跑一次单轮对话（system + user），返回纯文本；不做任何切换 */
 async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatParams): Promise<string> {
   const { freeOptions, accounts, sessionPwd, system, user } = params

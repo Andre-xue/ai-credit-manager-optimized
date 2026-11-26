@@ -974,7 +974,12 @@ function App() {
     let unlisten: (() => void) | undefined
     void (async () => {
       const { listen } = await import('@tauri-apps/api/event')
-      unlisten = await listen<string>('acm-navigate', (e) => { if (e.payload) openTab(e.payload as Tab) })
+      unlisten = await listen<string>('acm-navigate', (e) => {
+        if (!e.payload) return
+        // v0.1.477：'workshop:<tool>' 直达工坊内某个工具（翻译小窗「打开翻译设置」用）
+        if (e.payload.startsWith('workshop:')) openWorkshopTool(e.payload.slice('workshop:'.length))
+        else openTab(e.payload as Tab)
+      })
     })()
     return () => { unlisten?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps

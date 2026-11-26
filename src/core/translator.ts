@@ -1,11 +1,17 @@
 // 翻译助手（v0.1.440）：工坊新工具。划词/截图/输入三入口共用一套设置与翻译通道。
-// 引擎不新增服务：复用工坊路线（loadWorkshopRoutes + runWorkshopChat，内含 433 免费
-// 路线自动切换链与 439 的全局模式设置）。桌面原生能力（全局快捷键、模拟复制取词、
+// 引擎不新增服务：复用工坊路线。v0.1.477 起引擎改为「翻译服务商」两段式
+// （core/translatorProviders）：设置页启用/选模型/测速，小窗下拉选用，执行
+// 锁定单路线、不走自动切换链。桌面原生能力（全局快捷键、模拟复制取词、
 // 截图框选、Vision OCR、权限查询）在 Rust 侧 translator.rs，本模块只做 invoke 封装。
 // 设置仅本机保存（localStorage），不云同步——含快捷键与权限这类设备级偏好。
 
 import type { Account } from './types'
-import { loadWorkshopRoutes, runWorkshopChat } from './workshopChat'
+import { runWorkshopRouteOnce } from './workshopChat'
+import {
+  loadTranslatorProviders, pickTranslatorEngine, loadTranslatorEngineKey,
+  TRANSLATOR_OPEN_SETTINGS_KEY,
+  type TranslatorProviderInfo,
+} from './translatorProviders'
 import { isValidAccelerator, humanizeShortcutError } from './hotkey'
 
 export const TRANSLATOR_SETTINGS_KEY = 'acm.translator.settings.v1'
@@ -288,25 +294,51 @@ export async function getSelectedText(): Promise<SelectionOutcome> {
   return await inv('translator_get_selection') as SelectionOutcome
 }
 
+/** 小窗服务商载荷（v0.1.477）：已启用服务商摘要 JSON + 当前引擎 + 本次耗时。
+ * 字段只在有值时才进 invoke 参数（473 契约测试钉了无附加参数时的严格形状）。 */
+export interface PopProviderArgs {
+  providersJson?: string
+  providerKey?: string
+  elapsedMs?: number
+  usedLabel?: string
+}
+
+function popProviderArgs(p: PopProviderArgs): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (p.providersJson !== undefined) out.providersJson = p.providersJson
+  if (p.providerKey !== undefined) out.providerKey = p.providerKey
+  if (p.elapsedMs !== undefined) out.elapsedMs = p.elapsedMs
+  if (p.usedLabel !== undefined) out.usedLabel = p.usedLabel
+  return out
+}
+
 export async function showTranslatorPop(payload: {
   source: string; translated: string; targetLang: string; sourceLang?: string; error: string | null; ops: OpsDisplay; x: number; y: number
   /** v0.1.473：result（默认）= 译文/错误小窗；input = 输入翻译窗（走 showTranslatorInput，一般不用这里） */
   mode?: 'result' | 'input'
   /** v0.1.473：流式进行中——小窗已先行显示原文，译文随后经 updateTranslatorPop 填入 */
   streaming?: boolean
-}): Promise<void> {
+} & PopProviderArgs): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  await inv('translator_show_pop', { sourceLang: '', mode: 'result', streaming: false, ...payload } as unknown as Record<string, unknown>)
+  const { providersJson, providerKey, elapsedMs, usedLabel, ...rest } = payload
+  await inv('translator_show_pop', {
+    sourceLang: '', mode: 'result', streaming: false, ...rest,
+    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel }),
+  } as unknown as Record<string, unknown>)
 }
 
 /** 流式更新小窗内容（v0.1.473）：只换载荷不抢焦点；streaming=false 为最终结果 */
 export async function updateTranslatorPop(payload: {
   source: string; translated: string; targetLang: string; sourceLang?: string; error: string | null; ops: OpsDisplay; streaming?: boolean
-}): Promise<void> {
+} & PopProviderArgs): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  await inv('translator_update_pop', { sourceLang: '', streaming: false, ...payload } as unknown as Record<string, unknown>)
+  const { providersJson, providerKey, elapsedMs, usedLabel, ...rest } = payload
+  await inv('translator_update_pop', {
+    sourceLang: '', streaming: false, ...rest,
+    ...popProviderArgs({ providersJson, providerKey, elapsedMs, usedLabel }),
+  } as unknown as Record<string, unknown>)
 }
 
 /**
@@ -314,11 +346,33 @@ export async function updateTranslatorPop(payload: {
  * 同一置顶层级），返回小窗最终逻辑坐标。失败抛错——宿主必须转成可见报错，
  * 这是 Alt+E 链路的终点之一，不许静默（473 前旧链就是死在这里无声无息）。
  */
-export async function showTranslatorInput(offsetX: number, offsetY: number): Promise<[number, number]> {
+export async function showTranslatorInput(offsetX: number, offsetY: number, extra?: PopProviderArgs): Promise<[number, number]> {
   const inv = tauriInvoke()
   if (!inv) throw new Error('输入翻译仅在桌面端可用')
-  const r = await inv('translator_show_input', { offsetX, offsetY }) as [number, number]
+  const r = await inv('translator_show_input', { offsetX, offsetY, ...popProviderArgs(extra ?? {}) }) as [number, number]
   return [Number(r?.[0] ?? 0), Number(r?.[1] ?? 0)]
+}
+
+/** 小窗主题（v0.1.477）：浅/深双主题，仅本机记住；小窗自己读写 */
+export const POP_THEME_KEY = 'acm.translator.popTheme.v1'
+export type PopTheme = 'light' | 'dark'
+export function loadPopTheme(): PopTheme {
+  try { return localStorage.getItem(POP_THEME_KEY) === 'dark' ? 'dark' : 'light' } catch { return 'light' }
+}
+export function savePopTheme(t: PopTheme): void {
+  try { localStorage.setItem(POP_THEME_KEY, t) } catch { /* 忽略 */ }
+}
+
+/**
+ * 从小窗打开翻译助手设置页（v0.1.477 零启用服务商时的入口）：置一次性
+ * 标记（翻译页挂载消费、直落设置页签）+ 把主窗口带到前台并导航到工坊
+ * 翻译工具（App 的 acm-navigate 支持 'workshop:translator' 直达）。
+ */
+export async function openTranslatorSettings(): Promise<void> {
+  try { localStorage.setItem(TRANSLATOR_OPEN_SETTINGS_KEY, '1') } catch { /* 忽略 */ }
+  const inv = tauriInvoke()
+  if (!inv) return
+  try { await inv('show_main', { section: 'workshop:translator' }) } catch { /* 忽略 */ }
 }
 
 export async function writeClipboard(text: string): Promise<void> {
@@ -345,7 +399,7 @@ export async function setPopAlwaysOnTop(on: boolean): Promise<void> {
 
 // ---------------- 翻译执行（复用工坊路线 + 免费切换链） ----------------
 
-export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string }
+export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string; providerKey: string }
 
 /**
  * 翻译请求的输出上限（v0.1.473 请求瘦身，纯函数）：译文长度与原文同量级，
@@ -369,22 +423,24 @@ async function runTranslate(opts: {
   onPartial?: (full: string) => void
 }): Promise<TranslateOutcome> {
   const { accounts, sessionPwd, targetLang } = opts
-  const data = await loadWorkshopRoutes(accounts)
-  if (!data.routes.length) throw new Error('没有可用模型：先在 AI 助手登录云账号或添加账户')
-  const savedKey = loadTranslatorRouteKey()
-  const route = data.routes.find(r => r.key === savedKey) ?? data.routes[0]
-  if (route.kind === 'account' && route.disabledReason) throw new Error(route.disabledReason)
+  // v0.1.477 服务商两段式：引擎 = 设置里已启用的服务商中选定的那家（未选
+  // 则实测最快/第一个），锁定单路线执行——选了哪家就用哪家，失败报该家
+  // 真实原因，不再走自动切换链偷偷换家（onChainNote 因此不再触发，保留
+  // 参数兼容旧调用方）。一家都没启用时如实报错，不假装能翻。
+  const { providers, freeOptions } = await loadTranslatorProviders(accounts)
+  const engine: TranslatorProviderInfo | null = pickTranslatorEngine(providers, loadTranslatorEngineKey())
+  if (!engine) throw new Error('还没有启用的翻译服务商：请到翻译助手设置里启用至少一家')
+  if (engine.disabledReason) throw new Error(engine.disabledReason)
   const hint = opts.sourceLangName && opts.sourceLangName !== '自动检测' ? `源语言是${opts.sourceLangName}。` : ''
-  const translated = await runWorkshopChat({
-    route, freeOptions: data.freeOptions, accounts, sessionPwd,
+  const translated = await runWorkshopRouteOnce(engine.route, {
+    route: engine.route, freeOptions, accounts, sessionPwd,
     system: `你是专业翻译。${hint}把用户给出的文本翻译成${targetLang}。只输出译文，不要解释、不要加引号、不要保留原文。保留原有的段落与换行结构。`,
     user: opts.text.slice(0, 8000),
-    onChainNote: opts.onChainNote,
     onPartial: opts.onPartial,
     maxTokens: translationMaxTokens(opts.text.length),
     reasoningEffort: 'minimal',
   })
-  return { translated: translated.trim(), targetLang, usedLabel: route.label }
+  return { translated: translated.trim(), targetLang, usedLabel: engine.label, providerKey: engine.key }
 }
 
 export async function translateWithRoutes(opts: {
