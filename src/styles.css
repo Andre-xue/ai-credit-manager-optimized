@@ -2759,6 +2759,11 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .mail-modal-count { color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
 .mail-modal-err { color: var(--red); font-size: 12.5px; }
 .mail-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+/* v0.1.466：删除执行阶段总进度 */
+.mail-delete-progress { display: flex; flex-direction: column; gap: 6px; }
+.mail-delete-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text-2); }
+.mail-delete-progress-bar { height: 8px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
+.mail-delete-progress-bar > div { height: 100%; background: var(--red); border-radius: 4px; transition: width .25s ease; }
 
 /* ============ 翻译助手（v0.1.440） ============ */
 .trs-banner {

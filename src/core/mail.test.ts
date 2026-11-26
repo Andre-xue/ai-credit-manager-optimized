@@ -18,7 +18,8 @@ import {
   MS_GRAPH_SCOPE, MAIL_GRAPH_MIGRATION_MESSAGE, diagnoseOAuthTokenForGraph,
   mapGraphFolder, mapGraphMessage, hashGraphId, graphListFolders, graphErrorDetail,
   mailSyncAccount, addMailAccount, listMailAccounts, loadMailCache,
-  type MailSecret,
+  mailDeleteAll, mailDeleteAllPreview, mailDeleteAllSnapshot, saveMailCache,
+  type MailSecret, type MailDeleteAllProgressEvent, type MailMessage,
 } from './mail'
 import { initVault } from './crypto'
 
@@ -887,5 +888,228 @@ describe('v0.1.459 旧令牌迁移检出与 Graph 同步', () => {
     // 正文预取（450 缓存层）走 $value：等微任务跑完后缓存里应有正文
     await new Promise(r => setTimeout(r, 30))
     expect(loadCachedBody(cached.messages[0].key)?.text).toContain('Graph body 459')
+  })
+})
+
+/* ================= v0.1.466：一键删除全部——快照秒开 / 并发核对 / 真进度 / 取消 / 分步超时 =================
+ * 全部走 invoke 打桩跑真实 mailDeleteAll / mailDeleteAllPreview（与真机同一份代码），
+ * 断言进度事件序列、取消行为与计数口径，而不是只测纯函数。 */
+
+describe('v0.1.466 删除全部（打桩全流程）', () => {
+  const PWD = 'test1234'
+  const g = globalThis as unknown as { window?: Record<string, unknown> }
+  beforeEach(() => localStorage.clear())
+  afterEach(() => { delete g.window })
+
+  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i)
+  const searchRaw = (uids: number[]) => `* SEARCH ${uids.join(' ')}\r\na5 OK done`
+
+  async function makeImapAccount(email: string): Promise<MailAccountMeta> {
+    return addMailAccount(
+      { email, platformId: 'qq', label: email, host: 'imap.qq.com', port: 993 },
+      { kind: 'code', secret: 'authcode-1' },
+      PWD,
+    )
+  }
+
+  /** 通用 IMAP 打桩：folders 给 {name, uids}（名字含 Trash 自动带 \Trash 标记），可覆盖单命令行为 */
+  function stubImap(folders: { name: string; uids: number[] }[], overrides?: (cmd: string, args: Record<string, unknown>) => unknown) {
+    const deleteCalls: { folder: string; count: number }[] = []
+    // 必须 async：tauriInvoke 直传 invoke 的返回值，raceTimeout 要真 Promise（裸值会炸 p.then）
+    stubTauriInvoke(async (cmd, args) => {
+      if (overrides) {
+        const r = overrides(cmd, args)
+        if (r !== undefined) return r
+      }
+      if (cmd === 'mail_imap_connect') return 'IMAP4rev1 IDLE'
+      if (cmd === 'mail_imap_disconnect') return null
+      if (cmd === 'mail_imap_list_folders') {
+        return folders.map(f => `* LIST (\\HasNoChildren${f.name === 'Trash' ? ' \\Trash' : ''}) "/" "${f.name}"`).join('\r\n') + '\r\na3 OK List completed'
+      }
+      if (cmd === 'mail_imap_folder_counts') {
+        const counts: Record<string, number> = {}
+        for (const f of folders) counts[f.name] = f.uids.length
+        return JSON.stringify(counts)
+      }
+      if (cmd === 'mail_imap_search_all') {
+        const f = folders.find(x => x.name === args['folder'])
+        return searchRaw(f ? f.uids : [])
+      }
+      if (cmd === 'mail_imap_delete_messages') {
+        const uids = args['uids'] as number[]
+        deleteCalls.push({ folder: String(args['folder']), count: uids.length })
+        return uids.length
+      }
+      throw new Error(`unexpected ${cmd}`)
+    })
+    return { deleteCalls }
+  }
+
+  it('IMAP 进度序列：账户→文件夹→批次（450 封 3 批）→完成；垃圾箱计数口径不重复', async () => {
+    await initVault(PWD)
+    const acc = await makeImapAccount('a@qq.com')
+    stubImap([
+      { name: 'INBOX', uids: range(1, 450) },
+      { name: 'Trash', uids: [901, 902] },
+    ])
+    const events: MailDeleteAllProgressEvent[] = []
+    const [report] = await mailDeleteAll([acc], PWD, { onEvent: e => events.push(e) })
+    expect(events.map(e => e.type)).toEqual([
+      'account-start', 'folder-start', 'batch', 'batch', 'batch', 'folder-start', 'batch', 'account-done',
+    ])
+    const folderStarts = events.filter(e => e.type === 'folder-start')
+    expect(folderStarts.map(e => (e.type === 'folder-start' ? e.total : 0))).toEqual([450, 2])
+    const batches = events.filter(e => e.type === 'batch')
+    expect(batches.map(e => (e.type === 'batch' ? e.batchIndex : 0))).toEqual([1, 2, 3, 1])
+    // INBOX 450 封移入垃圾箱计 450；清垃圾箱时只计原本就在垃圾箱的 2 封，不重复计刚移入的
+    expect(report.deleted).toBe(452)
+    expect(report.mode).toBe('mixed')
+    expect(report.error).toBeUndefined()
+  })
+
+  it('取消：第 2 批后置取消令牌 → 不再发删除、报告 cancelled 且已删=前两批实数', async () => {
+    await initVault(PWD)
+    const acc = await makeImapAccount('b@qq.com')
+    const { deleteCalls } = stubImap([{ name: 'INBOX', uids: range(1, 450) }])
+    const token = { cancelled: false }
+    const events: MailDeleteAllProgressEvent[] = []
+    const [report] = await mailDeleteAll([acc], PWD, {
+      cancelToken: token,
+      onEvent: e => {
+        events.push(e)
+        if (e.type === 'batch' && e.batchIndex === 2) token.cancelled = true
+      },
+    })
+    expect(deleteCalls.length).toBe(2)
+    expect(report.cancelled).toBe(true)
+    expect(report.deleted).toBe(400)
+    expect(events.map(e => e.type)).toContain('account-cancelled')
+    expect(events.map(e => e.type)).not.toContain('account-done')
+  })
+
+  it('账户并发（≤3）与失败隔离：一个账户连接失败，其余照常删完，报告按输入序', async () => {
+    await initVault(PWD)
+    const accs = [await makeImapAccount('c1@qq.com'), await makeImapAccount('c2@qq.com'), await makeImapAccount('c3@qq.com')]
+    let inFlight = 0
+    let maxInFlight = 0
+    stubImap([{ name: 'INBOX', uids: range(1, 5) }], (cmd, args) => {
+      if (cmd === 'mail_imap_connect') {
+        if (args['accountId'] === accs[1].id) throw new Error('a1 NO Login failed')
+        return (async () => {
+          inFlight += 1
+          maxInFlight = Math.max(maxInFlight, inFlight)
+          await new Promise(r => setTimeout(r, 30))
+          inFlight -= 1
+          return 'IMAP4rev1 IDLE'
+        })()
+      }
+      return undefined
+    })
+    const reports = await mailDeleteAll(accs, PWD, {})
+    expect(reports.map(r => r.accountId)).toEqual(accs.map(a => a.id))
+    expect(reports[0].deleted).toBe(5)
+    expect(reports[1].error).toContain('Login failed')
+    expect(reports[2].deleted).toBe(5)
+    expect(maxInFlight).toBeGreaterThanOrEqual(2)
+    expect(maxInFlight).toBeLessThanOrEqual(3)
+  })
+
+  it('取消发生在开始前：其余账户标 notStarted、一封未删', async () => {
+    await initVault(PWD)
+    const acc = await makeImapAccount('d@qq.com')
+    const { deleteCalls } = stubImap([{ name: 'INBOX', uids: range(1, 3) }])
+    const [report] = await mailDeleteAll([acc], PWD, { cancelToken: { cancelled: true } })
+    expect(report.notStarted).toBe(true)
+    expect(report.deleted).toBe(0)
+    expect(deleteCalls.length).toBe(0)
+  })
+
+  /** Graph 打桩：inboxCount 封收件箱 + 垃圾箱 t1/t2；batchImpl 可替换 $batch 行为 */
+  function stubGraph(inboxCount: number, batchImpl?: (body: { requests: { id: string }[] }) => unknown) {
+    const inbox = { id: 'fid-inbox', displayName: 'Inbox', totalItemCount: inboxCount, unreadItemCount: 0, childFolderCount: 0 }
+    const trash = { id: 'fid-trash', displayName: 'Deleted Items', totalItemCount: 2, unreadItemCount: 0, childFolderCount: 0 }
+    stubTauriInvoke(async (cmd, args) => {
+      if (cmd !== 'plugin_http_b64') throw new Error(`unexpected ${cmd}`)
+      const url = String(args['url'])
+      if (url.endsWith('/$batch')) {
+        const body = JSON.parse(String(args['body'])) as { requests: { id: string }[] }
+        if (batchImpl) return batchImpl(body)
+        return b64Json(200, { responses: body.requests.map(r => ({ id: r.id, status: 200, body: {} })) })
+      }
+      if (url.includes('/mailFolders/inbox?')) return b64Json(200, { id: 'fid-inbox' })
+      if (url.includes('/mailFolders/deleteditems?')) return b64Json(200, { id: 'fid-trash' })
+      if (url.includes('/mailFolders/') && url.includes('?$select=id')) return b64Json(404, { error: { code: 'ErrorFolderNotFound', message: 'no' } })
+      if (url.includes('$top=100')) return b64Json(200, { value: [inbox, trash] })
+      if (url.includes('$top=1&')) return b64Json(200, { value: [] })
+      if (url.includes('/mailFolders/fid-inbox/messages')) return b64Json(200, { value: range(1, inboxCount).map(i => ({ id: `m${i}` })) })
+      if (url.includes('/mailFolders/fid-trash/messages')) return b64Json(200, { value: [{ id: 't1' }, { id: 't2' }] })
+      throw new Error(`unrouted ${url}`)
+    })
+  }
+
+  async function makeGraphAccount(email: string): Promise<MailAccountMeta> {
+    const tok = graphJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite', upn: email, exp: 9999999999 })
+    const secret: MailSecret = { kind: 'oauth', accessTok: tok, refreshTok: 'rt-g', expiresAt: Date.now() + 3600_000, clientId: 'cid', clientSecret: '', scope: MS_GRAPH_SCOPE }
+    return addMailAccount({ email, platformId: 'outlook', label: email, host: 'outlook.office365.com', port: 993 }, secret, PWD)
+  }
+
+  it('Graph 进度：收件箱 25 封分 2 批 $batch、垃圾箱只计原有 2 封', async () => {
+    await initVault(PWD)
+    const acc = await makeGraphAccount('someone@outlook.com')
+    stubGraph(25)
+    const events: MailDeleteAllProgressEvent[] = []
+    const [report] = await mailDeleteAll([acc], PWD, { onEvent: e => events.push(e) })
+    expect(events.map(e => e.type)).toEqual([
+      'account-start', 'folder-start', 'batch', 'batch', 'folder-start', 'batch', 'account-done',
+    ])
+    const batches = events.filter(e => e.type === 'batch')
+    expect(batches.map(e => (e.type === 'batch' ? e.deletedInFolder : 0))).toEqual([20, 25, 2])
+    expect(report.deleted).toBe(27)
+    expect(report.mode).toBe('mixed')
+    expect(report.error).toBeUndefined()
+  })
+
+  it('Graph 单步超时：$batch 挂死 → 该账户按超时失败收场，整体不挂住', async () => {
+    await initVault(PWD)
+    const acc = await makeGraphAccount('someone@outlook.com')
+    stubGraph(1, () => new Promise(() => {}))
+    ;(g.window as Record<string, unknown>)['__ACM_MAIL_GRAPH_TIMEOUT_MS__'] = 40
+    const t0 = Date.now()
+    const [report] = await mailDeleteAll([acc], PWD, {})
+    expect(Date.now() - t0).toBeLessThan(10_000)
+    expect(report.error).toContain('Graph 请求超时')
+    expect(report.deleted).toBe(0)
+  })
+
+  it('快照秒开：只读本地缓存、不发任何请求；核对并发逐行回告并给出服务器数字', async () => {
+    await initVault(PWD)
+    const acc = await makeImapAccount('e@qq.com')
+    const msg = (uid: number): MailMessage => ({
+      key: `${acc.id}|INBOX|${uid}`, accountId: acc.id, folder: 'INBOX', uid,
+      from: 'F', fromAddr: 'f@x.y', subject: 's', date: 0, snippet: '', flags: [], hasAttach: false, size: 0, category: 'personal',
+    })
+    saveMailCache({
+      [acc.id]: {
+        folders: [
+          { name: 'INBOX', flags: [], role: 'inbox' },
+          { name: 'Trash', flags: [], role: 'trash' },
+        ],
+        messages: [msg(1), msg(2), msg(3)],
+        caps: '', updatedAt: Date.now(),
+      },
+    })
+    stubTauriInvoke(() => { throw new Error('快照不许发网络') })
+    const snap = mailDeleteAllSnapshot([acc])
+    expect(snap).toHaveLength(1)
+    expect(snap[0].total).toBe(3)
+    expect(snap[0].mode).toBe('mixed')
+    expect(snap[0].source).toBe('snapshot')
+
+    stubImap([{ name: 'INBOX', uids: range(1, 5) }, { name: 'Trash', uids: [9] }])
+    const updates: string[] = []
+    const preview = await mailDeleteAllPreview([acc], PWD, e => updates.push(`${e.account.id}:${e.total}:${e.source}`))
+    expect(updates).toEqual([`${acc.id}:6:verified`])
+    expect(preview.total).toBe(6)
+    expect(preview.perAccount[0].source).toBe('verified')
   })
 })

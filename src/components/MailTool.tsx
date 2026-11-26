@@ -15,7 +15,7 @@ import {
   loadMailVisibility, saveMailVisibility, isAccountVisible,
   loadMailCache, applyCategoryOverrides, setCategoryOverride,
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
-  mailDeleteAllPreview, mailDeleteAll,
+  mailDeleteAllPreview, mailDeleteAll, mailDeleteAllSnapshot,
   mailEnsureConnected, mailCancelConnect, prepareMailHtml, htmlHasVisibleText, MAIL_IMG_PLACEHOLDER,
   mailVerifyAccount, MAIL_CONNECT_STEP_LABELS, loadCachedBody, mailFetchAttachment,
   OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
@@ -23,7 +23,7 @@ import {
   saveMailSecret, loadMailSecret, mailForgetSession,
   displayMailError, shouldSuggestCredentialCheck,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
-  type MailBodyContent, type MailDeleteAllReport,
+  type MailBodyContent, type MailDeleteAllReport, type MailDeleteAllPreviewEntry, type MailDeleteCancelToken,
 } from '../core/mail'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
 import { getBiometricPassword } from '../core/crypto'
@@ -87,6 +87,8 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   const [currentKey, setCurrentKey] = useState<string | null>(null)
   const [pwdInput, setPwdInput] = useState('')
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
+  const [deleteOneTarget, setDeleteOneTarget] = useState<MailAccountMeta | null>(null)
+  const [batchBusy, setBatchBusy] = useState('')
   const syncingRef = useRef<Set<string>>(new Set())
   // v0.1.450：与其它工具一致——有指纹密码副本就直接进，不单独弹解锁页；
   // 两个都没有才显示解锁页（onUnlock 仍回写全局 sessionPwd）。子组件（MailReader/
@@ -250,18 +252,30 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   }
 
   const deleteMessages = async (msgs: MailMessage[]) => {
+    if (batchBusy) return
     const byAccount = new Map<string, MailMessage[]>()
     for (const m of msgs) byAccount.set(m.accountId, [...(byAccount.get(m.accountId) ?? []), m])
-    for (const [accountId, list] of byAccount) {
+    const groups = [...byAccount.entries()]
+    let idx = 0
+    for (const [accountId, list] of groups) {
+      idx += 1
       const account = metaOf(accountId)
       if (!account) continue
+      // v0.1.466：批量删（尤其全选整账户）可能几百封，执行中给出当前账户/进度，不再干等
+      setBatchBusy(`正在删除「${account.email}」的 ${list.length} 封…（第 ${idx}/${groups.length} 个账户）`)
       try {
         const mode = await mailDeleteMessages(account, list)
         notify(mode === 'trash' ? `已移入垃圾箱（${list.length} 封）` : `已彻底删除（${list.length} 封）`)
       } catch (e) { notify(`删除失败：${e instanceof Error ? e.message : String(e)}`) }
     }
+    setBatchBusy('')
     setSelected(new Set())
     refreshCache()
+  }
+
+  /** v0.1.466：全选本账户全部已同步邮件（不止当前筛选下看得见的那些） */
+  const selectAllOfAccount = (accountId: string) => {
+    setSelected(new Set(allMessages.filter(m => m.accountId === accountId).map(m => m.key)))
   }
 
   const batchMarkRead = async () => {
@@ -323,6 +337,18 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
                 {syncMap[a.id]?.state === 'error' && <span className="mail-chip-err" title={syncMap[a.id]?.message}>同步失败</span>}
               </button>
             ))}
+            {/* v0.1.466：单账户视图的专属操作——全选本账户已同步邮件 / 删除本账户全部邮件（走全局同款弹窗，范围锁单账户） */}
+            {accountFilter !== 'all' && (() => {
+              const target = visibleMetas.find(a => a.id === accountFilter)
+              if (!target) return null
+              return (
+                <>
+                  <span className="mail-topbar-spacer" />
+                  <button className="btn sm ghost" onClick={() => selectAllOfAccount(target.id)}>全选本账户邮件</button>
+                  <button className="btn sm danger-ghost" onClick={() => setDeleteOneTarget(target)}><Trash2 size={14} /> 删除本账户全部邮件</button>
+                </>
+              )
+            })()}
           </div>
 
           {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
@@ -358,9 +384,15 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
               {selected.size > 0 && (
                 <div className="mail-batch-bar">
                   <span>已选 {selected.size} 封</span>
-                  <button className="btn sm" onClick={() => void batchMarkRead()}>标记已读</button>
-                  <button className="btn sm" onClick={() => void deleteMessages(filtered.filter(m => selected.has(m.key)))}>删除</button>
-                  <button className="btn sm ghost" onClick={() => setSelected(new Set())}><X size={13} /> 取消选择</button>
+                  {batchBusy
+                    ? <span><Loader2 size={13} className="spin" /> {batchBusy}</span>
+                    : (
+                      <>
+                        <button className="btn sm" onClick={() => void batchMarkRead()}>标记已读</button>
+                        <button className="btn sm" onClick={() => void deleteMessages(allMessages.filter(m => selected.has(m.key)))}>删除</button>
+                        <button className="btn sm ghost" onClick={() => setSelected(new Set())}><X size={13} /> 取消选择</button>
+                      </>
+                    )}
                 </div>
               )}
               <div className="mail-list">
@@ -461,6 +493,17 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           pwd={pwd}
           notify={notify}
           onClose={() => setDeleteAllOpen(false)}
+          onDone={() => { refreshCache(); setSelected(new Set()) }}
+        />
+      )}
+
+      {deleteOneTarget && (
+        <DeleteAllModal
+          metas={[deleteOneTarget]}
+          singleAccount={deleteOneTarget}
+          pwd={pwd}
+          notify={notify}
+          onClose={() => setDeleteOneTarget(null)}
           onDone={() => { refreshCache(); setSelected(new Set()) }}
         />
       )}
@@ -1165,42 +1208,120 @@ function MailReauthModal({ account, reason, pwd, notify, onClose, onDone }: {
 }
 
 // ---------------- 一键删除全部邮件（两次确认） ----------------
+// v0.1.466：弹窗打开即用本地同步快照渲染（不再等连服务器统计才出现内容），服务器
+// 核对并发进行、逐行替换并标注；执行阶段是逐账户状态列表 + 总进度 + 当前步骤，
+// 带「取消删除」（当前批次后停住，已删/未删如实汇报）。两次确认结构不变：删除只在
+// 第二次确认点击后才启动，关弹窗不触发删除。
 
-function DeleteAllModal({ metas, pwd, notify, onClose, onDone }: {
+type DeleteRunStatus = 'waiting' | 'deleting' | 'done' | 'failed' | 'cancelled' | 'not-started'
+
+interface DeleteRunRow {
+  status: DeleteRunStatus
+  deleted: number
+  target: number
+  step: string
+  folderLabel?: string
+  error?: string
+}
+
+function DeleteAllModal({ metas, pwd, notify, onClose, onDone, singleAccount }: {
   metas: MailAccountMeta[]
   pwd: string
   notify: (msg: string) => void
   onClose: () => void
   onDone: () => void
+  /** v0.1.466：单账户模式（metas 只含这一个账户）——标题/文案写明「本账户」，流程与全局完全共用 */
+  singleAccount?: MailAccountMeta
 }) {
-  const [stage, setStage] = useState<'loading' | 'preview' | 'confirm' | 'running' | 'done'>('loading')
-  const [preview, setPreview] = useState<Awaited<ReturnType<typeof mailDeleteAllPreview>> | null>(null)
+  const [stage, setStage] = useState<'preview' | 'confirm' | 'running' | 'done'>('preview')
+  const [entries, setEntries] = useState<MailDeleteAllPreviewEntry[]>(() => mailDeleteAllSnapshot(metas))
+  const [verifying, setVerifying] = useState(true)
   const [reports, setReports] = useState<MailDeleteAllReport[]>([])
-  const [progress, setProgress] = useState('')
+  const [runRows, setRunRows] = useState<Record<string, DeleteRunRow>>({})
+  const [cancelling, setCancelling] = useState(false)
+  const cancelTokenRef = useRef<MailDeleteCancelToken>({ cancelled: false })
 
   useEffect(() => {
     let dead = false
-    void mailDeleteAllPreview(metas, pwd).then(p => {
+    mailDeleteAllPreview(metas, pwd, entry => {
       if (dead) return
-      setPreview(p)
-      setStage('preview')
-    })
+      setEntries(prev => prev.map(e => (e.account.id === entry.account.id ? entry : e)))
+    }).then(p => {
+      if (dead) return
+      setEntries(p.perAccount)
+      setVerifying(false)
+    }).catch(() => { if (!dead) setVerifying(false) })
     return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const total = entries.reduce((a, e) => a + (e.error ? 0 : e.total), 0)
 
   const modeText = (mode: 'trash' | 'permanent' | 'mixed') =>
     mode === 'trash' ? '移入垃圾箱' : mode === 'mixed' ? '先移入垃圾箱，垃圾箱内彻底删除' : '彻底删除（无垃圾箱或已在垃圾箱）'
 
   const runDelete = async () => {
+    const rows: Record<string, DeleteRunRow> = {}
+    for (const m of metas) {
+      const e = entries.find(x => x.account.id === m.id)
+      rows[m.id] = { status: 'waiting', deleted: 0, target: e && !e.error ? e.total : 0, step: '等待开始' }
+    }
+    setRunRows(rows)
+    cancelTokenRef.current = { cancelled: false }
+    setCancelling(false)
     setStage('running')
-    const result = await mailDeleteAll(metas, pwd, (email, n) => setProgress(`正在删除「${email}」…已删 ${n} 封`))
+    const result = await mailDeleteAll(metas, pwd, {
+      cancelToken: cancelTokenRef.current,
+      onEvent: ev => {
+        setRunRows(prev => {
+          const row = prev[ev.accountId]
+          if (!row) return prev
+          const next = { ...row }
+          switch (ev.type) {
+            case 'account-start': next.status = 'deleting'; next.step = '正在连接服务器…'; break
+            case 'folder-start': next.folderLabel = ev.folderLabel; next.step = `正在删除「${ev.folderLabel}」…`; break
+            case 'batch': next.deleted = ev.deletedInAccount; next.step = `正在删除「${next.folderLabel ?? ev.folder}」第 ${ev.batchIndex}/${ev.batchCount} 批`; break
+            case 'account-done': next.status = 'done'; next.deleted = ev.deleted; next.step = '已完成'; break
+            case 'account-error': next.status = 'failed'; next.deleted = ev.deleted; next.error = ev.error; next.step = '失败'; break
+            case 'account-cancelled': next.status = 'cancelled'; next.deleted = ev.deleted; next.step = '已停止'; break
+          }
+          return { ...prev, [ev.accountId]: next }
+        })
+      },
+    })
+    // 未开始的账户（取消时还没轮到）事件里不会出现，按报告补齐行状态
+    setRunRows(prev => {
+      const nextRows = { ...prev }
+      for (const r of result) {
+        if (r.notStarted && nextRows[r.accountId]) nextRows[r.accountId] = { ...nextRows[r.accountId], status: 'not-started', step: '未开始' }
+      }
+      return nextRows
+    })
     setReports(result)
     setStage('done')
     onDone()
+    const deletedSum = result.reduce((a, r) => a + r.deleted, 0)
+    const wasCancelled = result.some(r => r.cancelled || r.notStarted)
     const failed = result.filter(r => r.error)
-    if (failed.length) notify(`删除完成，但 ${failed.length} 个账户有失败：${failed[0].error}`)
-    else notify(`已删除全部邮件，共 ${result.reduce((a, r) => a + r.deleted, 0)} 封`)
+    if (wasCancelled) notify(`已取消删除：共删 ${deletedSum} 封，其余邮件未动`)
+    else if (failed.length) notify(`删除完成，但 ${failed.length} 个账户有失败：${failed[0].error}`)
+    else notify(`已删除全部邮件，共 ${deletedSum} 封`)
+  }
+
+  const runDeleted = Object.values(runRows).reduce((a, r) => a + r.deleted, 0)
+  const runTarget = Object.values(runRows).reduce((a, r) => a + r.target, 0)
+  const runPercent = runTarget > 0 ? Math.min(100, Math.round((runDeleted / runTarget) * 100)) : 0
+  const anyCancelled = reports.some(r => r.cancelled || r.notStarted)
+
+  const runStatusText = (row: DeleteRunRow) => {
+    switch (row.status) {
+      case 'waiting': return <span className="mail-modal-count">等待开始</span>
+      case 'deleting': return <span className="mail-modal-count"><Loader2 size={13} className="spin" /> {row.step} · 已删 {row.deleted}{row.target > 0 ? ` / ${row.target}` : ''} 封</span>
+      case 'done': return <span className="mail-modal-count"><CheckCircle2 size={13} /> 已删 {row.deleted} 封</span>
+      case 'failed': return <span className="mail-modal-err">失败：{row.error}（已删 {row.deleted} 封）</span>
+      case 'cancelled': return <span className="mail-modal-count">已停止 · 已删 {row.deleted} 封</span>
+      case 'not-started': return <span className="mail-modal-count">未开始</span>
+    }
   }
 
   return (
@@ -1208,54 +1329,84 @@ function DeleteAllModal({ metas, pwd, notify, onClose, onDone }: {
       <div className="mail-modal" onClick={e => e.stopPropagation()}>
         <div className="mail-modal-head">
           <AlertTriangle size={18} className="mail-modal-warn" />
-          <h4>一键删除全部邮件</h4>
+          <h4>{singleAccount ? '删除本账户全部邮件' : '一键删除全部邮件'}</h4>
           <span className="mail-topbar-spacer" />
           {stage !== 'running' && <button className="btn sm ghost" onClick={onClose}><X size={14} /></button>}
         </div>
-        {stage === 'loading' && <div className="mail-loading"><Loader2 size={16} className="spin" /> 正在连接各账户统计邮件数…</div>}
-        {(stage === 'preview' || stage === 'confirm') && preview && (
+        {(stage === 'preview' || stage === 'confirm') && (
           <>
             <p className="mail-modal-desc">
-              将删除 <b>{preview.perAccount.length} 个账户</b>、共 <b>{preview.total} 封</b>邮件（含收件箱、已发送、草稿、垃圾箱等全部文件夹）。
-              账户与凭据保留，不删账户。删除方式按各平台实际支持：
+              {singleAccount
+                ? <>将删除「{mailPlatform(singleAccount.platformId).name} · {singleAccount.email}」<b>这一个账户的全部邮件</b>，共 <b>{total} 封</b>（含收件箱、已发送、草稿、垃圾箱等全部文件夹）。只删邮件，账户与凭据保留、不删账户。删除方式按平台实际支持：</>
+                : <>将删除 <b>{entries.length} 个账户</b>、共 <b>{total} 封</b>邮件（含收件箱、已发送、草稿、垃圾箱等全部文件夹）。账户与凭据保留，不删账户。删除方式按各平台实际支持：</>}
+              {verifying && <><br />封数正在与服务器核对（逐行更新中），不必等核对完——删除会覆盖全部邮件，计数只作知情。</>}
             </p>
             <div className="mail-modal-list">
-              {preview.perAccount.map(({ account, total, mode, error }) => (
-                <div key={account.id} className="mail-modal-row">
-                  <span className="mail-modal-email">{mailPlatform(account.platformId).name} · {account.email}</span>
-                  {error
-                    ? <span className="mail-modal-err">连接失败：{displayMailError(error)}</span>
-                    : <span className="mail-modal-count">{total} 封 · {modeText(mode)}</span>}
+              {entries.map(e => (
+                <div key={e.account.id} className="mail-modal-row">
+                  <span className="mail-modal-email">{mailPlatform(e.account.platformId).name} · {e.account.email}</span>
+                  {e.error
+                    ? <span className="mail-modal-err">连接失败：{e.error}</span>
+                    : <span className="mail-modal-count">{e.total} 封 · {modeText(e.mode)} · {e.source === 'verified' ? '已核对' : '本地同步快照'}</span>}
                 </div>
               ))}
             </div>
             {stage === 'preview' && (
               <div className="mail-modal-actions">
                 <button className="btn ghost" onClick={onClose}>取消</button>
-                <button className="btn danger" disabled={preview.total === 0} onClick={() => setStage('confirm')}>继续删除</button>
+                <button className="btn danger" disabled={total === 0} onClick={() => setStage('confirm')}>继续删除</button>
               </div>
             )}
             {stage === 'confirm' && (
               <>
-                <div className="mail-error-box"><AlertTriangle size={15} /> 最后确认：这一步执行后，被彻底删除的邮件无法恢复；移入垃圾箱的邮件可在邮箱网页版的垃圾箱里找回（自动清空前）。</div>
+                <div className="mail-error-box"><AlertTriangle size={15} /> 最后确认：这一步执行后，被彻底删除的邮件无法恢复；移入垃圾箱的邮件可在邮箱网页版的垃圾箱里找回（自动清空前）。{verifying && <>（封数仍在核对中，当前 {total} 封；删除将覆盖全部邮件。）</>}</div>
                 <div className="mail-modal-actions">
                   <button className="btn ghost" onClick={() => setStage('preview')}>返回</button>
-                  <button className="btn danger" onClick={() => void runDelete()}>确认删除全部 {preview.total} 封</button>
+                  <button className="btn danger" onClick={() => void runDelete()}>{singleAccount ? `确认删除本账户全部 ${total} 封` : `确认删除全部 ${total} 封`}</button>
                 </div>
               </>
             )}
           </>
         )}
-        {stage === 'running' && <div className="mail-loading"><Loader2 size={16} className="spin" /> {progress || '正在删除…'}</div>}
+        {stage === 'running' && (
+          <>
+            <div className="mail-delete-progress">
+              <div className="mail-delete-progress-head">
+                <span>已删 {runDeleted} / 共 {runTarget} 封（{runPercent}%）</span>
+                {cancelling && <span>正在停止…（当前批次完成后停住）</span>}
+              </div>
+              <div className="mail-delete-progress-bar"><div style={{ width: `${runPercent}%` }} /></div>
+            </div>
+            <div className="mail-modal-list">
+              {metas.map(m => {
+                const row = runRows[m.id]
+                return (
+                  <div key={m.id} className="mail-modal-row">
+                    <span className="mail-modal-email">{mailPlatform(m.platformId).name} · {m.email}</span>
+                    {row ? runStatusText(row) : <span className="mail-modal-count">等待开始</span>}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mail-modal-actions">
+              <button className="btn danger" disabled={cancelling} onClick={() => { cancelTokenRef.current.cancelled = true; setCancelling(true) }}>取消删除</button>
+            </div>
+          </>
+        )}
         {stage === 'done' && (
           <>
+            {anyCancelled && <p className="mail-modal-desc">已取消删除：共删 {reports.reduce((a, r) => a + r.deleted, 0)} 封，其余邮件未动。明细如下：</p>}
             <div className="mail-modal-list">
               {reports.map(r => (
                 <div key={r.accountId} className="mail-modal-row">
                   <span className="mail-modal-email">{r.email}</span>
                   {r.error
-                    ? <span className="mail-modal-err">失败：{r.error}</span>
-                    : <span className="mail-modal-count"><CheckCircle2 size={13} /> 已删 {r.deleted} 封（{modeText(r.mode)}）</span>}
+                    ? <span className="mail-modal-err">失败：{r.error}{r.deleted > 0 ? `（已删 ${r.deleted} 封）` : ''}</span>
+                    : r.notStarted
+                      ? <span className="mail-modal-count">未开始（已取消）</span>
+                      : r.cancelled
+                        ? <span className="mail-modal-count">已停止 · 已删 {r.deleted} 封</span>
+                        : <span className="mail-modal-count"><CheckCircle2 size={13} /> 已删 {r.deleted} 封（{modeText(r.mode)}）</span>}
                 </div>
               ))}
             </div>

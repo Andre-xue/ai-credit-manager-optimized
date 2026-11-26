@@ -959,7 +959,8 @@ export function mailConnectTimeoutMs(): number {
 export function raceTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(label)), ms)
-    p.then(
+    // Promise.resolve 包一层：传入值不是标准 Promise（异常传输层/打桩）时也不至于死在 p.then 上
+    Promise.resolve(p).then(
       v => { clearTimeout(timer); resolve(v) },
       (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))) },
     )
@@ -1194,7 +1195,13 @@ async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, 
   const url = preset.oauthProvider === 'microsoft'
     ? 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
     : 'https://oauth2.googleapis.com/token'
-  const res = await pluginHttpDesktop(url, 'POST', { 'Content-Type': 'application/x-www-form-urlencoded' }, form.toString())
+  // v0.1.466：令牌刷新此前无 TS 侧超时（仅 Rust 120 秒兜底），删除/同步前置步骤挂死
+  // 会静默卡两分钟。与 445 分步口径一致：30 秒未回按失败处理，错误原文说明卡在哪一步。
+  const res = await raceTimeout(
+    pluginHttpDesktop(url, 'POST', { 'Content-Type': 'application/x-www-form-urlencoded' }, form.toString()),
+    30_000,
+    'OAuth 令牌刷新超时（30 秒内授权服务器未返回），已中止',
+  )
   if (res.status < 200 || res.status >= 300) {
     // v0.1.459：旧令牌迁移——459 前的 refresh token 只同意过 IMAP 范围，按 Graph 范围
     // 刷新会被拒（invalid_grant / 未同意新权限类）。这不是撤销，是通道迁移：标记重新
@@ -1240,7 +1247,21 @@ export interface GraphHttpResult {
  * 8bit 字节，plugin_http 的文本通道会 UTF-8 有损解码弄坏正文/附件。
  * 状态码与响应体原样带回，成败由 assertGraphOk 按微软原文报错，不吞。
  */
-export async function graphHttp(accessTok: string, method: string, pathOrUrl: string, body?: unknown): Promise<GraphHttpResult> {
+/** v0.1.466：Graph 单步请求看门狗。此前 graphHttp 没有 TS 侧超时，只剩 Rust reqwest
+ * 120 秒兜底——删除全部/同步时一个挂死的 Graph 请求能静默卡两分钟、分页循环里更是
+ * 近乎无限等。与 445 的 IMAP 分步超时同口径：单步 45 秒，超时按当前步失败处理。 */
+export const MAIL_GRAPH_STEP_TIMEOUT_MS = 45_000
+
+export function mailGraphStepTimeoutMs(): number {
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __ACM_MAIL_GRAPH_TIMEOUT_MS__?: unknown }
+    const v = w.__ACM_MAIL_GRAPH_TIMEOUT_MS__
+    if (typeof v === 'number' && v > 0) return v
+  }
+  return MAIL_GRAPH_STEP_TIMEOUT_MS
+}
+
+export async function graphHttp(accessTok: string, method: string, pathOrUrl: string, body?: unknown, timeoutMs?: number): Promise<GraphHttpResult> {
   const headers: Record<string, string> = { Authorization: `Bearer ${accessTok}` }
   let bodyStr: string | null = null
   if (body !== undefined) {
@@ -1248,9 +1269,19 @@ export async function graphHttp(accessTok: string, method: string, pathOrUrl: st
     bodyStr = JSON.stringify(body)
   }
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${GRAPH_API_BASE}${pathOrUrl}`
-  const raw = await tauriInvoke<string>('plugin_http_b64', {
-    url, method, headersJson: JSON.stringify(headers), body: bodyStr,
-  })
+  // 只在调用方显式给 timeoutMs 时套看门狗（删除链路/连接探活传）：正文 $value 拉大附件
+  // 等既有路径不传，维持 Rust 120 秒兜底的原行为，不收紧误伤。
+  const raw = timeoutMs !== undefined
+    ? await raceTimeout(
+      tauriInvoke<string>('plugin_http_b64', {
+        url, method, headersJson: JSON.stringify(headers), body: bodyStr,
+      }),
+      timeoutMs,
+      `Graph 请求超时（${Math.round(timeoutMs / 1000)} 秒内微软服务器未返回），已中止`,
+    )
+    : await tauriInvoke<string>('plugin_http_b64', {
+      url, method, headersJson: JSON.stringify(headers), body: bodyStr,
+    })
   const parsed = JSON.parse(raw) as { status: number; bodyBase64?: string }
   const bytes = parsed.bodyBase64 ? b64ToBytes(parsed.bodyBase64) : new Uint8Array()
   return { status: parsed.status, text: new TextDecoder().decode(bytes), bytes }
@@ -1300,11 +1331,11 @@ export function mapGraphFolder(raw: Record<string, unknown>, roleOverride?: Mail
 const GRAPH_FOLDER_FIELDS = 'id,displayName,totalItemCount,unreadItemCount,childFolderCount'
 
 /** 文件夹列表（含计数）：先用知名文件夹端点定 id→role，再分页拉全量并逐层展开子文件夹 */
-export async function graphListFolders(accessTok: string): Promise<GraphFolderInfo[]> {
+export async function graphListFolders(accessTok: string, timeoutMs?: number): Promise<GraphFolderInfo[]> {
   const roleById = new Map<string, MailFolderRole>()
   await Promise.all(GRAPH_WELL_KNOWN_ROLES.map(async ([wk, role]) => {
     try {
-      const res = await graphHttp(accessTok, 'GET', `/me/mailFolders/${wk}?$select=id`)
+      const res = await graphHttp(accessTok, 'GET', `/me/mailFolders/${wk}?$select=id`, undefined, timeoutMs)
       if (res.status >= 200 && res.status < 300) {
         const j = JSON.parse(res.text) as Record<string, unknown>
         if (j['id']) roleById.set(String(j['id']), role)
@@ -1316,7 +1347,7 @@ export async function graphListFolders(accessTok: string): Promise<GraphFolderIn
   const pullLevel = async (firstUrl: string, depth: number): Promise<void> => {
     let next: string | null = firstUrl
     while (next && folders.length < 200) {
-      const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next)
+      const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next, undefined, timeoutMs)
       assertGraphOk(res, '拉取文件夹列表')
       const j = JSON.parse(res.text) as { value?: Record<string, unknown>[]; '@odata.nextLink'?: string }
       for (const rawF of j.value ?? []) {
@@ -1430,7 +1461,7 @@ export interface GraphBatchItemResult {
 }
 
 /** $batch 批量（微软上限 20 条/批，自动分片）；批本身失败按原文抛，单条成败看返回的 status */
-export async function graphBatch(accessTok: string, requests: GraphBatchRequest[]): Promise<GraphBatchItemResult[]> {
+export async function graphBatch(accessTok: string, requests: GraphBatchRequest[], timeoutMs?: number): Promise<GraphBatchItemResult[]> {
   const results: GraphBatchItemResult[] = []
   for (let i = 0; i < requests.length; i += 20) {
     const chunk = requests.slice(i, i + 20)
@@ -1441,7 +1472,7 @@ export async function graphBatch(accessTok: string, requests: GraphBatchRequest[
         url: r.url,
         ...(r.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: r.body } : {}),
       })),
-    })
+    }, timeoutMs)
     assertGraphOk(res, '批量操作')
     const j = JSON.parse(res.text) as { responses?: { id: string; status: number; body?: unknown }[] }
     for (const item of j.responses ?? []) {
@@ -1456,11 +1487,11 @@ export async function graphBatch(accessTok: string, requests: GraphBatchRequest[
 }
 
 /** 一个文件夹的全部邮件 id（删全部用，分页跟 nextLink） */
-export async function graphListAllMessageIds(accessTok: string, folderId: string): Promise<string[]> {
+export async function graphListAllMessageIds(accessTok: string, folderId: string, timeoutMs?: number): Promise<string[]> {
   const ids: string[] = []
   let next: string | null = `/me/mailFolders/${encodeURIComponent(folderId)}/messages?$top=999&$select=id`
   while (next) {
-    const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next)
+    const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next, undefined, timeoutMs)
     assertGraphOk(res, '搜索邮件')
     const j = JSON.parse(res.text) as { value?: { id?: string }[]; '@odata.nextLink'?: string }
     for (const v of j.value ?? []) if (v.id) ids.push(String(v.id))
@@ -1493,7 +1524,7 @@ async function ensureGraphConnected(account: MailAccountMeta, secret0: MailSecre
   if (secret.kind !== 'oauth') throw new Error('这个账户的凭据不是 OAuth 令牌，无法走 Graph 通道')
   const tokenProblem = diagnoseOAuthTokenForGraph(account, secret.accessTok)
   if (tokenProblem) throw new Error(tokenProblem)
-  const probe = await graphHttp(secret.accessTok, 'GET', '/me/mailFolders?$top=1&$select=id')
+  const probe = await graphHttp(secret.accessTok, 'GET', '/me/mailFolders?$top=1&$select=id', undefined, 30_000)
   assertGraphOk(probe, '连接验证')
   const session: LiveSession = { secret, caps: 'GRAPH' }
   graphSessions.set(account.id, session)
@@ -1891,18 +1922,63 @@ export interface MailDeleteAllReport {
   deleted: number
   mode: 'trash' | 'permanent' | 'mixed'
   error?: string
+  /** v0.1.466：用户中途取消时，这个账户删到一半停住（deleted 是已删实数） */
+  cancelled?: boolean
+  /** v0.1.466：取消发生时这个账户还没轮到开始，一封未删 */
+  notStarted?: boolean
+}
+
+/** v0.1.466：删除全部的取消令牌（界面点「取消删除」时置 cancelled=true，删除链路在每个批次前检查） */
+export interface MailDeleteCancelToken {
+  cancelled: boolean
+}
+
+/** v0.1.466：删除进度事件（账户 → 文件夹 → 批次三级粒度，界面据此渲染真进度） */
+export type MailDeleteAllProgressEvent =
+  | { type: 'account-start'; accountId: string; email: string }
+  | { type: 'folder-start'; accountId: string; folder: string; folderLabel: string; total: number }
+  | { type: 'batch'; accountId: string; folder: string; batchIndex: number; batchCount: number; deletedInFolder: number; deletedInAccount: number }
+  | { type: 'account-done'; accountId: string; deleted: number; mode: 'trash' | 'permanent' | 'mixed' }
+  | { type: 'account-error'; accountId: string; deleted: number; error: string }
+  | { type: 'account-cancelled'; accountId: string; deleted: number }
+
+export interface MailDeleteAllOptions {
+  onEvent?: (event: MailDeleteAllProgressEvent) => void
+  cancelToken?: MailDeleteCancelToken
+}
+
+/** 并发上限内跑完全部任务并按原序返回结果（删除/预检的账户级并行用，上限 3） */
+export async function mapWithConcurrencyLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i], i)
+    }
+  })
+  await Promise.all(workers)
+  return out
 }
 
 /**
  * v0.1.459：Graph 账户的一键删除全部——非垃圾箱文件夹先 $batch 移入已删除文件夹，
  * 垃圾箱最后 $batch 彻底删；计数口径与 IMAP 版一致（垃圾箱只计原本就在里面的，
  * 避免把刚移入的重复计数）。部分失败不中断：报告里如实写失败封数与首个微软原文。
+ * v0.1.466：每 20 条一批单独发 $batch 并报进度（原来整文件夹一次发完、中途零进度）；
+ * 每步 Graph 请求带单步超时；每批前查取消令牌，取消则停在本账户并如实返回已删数。
+ * 返回 'done' | 'cancelled'。
  */
-async function graphDeleteAll(account: MailAccountMeta, report: MailDeleteAllReport, onProgress?: (email: string, deletedSoFar: number) => void): Promise<void> {
+async function graphDeleteAll(
+  account: MailAccountMeta,
+  report: MailDeleteAllReport,
+  ctx: { emit: (e: MailDeleteAllProgressEvent) => void; isCancelled: () => boolean; legacyProgress: () => void },
+): Promise<'done' | 'cancelled'> {
   const tok = graphSessionToken(account)
-  const folders = await graphListFolders(tok)
+  const stepMs = mailGraphStepTimeoutMs()
+  const folders = await graphListFolders(tok, stepMs)
   const trash = folders.find(f => f.role === 'trash')
-  const initialTrashIds = new Set(trash ? await graphListAllMessageIds(tok, trash.name) : [])
+  const initialTrashIds = new Set(trash ? await graphListAllMessageIds(tok, trash.name, stepMs) : [])
   let usedTrash = false
   let usedPermanent = false
   let failedCount = 0
@@ -1910,7 +1986,7 @@ async function graphDeleteAll(account: MailAccountMeta, report: MailDeleteAllRep
   const runBatch = async (reqs: GraphBatchRequest[]): Promise<Set<string>> => {
     const okIds = new Set<string>()
     if (!reqs.length) return okIds
-    const results = await graphBatch(tok, reqs)
+    const results = await graphBatch(tok, reqs, stepMs)
     const byId = new Map(results.map(r => [r.id, r]))
     for (const r of reqs) {
       const item = byId.get(r.id)
@@ -1924,21 +2000,31 @@ async function graphDeleteAll(account: MailAccountMeta, report: MailDeleteAllRep
   }
   const ordered = [...folders.filter(f => f.role !== 'trash'), ...folders.filter(f => f.role === 'trash')]
   for (const folder of ordered) {
-    const ids = await graphListAllMessageIds(tok, folder.name)
+    if (ctx.isCancelled()) return 'cancelled'
+    const ids = await graphListAllMessageIds(tok, folder.name, stepMs)
     if (!ids.length) continue
-    if (trash && folder.role !== 'trash') {
-      usedTrash = true
-      const okIds = await runBatch(ids.map(id => ({
-        id, method: 'POST', url: `/me/messages/${encodeURIComponent(id)}/move`, body: { destinationId: trash.name },
-      })))
-      report.deleted += okIds.size
-    } else {
-      usedPermanent = true
-      const okIds = await runBatch(ids.map(id => ({ id, method: 'DELETE', url: `/me/messages/${encodeURIComponent(id)}` })))
+    const toTrash = trash && folder.role !== 'trash'
+    if (toTrash) usedTrash = true
+    else usedPermanent = true
+    ctx.emit({ type: 'folder-start', accountId: account.id, folder: folder.name, folderLabel: folder.label ?? folder.name, total: ids.length })
+    let deletedInFolder = 0
+    const batchCount = Math.ceil(ids.length / 20)
+    for (let i = 0; i < ids.length; i += 20) {
+      if (ctx.isCancelled()) return 'cancelled'
+      const chunkIds = ids.slice(i, i + 20)
+      const okIds = await runBatch(chunkIds.map(id => (toTrash && trash)
+        ? { id, method: 'POST', url: `/me/messages/${encodeURIComponent(id)}/move`, body: { destinationId: trash.name } }
+        : { id, method: 'DELETE', url: `/me/messages/${encodeURIComponent(id)}` }))
       // 清垃圾箱这一步删的含刚移入的邮件，只计快照内原本就在垃圾箱的数量（与 IMAP 版同口径）
-      report.deleted += folder.role === 'trash' ? [...okIds].filter(id => initialTrashIds.has(id)).length : okIds.size
+      const counted = folder.role === 'trash' ? [...okIds].filter(id => initialTrashIds.has(id)).length : okIds.size
+      deletedInFolder += counted
+      report.deleted += counted
+      ctx.emit({
+        type: 'batch', accountId: account.id, folder: folder.name,
+        batchIndex: Math.floor(i / 20) + 1, batchCount, deletedInFolder, deletedInAccount: report.deleted,
+      })
+      ctx.legacyProgress()
     }
-    onProgress?.(account.email, report.deleted)
   }
   report.mode = usedTrash && usedPermanent ? 'mixed' : usedTrash ? 'trash' : 'permanent'
   if (failedCount > 0) report.error = `有 ${failedCount} 封删除失败：${firstError}`
@@ -1949,114 +2035,210 @@ async function graphDeleteAll(account: MailAccountMeta, report: MailDeleteAllRep
       saveMailCache(cache)
     }
   }
+  return 'done'
 }
 
-/** 删除全部邮件的预检：每账户各文件夹的邮件数 + 预计删除方式（确认框展示用） */
-export async function mailDeleteAllPreview(accounts: MailAccountMeta[], pwd: string): Promise<{
-  perAccount: { account: MailAccountMeta; total: number; mode: 'trash' | 'permanent' | 'mixed'; error?: string }[]
+export interface MailDeleteAllPreviewEntry {
+  account: MailAccountMeta
   total: number
-}> {
-  const perAccount: { account: MailAccountMeta; total: number; mode: 'trash' | 'permanent' | 'mixed'; error?: string }[] = []
-  let total = 0
-  for (const account of accounts) {
-    try {
-      await mailEnsureConnected(account, pwd)
-      if (account.transport === 'graph') {
-        // v0.1.459：Graph 预检——文件夹计数直接来自 mailFolders 的 totalItemCount
-        const gfolders = await graphListFolders(graphSessionToken(account))
-        let gsum = 0
-        let gHasNonTrashMail = false
-        for (const f of gfolders) {
-          gsum += f.total
-          if (f.total > 0 && f.role !== 'trash') gHasNonTrashMail = true
-        }
-        const gHasTrash = !!gfolders.find(f => f.role === 'trash')
-        const gmode: 'trash' | 'permanent' | 'mixed' = !gHasTrash ? 'permanent' : gHasNonTrashMail ? 'mixed' : 'permanent'
-        perAccount.push({ account, total: gsum, mode: gmode })
-        total += gsum
-        continue
-      }
-      const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
-      const folders = parseListFolders(listRaw)
-      const countsRaw = await mailInvoke<string>('mail_imap_folder_counts', { accountId: account.id, folders: folders.map(f => f.name) }, '统计各文件夹邮件数')
-      const counts = JSON.parse(countsRaw) as Record<string, number>
-      let sum = 0
-      let hasTrash = !!folders.find(f => f.role === 'trash')
-      let hasNonTrashMail = false
-      for (const f of folders) {
-        const n = counts[f.name] ?? 0
-        sum += n
-        if (n > 0 && f.role !== 'trash') hasNonTrashMail = true
-      }
-      const mode: 'trash' | 'permanent' | 'mixed' = !hasTrash ? 'permanent' : hasNonTrashMail ? 'mixed' : 'permanent'
-      perAccount.push({ account, total: sum, mode })
-      total += sum
-    } catch (e) {
-      perAccount.push({ account, total: 0, mode: 'permanent', error: displayMailError(e instanceof Error ? e.message : String(e)) })
-    }
-  }
-  return { perAccount, total }
+  mode: 'trash' | 'permanent' | 'mixed'
+  /** snapshot=本地已同步数据的即时快照（可能与服务器有出入）；verified=已连服务器核对 */
+  source: 'snapshot' | 'verified'
+  error?: string
 }
 
-/** 真删全部：非垃圾箱文件夹先移入垃圾箱（无垃圾箱则彻底删），垃圾箱最后彻底清空 */
+/**
+ * v0.1.466：本地快照封数——弹窗打开的瞬间就能渲染，不连任何服务器。
+ * 数据来自上次同步的缓存：Graph 账户缓存文件夹带服务器计数时用计数和，
+ * 否则数本地已同步邮件条数。只是快照，界面必须如实标注，随后由核对结果逐行替换。
+ */
+export function mailDeleteAllSnapshot(accounts: MailAccountMeta[]): MailDeleteAllPreviewEntry[] {
+  const cache = loadMailCache()
+  return accounts.map(account => {
+    const entry = cache[account.id]
+    if (!entry) return { account, total: 0, mode: 'permanent' as const, source: 'snapshot' as const }
+    const hasTrash = entry.folders.some(f => f.role === 'trash')
+    const folderTotals = entry.folders.map(f => (f as GraphFolderInfo).total)
+    let total: number
+    let hasNonTrashMail: boolean
+    if (entry.folders.length > 0 && folderTotals.every(t => typeof t === 'number')) {
+      total = folderTotals.reduce((a, b) => a + (b ?? 0), 0)
+      hasNonTrashMail = entry.folders.some((f, i) => f.role !== 'trash' && (folderTotals[i] ?? 0) > 0)
+    } else {
+      const roleByName = new Map(entry.folders.map(f => [f.name, f.role]))
+      total = entry.messages.length
+      hasNonTrashMail = entry.messages.some(m => roleByName.get(m.folder) !== 'trash')
+    }
+    const mode: 'trash' | 'permanent' | 'mixed' = !hasTrash ? 'permanent' : hasNonTrashMail ? 'mixed' : 'permanent'
+    return { account, total, mode, source: 'snapshot' as const }
+  })
+}
+
+/** 单个账户的服务器核对（纯只读：Graph 文件夹计数 / IMAP 的 LIST+STATUS，不删任何东西） */
+async function previewDeleteAllOne(account: MailAccountMeta, pwd: string): Promise<MailDeleteAllPreviewEntry> {
+  try {
+    await mailEnsureConnected(account, pwd)
+    if (account.transport === 'graph') {
+      // v0.1.459：Graph 预检——文件夹计数直接来自 mailFolders 的 totalItemCount
+      const gfolders = await graphListFolders(graphSessionToken(account), mailGraphStepTimeoutMs())
+      let gsum = 0
+      let gHasNonTrashMail = false
+      for (const f of gfolders) {
+        gsum += f.total
+        if (f.total > 0 && f.role !== 'trash') gHasNonTrashMail = true
+      }
+      const gHasTrash = !!gfolders.find(f => f.role === 'trash')
+      const gmode: 'trash' | 'permanent' | 'mixed' = !gHasTrash ? 'permanent' : gHasNonTrashMail ? 'mixed' : 'permanent'
+      return { account, total: gsum, mode: gmode, source: 'verified' }
+    }
+    const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
+    const folders = parseListFolders(listRaw)
+    const countsRaw = await mailInvoke<string>('mail_imap_folder_counts', { accountId: account.id, folders: folders.map(f => f.name) }, '统计各文件夹邮件数')
+    const counts = JSON.parse(countsRaw) as Record<string, number>
+    let sum = 0
+    const hasTrash = !!folders.find(f => f.role === 'trash')
+    let hasNonTrashMail = false
+    for (const f of folders) {
+      const n = counts[f.name] ?? 0
+      sum += n
+      if (n > 0 && f.role !== 'trash') hasNonTrashMail = true
+    }
+    const mode: 'trash' | 'permanent' | 'mixed' = !hasTrash ? 'permanent' : hasNonTrashMail ? 'mixed' : 'permanent'
+    return { account, total: sum, mode, source: 'verified' }
+  } catch (e) {
+    return { account, total: 0, mode: 'permanent', source: 'verified', error: displayMailError(e instanceof Error ? e.message : String(e)) }
+  }
+}
+
+/**
+ * 删除全部邮件的预检（服务器核对）：每账户各文件夹的邮件数 + 预计删除方式（确认框展示用）。
+ * v0.1.466：账户间并发核对（上限 3），每完成一个就经 onUpdate 逐行回告界面替换快照；
+ * 此前是 for...of 串行全连接，6 个账户排队等——弹窗长时间卡在「正在连接各账户统计邮件数…」。
+ * 本函数仍然纯只读，不删任何邮件。
+ */
+export async function mailDeleteAllPreview(
+  accounts: MailAccountMeta[],
+  pwd: string,
+  onUpdate?: (entry: MailDeleteAllPreviewEntry) => void,
+): Promise<{ perAccount: MailDeleteAllPreviewEntry[]; total: number }> {
+  const perAccount = await mapWithConcurrencyLimit(accounts, 3, async account => {
+    const entry = await previewDeleteAllOne(account, pwd)
+    try { onUpdate?.(entry) } catch { /* 界面回调异常不影响核对本身 */ }
+    return entry
+  })
+  return { perAccount, total: perAccount.reduce((a, e) => a + (e.error ? 0 : e.total), 0) }
+}
+
+/**
+ * 真删全部：非垃圾箱文件夹先移入垃圾箱（无垃圾箱则彻底删），垃圾箱最后彻底清空。
+ * v0.1.466 重写编排（删除语义与计数口径不变）：
+ * - 账户间并发（上限 3，不同服务器互不影响），同一账户内仍串行；单账户失败不连累其他账户；
+ * - 进度细化到账户→文件夹→批次，经 opts.onEvent 透传（旧 (email, n) 回调继续兼容）；
+ * - 每步网络调用都有分步超时（IMAP 走 mailInvoke 的 445 口径、Graph 走单步 45 秒），
+ *   单步超时按该账户失败处理并继续其他账户，不整场挂死；
+ * - opts.cancelToken：每个批次前检查，取消后当前账户停在已删实数、未开始的账户标
+ *   notStarted，已删/未删在报告里如实分开，不静默消失。
+ */
 export async function mailDeleteAll(
   accounts: MailAccountMeta[],
   pwd: string,
-  onProgress?: (email: string, deletedSoFar: number) => void,
+  optsOrProgress?: MailDeleteAllOptions | ((email: string, deletedSoFar: number) => void),
 ): Promise<MailDeleteAllReport[]> {
-  const reports: MailDeleteAllReport[] = []
-  for (const account of accounts) {
+  const opts: MailDeleteAllOptions = typeof optsOrProgress === 'function' ? {} : (optsOrProgress ?? {})
+  const legacy = typeof optsOrProgress === 'function' ? optsOrProgress : undefined
+  const emit = (e: MailDeleteAllProgressEvent) => { try { opts.onEvent?.(e) } catch { /* 进度回调异常不影响删除 */ } }
+  const isCancelled = () => !!opts.cancelToken?.cancelled
+
+  const deleteOne = async (account: MailAccountMeta): Promise<MailDeleteAllReport> => {
     const report: MailDeleteAllReport = { accountId: account.id, email: account.email, deleted: 0, mode: 'permanent' }
+    if (isCancelled()) {
+      report.notStarted = true
+      return report
+    }
+    emit({ type: 'account-start', accountId: account.id, email: account.email })
+    const legacyProgress = () => { try { legacy?.(account.email, report.deleted) } catch { /* 同上 */ } }
     try {
       await mailEnsureConnected(account, pwd)
+      if (isCancelled()) {
+        report.cancelled = true
+        emit({ type: 'account-cancelled', accountId: account.id, deleted: report.deleted })
+        return report
+      }
       if (account.transport === 'graph') {
         // v0.1.459：Graph 账户走 graphDeleteAll（移入已删除 + 清空），与 IMAP 账户在同一份报告里分别汇总
-        await graphDeleteAll(account, report, onProgress)
-      } else {
-      const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
-      const folders = parseListFolders(listRaw)
-      const trash = folders.find(f => f.role === 'trash')
-      const ordered = [...folders.filter(f => f.role !== 'trash'), ...folders.filter(f => f.role === 'trash')]
-      // 先快照垃圾箱原有 UID：其他文件夹先移入垃圾箱、最后清垃圾箱时会把刚移入的
-      // 一并搜出来删掉，计数只能算「原本就在垃圾箱的 + 各文件夹移出的」，否则重复计数。
-      let initialTrashUids = new Set<number>()
-      if (trash) {
-        const trashSearch = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: trash.name }, '搜索垃圾箱邮件（SEARCH）')
-        initialTrashUids = new Set(parseSearchUids(trashSearch))
-      }
-      let usedTrash = false
-      let usedPermanent = false
-      for (const folder of ordered) {
-        const searchRaw = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: folder.name }, `搜索「${folder.name}」邮件（SEARCH）`)
-        const uids = parseSearchUids(searchRaw)
-        if (!uids.length) continue
-        const toTrash = trash && folder.role !== 'trash' ? trash.name : null
-        if (toTrash) usedTrash = true
-        else usedPermanent = true
-        for (let i = 0; i < uids.length; i += 200) {
-          const chunk = uids.slice(i, i + 200)
-          const n = await mailInvoke<number>('mail_imap_delete_messages', {
-            accountId: account.id, folder: folder.name, uids: chunk, trashFolder: toTrash,
-          }, '删除邮件')
-          // 清垃圾箱这一步删的含刚移入的邮件，只计快照内原本就在垃圾箱的数量，避免重复计数
-          report.deleted += folder.role === 'trash' ? chunk.filter(u => initialTrashUids.has(u)).length : n
-          onProgress?.(account.email, report.deleted)
+        const outcome = await graphDeleteAll(account, report, { emit, isCancelled, legacyProgress })
+        if (outcome === 'cancelled') {
+          report.cancelled = true
+          emit({ type: 'account-cancelled', accountId: account.id, deleted: report.deleted })
+          return report
         }
-      }
-      report.mode = usedTrash && usedPermanent ? 'mixed' : usedTrash ? 'trash' : 'permanent'
-      // 本地缓存同步清掉（服务器端已删，缓存留着会显示幽灵邮件）
-      const cache = loadMailCache()
-      if (cache[account.id]) {
-        cache[account.id] = { ...cache[account.id], messages: [], updatedAt: Date.now() }
-        saveMailCache(cache)
-      }
+      } else {
+        const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
+        const folders = parseListFolders(listRaw)
+        const trash = folders.find(f => f.role === 'trash')
+        const ordered = [...folders.filter(f => f.role !== 'trash'), ...folders.filter(f => f.role === 'trash')]
+        // 先快照垃圾箱原有 UID：其他文件夹先移入垃圾箱、最后清垃圾箱时会把刚移入的
+        // 一并搜出来删掉，计数只能算「原本就在垃圾箱的 + 各文件夹移出的」，否则重复计数。
+        let initialTrashUids = new Set<number>()
+        if (trash) {
+          const trashSearch = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: trash.name }, '搜索垃圾箱邮件（SEARCH）')
+          initialTrashUids = new Set(parseSearchUids(trashSearch))
+        }
+        let usedTrash = false
+        let usedPermanent = false
+        let stopped = false
+        for (const folder of ordered) {
+          if (isCancelled()) { stopped = true; break }
+          const searchRaw = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: folder.name }, `搜索「${folder.name}」邮件（SEARCH）`)
+          const uids = parseSearchUids(searchRaw)
+          if (!uids.length) continue
+          const toTrash = trash && folder.role !== 'trash' ? trash.name : null
+          if (toTrash) usedTrash = true
+          else usedPermanent = true
+          emit({ type: 'folder-start', accountId: account.id, folder: folder.name, folderLabel: folder.label ?? folder.name, total: uids.length })
+          let deletedInFolder = 0
+          const batchCount = Math.ceil(uids.length / 200)
+          for (let i = 0; i < uids.length; i += 200) {
+            if (isCancelled()) { stopped = true; break }
+            const chunk = uids.slice(i, i + 200)
+            const n = await mailInvoke<number>('mail_imap_delete_messages', {
+              accountId: account.id, folder: folder.name, uids: chunk, trashFolder: toTrash,
+            }, '删除邮件')
+            // 清垃圾箱这一步删的含刚移入的邮件，只计快照内原本就在垃圾箱的数量，避免重复计数
+            const counted = folder.role === 'trash' ? chunk.filter(u => initialTrashUids.has(u)).length : n
+            deletedInFolder += counted
+            report.deleted += counted
+            emit({
+              type: 'batch', accountId: account.id, folder: folder.name,
+              batchIndex: Math.floor(i / 200) + 1, batchCount, deletedInFolder, deletedInAccount: report.deleted,
+            })
+            legacyProgress()
+          }
+          if (stopped) break
+        }
+        report.mode = usedTrash && usedPermanent ? 'mixed' : usedTrash ? 'trash' : 'permanent'
+        if (stopped) {
+          report.cancelled = true
+          emit({ type: 'account-cancelled', accountId: account.id, deleted: report.deleted })
+          return report
+        }
+        // 本地缓存同步清掉（服务器端已删，缓存留着会显示幽灵邮件）
+        const cache = loadMailCache()
+        if (cache[account.id]) {
+          cache[account.id] = { ...cache[account.id], messages: [], updatedAt: Date.now() }
+          saveMailCache(cache)
+        }
       }
     } catch (e) {
       report.error = displayMailError(e instanceof Error ? e.message : String(e), { transport: account.transport })
+      emit({ type: 'account-error', accountId: account.id, deleted: report.deleted, error: report.error })
+      return report
     }
-    reports.push(report)
+    emit({ type: 'account-done', accountId: account.id, deleted: report.deleted, mode: report.mode })
+    return report
   }
-  return reports
+
+  return mapWithConcurrencyLimit(accounts, 3, deleteOne)
 }
 
 // ---------------- OAuth 授权（Gmail / Outlook） ----------------
