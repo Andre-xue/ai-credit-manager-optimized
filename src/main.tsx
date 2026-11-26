@@ -40,6 +40,25 @@ async function bootstrap() {
     )
     return
   }
+  // 翻译助手小窗 / 截图框选层也是独立窗口（v0.1.440）：只渲染各自轻量组件
+  if (typeof window !== 'undefined' && location.hash.includes('/translator-pop')) {
+    const { TranslatorPop } = await import('./components/TranslatorPop')
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <TranslatorPop />
+      </React.StrictMode>,
+    )
+    return
+  }
+  if (typeof window !== 'undefined' && location.hash.includes('/translator-capture')) {
+    const { TranslatorCapture } = await import('./components/TranslatorCapture')
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <TranslatorCapture />
+      </React.StrictMode>,
+    )
+    return
+  }
   const { restoreFromNative, backupToNative } = await import('./core/persistence')
   await restoreFromNative()
 

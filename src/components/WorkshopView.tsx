@@ -21,6 +21,7 @@ import { FreeGamesTool } from './FreeGamesTool'
 import { SteamDealsTool } from './SteamDealsTool'
 import { WatchTool } from './WatchTool'
 import { MailTool } from './MailTool'
+import { TranslatorTool } from './TranslatorTool'
 import { isDesktopApp } from '../core/openExternal'
 import { TranslationView } from './TranslationView'
 import { ImageView } from './ImageView'
@@ -28,9 +29,9 @@ import { VideoView } from './VideoView'
 import { DocQAView } from './DocQAView'
 import type { AppSettings } from '../core/types'
 import type { ServiceController } from '../core/useServiceController'
-import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck, Users, Gamepad2, Tv, BadgePercent, Mail } from 'lucide-react'
+import { RefreshCw, Film, MessagesSquare, Download, CalendarCheck, Users, Gamepad2, Tv, BadgePercent, Mail, Globe } from 'lucide-react'
 
-type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin' | 'wbpool' | 'freegames' | 'watch' | 'steamdeals' | 'mail'
+type ToolId = 'hub' | 'files' | 'summary' | 'polish' | 'webcheck' | 'table' | 'translate' | 'image' | 'video' | 'docqa' | 'gallery' | 'dailycheckin' | 'wbpool' | 'freegames' | 'watch' | 'steamdeals' | 'mail' | 'translator'
 
 /** 工具页共用：加载可选对话路线（免费模型 + 自有账户） */
 export function useRouteData(accounts: Account[]) {
@@ -490,6 +491,11 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
       <MailTool accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} />
     </ToolShell>
   )
+  if (tool === 'translator') return (
+    <ToolShell title="翻译助手" desc="划词、截图、输入三入口随手翻译：全局快捷键在任何应用里取词/框选，本地 OCR 识别，译文走你现有的模型与免费路线（仅桌面端）。与整页文档用的「AI 翻译」不是同一个工具。" onBack={back}>
+      <TranslatorTool accounts={accounts} sessionPwd={sessionPwd} notify={notify} />
+    </ToolShell>
+  )
   if (tool === 'summary') return <SummaryTool {...toolProps} />
   if (tool === 'polish') return <PolishTool {...toolProps} />
   if (tool === 'webcheck') return <WebCheckTool {...toolProps} />
@@ -546,6 +552,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
         { id: 'watch', name: '看剧', desc: 'AI 找剧、热门推荐、直播、点播：App 内播放器直接看，直播多套源自动切换，点播带选集与续播；片单与追剧日历只存本机。', tag: '看剧追剧', grad: 'g6', icon: <Tv size={21} />, action: () => setTool('watch'), isNew: true },
         { id: 'wbpool', name: 'WorkBuddy 账号池', desc: '多个 WorkBuddy 账号授权入池成一个模型来源：对话自动轮换、限流自动切换，签到一并带上。', tag: '多账号池', grad: 'g2', icon: <Users size={21} />, action: () => setTool('wbpool'), isNew: true },
         ...(isDesktopApp() ? [{ id: 'mail', name: '邮箱', desc: 'Gmail、Outlook、QQ、163、iCloud 等全部邮箱一个收件箱：验证码自动分类、实时同步、凭据只存本机。', tag: '统一收件箱', grad: 'g5', icon: <Mail size={21} />, action: () => setTool('mail'), isNew: true }] : []),
+        ...(isDesktopApp() ? [{ id: 'translator', name: '翻译助手', desc: '在任何应用里划词、框选截图就能翻译：全局快捷键取词、本地 OCR、译文小窗可复制/替换/朗读，引擎用你现有模型与免费路线。', tag: '划词截图', grad: 'g2', icon: <Globe size={21} />, action: () => setTool('translator'), isNew: true }] : []),
         { id: 'catalog', name: 'AI 工具大全', desc: '各平台 AI 工具目录与签到入口汇总，原侧边栏入口已并入工坊。', tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
       ],
     },

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "AI 积分管家主窗口权限",
-  "windows": ["main", "mini"],
+  "windows": ["main", "mini", "translator-pop", "translator-capture"],
   "permissions": [
     "core:default",
     "dialog:allow-open",

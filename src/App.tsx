@@ -39,6 +39,7 @@ import {
   importState, mergeState, addUsageEvent, updateSettings, clearAllData,
 } from './core/store'
 import { HoldToConfirm } from './components/HoldToConfirm'
+import { TranslatorHost } from './components/TranslatorHost'
 import {
   AGENT_TOOLS, CHECKIN_TOOLS, CATEGORY_TAGS, PLATFORM_TAGS,
   type AgentTool,
@@ -1599,6 +1600,10 @@ function App() {
           {tab === 'plugins' && <PluginsView notify={notify} />}
 
           {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={setSessionPwd} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
+
+          {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗 */}
+          <TranslatorHost accounts={state.accounts} sessionPwd={sessionPwd} notify={notify}
+            onOpenInput={() => { openTab('workshop'); setWsSignal({ tool: 'translator', n: Date.now() }) }} />
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}

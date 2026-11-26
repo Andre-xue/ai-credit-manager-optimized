@@ -2737,3 +2737,86 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .mail-modal-count { color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
 .mail-modal-err { color: var(--red); font-size: 12.5px; }
 .mail-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ============ 翻译助手（v0.1.440） ============ */
+.trs-banner {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+  padding: 9px 12px; margin-bottom: 10px;
+  background: var(--surface-2, var(--surface)); border: 1px solid var(--border);
+  border-radius: 10px; font-size: 12.5px;
+}
+.trs-banner-item { display: inline-flex; align-items: center; gap: 7px; }
+.trs-dot { width: 8px; height: 8px; border-radius: 4px; background: var(--border-strong); flex-shrink: 0; display: inline-block; }
+.trs-dot.ok { background: #16a34a; }
+.trs-dot.warn { background: #f59e0b; }
+.trs-settings { display: flex; flex-direction: column; gap: 12px; }
+.trs-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px;
+}
+.trs-card h4 { margin: 0 0 8px; font-size: 13.5px; display: flex; align-items: center; gap: 7px; }
+.trs-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.trs-row:first-of-type { border-top: none; }
+.trs-row.sub { padding-left: 18px; font-size: 12.5px; opacity: .92; }
+.trs-row-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.trs-row-main > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+.trs-state { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.trs-state.ok { color: #16a34a; }
+.trs-state.warn { color: #d97706; }
+.trs-state.off { opacity: .55; }
+.trs-note { font-size: 12px; opacity: .6; margin: 8px 0 0; display: flex; align-items: center; gap: 5px; }
+.trs-note.inline { margin: 0; }
+.trs-recorder.rec { border-color: var(--accent, #7c5cff); box-shadow: 0 0 0 2px rgba(124,92,255,.25); }
+
+/* 译文小窗（独立窗口，窗口本身无边框，卡片自带圆角阴影） */
+.trs-pop {
+  position: relative; margin: 6px; padding: 12px 14px 10px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.28);
+  font-size: 13px; max-height: calc(100vh - 12px); overflow-y: auto;
+}
+.trs-pop-x {
+  position: absolute; top: 6px; right: 6px; border: none; background: transparent;
+  color: var(--text-2); cursor: pointer; padding: 4px; border-radius: 6px; display: inline-flex;
+}
+.trs-pop-x:hover { background: var(--surface-2, rgba(0,0,0,.06)); }
+.trs-pop-src {
+  font-size: 12px; opacity: .65; max-height: 84px; overflow-y: auto;
+  padding-right: 18px; white-space: pre-wrap; word-break: break-word;
+}
+.trs-pop-dst {
+  margin-top: 6px; font-size: 14.5px; line-height: 1.55;
+  max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+.trs-pop-bar { display: flex; gap: 6px; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 9px; }
+.trs-pop-bar button {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border-radius: 8px; padding: 5px 10px; cursor: pointer;
+}
+.trs-pop-bar button:hover { background: var(--surface-2, rgba(0,0,0,.05)); }
+.trs-pop-error { display: flex; gap: 8px; align-items: flex-start; color: var(--red); padding-right: 16px; line-height: 1.5; }
+.trs-pop-loading { opacity: .6; padding: 6px 0; }
+
+/* 截图框选层（独立全屏窗口） */
+.trs-capture {
+  position: fixed; inset: 0; cursor: crosshair; user-select: none;
+  background: rgba(10, 12, 20, .18);
+}
+.trs-capture-hint {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  background: rgba(17, 20, 32, .85); color: #fff; font-size: 12.5px;
+  padding: 6px 14px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+}
+.trs-capture-rect {
+  position: absolute; border: 1.5px solid #7c5cff;
+  background: rgba(124, 92, 255, .10); box-shadow: 0 0 0 9999px rgba(10, 12, 20, .18);
+}
+.trs-capture-size {
+  position: absolute; left: 0; top: -22px; font-size: 11px; color: #fff;
+  background: rgba(17, 20, 32, .85); padding: 2px 7px; border-radius: 5px; white-space: nowrap;
+}

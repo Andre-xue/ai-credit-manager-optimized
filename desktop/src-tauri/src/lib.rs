@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 mod dlna;
 pub mod mail_imap;
+pub mod translator;
 
 /// 进程级共享 HTTP Client：复用 TLS 连接池，避免每次调用重新握手（性能）。
 /// v0.1.285 起禁用重定向：云端请求带会话令牌/自定义头，reqwest 跟随重定向时不会剥离
@@ -3482,6 +3483,9 @@ use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const TRAY_ID: &str = "acm-tray";
+/// App 壳自己管的快捷键（AI 助手 / 迷你窗）：shortcuts_apply 只注销这一批，
+/// 不再 unregister_all——翻译助手（v0.1.440）等模块的快捷键分开管理、互不误伤。
+static SHELL_SHORTCUTS: std::sync::Mutex<Vec<Shortcut>> = std::sync::Mutex::new(Vec::new());
 const MINI_LABEL: &str = "mini";
 /// 内嵌浏览器窗口标签：Epic 领取专用（v0.1.397）
 const EPIC_BROWSER_LABEL: &str = "epic-browser";
@@ -4067,7 +4071,7 @@ fn tray_rect_store() -> &'static std::sync::Mutex<Option<(i32, i32, i32, i32)>> 
     TRAY_RECT.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-fn show_main_window(app: &tauri::AppHandle, section: Option<&str>) {
+pub(crate) fn show_main_window(app: &tauri::AppHandle, section: Option<&str>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -4115,11 +4119,15 @@ fn toggle_mini_window(app: &tauri::AppHandle) {
     }
 }
 
-/// 前端下发快捷键设置：先注销全部，再按开关与自定义组合重新注册（设置页动态生效）
+/// 前端下发快捷键设置：先注销壳自己之前注册的那批，再按开关与自定义组合重新注册（设置页动态生效）
 #[tauri::command]
 fn shortcuts_apply(app: tauri::AppHandle, enabled: bool, ai: Option<String>, mini: Option<String>) -> Result<(), String> {
     let gs = app.global_shortcut();
-    let _ = gs.unregister_all();
+    if let Ok(mut store) = SHELL_SHORTCUTS.lock() {
+        for sc in store.drain(..) {
+            let _ = gs.unregister(sc);
+        }
+    }
     if !enabled {
         return Ok(());
     }
@@ -4140,6 +4148,9 @@ fn shortcuts_apply(app: tauri::AppHandle, enabled: bool, ai: Option<String>, min
             }
         })
         .map_err(|e| format!("注册 AI 助手快捷键失败（可能被其他应用占用）：{e}"))?;
+        if let Ok(mut store) = SHELL_SHORTCUTS.lock() {
+            store.push(sc);
+        }
     }
     if let Some(sc) = parse(mini)? {
         let h = app.clone();
@@ -4149,6 +4160,9 @@ fn shortcuts_apply(app: tauri::AppHandle, enabled: bool, ai: Option<String>, min
             }
         })
         .map_err(|e| format!("注册迷你窗快捷键失败（可能被其他应用占用）：{e}"))?;
+        if let Ok(mut store) = SHELL_SHORTCUTS.lock() {
+            store.push(sc);
+        }
     }
     Ok(())
 }
@@ -4376,6 +4390,11 @@ fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
             toggle_mini_window(&h2);
         }
     })?;
+    // 记录壳的默认快捷键，shortcuts_apply 重注册时只注销这一批
+    if let Ok(mut store) = SHELL_SHORTCUTS.lock() {
+        store.push(Shortcut::new(Some(mods), Code::KeyA));
+        store.push(Shortcut::new(Some(mods), Code::KeyM));
+    }
     Ok(())
 }
 
@@ -4395,7 +4414,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, translator::translator_permissions, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_paste_text, translator::translator_show_pop, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
