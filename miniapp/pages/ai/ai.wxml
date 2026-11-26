@@ -53,6 +53,9 @@
       </view>
     </view>
 
+    <!-- 成长计划模型的额度来源常驻提示：烧的是免费额度还是会转扣套餐，一眼可见 -->
+    <view wx:if="{{quotaBar}}" class="quota-bar">{{quotaBar}}</view>
+
     <scroll-view class="chat-scroll" scroll-y scroll-into-view="{{scrollTo}}" scroll-with-animation>
       <view wx:if="{{messages.length === 0}}" class="chat-empty">
         <view class="hero">
@@ -102,6 +105,18 @@
           </view>
         </block>
       </scroll-view>
+      <view class="sheet-foot" catchtap="openQuotaInfo">ⓘ 成长计划额度说明：哪份额度在扣钱</view>
+    </view>
+  </view>
+
+  <!-- 成长计划额度说明 -->
+  <view wx:if="{{showQuotaInfo}}" class="sheet-mask info-mask" bindtap="closeQuotaInfo">
+    <view class="sheet" catchtap="noop">
+      <view class="sheet-title">成长计划额度说明</view>
+      <scroll-view class="sheet-list info-list" scroll-y>
+        <view wx:for="{{quotaInfoLines}}" wx:key="index" class="quota-line">{{item}}</view>
+      </scroll-view>
+      <view class="sheet-foot" catchtap="closeQuotaInfo">知道了</view>
     </view>
   </view>
 </view>

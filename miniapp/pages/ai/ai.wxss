@@ -55,6 +55,10 @@
 .model-caret { font-size: 22rpx; color: var(--text-3); }
 .head-actions { display: flex; gap: 26rpx; }
 .head-link { font-size: 25rpx; color: var(--text-3); }
+.quota-bar {
+  background: var(--primary-soft); border: 1rpx solid var(--border); border-radius: 20rpx;
+  padding: 16rpx 22rpx; font-size: 23rpx; line-height: 1.55; color: var(--text-2); margin-bottom: 18rpx;
+}
 .chat-scroll { flex: 1; min-height: 0; }
 .chat-empty { padding-top: 10rpx; }
 .msg-row { display: flex; margin-bottom: 22rpx; }
@@ -93,3 +97,7 @@
 .model-item-name { font-size: 28rpx; color: var(--text); font-weight: 550; }
 .model-item-sub { font-size: 23rpx; color: var(--text-3); margin-top: 6rpx; }
 .model-check { color: var(--primary); font-size: 30rpx; font-weight: 700; }
+.sheet-foot { text-align: center; color: var(--primary); font-size: 25rpx; padding: 26rpx 0 2rpx; }
+.info-mask { z-index: 60; }
+.info-list { max-height: 60vh; }
+.quota-line { font-size: 26rpx; color: var(--text-2); line-height: 1.7; margin-bottom: 16rpx; }
