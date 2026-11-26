@@ -368,6 +368,33 @@ describe('OAuth URL', () => {
     expect(m).toContain('login.microsoftonline.com')
     expect(m).toContain('IMAP.AccessAsUser.All')
   })
+
+  // v0.1.457 钉死端点形状：微软 v2 授权端点是 /authorize，写成 /auth（Google 的结尾）线上直接 404，
+  // Ethan 实机点「连接并授权」打开即 404。此后这类「拼错一个词」必须被单测拦住。
+  it('微软授权 URL 的 host+path 精确等于 /common/oauth2/v2.0/authorize 且带必需参数', () => {
+    const u = new URL(buildOAuthUrl('microsoft', 'cid-2', 18766))
+    expect(u.protocol).toBe('https:')
+    expect(u.host).toBe('login.microsoftonline.com')
+    expect(u.pathname).toBe('/common/oauth2/v2.0/authorize')
+    expect(u.searchParams.get('client_id')).toBe('cid-2')
+    expect(u.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:18766')
+    expect(u.searchParams.get('response_type')).toBe('code')
+    expect(u.searchParams.get('response_mode')).toBe('query')
+    expect(u.searchParams.get('scope')).toBe('https://outlook.office.com/IMAP.AccessAsUser.All offline_access')
+  })
+
+  it('Google 授权 URL 的 host+path 精确等于 /o/oauth2/v2/auth 且带必需参数', () => {
+    const u = new URL(buildOAuthUrl('google', 'cid-1', 18765))
+    expect(u.protocol).toBe('https:')
+    expect(u.host).toBe('accounts.google.com')
+    expect(u.pathname).toBe('/o/oauth2/v2/auth')
+    expect(u.searchParams.get('client_id')).toBe('cid-1')
+    expect(u.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:18765')
+    expect(u.searchParams.get('response_type')).toBe('code')
+    expect(u.searchParams.get('scope')).toBe('https://mail.google.com/')
+    expect(u.searchParams.get('access_type')).toBe('offline')
+    expect(u.searchParams.get('prompt')).toBe('consent')
+  })
 })
 
 describe('错误文本显示清洗与后缀决策（447）', () => {

@@ -1401,7 +1401,7 @@ export function buildOAuthUrl(provider: 'google' | 'microsoft', clientId: string
   q.set('response_type', 'code')
   q.set('response_mode', 'query')
   q.set('scope', 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access')
-  return `https://login.microsoftonline.com/common/oauth2/v2.0/auth?${q.toString()}`
+  return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${q.toString()}`
 }
 
 export async function mailOAuthExchange(
