@@ -294,6 +294,9 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
               )}
             </div>
             <p className="trs-note">权限状态实时读取系统真实值：在系统设置里关掉，这里立刻变「未开启」；功能开着但缺权限会显示「待授权」，不会假装可用。</p>
+            {perms.macos && (!perms.accessibility || !perms.screenCapture) && (
+              <p className="trs-note">已在系统设置里开启、这里却仍显示未开启时，按顺序排查：①开启后请完全退出并重开本 App（录屏授权对已经在运行的进程不生效）；②刚更新版本后出现的，是系统里登记的还是旧版本——请在对应面板的列表中将「AI Cube」移除后重新添加、再打开开关并重开本 App。</p>
+            )}
           </section>
 
           {/* 翻译设置 */}

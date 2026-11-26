@@ -43,8 +43,8 @@ export function TranslatorPop() {
   stateRef.current = { draft, targetSel, sourceSel }
 
   useEffect(() => {
-    document.documentElement.style.background = 'transparent'
-    document.body.style.background = 'transparent'
+    // 窗口底色由 main.tsx 的 trs-popwin 标记 + styles.css 统一管（不透明）；
+    // 这里不再内联清底色——451 时清过头是小窗透明的原因之一（v0.1.453）。
     let unlisten: (() => void) | undefined
     const apply = (p: PopPayload) => {
       setPayload(p)

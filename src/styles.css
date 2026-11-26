@@ -2744,7 +2744,7 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .trs-banner {
   display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
   padding: 9px 12px; margin-bottom: 10px;
-  background: var(--surface-2, var(--surface)); border: 1px solid var(--border);
+  background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 10px; font-size: 12.5px;
 }
 .trs-banner-item { display: inline-flex; align-items: center; gap: 7px; }
@@ -2753,7 +2753,7 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .trs-dot.warn { background: #f59e0b; }
 .trs-settings { display: flex; flex-direction: column; gap: 12px; }
 .trs-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 14px 16px;
 }
 .trs-card h4 { margin: 0 0 8px; font-size: 13.5px; display: flex; align-items: center; gap: 7px; }
@@ -2773,14 +2773,20 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .trs-note.inline { margin: 0; }
 .trs-recorder.rec { border-color: var(--accent, #7c5cff); box-shadow: 0 0 0 2px rgba(124,92,255,.25); }
 
-/* 翻译小窗/框选层独立窗口：整窗透明（v0.1.451）。压过 index.html 内联样式与
+/* 截图框选层独立窗口：整窗真透明（v0.1.451）。压过 index.html 内联样式与
    全局 body 底色，否则窗口被不透明底色铺满（440 框选层灰幕的根源）。 */
 html.trs-window, html.trs-window body, html.trs-window #root { background: transparent !important; }
+
+/* 译文小窗独立窗口：页面底色不透明（v0.1.453 纠正 451 的越界——451 把 pop 也
+   打了 trs-window 全透明标记，且卡片背景误用了从未定义的 --surface 变量，
+   两处叠加导致实机小窗透明）。窗口本体仍是透明无边框，靠 html/body 的不透明
+   底色 + 卡片自身的实心背景（--panel）呈现 Manggo 式实心卡片。 */
+html.trs-popwin, html.trs-popwin body, html.trs-popwin #root { background: var(--bg) !important; }
 
 /* 译文小窗（独立窗口，窗口本身无边框，卡片自带圆角阴影） */
 .trs-pop {
   position: relative; margin: 6px; padding: 12px 14px 10px;
-  background: var(--surface); color: var(--text);
+  background: var(--panel); color: var(--text);
   border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 12px 34px rgba(0,0,0,.28);
   font-size: 13px; max-height: calc(100vh - 12px); overflow-y: auto;
@@ -2789,7 +2795,7 @@ html.trs-window, html.trs-window body, html.trs-window #root { background: trans
   position: absolute; top: 6px; right: 6px; border: none; background: transparent;
   color: var(--text-2); cursor: pointer; padding: 4px; border-radius: 6px; display: inline-flex;
 }
-.trs-pop-x:hover { background: var(--surface-2, rgba(0,0,0,.06)); }
+.trs-pop-x:hover { background: rgba(127,127,127,.14); }
 .trs-pop-x.static { position: static; }
 .trs-pop-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -2800,7 +2806,7 @@ html.trs-window, html.trs-window body, html.trs-window #root { background: trans
 .trs-pop-src-edit {
   width: 100%; box-sizing: border-box; resize: vertical; min-height: 56px; max-height: 150px;
   font: inherit; font-size: 13px; line-height: 1.5; color: var(--text);
-  background: var(--surface-2, rgba(0,0,0,.03)); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 7px 9px; outline: none;
 }
 .trs-pop-src-edit:focus { border-color: var(--accent, #7c5cff); }
@@ -2810,7 +2816,7 @@ html.trs-window, html.trs-window body, html.trs-window #root { background: trans
   border: 1px solid transparent; background: transparent; color: var(--text);
   border-radius: 7px; padding: 4px 7px; cursor: pointer;
 }
-.trs-pop-opsrow button:hover, .trs-pop-bar button:hover { background: var(--surface-2, rgba(0,0,0,.05)); }
+.trs-pop-opsrow button:hover, .trs-pop-bar button:hover { background: rgba(127,127,127,.12); }
 .trs-pop-detected { margin-left: auto; font-size: 12px; opacity: .55; }
 .trs-pop-langrow {
   display: flex; align-items: center; gap: 7px; margin-top: 9px;
@@ -2818,15 +2824,15 @@ html.trs-window, html.trs-window body, html.trs-window #root { background: trans
 }
 .trs-pop-langsel {
   flex: 1; min-width: 0; font-size: 12.5px; color: var(--text);
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 7px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 5px 7px;
 }
 .trs-pop-swap { opacity: .45; flex: none; }
 .trs-pop-retranslate {
   display: inline-flex; align-items: center; gap: 4px; font-size: 12px; flex: none;
-  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
   border-radius: 8px; padding: 5px 9px; cursor: pointer;
 }
-.trs-pop-retranslate:hover { background: var(--surface-2, rgba(0,0,0,.05)); }
+.trs-pop-retranslate:hover { background: rgba(127,127,127,.12); }
 .trs-pop-dst {
   margin-top: 6px; font-size: 14.5px; line-height: 1.55;
   max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;

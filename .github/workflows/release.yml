@@ -81,6 +81,31 @@ jobs:
           fi
           echo "updater 签名密钥已配置，将生成签名更新产物"
 
+      # v0.1.453：可选的固定自签身份，让 macOS TCC（辅助功能/录屏）的 designated
+      # requirement 跨版本稳定、授权不随更新失效。此前构建是 ad-hoc 签名，cdhash
+      # 每版都变，TCC 按 cdhash 认人——这正是翻译助手授权「装新版就丢」的根源。
+      # 仓库 secrets 配齐 APPLE_CERTIFICATE（自签 .p12 的 base64 单行）/
+      # APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 才启用；未配则保持
+      # ad-hoc，行为与之前完全一致。Tauri CLI 构建时读这三个环境变量完成
+      # 临时钥匙串导入与签名。注意：身份切换后的第一个版本，旧授权会最后失效
+      # 一次（requirement 从 cdhash 变为证书），之后跨版本保留。
+      - name: Prepare macOS fixed signing identity (optional)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          ACM_APPLE_CERT_B64: ${{ secrets.APPLE_CERTIFICATE }}
+          ACM_APPLE_CERT_PWD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          ACM_APPLE_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -n "$ACM_APPLE_CERT_B64" ] && [ -n "$ACM_APPLE_SIGN_ID" ]; then
+            echo "APPLE_CERTIFICATE=$ACM_APPLE_CERT_B64" >> "$GITHUB_ENV"
+            echo "APPLE_CERTIFICATE_PASSWORD=$ACM_APPLE_CERT_PWD" >> "$GITHUB_ENV"
+            echo "APPLE_SIGNING_IDENTITY=$ACM_APPLE_SIGN_ID" >> "$GITHUB_ENV"
+            echo "已启用固定签名身份：$ACM_APPLE_SIGN_ID"
+          else
+            echo "未配置固定签名身份 secrets，本次仍为 ad-hoc 签名（macOS TCC 授权不跨版本保留）"
+          fi
+
       - name: Install Tauri CLI & build installer
         working-directory: desktop
         shell: bash

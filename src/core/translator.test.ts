@@ -15,6 +15,7 @@ import {
   detectSourceLang, pickTargetLang, preprocessText, removeSmartNewlines, sourceLangLabel,
   loadTranslatorSettings, saveTranslatorSettings, DEFAULT_TRANSLATOR_SETTINGS,
   getInvalidTranslatorShortcutFields, TRANSLATOR_SETTINGS_KEY,
+  parseTranslatorPermissions,
 } from './translator'
 
 beforeEach(() => { ;(localStorage as any).clear() })
@@ -104,6 +105,31 @@ describe('v0.1.451 坏快捷键值识别', () => {
     expect(bad).toContain('shortcutSelection')
     expect(bad).toContain('shortcutInput')
     expect(bad).not.toContain('shortcutScreenshot')
+  })
+})
+
+describe('v0.1.453 权限载荷契约 parseTranslatorPermissions', () => {
+  it('Rust 实际序列化形状（camelCase）逐字读对', () => {
+    // 与 desktop/src-tauri TranslatorPermissions 的 serde 输出逐字一致
+    expect(parseTranslatorPermissions({ macos: true, accessibility: true, screenCapture: false }))
+      .toEqual({ macos: true, accessibility: true, screenCapture: false })
+    expect(parseTranslatorPermissions({ macos: true, accessibility: false, screenCapture: true }))
+      .toEqual({ macos: true, accessibility: false, screenCapture: true })
+  })
+  it('screen_capture（rename 丢失时的 snake_case）也能读到，不恒 false', () => {
+    expect(parseTranslatorPermissions({ macos: true, accessibility: true, screen_capture: true }))
+      .toEqual({ macos: true, accessibility: true, screenCapture: true })
+  })
+  it('非严格 true 一律按未授权（字符串/数字不冒充）', () => {
+    expect(parseTranslatorPermissions({ macos: 1, accessibility: 'true', screenCapture: true }))
+      .toEqual({ macos: false, accessibility: false, screenCapture: true })
+  })
+  it('空/垃圾输入回全 false', () => {
+    const none = { macos: false, accessibility: false, screenCapture: false }
+    expect(parseTranslatorPermissions(null)).toEqual(none)
+    expect(parseTranslatorPermissions(undefined)).toEqual(none)
+    expect(parseTranslatorPermissions('granted')).toEqual(none)
+    expect(parseTranslatorPermissions({})).toEqual(none)
   })
 })
 

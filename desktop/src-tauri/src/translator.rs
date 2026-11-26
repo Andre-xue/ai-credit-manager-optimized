@@ -78,6 +78,41 @@ struct HotkeyConfig {
 static CONFIG: Mutex<HotkeyConfig> = Mutex::new(HotkeyConfig { disable_fullscreen: false });
 static TRANSLATOR_SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 
+// 权限查询诊断节流状态（v0.1.453）：(ax, axOpts, screen, namesVisible) 与上次落盘秒数。
+// 前端每 2.5 秒轮询一次权限命令，无节流会把 diag.log 刷爆；状态变化必记、
+// 无变化最多每分钟一条。Ethan 实机「系统设置已开、App 恒报未授权」靠这行定性：
+// 四个读数互相交叉（两条官方 API + WithOptions 读数 + 窗口名功能探针），
+// 再带 current_exe 路径——运行的若不是 /Applications 里的正本，一眼可见。
+static LAST_PERM_DIAG: Mutex<Option<((bool, bool, bool, bool), u64)>> = Mutex::new(None);
+
+fn diag_perm(ax: bool, ax_opts: bool, screen: bool, names_visible: bool) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cur = (ax, ax_opts, screen, names_visible);
+    let should = {
+        let Ok(mut guard) = LAST_PERM_DIAG.lock() else { return };
+        let due = match *guard {
+            None => true,
+            Some((prev, last)) => prev != cur || secs.saturating_sub(last) >= 60,
+        };
+        if due {
+            *guard = Some((cur, secs));
+        }
+        due
+    };
+    if should {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        diag(
+            "perm-check",
+            &format!("ax={ax} axOpts={ax_opts} screen={screen} namesVisible={names_visible} exe={exe}"),
+        );
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PopPayload {
@@ -129,11 +164,18 @@ pub struct TranslatorPermissions {
 pub fn translator_permissions() -> TranslatorPermissions {
     #[cfg(target_os = "macos")]
     {
-        TranslatorPermissions {
-            macos: true,
-            accessibility: mac::ax_trusted(),
-            screen_capture: mac::screen_ok(),
-        }
+        let accessibility = mac::ax_trusted();
+        let screen_capture = mac::screen_ok();
+        // v0.1.453 交叉核对 + 落盘原始读数：axOpts 是 WithOptions（空字典、不弹窗）
+        // 的第二读数，namesVisible 是「窗口名可见」功能探针（不依赖录屏 preflight）。
+        // 返回给前端的仍是官方两 API 的读数，交叉读数只进 diag.log 供定性。
+        diag_perm(
+            accessibility,
+            mac::ax_trusted_opts(),
+            screen_capture,
+            mac::screen_names_visible(),
+        );
+        TranslatorPermissions { macos: true, accessibility, screen_capture }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -896,8 +938,69 @@ mod mac {
         }
     }
 
+    /// AXIsProcessTrusted 的第二读数：WithOptions + 空字典（不带 prompt，不弹窗）。
+    /// 与无参版同源但不同入口，两者不一致本身就是诊断信息（v0.1.453）。
+    pub fn ax_trusted_opts() -> bool {
+        unsafe {
+            let dict_cls = class("NSMutableDictionary");
+            if dict_cls.is_null() {
+                return AXIsProcessTrusted();
+            }
+            let dict = msg_id(dict_cls, sel("dictionary"));
+            if dict.is_null() {
+                return AXIsProcessTrusted();
+            }
+            AXIsProcessTrustedWithOptions(dict as *const c_void)
+        }
+    }
+
     pub fn screen_ok() -> bool {
         unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// 录屏权限的功能探针（v0.1.453）：没有录屏权限时，CGWindowList 返回的其他
+    /// 应用窗口一律没有 kCGWindowName（被系统抹掉）；有权限时能读到窗口标题。
+    /// 跳过 layer 非 0 与本进程自己的窗口（自家窗口名无需权限也可读，会假阳性）。
+    /// 只用作 diag.log 交叉核对，不参与返回给前端的权限判定。
+    pub fn screen_names_visible() -> bool {
+        unsafe {
+            // kCGWindowListOptionOnScreenOnly(1) | kCGWindowListExcludeDesktopElements(16)
+            let arr = CGWindowListCopyWindowInfo(0x1 | 0x10, 0);
+            if arr.is_null() {
+                return false;
+            }
+            let own_pid = std::process::id() as i32;
+            let n = CFArrayGetCount(arr);
+            let mut found = false;
+            for i in 0..n {
+                let dict = CFArrayGetValueAtIndex(arr, i);
+                if dict.is_null() {
+                    continue;
+                }
+                if dict_i32(dict, "kCGWindowLayer") != Some(0) {
+                    continue;
+                }
+                if dict_i32(dict, "kCGWindowOwnerPID") == Some(own_pid) {
+                    continue;
+                }
+                let key = cf_key("kCGWindowName");
+                if key.is_null() {
+                    continue;
+                }
+                let v = CFDictionaryGetValue(dict, key);
+                CFRelease(key);
+                if !v.is_null() {
+                    if let Some(name) = ns_utf8(v as Id) {
+                        if !name.trim().is_empty() {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            CFRelease(arr);
+            found
+        }
     }
 
     pub fn screen_request() -> bool {

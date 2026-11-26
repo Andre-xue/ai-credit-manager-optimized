@@ -197,11 +197,28 @@ export interface TranslatorPermissions {
   screenCapture: boolean
 }
 
+/**
+ * 权限载荷契约解析（v0.1.453）：Rust 侧 TranslatorPermissions 序列化为
+ * { macos, accessibility, screenCapture }（screen_capture 带 serde rename）。
+ * 451 在同一功能坐实过 snake_case/camelCase 对不上、无头 stub 掩盖真机契约的
+ * 教训，这里把消费侧契约锁死：只认严格 true；screenCapture 缺失时回退读
+ * screen_capture，防 Rust 侧 rename 丢失时前端恒读 false 且无声无息。
+ */
+export function parseTranslatorPermissions(raw: unknown): TranslatorPermissions {
+  if (!raw || typeof raw !== 'object') return { macos: false, accessibility: false, screenCapture: false }
+  const r = raw as Record<string, unknown>
+  return {
+    macos: r.macos === true,
+    accessibility: r.accessibility === true,
+    screenCapture: (r.screenCapture ?? r.screen_capture) === true,
+  }
+}
+
 export async function getTranslatorPermissions(): Promise<TranslatorPermissions> {
   const inv = tauriInvoke()
   if (!inv) return { macos: false, accessibility: false, screenCapture: false }
   try {
-    return await inv('translator_permissions') as TranslatorPermissions
+    return parseTranslatorPermissions(await inv('translator_permissions'))
   } catch { return { macos: false, accessibility: false, screenCapture: false } }
 }
 
