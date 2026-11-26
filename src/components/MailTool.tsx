@@ -20,7 +20,7 @@ import {
   mailVerifyAccount, MAIL_CONNECT_STEP_LABELS, loadCachedBody, mailFetchAttachment,
   OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
   loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
-  saveMailSecret, mailForgetSession,
+  saveMailSecret, loadMailSecret, mailForgetSession,
   displayMailError, shouldSuggestCredentialCheck,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
   type MailBodyContent, type MailDeleteAllReport,
@@ -92,6 +92,19 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   // 两个都没有才显示解锁页（onUnlock 仍回写全局 sessionPwd）。子组件（MailReader/
   // MailAddAccount/MailSettings）都从这个 pwd 派生，不再有来源分叉。
   const pwd = getBiometricPassword() || sessionPwd
+
+  // v0.1.461：账户在、凭据读不到的存量账户（保存曾被竞态/配额打断）——探针检出后
+  // 在设置行/错误条给「重新授权」补凭据入口，不逼用户删账户重加
+  const [missingSecrets, setMissingSecrets] = useState<ReadonlySet<string>>(new Set())
+  const probeMissingSecrets = useCallback(async () => {
+    if (!pwd) { setMissingSecrets(new Set()); return }
+    const missing = new Set<string>()
+    for (const a of listMailAccounts()) {
+      if (!(await loadMailSecret(a.id, pwd))) missing.add(a.id)
+    }
+    setMissingSecrets(missing)
+  }, [pwd])
+  useEffect(() => { void probeMissingSecrets() }, [probeMissingSecrets, metas, view])
 
   const cache = useMemo(() => loadMailCache(), [cacheVersion])
   const refreshCache = useCallback(() => setCacheVersion(v => v + 1), [])
@@ -315,7 +328,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
           {visibleMetas.filter(a => syncMap[a.id]?.state === 'error').map(a => (
             <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{displayMailError(syncMap[a.id]?.message ?? '')}
-              {reauthFlags[a.id] && <button className="btn sm mail-error-action" onClick={() => setReauthTarget(a)}>重新授权</button>}
+              {(reauthFlags[a.id] || (missingSecrets.has(a.id) && mailPlatform(a.platformId).oauthProvider)) && <button className="btn sm mail-error-action" onClick={() => setReauthTarget(a)}>重新授权</button>}
             </div>
           ))}
 
@@ -412,6 +425,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           syncMap={syncMap}
           cache={cache}
           reauthFlags={reauthFlags}
+          missingSecrets={missingSecrets}
           onReauth={a => setReauthTarget(a)}
           onBack={() => setView('inbox')}
           onVisibility={v => { setVisibility(v); saveMailVisibility(v) }}
@@ -437,7 +451,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
           pwd={pwd}
           notify={notify}
           onClose={() => setReauthTarget(null)}
-          onDone={() => { const a = reauthTarget; setReauthTarget(null); setReauthFlags(loadMailReauthFlags()); void syncOne(a) }}
+          onDone={() => { const a = reauthTarget; setReauthTarget(null); setReauthFlags(loadMailReauthFlags()); void probeMissingSecrets(); void syncOne(a) }}
         />
       )}
 
@@ -692,12 +706,14 @@ function MailReader({ msg, account, siblings, accounts, sessionPwd, notify, onBa
 
 // ---------------- 设置页（管账户：平台总开关 / 账户副开关） ----------------
 
-function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, onReauth, onBack, onVisibility, onAdd, onRemove, onDeleteAll }: {
+function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, missingSecrets, onReauth, onBack, onVisibility, onAdd, onRemove, onDeleteAll }: {
   metas: MailAccountMeta[]
   visibility: ReturnType<typeof loadMailVisibility>
   syncMap: Record<string, AccountSync>
   cache: ReturnType<typeof loadMailCache>
   reauthFlags: Record<string, string>
+  /** v0.1.461：账户在、凭据读不到的账户 id 集合（设置行给补凭据入口） */
+  missingSecrets: ReadonlySet<string>
   onReauth: (a: MailAccountMeta) => void
   onBack: () => void
   onVisibility: (v: ReturnType<typeof loadMailVisibility>) => void
@@ -750,9 +766,16 @@ function MailSettings({ metas, visibility, syncMap, cache, reauthFlags, onReauth
                     {reauthFlags[a.id] && (
                       <span className="mail-settings-sub mail-reauth-note">授权已失效，需要重新授权（{reauthFlags[a.id]}）</span>
                     )}
+                    {missingSecrets.has(a.id) && !reauthFlags[a.id] && (
+                      <span className="mail-settings-sub mail-reauth-note">
+                        {mailPlatform(a.platformId).oauthProvider
+                          ? '凭据缺失（保险箱里读不到这个账户的凭据），点「重新授权」补回，不用删除账户'
+                          : '凭据缺失（保险箱里读不到这个账户的凭据），请删除后用授权码重新添加'}
+                      </span>
+                    )}
                   </div>
                   <span className="mail-topbar-spacer" />
-                  {reauthFlags[a.id] && (
+                  {(reauthFlags[a.id] || (missingSecrets.has(a.id) && mailPlatform(a.platformId).oauthProvider)) && (
                     <button className="btn sm" onClick={() => onReauth(a)}><RefreshCw size={13} /> 重新授权</button>
                   )}
                   {confirmRemoveId === a.id ? (
@@ -900,7 +923,15 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
   // 文件夹枚举与拉取留给回到收件箱后的首次同步，不再全压在验证按钮上。
   const finishWithVerify = async (metaNoId: Omit<MailAccountMeta, 'id'>, secret: MailSecret) => {
     const flow = flowRef.current
-    const meta = await addMailAccount(metaNoId, secret, pwd)
+    // v0.1.461：凭据保存失败必须当场失败并报真实原因，不许留下一个没凭据的账户
+    // 再到连接阶段才暴露（旧行为是保存被竞态/配额静默打断、账户成幻影）。
+    let meta: MailAccountMeta
+    try {
+      meta = await addMailAccount(metaNoId, secret, pwd)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      throw new Error(secret.kind === 'oauth' ? `授权成功，但凭据保存失败：${msg}` : `凭据保存失败：${msg}`)
+    }
     activeAccountRef.current = meta.id
     if (flow !== flowRef.current) return // 保存期间已被取消：不再发起连接
     try {
@@ -916,7 +947,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
       // v0.1.458：OAuth 账户根本没有授权码，这句后缀对它不适用——改给重新授权类指引；
       // 若错误本身已带「重新授权」指引（458 令牌声明校验 / 令牌失效 / not connected 映射），不再叠加。
       setError(secret.kind === 'oauth'
-        ? `账户已保存，但连接失败：${msg}${/重新授权/.test(msg) ? '' : '。请删除账户后重新连接并授权，或在收件箱点「刷新」重试。'}`
+        ? `账户已保存，但连接失败：${msg}${/重新授权/.test(msg) ? '' : '。请在收件箱点「刷新」重试；若仍失败，在设置页对该账户点「重新授权」补回凭据。'}`
         : shouldSuggestCredentialCheck(msg)
           ? `账户已保存，但连接失败：${msg}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
           : `账户已保存，但连接失败：${msg}。可在收件箱点「刷新」重试。`)
@@ -1081,7 +1112,13 @@ function MailReauthModal({ account, reason, pwd, notify, onClose, onDone }: {
         isCancelled: () => flow !== flowRef.current,
       })
       if (flow !== flowRef.current) return // 已取消
-      await saveMailSecret(account.id, secret, pwd)
+      // v0.1.461：保存结果必须核对——没存上就不许报成功、不清标记、不关弹窗
+      const saved = await saveMailSecret(account.id, secret, pwd)
+      if (!saved) {
+        setError('授权成功，但凭据保存失败：没找到这个账户的记录（可能已被删除）。请关闭弹窗后重新添加该账户。')
+        setBusy('')
+        return
+      }
       await creds.persist()
       clearMailReauthFlag(account.id)
       mailForgetSession(account.id) // 丢掉用旧令牌建的会话，下次同步用新令牌重连

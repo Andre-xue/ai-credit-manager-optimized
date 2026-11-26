@@ -164,17 +164,64 @@ function readAccountsFile(): StoredAccount[] {
   return readJson<{ accounts: StoredAccount[] }>(ACCOUNTS_KEY, { accounts: [] }).accounts ?? []
 }
 
+// ---------------- 账户文件写入（v0.1.461：串行化 + 写失败必报） ----------------
+// 实机连环故障（加第二个起的 Gmail 账户必报「保险箱里没有这个账户的凭据」）：
+// 旧实现每处都是「读全量 → await 加密 → 写全量」，且 writeJson 吞 setItem 异常。
+//  (1) 丢失更新：加账户要等浏览器授权回调（可达数分钟），期间后台同步给其它
+//      账户刷新令牌的 saveMailSecret 若「读在新账户写入前、写在其后」，会用不含
+//      新账户的旧快照把整个文件盖回去——新账户连元信息带凭据一起消失。
+//  (2) 配额静默失败：正文缓存（40 封 × 最大 1M 字符）等把 localStorage 撑满后，
+//      账户写入抛 QuotaExceededError 被吞，流程照常往下走成幻影账户，到连接
+//      阶段才暴露成「没有凭据」。
+// 修法：所有账户文件变更走同一条串行链（读-改-写不交错）；写入失败先清可再生
+// 缓存（正文/列表缓存）让路重试，仍失败就抛真实错误，绝不静默。
+let accountsChain: Promise<unknown> = Promise.resolve()
+function mutateAccounts<T>(
+  fn: (accounts: StoredAccount[]) => { result: T; dirty: boolean } | Promise<{ result: T; dirty: boolean }>,
+): Promise<T> {
+  const run = accountsChain.then(async () => {
+    const accounts = readAccountsFile()
+    const { result, dirty } = await fn(accounts)
+    if (dirty) writeAccountsStrict(accounts)
+    return result
+  })
+  accountsChain = run.then(() => undefined, () => undefined)
+  return run
+}
+
+function writeJsonStrict(key: string, value: unknown, errLabel: string): void {
+  const raw = JSON.stringify(value)
+  const attempt = (): boolean => {
+    try {
+      localStorage.setItem(key, raw)
+      return localStorage.getItem(key) === raw
+    } catch { return false }
+  }
+  if (attempt()) return
+  // 凭据不可再生、正文/头部缓存可再生：清掉让路后重试一次
+  try { localStorage.removeItem(BODIES_KEY) } catch { /* 忽略 */ }
+  try { localStorage.removeItem(CACHE_KEY) } catch { /* 忽略 */ }
+  if (attempt()) return
+  throw new Error(`${errLabel}：本机存储空间不足，清掉邮件正文缓存后仍写不下（请清理本机存储后重试）`)
+}
+
+function writeAccountsStrict(accounts: StoredAccount[]): void {
+  writeJsonStrict(ACCOUNTS_KEY, { accounts }, '账户凭据保存失败')
+}
+
 export function listMailAccounts(): MailAccountMeta[] {
   return readAccountsFile().map(({ id, platformId, email, label, host, port, transport }) => ({ id, platformId, email, label, host, port, transport }))
 }
 
-/** v0.1.459：把账户的传输通道回填进账户文件（只改元信息，不动加密凭据） */
-export function setMailAccountTransport(id: string, transport: MailTransport): void {
-  const accounts = readAccountsFile()
-  const entry = accounts.find(a => a.id === id)
-  if (!entry || entry.transport === transport) return
-  entry.transport = transport
-  writeJson(ACCOUNTS_KEY, { accounts })
+/** v0.1.459：把账户的传输通道回填进账户文件（只改元信息，不动加密凭据）。
+ *  v0.1.461：走串行变更链（旧实现是同步读-改-写，会与在途的加账户/令牌保存互相覆盖）。 */
+export function setMailAccountTransport(id: string, transport: MailTransport): Promise<void> {
+  return mutateAccounts(accounts => {
+    const entry = accounts.find(a => a.id === id)
+    if (!entry || entry.transport === transport) return { result: undefined, dirty: false }
+    entry.transport = transport
+    return { result: undefined, dirty: true }
+  })
 }
 
 export async function addMailAccount(
@@ -182,19 +229,29 @@ export async function addMailAccount(
   secret: MailSecret,
   pwd: string,
 ): Promise<MailAccountMeta> {
-  const accounts = readAccountsFile()
-  const existing = accounts.findIndex(a => a.platformId === meta.platformId && a.email.toLowerCase() === meta.email.toLowerCase())
-  const id = existing >= 0 ? accounts[existing].id : `mail-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
-  const cipher = await encryptSecret(JSON.stringify(secret), pwd)
-  const stored: StoredAccount = { ...meta, id, cipher }
-  if (existing >= 0) accounts[existing] = stored
-  else accounts.push(stored)
-  writeJson(ACCOUNTS_KEY, { accounts })
-  return { ...meta, id }
+  const added = await mutateAccounts(async accounts => {
+    const existing = accounts.findIndex(a => a.platformId === meta.platformId && a.email.toLowerCase() === meta.email.toLowerCase())
+    const id = existing >= 0 ? accounts[existing].id : `mail-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
+    const cipher = await encryptSecret(JSON.stringify(secret), pwd)
+    const stored: StoredAccount = { ...meta, id, cipher }
+    if (existing >= 0) accounts[existing] = stored
+    else accounts.push(stored)
+    return { result: { ...meta, id }, dirty: true }
+  })
+  // 写后回读校验：记录必须真在盘上且密文就是刚写的这份，否则当场抛错，
+  // 不许留到连接阶段才暴露成「没有凭据」（v0.1.461）
+  const back = readAccountsFile().find(a => a.id === added.id)
+  if (!back) throw new Error('账户凭据保存失败：写入后回读不到该账户记录（本机存储可能已满或被占用）')
+  return added
 }
 
-export function removeMailAccount(id: string): void {
-  writeJson(ACCOUNTS_KEY, { accounts: readAccountsFile().filter(a => a.id !== id) })
+export async function removeMailAccount(id: string): Promise<void> {
+  await mutateAccounts(accounts => {
+    const idx = accounts.findIndex(a => a.id === id)
+    if (idx < 0) return { result: undefined, dirty: false }
+    accounts.splice(idx, 1)
+    return { result: undefined, dirty: true }
+  })
   const cache = readJson<Record<string, MailAccountCache>>(CACHE_KEY, {})
   delete cache[id]
   writeJson(CACHE_KEY, cache)
@@ -209,12 +266,15 @@ export async function loadMailSecret(id: string, pwd: string): Promise<MailSecre
   } catch { return null }
 }
 
-export async function saveMailSecret(id: string, secret: MailSecret, pwd: string): Promise<void> {
-  const accounts = readAccountsFile()
-  const entry = accounts.find(a => a.id === id)
-  if (!entry) return
-  entry.cipher = await encryptSecret(JSON.stringify(secret), pwd)
-  writeJson(ACCOUNTS_KEY, { accounts })
+/** 保存（替换）账户凭据。返回 false = 账户记录不存在（没存上，调用方必须当失败处理）；
+ *  写入本身失败（存储满等）直接抛错。v0.1.461 前是静默 return，存没存上没人知道。 */
+export async function saveMailSecret(id: string, secret: MailSecret, pwd: string): Promise<boolean> {
+  return mutateAccounts(async accounts => {
+    const entry = accounts.find(a => a.id === id)
+    if (!entry) return { result: false, dirty: false }
+    entry.cipher = await encryptSecret(JSON.stringify(secret), pwd)
+    return { result: true, dirty: true }
+  })
 }
 
 // ---------------- 显示开关（平台总开关 / 账户副开关，仅本机） ----------------
@@ -1437,7 +1497,7 @@ async function ensureGraphConnected(account: MailAccountMeta, secret0: MailSecre
   assertGraphOk(probe, '连接验证')
   const session: LiveSession = { secret, caps: 'GRAPH' }
   graphSessions.set(account.id, session)
-  setMailAccountTransport(account.id, 'graph')
+  await setMailAccountTransport(account.id, 'graph')
   account.transport = 'graph'
   clearMailReauthFlag(account.id)
   return session
@@ -1473,7 +1533,15 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string,
     if (existing0) return existing0
   }
   let secret = await loadMailSecret(account.id, pwd)
-  if (!secret) throw new Error('保险箱里没有这个账户的凭据，请删除后重新添加')
+  if (!secret) {
+    // v0.1.461：账户在、凭据读不到（461 前保存被竞态/配额打断的存量，或凭据损坏）。
+    // OAuth 账户落重新授权标记，界面给出「重新授权」入口补回，不再逼用户删账户。
+    if (mailPlatform(account.platformId).oauthProvider) {
+      setMailReauthFlag(account.id, '保险箱里没有这个账户的凭据，点「重新授权」补回即可，不用删除账户')
+      throw new Error('保险箱里没有这个账户的凭据，请点「重新授权」补回（不用删除账户）')
+    }
+    throw new Error('保险箱里没有这个账户的凭据，请删除后用授权码重新添加')
+  }
   if (mailSecretUsesGraph(account, secret)) return ensureGraphConnected(account, secret, pwd)
   const existing = liveSessions.get(account.id)
   if (existing) return existing
@@ -1518,7 +1586,7 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string,
   }
   const session: LiveSession = { secret, caps }
   liveSessions.set(account.id, session)
-  setMailAccountTransport(account.id, 'imap') // v0.1.459：回填通道，界面操作据此判路由
+  await setMailAccountTransport(account.id, 'imap') // v0.1.459：回填通道，界面操作据此判路由
   account.transport = 'imap'
   clearMailReauthFlag(account.id) // v0.1.446：连上了就说明授权有效，清掉可能残留的重新授权标记
   return session
@@ -2127,7 +2195,8 @@ export async function loadOAuthClientCreds(provider: 'google' | 'microsoft', pwd
 export async function saveOAuthClientCreds(provider: 'google' | 'microsoft', creds: OAuthClientCreds, pwd: string): Promise<void> {
   const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
   all[provider] = await encryptSecret(JSON.stringify({ clientId: creds.clientId, clientSecret: creds.clientSecret }), pwd)
-  writeJson(OAUTH_CLIENTS_KEY, all)
+  // v0.1.461：与账户凭据同等待遇——写不下必须抛错，不许静默丢（旧 writeJson 吞异常）
+  writeJsonStrict(OAUTH_CLIENTS_KEY, all, 'OAuth 客户端凭据保存失败')
 }
 
 export function clearOAuthClientCreds(provider: 'google' | 'microsoft'): void {
