@@ -21,6 +21,18 @@ use tokio::sync::Mutex;
 trait MailStream: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> MailStream for T {}
 
+// v0.1.445：连接验证全链路超时预算（秒）。436 的教训：greeting / XOAUTH2 质询等读取
+// 没有超时，服务器在某一步不说话就会让界面无限转圈。现在每一步都有上限且报错指明步骤，
+// 各步之和 ≤ 总时长上限（60 秒，由 mail_imap_connect 兜底中止）。
+const TCP_TIMEOUT_SECS: u64 = 10;
+const TLS_TIMEOUT_SECS: u64 = 10;
+const GREETING_TIMEOUT_SECS: u64 = 10;
+const LOGIN_TIMEOUT_SECS: u64 = 15;
+const CAPABILITY_TIMEOUT_SECS: u64 = 10;
+const COMMAND_TIMEOUT_SECS: u64 = 30;
+const IDLE_STEP_TIMEOUT_SECS: u64 = 15;
+const VERIFY_TOTAL_TIMEOUT_SECS: u64 = 60;
+
 type BoxStream = Box<dyn MailStream + Unpin + Send>;
 
 enum Seg {
@@ -66,6 +78,20 @@ impl ImapConn {
         Ok(String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string())
     }
 
+    /// 带步骤名与超时的 read_line：超时/失败都指明卡在哪一步（v0.1.445）。
+    async fn read_line_step(&mut self, step: &str, secs: u64) -> Result<String, String> {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(secs),
+            self.read_line(),
+        )
+        .await
+        {
+            Ok(Ok(line)) => Ok(line),
+            Ok(Err(e)) => Err(format!("{step}失败：{e}")),
+            Err(_) => Err(format!("{step}超时（{secs} 秒内服务器没有响应）")),
+        }
+    }
+
     /// 读一段以 tag 完成行结束的完整响应；行尾 {n} 字面量读成 Bytes 段。
     async fn read_response(&mut self, tag: &str) -> Result<Vec<Seg>, String> {
         let mut segs: Vec<Seg> = Vec::new();
@@ -100,14 +126,29 @@ impl ImapConn {
 
     /// 发一条命令并等完成行；NO/BAD 时把服务器完成行原文作为错误返回（真实原因，不加工）。
     async fn command(&mut self, cmd: &str) -> Result<Vec<Seg>, String> {
+        self.command_t(cmd, COMMAND_TIMEOUT_SECS).await
+    }
+
+    /// 同 command，但可指定超时；超时报错带命令动词与秒数（只用动词，绝不回显
+    /// LOGIN 的完整命令——里面含授权码/令牌）。
+    async fn command_t(&mut self, cmd: &str, secs: u64) -> Result<Vec<Seg>, String> {
         let tag = self.next_tag();
         self.write_line(&format!("{tag} {cmd}")).await?;
+        let mut words = cmd.split_whitespace();
+        let verb = match words.next() {
+            Some("UID") => match words.next() {
+                Some(sub) => format!("UID {sub}"),
+                None => "UID".to_string(),
+            },
+            Some(w) => w.to_string(),
+            None => "命令".to_string(),
+        };
         let segs = tokio::time::timeout(
-            std::time::Duration::from_secs(45),
+            std::time::Duration::from_secs(secs),
             self.read_response(&tag),
         )
         .await
-        .map_err(|_| "服务器响应超时".to_string())??;
+        .map_err(|_| format!("服务器响应超时（命令 {verb}，{secs} 秒内未返回完整结果）"))??;
         let last = segs
             .iter()
             .rev()
@@ -187,6 +228,8 @@ struct MailGlobals {
     sessions: Mutex<HashMap<String, Session>>,
     idle_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     oauth: StdMutex<Option<OAuthSlot>>,
+    /// v0.1.445：进行中的连接验证任务，前端「取消验证」靠它真正掐断在途连接。
+    pending_connects: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 fn globals() -> &'static MailGlobals {
@@ -195,16 +238,17 @@ fn globals() -> &'static MailGlobals {
         sessions: Mutex::new(HashMap::new()),
         idle_stops: Mutex::new(HashMap::new()),
         oauth: StdMutex::new(None),
+        pending_connects: Mutex::new(HashMap::new()),
     })
 }
 
 async fn raw_connect(host: &str, port: u16, use_tls: bool) -> Result<ImapConn, String> {
     let tcp = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(TCP_TIMEOUT_SECS),
         TcpStream::connect((host, port)),
     )
     .await
-    .map_err(|_| "连接服务器超时".to_string())?
+    .map_err(|_| format!("连接服务器超时（{host}:{port}，{TCP_TIMEOUT_SECS} 秒内未建立 TCP 连接）"))?
     .map_err(|e| format!("连接 {host}:{port} 失败：{e}"))?;
     let stream: BoxStream = if use_tls {
         let mut roots = rustls::RootCertStore::empty();
@@ -216,11 +260,11 @@ async fn raw_connect(host: &str, port: u16, use_tls: bool) -> Result<ImapConn, S
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|_| "服务器域名无效".to_string())?;
         let tls = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(TLS_TIMEOUT_SECS),
             connector.connect(server_name, tcp),
         )
         .await
-        .map_err(|_| "TLS 握手超时".to_string())?
+        .map_err(|_| format!("TLS 握手超时（{TLS_TIMEOUT_SECS} 秒内未完成握手）"))?
         .map_err(|e| format!("TLS 握手失败：{e}"))?;
         Box::new(tls)
     } else {
@@ -245,7 +289,11 @@ async fn login_conn(
     secret: &str,
 ) -> Result<(ImapConn, String), String> {
     let mut conn = raw_connect(host, port, use_tls).await?;
-    let greet = conn.read_line().await?;
+    // v0.1.445：greeting 必须带超时——436 这里是裸 read_line，服务器连上后不发问候语
+    // （隐式 TLS 等待顺序错位、服务器假死、中间设备吞包）就会永久死等，界面无限转圈。
+    let greet = conn
+        .read_line_step("等待服务器问候语", GREETING_TIMEOUT_SECS)
+        .await?;
     if !greet.starts_with("* OK") && !greet.starts_with("* PREAUTH") {
         return Err(format!("服务器 greeting 异常：{greet}"));
     }
@@ -257,19 +305,28 @@ async fn login_conn(
         conn.write_line(&format!("{tag} AUTHENTICATE XOAUTH2 {b64}"))
             .await?;
         // 失败时服务器先回一行 "+ <详情>" 质询：回空行后再等完成行；成功则直接是完成行
-        let mut line = conn.read_line().await?;
+        let mut line = conn
+            .read_line_step("等待 OAuth 登录响应", IDLE_STEP_TIMEOUT_SECS)
+            .await?;
         if line.starts_with('+') {
             conn.write_line("").await?;
-            line = conn.read_line().await?;
+            line = conn
+                .read_line_step("等待 OAuth 登录响应", IDLE_STEP_TIMEOUT_SECS)
+                .await?;
         }
         if !line.starts_with(&format!("{tag} OK")) {
             return Err(line);
         }
     } else {
-        conn.command(&format!("LOGIN {} {}", quote(username), quote(secret)))
-            .await?;
+        conn.command_t(
+            &format!("LOGIN {} {}", quote(username), quote(secret)),
+            LOGIN_TIMEOUT_SECS,
+        )
+        .await?;
     }
-    let segs = conn.command("CAPABILITY").await?;
+    let segs = conn
+        .command_t("CAPABILITY", CAPABILITY_TIMEOUT_SECS)
+        .await?;
     Ok((conn, parse_caps(&flatten(&segs))))
 }
 
@@ -300,13 +357,56 @@ pub async fn mail_imap_connect(
     username: String,
     secret: String,
 ) -> Result<String, String> {
-    let (conn, caps) = login_conn(&host, port, use_tls, &auth_mode, &username, &secret).await?;
+    // v0.1.445：登录跑在独立任务里并登记 AbortHandle，前端可取消；
+    // 再套一层总时长上限兜底（各步超时之和 ≤ 55 秒，总上限 60 秒）。
+    let task = tokio::spawn(async move {
+        login_conn(&host, port, use_tls, &auth_mode, &username, &secret).await
+    });
+    let abort = task.abort_handle();
+    globals()
+        .pending_connects
+        .lock()
+        .await
+        .insert(account_id.clone(), abort.clone());
+    let joined = tokio::time::timeout(
+        std::time::Duration::from_secs(VERIFY_TOTAL_TIMEOUT_SECS),
+        task,
+    )
+    .await;
+    globals()
+        .pending_connects
+        .lock()
+        .await
+        .remove(&account_id);
+    let (conn, caps) = match joined {
+        Ok(Ok(Ok(pair))) => pair,
+        Ok(Ok(Err(e))) => return Err(e),
+        Ok(Err(j)) if j.is_cancelled() => {
+            return Err("连接验证已被取消".to_string());
+        }
+        Ok(Err(j)) => return Err(format!("连接任务异常结束：{j}")),
+        Err(_) => {
+            abort.abort();
+            return Err(format!(
+                "连接验证总时长超过 {VERIFY_TOTAL_TIMEOUT_SECS} 秒，已自动中止（服务器响应过慢）"
+            ));
+        }
+    };
     let session = Session {
         conn: Arc::new(Mutex::new(conn)),
         caps: caps.clone(),
     };
     globals().sessions.lock().await.insert(account_id, session);
     Ok(caps)
+}
+
+/// 取消进行中的连接验证（v0.1.445）：真正 abort 掉在途登录任务，连接随任务取消被断开。
+#[tauri::command]
+pub async fn mail_imap_cancel_connect(account_id: String) -> Result<(), String> {
+    if let Some(h) = globals().pending_connects.lock().await.remove(&account_id) {
+        h.abort();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -491,7 +591,13 @@ async fn idle_session(
         // 服务器不支持 IDLE：如实上报，前端改走定时轮询，不假装实时
         emit_idle(app, account_id, "unsupported", None);
         while !stop.load(Ordering::Relaxed) {
-            tokio::time::sleep(std::time::Duration::from_secs(180)).await;
+            // 5 秒一片地睡，stop 置位后最多 5 秒就退出（436 是整段 180 秒才看一次）
+            for _ in 0..36 {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
             if stop.load(Ordering::Relaxed) {
                 break;
             }
@@ -503,8 +609,10 @@ async fn idle_session(
     while !stop.load(Ordering::Relaxed) {
         let tag = conn.next_tag();
         conn.write_line(&format!("{tag} IDLE")).await?;
-        // 等服务器 "+ idling" 确认行
-        let first = conn.read_line().await?;
+        // 等服务器 "+ idling" 确认行（v0.1.445：带超时，436 是裸 read_line 会死等）
+        let first = conn
+            .read_line_step("等待 IDLE 确认", IDLE_STEP_TIMEOUT_SECS)
+            .await?;
         if !first.starts_with('+') {
             return Err(format!("IDLE 启动失败：{first}"));
         }
@@ -533,7 +641,22 @@ async fn idle_session(
             }
         }
         conn.write_line("DONE").await?;
-        let _segs = conn.read_response(&tag).await?;
+        // v0.1.445：DONE 的完成行也要超时——436 是裸 read_response，服务器不回就死等，
+        // 且 stop 已置位也退不出去。超时按连接已坏处理，返回 Err 走外层重连退避。
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(IDLE_STEP_TIMEOUT_SECS),
+            conn.read_response(&tag),
+        )
+        .await
+        {
+            Ok(Ok(_segs)) => {}
+            Ok(Err(e)) => return Err(format!("IDLE 结束失败：{e}")),
+            Err(_) => {
+                return Err(format!(
+                    "IDLE 结束确认超时（{IDLE_STEP_TIMEOUT_SECS} 秒内服务器没有响应），将重新连接"
+                ))
+            }
+        }
     }
     Ok(())
 }
@@ -576,7 +699,13 @@ pub async fn mail_imap_idle_start(
                     }
                     emit_idle(&app, &acc, "error", Some(&e));
                     emit_idle(&app, &acc, "reconnecting", None);
-                    tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                    // 退避睡眠 1 秒一片，stop 置位能及时退出（v0.1.445）
+                    for _ in 0..backoff {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
                     backoff = (backoff * 2).min(60);
                 }
             }

@@ -633,6 +633,70 @@ function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promis
   return w.__TAURI_INTERNALS__.invoke(cmd, args) as Promise<T>
 }
 
+// v0.1.445：前端连接看门狗。Rust 侧连接验证已有分步超时（总上限 60 秒），
+// 这里再兜一层：invoke 万一永不返回（传输层死等），70 秒后按超时报错并请求后端取消，
+// 界面绝不无限转圈。测试可用 window.__ACM_MAIL_CONNECT_TIMEOUT_MS__ 覆盖时长。
+export const MAIL_CONNECT_TIMEOUT_MS = 70_000
+
+export function mailConnectTimeoutMs(): number {
+  if (typeof window === 'undefined') return MAIL_CONNECT_TIMEOUT_MS
+  const w = window as unknown as { __ACM_MAIL_CONNECT_TIMEOUT_MS__?: unknown }
+  const v = w.__ACM_MAIL_CONNECT_TIMEOUT_MS__
+  return typeof v === 'number' && v > 0 ? v : MAIL_CONNECT_TIMEOUT_MS
+}
+
+export function raceTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label)), ms)
+    p.then(
+      v => { clearTimeout(timer); resolve(v) },
+      (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))) },
+    )
+  })
+}
+
+/** 取消进行中的连接验证（v0.1.445）：通知 Rust abort 在途登录，并断开已建会话 */
+export async function mailCancelConnect(accountId: string): Promise<void> {
+  try { await tauriInvoke('mail_imap_cancel_connect', { accountId }) } catch { /* 命令不存在（旧后端）则忽略 */ }
+  await mailDisconnect(accountId)
+}
+
+// v0.1.445（补充）：同步/读取路径的分步看门狗。实机证明卡死不只在添加账户的连接验证里，
+// 连上之后的 LIST/FETCH 同样能让主页永远停在「同步中」。每个命令一个上限 + 步骤名报错；
+// 超时说明连接协议状态已不可信，顺手丢弃会话，下次同步重新建连，不在坏连接上连环卡。
+const MAIL_STEP_TIMEOUT_MS: Record<string, number> = {
+  mail_imap_list_folders: 30_000,
+  mail_imap_fetch_headers: 45_000,
+  mail_imap_fetch_message: 45_000,
+  mail_imap_folder_counts: 30_000,
+  mail_imap_search_all: 30_000,
+  mail_imap_store_flags: 30_000,
+  mail_imap_delete_messages: 60_000,
+}
+
+export function mailStepTimeoutMs(cmd: string): number {
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __ACM_MAIL_STEP_TIMEOUT_MS__?: unknown }
+    const v = w.__ACM_MAIL_STEP_TIMEOUT_MS__
+    if (typeof v === 'number' && v > 0) return v
+  }
+  return MAIL_STEP_TIMEOUT_MS[cmd] ?? 30_000
+}
+
+export async function mailInvoke<T>(cmd: string, args: Record<string, unknown>, stepLabel: string): Promise<T> {
+  const ms = mailStepTimeoutMs(cmd)
+  const timeoutLabel = `${stepLabel}超时（${Math.round(ms / 1000)} 秒内服务器未返回完整结果），已中止`
+  try {
+    return await raceTimeout(tauriInvoke<T>(cmd, args), ms, timeoutLabel)
+  } catch (e) {
+    if (e instanceof Error && e.message === timeoutLabel && typeof args.accountId === 'string') {
+      mailForgetSession(args.accountId)
+      void tauriInvoke('mail_imap_disconnect', { accountId: args.accountId }).catch(() => {})
+    }
+    throw e
+  }
+}
+
 export function mailDesktopAvailable(): boolean {
   return isDesktopApp()
 }
@@ -683,15 +747,27 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string)
   let secret = await loadMailSecret(account.id, pwd)
   if (!secret) throw new Error('保险箱里没有这个账户的凭据，请删除后重新添加')
   secret = await refreshOAuthSecret(account, secret, pwd)
-  const caps = await tauriInvoke<string>('mail_imap_connect', {
-    accountId: account.id,
-    host: account.host,
-    port: account.port,
-    useTls: account.port !== 143,
-    authMode: secret.kind === 'oauth' ? 'xoauth2' : 'login',
-    username: account.email,
-    secret: secret.kind === 'oauth' ? secret.accessTok : secret.secret,
-  })
+  const timeoutMs = mailConnectTimeoutMs()
+  let caps: string
+  try {
+    caps = await raceTimeout(
+      tauriInvoke<string>('mail_imap_connect', {
+        accountId: account.id,
+        host: account.host,
+        port: account.port,
+        useTls: account.port !== 143,
+        authMode: secret.kind === 'oauth' ? 'xoauth2' : 'login',
+        username: account.email,
+        secret: secret.kind === 'oauth' ? secret.accessTok : secret.secret,
+      }),
+      timeoutMs,
+      `连接验证超时（${Math.round(timeoutMs / 1000)} 秒内服务器未完成连接验证），已自动中止；请检查网络与服务器地址后重试`,
+    )
+  } catch (e) {
+    // 超时或失败都请后端掐掉可能还在途的连接，避免留下一条僵尸连接
+    if (e instanceof Error && e.message.includes('连接验证超时')) void mailCancelConnect(account.id)
+    throw e
+  }
   const session: LiveSession = { secret, caps }
   liveSessions.set(account.id, session)
   return session
@@ -715,14 +791,14 @@ export interface MailSyncOutcome {
 export async function mailSyncAccount(account: MailAccountMeta, pwd: string, headerLimit = 60): Promise<MailSyncOutcome> {
   try {
     const session = await mailEnsureConnected(account, pwd)
-    const listRaw = await tauriInvoke<string>('mail_imap_list_folders', { accountId: account.id })
+    const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
     const folders = parseListFolders(listRaw)
     if (!folders.length) throw new Error('服务器没有返回任何文件夹')
     const prev = loadMailCache()[account.id]
     const prevKeys = new Set((prev?.messages ?? []).map(m => m.key))
     const messages: MailMessage[] = []
     for (const folder of folders) {
-      const raw = await tauriInvoke<string>('mail_imap_fetch_headers', { accountId: account.id, folder: folder.name, limit: headerLimit })
+      const raw = await mailInvoke<string>('mail_imap_fetch_headers', { accountId: account.id, folder: folder.name, limit: headerLimit }, `拉取「${folder.name}」邮件列表（FETCH）`)
       messages.push(...parseFetchHeaders(raw, account.id, folder.name))
     }
     const cache = loadMailCache()
@@ -758,7 +834,7 @@ function patchCacheMessages(accountId: string, fn: (messages: MailMessage[]) => 
 }
 
 export async function mailSetFlag(account: MailAccountMeta, msg: MailMessage, flag: '\\Seen' | '\\Flagged', add: boolean): Promise<void> {
-  await tauriInvoke('mail_imap_store_flags', { accountId: account.id, folder: msg.folder, uids: [msg.uid], flag, add })
+  await mailInvoke('mail_imap_store_flags', { accountId: account.id, folder: msg.folder, uids: [msg.uid], flag, add }, '更新邮件标记（STORE）')
   patchCacheMessages(account.id, list => list.map(m => {
     if (m.key !== msg.key) return m
     const flags = add ? [...new Set([...m.flags, flag])] : m.flags.filter(f => f !== flag)
@@ -774,9 +850,9 @@ export async function mailMoveMessages(account: MailAccountMeta, msgs: MailMessa
     byFolder.set(m.folder, [...(byFolder.get(m.folder) ?? []), m])
   }
   for (const [folder, list] of byFolder) {
-    await tauriInvoke('mail_imap_delete_messages', {
+    await mailInvoke('mail_imap_delete_messages', {
       accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: destFolder,
-    })
+    }, '移动邮件（COPY/删除）')
     const destRole = loadMailCache()[account.id]?.folders.find(f => f.name === destFolder)?.role ?? 'other'
     void destRole
     patchCacheMessages(account.id, all => all.map(m => (list.some(x => x.key === m.key) ? { ...m, folder: destFolder, key: `${account.id}|${destFolder}|${m.uid}` } : m)))
@@ -793,9 +869,9 @@ export async function mailDeleteMessages(account: MailAccountMeta, msgs: MailMes
   for (const [folder, list] of byFolder) {
     const decision = resolveDeleteMode(folders, folder)
     if (decision.mode === 'trash') mode = 'trash'
-    await tauriInvoke('mail_imap_delete_messages', {
+    await mailInvoke('mail_imap_delete_messages', {
       accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: decision.trashFolder ?? null,
-    })
+    }, '删除邮件')
     const keys = new Set(list.map(m => m.key))
     patchCacheMessages(account.id, all => all.filter(m => !keys.has(m.key)))
   }
@@ -803,7 +879,7 @@ export async function mailDeleteMessages(account: MailAccountMeta, msgs: MailMes
 }
 
 export async function mailFetchBody(account: MailAccountMeta, msg: MailMessage): Promise<MailBodyContent & { code: string | null }> {
-  const b64 = await tauriInvoke<string>('mail_imap_fetch_message', { accountId: account.id, folder: msg.folder, uid: msg.uid })
+  const b64 = await mailInvoke<string>('mail_imap_fetch_message', { accountId: account.id, folder: msg.folder, uid: msg.uid }, '拉取邮件正文（FETCH）')
   const bytes = b64ToBytes(b64)
   const body = parseMimeMessage(bytes)
   const code = extractVerifyCode(`${msg.subject}\n${body.text || htmlToText(body.html)}`)
@@ -834,9 +910,9 @@ export async function mailDeleteAllPreview(accounts: MailAccountMeta[], pwd: str
   for (const account of accounts) {
     try {
       await mailEnsureConnected(account, pwd)
-      const listRaw = await tauriInvoke<string>('mail_imap_list_folders', { accountId: account.id })
+      const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
       const folders = parseListFolders(listRaw)
-      const countsRaw = await tauriInvoke<string>('mail_imap_folder_counts', { accountId: account.id, folders: folders.map(f => f.name) })
+      const countsRaw = await mailInvoke<string>('mail_imap_folder_counts', { accountId: account.id, folders: folders.map(f => f.name) }, '统计各文件夹邮件数')
       const counts = JSON.parse(countsRaw) as Record<string, number>
       let sum = 0
       let hasTrash = !!folders.find(f => f.role === 'trash')
@@ -867,7 +943,7 @@ export async function mailDeleteAll(
     const report: MailDeleteAllReport = { accountId: account.id, email: account.email, deleted: 0, mode: 'permanent' }
     try {
       await mailEnsureConnected(account, pwd)
-      const listRaw = await tauriInvoke<string>('mail_imap_list_folders', { accountId: account.id })
+      const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
       const folders = parseListFolders(listRaw)
       const trash = folders.find(f => f.role === 'trash')
       const ordered = [...folders.filter(f => f.role !== 'trash'), ...folders.filter(f => f.role === 'trash')]
@@ -875,13 +951,13 @@ export async function mailDeleteAll(
       // 一并搜出来删掉，计数只能算「原本就在垃圾箱的 + 各文件夹移出的」，否则重复计数。
       let initialTrashUids = new Set<number>()
       if (trash) {
-        const trashSearch = await tauriInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: trash.name })
+        const trashSearch = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: trash.name }, '搜索垃圾箱邮件（SEARCH）')
         initialTrashUids = new Set(parseSearchUids(trashSearch))
       }
       let usedTrash = false
       let usedPermanent = false
       for (const folder of ordered) {
-        const searchRaw = await tauriInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: folder.name })
+        const searchRaw = await mailInvoke<string>('mail_imap_search_all', { accountId: account.id, folder: folder.name }, `搜索「${folder.name}」邮件（SEARCH）`)
         const uids = parseSearchUids(searchRaw)
         if (!uids.length) continue
         const toTrash = trash && folder.role !== 'trash' ? trash.name : null
@@ -889,9 +965,9 @@ export async function mailDeleteAll(
         else usedPermanent = true
         for (let i = 0; i < uids.length; i += 200) {
           const chunk = uids.slice(i, i + 200)
-          const n = await tauriInvoke<number>('mail_imap_delete_messages', {
+          const n = await mailInvoke<number>('mail_imap_delete_messages', {
             accountId: account.id, folder: folder.name, uids: chunk, trashFolder: toTrash,
-          })
+          }, '删除邮件')
           // 清垃圾箱这一步删的含刚移入的邮件，只计快照内原本就在垃圾箱的数量，避免重复计数
           report.deleted += folder.role === 'trash' ? chunk.filter(u => initialTrashUids.has(u)).length : n
           onProgress?.(account.email, report.deleted)

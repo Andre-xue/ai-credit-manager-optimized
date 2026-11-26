@@ -1,11 +1,12 @@
 // 邮箱工具 v0.1.436 单元测试：预设 / 验证码提取 / 自动分类 / 编码解码 /
 // IMAP 报文解析（报文形态与本地假 IMAP 服务器 verify436 的真实输出一致）/ MIME 解析 / 删除方式决策。
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   MAIL_PLATFORMS, mailPlatform, extractVerifyCode, classifyMessage, decodeEncodedWords,
   parseListFolders, parseFetchHeaders, parseSearchUids, resolveDeleteMode, parseMimeMessage,
   htmlToText, sanitizeMailHtml, loadMailVisibility, saveMailVisibility, isAccountVisible,
-  buildOAuthUrl, type MailFolder,
+  buildOAuthUrl, raceTimeout, mailConnectTimeoutMs, MAIL_CONNECT_TIMEOUT_MS,
+  mailInvoke, mailStepTimeoutMs, type MailFolder,
 } from './mail'
 
 class MemStorage {
@@ -200,6 +201,64 @@ describe('显示开关', () => {
     v2.accounts.a1 = false
     saveMailVisibility(v2)
     expect(isAccountVisible(loadMailVisibility(), { id: 'a1', platformId: 'qq', email: 'x@qq.com', label: '', host: '', port: 993 })).toBe(false)
+  })
+})
+
+describe('连接验证超时兜底（445）', () => {
+  it('默认看门狗 70 秒（大于 Rust 侧 60 秒总上限，正常时先收到 Rust 的分步报错）', () => {
+    expect(MAIL_CONNECT_TIMEOUT_MS).toBe(70_000)
+    expect(mailConnectTimeoutMs()).toBe(70_000)
+  })
+  it('raceTimeout：按时返回的结果原样通过', async () => {
+    await expect(raceTimeout(Promise.resolve('caps'), 1000, '不应触发')).resolves.toBe('caps')
+  })
+  it('raceTimeout：永不返回的连接按时以指定文案拒绝（不再无限等）', async () => {
+    const t0 = Date.now()
+    await expect(raceTimeout(new Promise<string>(() => {}), 30, '连接验证超时（测试）'))
+      .rejects.toThrow('连接验证超时（测试）')
+    expect(Date.now() - t0).toBeLessThan(1000)
+  })
+  it('raceTimeout：底层真实错误原样透传，不被超时文案吞掉', async () => {
+    await expect(raceTimeout(Promise.reject(new Error('a1 NO Login failed')), 1000, '不应触发'))
+      .rejects.toThrow('a1 NO Login failed')
+  })
+})
+
+describe('同步路径分步超时（445 补充）', () => {
+  it('每类命令有自己的上限：LIST 30s / FETCH 45s / 删除 60s / 未知命令 30s', () => {
+    expect(mailStepTimeoutMs('mail_imap_list_folders')).toBe(30_000)
+    expect(mailStepTimeoutMs('mail_imap_fetch_headers')).toBe(45_000)
+    expect(mailStepTimeoutMs('mail_imap_delete_messages')).toBe(60_000)
+    expect(mailStepTimeoutMs('mail_imap_unknown')).toBe(30_000)
+  })
+
+  const g = globalThis as unknown as { window?: unknown }
+  let calls: string[]
+  const stubWindow = (invoke: (cmd: string) => Promise<unknown>, stepMs?: number) => {
+    calls = []
+    g.window = {
+      __ACM_MAIL_STEP_TIMEOUT_MS__: stepMs,
+      __TAURI_INTERNALS__: { invoke: (cmd: string) => { calls.push(cmd); return invoke(cmd) } },
+    }
+  }
+  afterEach(() => { delete g.window })
+
+  it('mailInvoke：正常返回原样通过', async () => {
+    stubWindow(async () => '* LIST ok')
+    await expect(mailInvoke<string>('mail_imap_list_folders', { accountId: 'a1' }, '拉取文件夹列表（LIST）')).resolves.toBe('* LIST ok')
+  })
+  it('mailInvoke：服务器不响应 → 带步骤名的超时错误，并丢弃会话（发 disconnect）', async () => {
+    stubWindow(async (cmd) => (cmd === 'mail_imap_disconnect' ? null : new Promise(() => {})), 30)
+    await expect(mailInvoke<string>('mail_imap_list_folders', { accountId: 'a1' }, '拉取文件夹列表（LIST）'))
+      .rejects.toThrow('拉取文件夹列表（LIST）超时')
+    await new Promise(r => setTimeout(r, 20))
+    expect(calls).toContain('mail_imap_disconnect')
+  })
+  it('mailInvoke：服务器真实报错原样透传，不触发丢弃会话', async () => {
+    stubWindow(async () => { throw new Error('a3 NO Mailbox does not exist') })
+    await expect(mailInvoke<string>('mail_imap_fetch_headers', { accountId: 'a1', folder: 'INBOX' }, '拉取「INBOX」邮件列表（FETCH）'))
+      .rejects.toThrow('a3 NO Mailbox does not exist')
+    expect(calls).not.toContain('mail_imap_disconnect')
   })
 })
 

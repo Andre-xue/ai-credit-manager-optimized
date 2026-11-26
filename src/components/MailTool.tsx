@@ -16,7 +16,7 @@ import {
   loadMailCache, applyCategoryOverrides, setCategoryOverride,
   mailSyncAccount, mailSetFlag, mailMoveMessages, mailDeleteMessages, mailFetchBody, mailSaveAttachment,
   mailDeleteAllPreview, mailDeleteAll, mailOAuthListenStart, mailOAuthListenResult, mailOAuthExchange,
-  mailEnsureConnected, sanitizeMailHtml, buildOAuthUrl,
+  mailEnsureConnected, mailCancelConnect, sanitizeMailHtml, buildOAuthUrl,
   type MailAccountMeta, type MailMessage, type MailCategory, type MailPlatformId, type MailSecret,
   type MailBodyContent, type MailDeleteAllReport,
 } from '../core/mail'
@@ -299,6 +299,11 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
               </button>
             ))}
           </div>
+
+          {/* v0.1.445：同步失败原因常驻显示（不只藏在 chip 的 tooltip 里），含卡住的步骤 */}
+          {visibleMetas.filter(a => syncMap[a.id]?.state === 'error').map(a => (
+            <div key={a.id} className="mail-error-box"><AlertTriangle size={15} /> 「{a.email}」同步失败：{syncMap[a.id]?.message}</div>
+          ))}
 
           {!metas.length ? (
             <div className="mail-empty">
@@ -681,10 +686,29 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
   const [clientSecret, setClientSecret] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  // v0.1.445：验证流程代号 + 在途账户 id，支撑「取消验证」真正中断并让迟到的结果作废
+  const flowRef = useRef(0)
+  const activeAccountRef = useRef('')
+
+  const cancelVerify = async () => {
+    flowRef.current += 1
+    const id = activeAccountRef.current
+    activeAccountRef.current = ''
+    setBusy('')
+    setError(id
+      ? '已取消验证。账户已保存，可在收件箱点「刷新」重新连接。'
+      : '已取消验证。')
+    if (id) await mailCancelConnect(id)
+  }
 
   const finishWithSyncTest = async (metaNoId: Omit<MailAccountMeta, 'id'>, secret: MailSecret) => {
+    const flow = flowRef.current
     const meta = await addMailAccount(metaNoId, secret, pwd)
+    activeAccountRef.current = meta.id
+    if (flow !== flowRef.current) return // 保存期间已被取消：不再发起连接
     const outcome = await mailSyncAccount(meta, pwd)
+    if (flow !== flowRef.current) return // 已取消：迟到的结果不再改界面
+    activeAccountRef.current = ''
     if (outcome.ok) {
       notify(`「${meta.email}」连接成功，已同步 ${(loadMailCache()[meta.id]?.messages ?? []).length} 封邮件`)
       onAdded()
@@ -700,6 +724,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
     if (platformId === 'custom' && !customHost) { setError('请填写 IMAP 服务器地址'); return }
     setBusy('正在连接服务器验证…')
     setError('')
+    const flow = flowRef.current
     try {
       await finishWithSyncTest(
         {
@@ -711,6 +736,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
         { kind: 'code', secret: secretInput },
       )
     } catch (e) {
+      if (flow !== flowRef.current) return // 已取消，界面已由 cancelVerify 复位
       setError(e instanceof Error ? e.message : String(e))
       setBusy('')
     }
@@ -722,12 +748,14 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
     if (!preset.oauthProvider) { setError('该平台不支持 OAuth'); return }
     setBusy('已打开浏览器，请在浏览器里完成授权…（最长等 3 分钟）')
     setError('')
+    const flow = flowRef.current
     try {
       const port = await mailOAuthListenStart()
       await openExternal(buildOAuthUrl(preset.oauthProvider, clientId.trim(), port))
       const deadline = Date.now() + 180_000
       let code = ''
       while (Date.now() < deadline) {
+        if (flow !== flowRef.current) return // 已取消验证
         await new Promise(r => setTimeout(r, 800))
         const res = await mailOAuthListenResult()
         if (res?.error) throw new Error(`授权被拒绝：${res.error}`)
@@ -741,6 +769,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
         secret,
       )
     } catch (e) {
+      if (flow !== flowRef.current) return // 已取消，界面已由 cancelVerify 复位
       setError(e instanceof Error ? e.message : String(e))
       setBusy('')
     }
@@ -751,7 +780,7 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
   return (
     <div className="mail-add">
       <div className="mail-reader-top">
-        <button className="btn sm ghost" onClick={onBack}><ChevronLeft size={14} /> 返回</button>
+        <button className="btn sm ghost" onClick={() => { if (busy) void cancelVerify(); onBack() }}><ChevronLeft size={14} /> 返回</button>
         <h4 className="mail-add-title">添加邮箱账户</h4>
       </div>
       <div className="mail-platform-grid">
@@ -792,7 +821,10 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
         )}
         {error && <div className="mail-error-box"><AlertTriangle size={15} /> {error}</div>}
         <div className="mail-form-actions">
-          <button className="btn ghost" onClick={onBack}>取消</button>
+          <button className="btn ghost" onClick={() => { if (busy) void cancelVerify(); onBack() }}>取消</button>
+          {busy && (
+            <button className="btn" onClick={() => void cancelVerify()}>取消验证</button>
+          )}
           <button className="btn primary" disabled={!!busy} onClick={() => void (useOAuth ? saveWithOAuth() : saveWithCode())}>
             {busy ? <Loader2 size={14} className="spin" /> : <FolderInput size={14} />} {busy || '连接并保存'}
           </button>
