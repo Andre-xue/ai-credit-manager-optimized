@@ -1089,6 +1089,18 @@ mod mac {
         fn CGWindowListCopyWindowInfo(options: u32, relative_to_window: u32) -> *const c_void;
         fn CGMainDisplayID() -> u32;
         fn CGDisplayBounds(display: u32) -> CGRectF;
+        // v0.1.468 OCR 新路径：CGImageSource 解码出的 CGImage 尺寸/释放。
+        fn CGImageGetWidth(image: *mut c_void) -> usize;
+        fn CGImageGetHeight(image: *mut c_void) -> usize;
+        fn CGImageRelease(image: *mut c_void);
+    }
+
+    // v0.1.468 OCR 新路径：ImageIO 的 CGImageSource 是纯 C 接口，PNG 解码
+    // 不再经 NSData/ObjC 消息（旧 initWithData: 路径是卡死嫌疑段之一）。
+    #[link(name = "ImageIO", kind = "framework")]
+    extern "C" {
+        fn CGImageSourceCreateWithData(data: *const c_void, options: *const c_void) -> *mut c_void;
+        fn CGImageSourceCreateImageAtIndex(source: *mut c_void, index: usize, options: *const c_void) -> *mut c_void;
     }
 
     // CFDictionaryCreate 的回调结构体：本模块只取官方常量
@@ -1132,6 +1144,11 @@ mod mac {
         static kCFBooleanTrue: *const c_void;
         static kCFTypeDictionaryKeyCallBacks: CfDictKeyCallbacks;
         static kCFTypeDictionaryValueCallBacks: CfDictValueCallbacks;
+        // v0.1.468 OCR 新路径：字节→CFData（喂 CGImageSource 解码）与调用线程
+        // runloop 泵（等 Vision worker 线程时不死等，见 vision_ocr）。
+        fn CFDataCreate(allocator: *const c_void, bytes: *const u8, length: isize) -> *const c_void;
+        fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source_handled: bool) -> i32;
+        static kCFRunLoopDefaultMode: *const c_void;
     }
 
     // Vision / Foundation 只经 libobjc 动态消息调用，没有链接期符号；
@@ -1213,11 +1230,6 @@ mod mac {
         let f: extern "C" fn(Id, Sel, Id, *mut Id) -> bool = std::mem::transmute(objc_msgSend as usize);
         f(recv, sel, requests, error)
     }
-    unsafe fn msg_supported_langs(recv: Id, sel: Sel, revision: i64, error: *mut Id) -> Id {
-        let f: extern "C" fn(Id, Sel, i64, *mut Id) -> Id = std::mem::transmute(objc_msgSend as usize);
-        f(recv, sel, revision, error)
-    }
-
     unsafe fn ns_string(s: &str) -> Id {
         let cls = class("NSString");
         if cls.is_null() {
@@ -1560,7 +1572,8 @@ mod mac {
 
     // ---- 截图 + Vision OCR ----
     // v0.1.451 起两者分工：capture_shot 只负责截图（留在主进程，screencapture 是
-    // 外部命令）；vision_ocr_path 只在 --acm-ocr 子进程里被调用（见 run_ocr_cli），
+    // 外部命令）；vision_ocr_path 只在 --acm-ocr 子进程里被调用（见 run_ocr_cli；
+    // v0.1.468 起 CI 集成测试 t08 经 ffi_probe::ocr_png 调同一入口做真跑验收），
     // 主进程不再碰 Vision FFI——440 实机它曾把主进程带崩。
 
     pub fn capture_shot(x: f64, y: f64, w: f64, h: f64) -> Result<std::path::PathBuf, String> {
@@ -1588,50 +1601,108 @@ mod mac {
         vision_ocr(png_path)
     }
 
+    /// v0.1.468 改法（根因见 vision_ocr_inner 头注释）：Vision 调用搬到
+    /// worker 线程真跑，调用线程不阻塞在 perform 上，而是泵自己的 runloop
+    /// 等结果——子进程里调用线程就是主线程，泵 runloop 的同时会处理
+    /// libdispatch 主队列，Vision 内部若有往主队列派活再同步等的步骤也不
+    /// 再死锁。autorelease pool 随 worker 线程建/销（pool 是线程局部的）。
     fn vision_ocr(png_path: &std::path::Path) -> Result<String, String> {
-        unsafe {
-            let pool = objc_autoreleasePoolPush();
-            let r = vision_ocr_inner(png_path);
-            objc_autoreleasePoolPop(pool);
-            r
+        let path = png_path.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        std::thread::spawn(move || {
+            let r = unsafe {
+                let pool = objc_autoreleasePoolPush();
+                let r = vision_ocr_inner(&path);
+                objc_autoreleasePoolPop(pool);
+                r
+            };
+            let _ = tx.send(r);
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(r) => return r,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err("本地 OCR 识别失败：识别线程意外结束，请重试".to_string());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // 在当前线程 runloop 里等一小片（50ms）：无源时到期返回，
+                    // 有主队列工作时顺带把它办了，再回头看 worker 结果。
+                    unsafe {
+                        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+                    }
+                }
+            }
         }
     }
 
+    /// v0.1.468 OCR 核心重写。旧实现（451 起）在子进程主线程上一串手拼
+    /// objc_msgSend：NSData dataWithContentsOfFile 解码 → 类方法
+    /// supportedRecognitionLanguagesForTextRequestRevision:error: 查语言 →
+    /// initWithData 建 handler → performRequests。Ethan 实机 464（25s）与
+    /// 465（30s）两次都在 ocr-child-start 之后整段无下文、被父进程超时
+    /// 强杀，这条路径上 OCR 从未成功过一次，与图片内容无关（44×44、5.6KB
+    /// 的小图同样挂满）。新实现按最标准同步路径重写，三段各落一条面包屑
+    /// （ocr-child-img / ocr-child-req / ocr-child-perform），卡哪段一目了然：
+    /// 1) 解码走纯 C 的 ImageIO：fs 读字节 → CFData → CGImageSource →
+    ///    CGImage，不再经 NSData/ObjC；
+    /// 2) 识别语言直接设固定列表（zh-Hans/zh-Hant/en-US，macOS 11+ 的
+    ///    revision 2 全部支持），删掉 supportedRecognitionLanguages 类方法
+    ///    查询——该调用内部要拉起识别引擎资源，是同步阻塞的黑盒；
+    /// 3) handler 改 initWithCGImage:options:，perform 仍是官方同步
+    ///    performRequests:error:（无 completion block 可拼），且由
+    ///    vision_ocr 的 worker 线程承载、调用线程泵 runloop 等待，
+    ///    perform 内部若往主队列派活不再死锁。
     unsafe fn vision_ocr_inner(png_path: &std::path::Path) -> Result<String, String> {
-        let path_str = png_path.to_string_lossy().into_owned();
-        let data_cls = class("NSData");
         let req_cls = class("VNRecognizeTextRequest");
         let handler_cls = class("VNImageRequestHandler");
         let arr_cls = class("NSArray");
-        if data_cls.is_null() || req_cls.is_null() || handler_cls.is_null() || arr_cls.is_null() {
+        if req_cls.is_null() || handler_cls.is_null() || arr_cls.is_null() {
             return Err("系统 Vision 框架不可用（需要 macOS 10.15 以上）".to_string());
         }
-        let ns_path = ns_string(&path_str);
-        let data = msg_id_id(data_cls, sel("dataWithContentsOfFile:"), ns_path);
-        if data.is_null() {
+        // 1) 解码：纯 C 的 ImageIO 链
+        let bytes = std::fs::read(png_path).map_err(|e| format!("读取截图文件失败：{e}"))?;
+        let cf_data = CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize);
+        if cf_data.is_null() {
             return Err("读取截图文件失败".to_string());
         }
+        let source = CGImageSourceCreateWithData(cf_data, std::ptr::null());
+        if source.is_null() {
+            CFRelease(cf_data);
+            return Err("读取截图文件失败".to_string());
+        }
+        let image = CGImageSourceCreateImageAtIndex(source, 0, std::ptr::null());
+        CFRelease(source as *const c_void);
+        CFRelease(cf_data);
+        if image.is_null() {
+            return Err("截图解码失败：不是有效的 PNG 图片".to_string());
+        }
+        super::diag(
+            "ocr-child-img",
+            &format!("{}x{}", CGImageGetWidth(image), CGImageGetHeight(image)),
+        );
+        // 2) 请求与 handler 就绪
         let req = msg_id(msg_id(req_cls, sel("alloc")), sel("init"));
         if req.is_null() {
+            CGImageRelease(image);
             return Err("创建 OCR 请求失败".to_string());
         }
         // VNRecognitionLevelAccurate = 0
         msg_void_i64(req, sel("setRecognitionLevel:"), 0);
         msg_void_bool(req, sel("setUsesLanguageCorrection:"), true);
-        // 只用系统真正支持的识别语言（不同 macOS 版本支持集不同），避免设入不支持的语种
-        let langs = supported_languages(req_cls, arr_cls);
-        if !langs.is_empty() {
-            let ptrs: Vec<Id> = langs.iter().map(|s| ns_string(s)).collect();
-            let lang_arr = msg_arr_objs(arr_cls, sel("arrayWithObjects:count:"), ptrs.as_ptr(), ptrs.len());
-            if !lang_arr.is_null() {
-                msg_void_id(req, sel("setRecognitionLanguages:"), lang_arr);
-            }
+        let lang_names = ["zh-Hans", "zh-Hant", "en-US"];
+        let lang_ptrs: Vec<Id> = lang_names.iter().map(|s| ns_string(s)).collect();
+        let lang_arr = msg_arr_objs(arr_cls, sel("arrayWithObjects:count:"), lang_ptrs.as_ptr(), lang_ptrs.len());
+        if !lang_arr.is_null() {
+            msg_void_id(req, sel("setRecognitionLanguages:"), lang_arr);
         }
-        let handler = msg_id_id_id(msg_id(handler_cls, sel("alloc")), sel("initWithData:options:"), data, std::ptr::null_mut());
+        let handler = msg_id_id_id(msg_id(handler_cls, sel("alloc")), sel("initWithCGImage:options:"), image, std::ptr::null_mut());
         if handler.is_null() {
             msg_void(req, sel("release"));
+            CGImageRelease(image);
             return Err("创建 OCR 处理器失败".to_string());
         }
+        super::diag("ocr-child-req", "ready");
+        // 3) 同步 perform（官方同步 API，无 block），读 results 的 topCandidates
         let req_arr = msg_id_id(arr_cls, sel("arrayWithObject:"), req);
         let mut err: Id = std::ptr::null_mut();
         let ok = msg_perform(handler, sel("performRequests:error:"), req_arr, &mut err);
@@ -1642,8 +1713,10 @@ mod mac {
             } else {
                 String::new()
             };
+            super::diag("ocr-child-perform", &format!("ok=false err={detail}"));
             msg_void(req, sel("release"));
             msg_void(handler, sel("release"));
+            CGImageRelease(image);
             return Err(if detail.is_empty() {
                 "本地 OCR 识别失败".to_string()
             } else {
@@ -1675,38 +1748,11 @@ mod mac {
                 }
             }
         }
+        let text = lines.join("\n");
+        super::diag("ocr-child-perform", &format!("ok=true chars={}", text.chars().count()));
         msg_void(req, sel("release"));
         msg_void(handler, sel("release"));
-        Ok(lines.join("\n"))
-    }
-
-    /// 问 VNRecognizeTextRequest 本人支持哪些语言（revision 2），与期望列表取交集。
-    unsafe fn supported_languages(req_cls: Id, _arr_cls: Id) -> Vec<String> {
-        let want = ["zh-Hans", "zh-Hant", "en-US"];
-        // 老系统上该类方法不存在时直接调会抛 NSException 让进程 abort：
-        // 先问 respondsToSelector:，没有就返回空（调用方据此不设语言、用系统默认集）
-        let target = sel("supportedRecognitionLanguagesForTextRequestRevision:error:");
-        let responds: extern "C" fn(Id, Sel, Sel) -> bool = std::mem::transmute(objc_msgSend as usize);
-        if !responds(req_cls, sel("respondsToSelector:"), target) {
-            return Vec::new();
-        }
-        let mut err: Id = std::ptr::null_mut();
-        // +supportedRecognitionLanguagesForTextRequestRevision:error:（revision 2 = macOS 11+）
-        let list = msg_supported_langs(req_cls, target, 2, &mut err);
-        if list.is_null() {
-            return vec!["en-US".to_string()];
-        }
-        let n = msg_usize(list, sel("count"));
-        let mut have: Vec<String> = Vec::new();
-        for i in 0..n {
-            let s = msg_id_usize(list, sel("objectAtIndex:"), i);
-            if let Some(t) = ns_utf8(s) {
-                have.push(t);
-            }
-        }
-        want.iter()
-            .filter(|w| have.iter().any(|h| h == **w))
-            .map(|w| w.to_string())
-            .collect()
+        CGImageRelease(image);
+        Ok(text)
     }
 }
