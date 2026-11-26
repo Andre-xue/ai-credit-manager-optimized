@@ -40,8 +40,8 @@ import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDel
 import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
 import { testFreeAiOption, classifyFreeTestError, type FreeAiOption } from '../core/freeAi'
 import {
-  loadApisFreeState, saveApisFreeState, apisFreeReady, apisFreeRateText, testApisFree, chatApisFree,
-  APISFREE_MODEL, APISFREE_LIMITS_TEXT, APISFREE_CHANGED_EVENT, type ApisFreeState,
+  loadApisFreeState, apisFreeReady, chatApisFree,
+  APISFREE_MODEL, APISFREE_CHANGED_EVENT, type ApisFreeState,
 } from '../core/apisFree'
 import {
   runFreeChain, loadChainMode, saveChainMode, classifyChainError, failoverEligible, orderChainCandidates,
@@ -471,9 +471,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 免费路线切换链模式 + APIsFreeLLM 通道状态（v0.1.433，本机偏好；工坊 RouteSelect 共用同一份）
   const [chainMode, setChainModeState] = useState<ChainMode>(() => loadChainMode())
   const [apisFreeState, setApisFreeState] = useState<ApisFreeState>(() => loadApisFreeState())
-  const [apisFreeTesting, setApisFreeTesting] = useState(false)
-  // v0.1.448：模型菜单里 APIsFreeLLM 块的长规格默认收起，点「详情」才展开
-  const [apisFreeDetailOpen, setApisFreeDetailOpen] = useState(false)
   useEffect(() => {
     const refresh = () => { setApisFreeState(loadApisFreeState()); setChainModeState(loadChainMode()) }
     window.addEventListener(APISFREE_CHANGED_EVENT, refresh)
@@ -489,20 +486,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     setToolsOpen(false)
   }
-  const runApisFreeTest = async () => {
-    if (apisFreeTesting) return
-    setApisFreeTesting(true)
-    const r = await testApisFree()
-    setApisFreeState(loadApisFreeState())
-    setApisFreeTesting(false)
-    notify(r.ok ? `APIsFreeLLM 测活通过（${r.ms} 毫秒），已可作兜底路线` : `APIsFreeLLM 测活失败：${r.error ?? ''}`)
-  }
-  const toggleApisFree = async (on: boolean) => {
-    saveApisFreeState({ enabled: on })
-    setApisFreeState(loadApisFreeState())
-    if (on) await runApisFreeTest()
-  }
-
   // 免费模型 + 用户自己的账户模型，按分类联动过滤
   const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined, upstream: undefined as UpstreamSource | undefined, apisFree: undefined as boolean | undefined })), [models])
   // 内置免费通道模型（Zen / Kilo）：与云端免费模型同列「免费模型」分类，标签带来源后缀区分
@@ -1406,16 +1389,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
       {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
-      {category === '免费模型' && <div className="ai-model-block">
-        <span>🛟 APIsFreeLLM 兜底通道（免 Key）</span>
-        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-          <button className="btn sm" onClick={() => void toggleApisFree(!apisFreeState.enabled)}>{apisFreeState.enabled ? '关闭' : '开启'}</button>
-          <button className="btn sm" disabled={apisFreeTesting} onClick={() => void runApisFreeTest()}>{apisFreeTesting ? '测活中…' : '测活'}</button>
-          <button className="btn sm ghost" onClick={() => setApisFreeDetailOpen(v => !v)}>{apisFreeDetailOpen ? '收起' : '详情'}</button>
-          <span>{!apisFreeState.enabled ? '未开启' : apisFreeState.verifiedAt > 0 ? `已测通 · ${apisFreeRateText(apisFreeState.rate)}` : `未测通${apisFreeState.lastError ? `：${apisFreeState.lastError}` : '（点测活在你当前网络下验证）'}`}</span>
-        </small>
-        {apisFreeDetailOpen && <div className="ai-model-block-detail">{APISFREE_LIMITS_TEXT}</div>}
-      </div>}
+      {/* v0.1.454：APIsFreeLLM 兜底通道控制块（开关/测活/剩余量/详情）也已摘除——通道控制全 App 只留工坊 RouteSelect 一处；通道开启且测通时 free-ai 仍作为普通模型条目出现在这里（apisFreeOptions） */}
       {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('自动标出哪些还能用，并选到第一个可用的')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
