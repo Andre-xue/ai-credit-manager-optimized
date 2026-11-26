@@ -84,6 +84,7 @@
 .sheet { width: 100%; background: var(--panel); border-radius: 36rpx 36rpx 0 0; padding: 34rpx 32rpx 50rpx; box-sizing: border-box; }
 .sheet-title { font-size: 31rpx; font-weight: 650; color: var(--text); margin-bottom: 20rpx; }
 .sheet-list { max-height: 56vh; }
+.model-section { font-size: 24rpx; color: var(--text-3); font-weight: 600; padding: 28rpx 8rpx 2rpx; }
 .model-item {
   display: flex; align-items: center; justify-content: space-between; gap: 16rpx;
   padding: 24rpx 8rpx; border-bottom: 1rpx solid var(--border);

@@ -90,14 +90,17 @@
     <view class="sheet" catchtap="noop">
       <view class="sheet-title">选择模型引擎</view>
       <scroll-view class="sheet-list" scroll-y>
-        <view wx:for="{{models}}" wx:key="id" class="model-item {{item.id === modelId ? 'active' : ''}}"
-          data-id="{{item.id}}" bindtap="pickModel">
-          <view class="model-item-main">
-            <view class="model-item-name">{{item.name}}</view>
-            <view wx:if="{{item.provider}}" class="model-item-sub">{{item.provider}}</view>
+        <block wx:for="{{models}}" wx:key="id">
+          <view wx:if="{{item.sectionTitle}}" class="model-section">{{item.sectionTitle}}</view>
+          <view class="model-item {{item.id === modelId ? 'active' : ''}}"
+            data-id="{{item.id}}" bindtap="pickModel">
+            <view class="model-item-main">
+              <view class="model-item-name">{{item.name}}</view>
+              <view wx:if="{{item.provider}}" class="model-item-sub">{{item.provider}}</view>
+            </view>
+            <text wx:if="{{item.id === modelId}}" class="model-check">✓</text>
           </view>
-          <text wx:if="{{item.id === modelId}}" class="model-check">✓</text>
-        </view>
+        </block>
       </scroll-view>
     </view>
   </view>

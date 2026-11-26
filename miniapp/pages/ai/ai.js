@@ -1,6 +1,9 @@
 // AI 助手（小程序完整版）：与桌面/安卓/Web 同一云账号登录，使用云端免费模型对话，
 // 模型（引擎）可切换。聊天记录只存本机（与主 App 一致，不进云同步）。
+// 双通道：WorkBuddy 云端模型（utils/cloud）+ 成长计划免费额度（utils/cloudbase，andre 环境），
+// 按所选模型路由，任一通道失败都如实报错、不互相回落。
 const { getCloud, friendlyErr } = require('../../utils/cloud')
+const { andrePickerModels, streamAndreChat, andreFriendlyErr } = require('../../utils/cloudbase')
 
 const HISTORY_KEY = 'acm_mp_ai_history_v1'
 const MODEL_KEY = 'acm_mp_ai_model'
@@ -174,20 +177,27 @@ Page({
 
   async loadModels() {
     this.setData({ modelsLoading: true })
+    // 双通道：WorkBuddy 云端模型 + 成长计划免费额度（andre 环境）。
+    // 两组独立构建：WorkBuddy 列表拉取失败只影响它自己那组，andre 组照常可选。
+    let wbModels = []
     try {
       const cloud = getCloud()
       const list = await cloud.llm.models.list()
-      const models = (Array.isArray(list) ? list : [])
+      wbModels = (Array.isArray(list) ? list : [])
         .filter((m) => m && typeof m.id === 'string' && m.disabled !== true)
-        .map((m) => ({ id: m.id, name: m.name || m.id, provider: m.provider || m.vendor || '' }))
-      let modelId = ''
-      try { modelId = wx.getStorageSync(MODEL_KEY) || '' } catch (e) { /* 忽略 */ }
-      if (!models.some((m) => m.id === modelId)) modelId = models.length ? models[0].id : ''
-      const current = models.find((m) => m.id === modelId)
-      this.setData({ models: models, modelId: modelId, modelName: current ? current.name : '' })
+        .map((m) => ({ id: m.id, name: m.name || m.id, provider: m.provider || m.vendor || '', channel: 'wb' }))
     } catch (e) {
       wx.showToast({ title: friendlyErr(e), icon: 'none', duration: 2600 })
-    } finally { this.setData({ modelsLoading: false }) }
+    }
+    const andreModels = andrePickerModels()
+    if (wbModels.length) wbModels[0].sectionTitle = '云端模型（WorkBuddy）'
+    if (andreModels.length) andreModels[0].sectionTitle = '成长计划免费额度（andre 环境）'
+    const models = wbModels.concat(andreModels)
+    let modelId = ''
+    try { modelId = wx.getStorageSync(MODEL_KEY) || '' } catch (e) { /* 忽略 */ }
+    if (!models.some((m) => m.id === modelId)) modelId = models.length ? models[0].id : ''
+    const current = models.find((m) => m.id === modelId)
+    this.setData({ models: models, modelId: modelId, modelName: current ? current.name : '', modelsLoading: false })
   },
 
   openModels() { if (this.data.models.length) this.setData({ showModels: true }) },
@@ -232,26 +242,38 @@ Page({
       patch['messages[' + idx + '].content'] = full
       this.setData(patch)
     }
+    const currentModel = this.data.models.find((m) => m.id === this.data.modelId)
+    const isAndre = !!(currentModel && currentModel.channel === 'andre')
     try {
-      const cloud = getCloud()
       const msgs = [{ role: 'system', content: SYSTEM_PROMPT }]
         .concat(history.slice(-20).map((m) => ({ role: m.role, content: m.content })))
-      const stream = cloud.llm.chat.completions.create({ model: this.data.modelId, messages: msgs, stream: true })
-      const it = stream[Symbol.asyncIterator]()
-      while (true) {
-        const step = await it.next()
-        if (step.done) break
-        const chunk = step.value
-        const delta = chunk && chunk.choices && chunk.choices[0] ? chunk.choices[0].delta : null
-        const piece = delta ? (delta.content || delta.reasoning_content || '') : ''
-        if (piece) { full += piece; flush(false) }
+      if (isAndre) {
+        // 成长计划通道（andre 环境）：失败如实报错，绝不回落到 WorkBuddy 通道
+        await streamAndreChat({
+          group: currentModel.group,
+          model: currentModel.model,
+          messages: msgs,
+          onText: (piece) => { full += piece; flush(false) },
+        })
+      } else {
+        const cloud = getCloud()
+        const stream = cloud.llm.chat.completions.create({ model: this.data.modelId, messages: msgs, stream: true })
+        const it = stream[Symbol.asyncIterator]()
+        while (true) {
+          const step = await it.next()
+          if (step.done) break
+          const chunk = step.value
+          const delta = chunk && chunk.choices && chunk.choices[0] ? chunk.choices[0].delta : null
+          const piece = delta ? (delta.content || delta.reasoning_content || '') : ''
+          if (piece) { full += piece; flush(false) }
+        }
       }
       if (!full) full = '（模型没有返回内容，请重试）'
       flush(true)
       this.persistHistory()
     } catch (e) {
-      const msg = friendlyErr(e)
-      if (/登录已过期/.test(msg)) {
+      const msg = isAndre ? andreFriendlyErr(e) : friendlyErr(e)
+      if (!isAndre && /登录已过期/.test(msg)) {
         this.setData({ user: null })
         wx.showToast({ title: msg, icon: 'none', duration: 2400 })
       }

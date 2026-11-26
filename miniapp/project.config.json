@@ -9,7 +9,7 @@
     "newFeature": true
   },
   "compileType": "miniprogram",
-  "libVersion": "3.5.0",
+  "libVersion": "3.15.1",
   "appid": "touristappid",
   "projectname": "ai-credit-manager",
   "condition": {}
