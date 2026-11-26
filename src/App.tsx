@@ -2631,7 +2631,7 @@ function QuotaFilterDropdown({ value, stats, onChange }: { value: string; stats:
   return (
     <div className="keys-quota-dd" ref={ref}>
       <button type="button" className="btn sm keys-quota-btn" onClick={() => setOpen(o => !o)} title={t('按分组看剩余额度并筛选')} aria-haspopup="listbox" aria-expanded={open}>
-        {t('额度 · {g} ¥{remain}', { g: cur.name, remain: cur.remain })} <ChevronDown size={14} />
+        <span className="keys-quota-btn-text">{t('额度 · {g} ¥{remain}', { g: cur.name, remain: cur.remain })}</span> <ChevronDown size={14} />
       </button>
       {open && (
         <div className="keys-quota-menu" role="listbox">

@@ -667,6 +667,21 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .keys-quota-item:hover { background: var(--panel-2); }
 .keys-quota-item.on { background: var(--primary-soft); color: var(--primary); }
 
+/* ===== v0.1.483 筛选行等宽平分（Ethan 2026-11-27 实机截图：479 的四下拉按内容自适应宽度，
+   前三个撑到 240px 上限，窗口稍窄「全部平台」就被挤到第二行，不在一水平线上）。
+   桌面端改 grid 等分：标签 auto + 四控件各 minmax(0,1fr)，永不换行、同行同高、严格等宽；
+   文案过长在控件内省略号截断、不许撑宽。为什么不用 flex 均分：无头实测 Chrome 下原生
+   <select> 的 flex base size 恒比普通块多约 26px（控件自身结构宽，basis:0 !important 亦然），
+   flex:1 1 0 分配后四控件恒差 26px 做不到等宽；grid 的 1fr 轨道无此问题（实测 256×4 齐平）。
+   ≤680px 手机壳在下方媒体查询切回 flex 的 2×2 排列。 ===== */
+.keys-filter-row { display: grid; grid-template-columns: auto repeat(4, minmax(0, 1fr)); }
+.keys-filter-row .keys-filter-select,
+.keys-filter-row .keys-quota-dd { min-width: 0; }
+.keys-filter-row .keys-filter-select { max-width: none; text-overflow: ellipsis; }
+.keys-filter-row .keys-quota-btn { width: 100%; }
+.keys-quota-btn-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.keys-quota-btn > svg { flex: none; }
+
 /* ===== API Key 管理手机布局（Ethan 录屏 2026-11-20：表格 8 列定宽合计约 960px，
    手机上只能横滚、操作列够不着，观感混乱）。≤680px 时：工具区纵向收紧；
    表格变卡片——每行一张卡，名称+健康状态一行、余额/Key 一行、链接整行、操作整行平铺，
@@ -674,9 +689,9 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
    导入预览弹窗里的 .key-table 不受影响。 ===== */
 @media (max-width: 680px) {
   .keys-toolbar { gap: 8px; margin-bottom: 10px; }
-  .keys-filter-row { gap: 8px; }
-  .keys-filter-select { width: auto; flex: 1 1 140px; }
-  .keys-quota-dd { flex: 1 1 140px; }
+  .keys-filter-row { gap: 8px; display: flex; flex-wrap: wrap; }
+  .keys-filter-row .keys-filter-select { width: auto; flex: 1 1 140px; }
+  .keys-filter-row .keys-quota-dd { flex: 1 1 140px; }
   .keys-quota-btn { width: 100%; justify-content: space-between; }
   .keys-unlock-group { padding-left: 0; border-left: none; flex-wrap: wrap; }
   .key-table-wrap { overflow-x: visible; }
