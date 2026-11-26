@@ -66,6 +66,9 @@ export const ENGINE_CATALOG: Record<string, Engine[]> = {
   // AnyAPI.ai（v0.1.435）：不在此预置目录——官网没有可核实的免费模型 id 清单，
   // 模型全量以 GET /v1/models 按用户 Key 动态拉取为准，冒烟通过的模型记在验证记录里
   // 作默认对话模型（见 core/anyapi.ts 的 pickAnyApiSmokeModel / getAnyApiSmokeModel）。
+  // 移动云 MoMA（v0.1.456）：同样不在此预置目录——模型全量以 GET /v1/models 按用户 Key
+  // 动态拉取为准，冒烟通过的模型（优先九天自营）记在验证记录里作默认对话模型
+  // （见 core/moma.ts 的 pickMomaSmokeModel / getMomaSmokeModel）。
   // DeepSeek（api-docs.deepseek.com：deepseek-chat/reasoner 已于 2026-07-24 下线）
   deepseek: [
     { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', multiplier: 0.15, tag: '高性价比', flagship: true },

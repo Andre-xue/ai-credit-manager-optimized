@@ -14,6 +14,7 @@ import { loadFreeAiOptions, filterChatCapableFreeOptions, freeAiChat, type FreeA
 import { inferbaseGate } from './inferbase'
 import { oneAiGate } from './oneai'
 import { anyApiGate, getAnyApiSmokeModel } from './anyapi'
+import { momaGate, getMomaSmokeModel } from './moma'
 import { runFreeChain, loadChainMode, orderChainCandidates, ChainAllFailedError, type ChainCandidate } from './freeChain'
 
 export type WorkshopRoute =
@@ -41,6 +42,11 @@ export function resolveWorkshopModel(acct: Account, route?: WorkshopRoute): stri
   // AnyAPI 无预置引擎目录：冒烟通过时用通的模型（来自 /v1/models 真实返回）就是默认模型
   if (acct.providerId === 'anyapi') {
     const smoke = getAnyApiSmokeModel(acct.id)
+    if (smoke) return smoke
+  }
+  // MoMA 同样无预置引擎目录：冒烟通过时用通的模型（优先九天自营）就是默认模型
+  if (acct.providerId === 'moma') {
+    const smoke = getMomaSmokeModel(acct.id)
     if (smoke) return smoke
   }
   const label = (acct.label ?? '').trim()
@@ -75,12 +81,13 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
   const routes: WorkshopRoute[] = [
     ...freeOptions.map(o => ({ kind: 'free' as const, key: `free:${o.key}`, label: `免费 · ${o.label}` })),
     ...workshopAccounts(accounts).map(a => {
-      // Inferbase / One AI / AnyAPI 启用门槛（v0.1.432 / v0.1.434 / v0.1.435）：冒烟未通过的路线照常列出但标明
+      // Inferbase / One AI / AnyAPI / MoMA 启用门槛（v0.1.432 / v0.1.434 / v0.1.435 / v0.1.456）：冒烟未通过的路线照常列出但标明
       // 待实测、不可调用，选中发送时给出真实原因与手动切换入口，不静默兜底到别的路线
       const gate = a.providerId === 'inferbase' ? inferbaseGate(a)
         : a.providerId === 'oneai' ? oneAiGate(a)
-        : a.providerId === 'anyapi' ? anyApiGate(a) : null
-      const gateName = a.providerId === 'inferbase' ? 'Inferbase' : a.providerId === 'anyapi' ? 'AnyAPI' : 'One AI'
+        : a.providerId === 'anyapi' ? anyApiGate(a)
+        : a.providerId === 'moma' ? momaGate(a) : null
+      const gateName = a.providerId === 'inferbase' ? 'Inferbase' : a.providerId === 'anyapi' ? 'AnyAPI' : a.providerId === 'moma' ? 'MoMA' : 'One AI'
       return {
         kind: 'account' as const, key: `acct:${a.id}`,
         label: gate && !gate.enabled ? `${a.label}（${gateName} 待实测，未启用）` : a.label,
@@ -126,7 +133,7 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   }
   const acct = accounts.find(a => a.id === route.accountId)
   if (!acct) throw new Error('所选账户不存在')
-  // Inferbase / One AI / AnyAPI 门槛实时复查（路线列表生成后又完成冒烟的，以最新状态为准）
+  // Inferbase / One AI / AnyAPI / MoMA 门槛实时复查（路线列表生成后又完成冒烟的，以最新状态为准）
   if (acct.providerId === 'inferbase') {
     const gate = inferbaseGate(acct)
     if (!gate.enabled) throw new Error(gate.message)
@@ -135,6 +142,9 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
     if (!gate.enabled) throw new Error(gate.message)
   } else if (acct.providerId === 'anyapi') {
     const gate = anyApiGate(acct)
+    if (!gate.enabled) throw new Error(gate.message)
+  } else if (acct.providerId === 'moma') {
+    const gate = momaGate(acct)
     if (!gate.enabled) throw new Error(gate.message)
   } else if (route.disabledReason) {
     throw new Error(route.disabledReason)
@@ -184,6 +194,8 @@ export async function buildWorkshopChainRoutes(params: WorkshopChatParams): Prom
     if (a.providerId === 'anyapi' && anyApiGate(a).enabled) {
       push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
     }
+    // 移动云 MoMA（v0.1.456）有意不进候选：它是按量付费平台，433 口径是自动切换只在
+    // 免费路线之间发生；2500 万免费试用也不改变这条口径。MoMA 只能被用户手动选作首选。
   }
   try {
     const { hasPoolAccounts } = await import('./wbPool')

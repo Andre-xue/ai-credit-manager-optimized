@@ -201,6 +201,14 @@ export const PROVIDERS: ProviderDefinition[] = [
     apiKeyUrl: 'https://anyapi.ai/',
     note: '多模型聚合网关：OpenAI 兼容。免费档每天 100,000 AnyTokens、免绑卡，仅免费（基础）模型可用；API 调用受限，官网未公布具体限额。模型以 GET /v1/models 按你的 Key 动态拉取为准（官网无可核实的免费模型清单，不预置）。无公开余额接口，余额与用量请在官网控制台查看后手动录入；App 内只有本机调用估算。新 Key 需先在 Key 管理页点健康检查做真实冒烟（查 /v1/models + 发一条测试消息），实测通过后才启用对话路线并进入自动切换链。',
   },
+  {
+    id: 'moma', name: '移动云 MoMA', shortName: 'MoMA', category: 'llm',
+    officialUrl: 'https://ecloud.10086.cn/', usageUrl: 'https://ecloud.10086.cn/api/page/maas/moma/apiKeyManage',
+    color: '#0b7ac0', initials: 'MM', modes: ['api', 'manual'],
+    apiBaseUrl: 'https://zhenze-huhehaote.cmecloud.cn/v1',
+    apiKeyUrl: 'https://ecloud.10086.cn/api/page/maas/moma/apiKeyManage',
+    note: '中国移动大模型聚合平台（模型广场按量网关）：OpenAI 兼容，一个 Key 通吃 300+ 模型，模型以 GET /v1/models 按你的 Key 动态拉取为准（不预置）。默认按量付费；另有独立的 2500 万免费试用（控制台模型广场领取，30 天有效，仅部分自营模型）。无公开余额接口，余额与用量请在 MoMA 控制台查看后手动录入；App 内只有本机调用估算。新 Key 需先在 Key 管理页点健康检查做真实冒烟（查 /v1/models + 优先挑九天自营模型发一条测试消息），通过后才启用对话路线；MoMA 是付费平台，不进入免费路线自动切换链。',
+  },
 
   // ==================== 编程助手 ====================
   {

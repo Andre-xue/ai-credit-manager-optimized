@@ -13,6 +13,7 @@ import {
 import { fetchInferbaseModels, inferbaseErrorText } from './inferbase'
 import { recordOneAiLocalUsage, recordOneAiRouteFailure, recordOneAiRouteSuccess } from './oneai'
 import { recordAnyApiLocalUsage, recordAnyApiRouteFailure, recordAnyApiRouteSuccess } from './anyapi'
+import { recordMomaLocalUsage, recordMomaRouteFailure, recordMomaRouteSuccess } from './moma'
 
 export interface ProviderCallResult {
   ok: boolean
@@ -213,6 +214,24 @@ function noteAnyApiCall(account: Account, result: ProviderCallResult, usageToken
   return result
 }
 
+/**
+ * 移动云 MoMA 记账（v0.1.456）：只对 moma 账户——成功记本机估算用量并清路线状态，
+ * 失败记限流冷却/密钥失效（供 momaGate 消费；MoMA 不进切换链，记账只服务门槛与估算）。
+ * 记账失败不影响调用结果本身。
+ */
+function noteMomaCall(account: Account, result: ProviderCallResult, usageTokens = 0): ProviderCallResult {
+  if (account.providerId !== 'moma') return result
+  try {
+    if (result.ok) {
+      recordMomaLocalUsage(account.id, usageTokens)
+      recordMomaRouteSuccess(account.id)
+    } else if (result.error) {
+      recordMomaRouteFailure(account.id, new Error(result.error))
+    }
+  } catch { /* 记账失败不影响调用结果 */ }
+  return result
+}
+
 function usageTokensOf(json: any): number {
   const u = json?.usage
   if (typeof u?.total_tokens === 'number') return u.total_tokens
@@ -295,10 +314,10 @@ export async function callChat(
     }
     const json = JSON.parse(raw)
     const text = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? ''
-    if (!text) return noteAnyApiCall(account, noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json)), usageTokensOf(json))
-    return noteAnyApiCall(account, noteOneAiCall(account, { ok: true, text }, usageTokensOf(json)), usageTokensOf(json))
+    if (!text) return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
+    return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: true, text }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
   } catch (e) {
-    return noteAnyApiCall(account, noteOneAiCall(account, toError(e)))
+    return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, toError(e))))
   }
 }
 

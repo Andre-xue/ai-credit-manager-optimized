@@ -18,6 +18,10 @@ import {
   anyApiStateFromError, anyApiErrorText, recordAnyApiVerification, anyApiEstimateText,
   pickAnyApiSmokeModel, ANYAPI_BASE, ANYAPI_STATE_LABEL, type AnyApiRouteState,
 } from './anyapi'
+import {
+  momaStateFromError, momaErrorText, recordMomaVerification, momaEstimateText,
+  pickMomaSmokeModel, MOMA_BASE, MOMA_STATE_LABEL, type MomaRouteState,
+} from './moma'
 
 export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped' | 'rate' | 'pending' | 'model'
 
@@ -236,6 +240,70 @@ async function checkAnyApiHealth(account: Account, apiKey: string | undefined, s
   return done({ status: 'ok', modelCount: models.length, message })
 }
 
+/** MoMA 状态 → 健康徽标状态（与 Inferbase / One AI / AnyAPI 同口径） */
+function momaHealthStatus(state: MomaRouteState): KeyHealthStatus {
+  switch (state) {
+    case 'available': return 'ok'
+    case 'auth_invalid': return 'auth'
+    case 'quota_exceeded': return 'quota'
+    case 'rate_limited': return 'rate'
+    case 'network_error': return 'network'
+    case 'model_unavailable': return 'model'
+    case 'pending_verification': return 'pending'
+    default: return 'error'
+  }
+}
+
+/**
+ * 移动云 MoMA 专用健康检查 = 真实冒烟（v0.1.456 启用门槛，与 AnyAPI 同口径）：
+ * 用 Ethan 自己的 Key 查 /v1/models → 从真实返回列表里挑一个模型发一条测试消息。
+ * 注意 /v1/models 公开可达（无 Key 也返回 200），证明不了 Key 有效——Key 有效性以
+ * 聊天冒烟为准（无 Key 聊天实测 401 code 1001）。挑模型优先九天自营对话模型：
+ * 2500 万免费试用仅覆盖部分自营模型，冒烟用自营便于他核对扣的是试用额度还是按量。
+ * 全过才记录「已验证」（含用通的模型）并启用路线；任一步失败记录真实状态与原因，
+ * 路线保持未启用。无公开余额接口，不查余额；冒烟消耗 1 次真实调用（可能计费/扣试用额度）。
+ * MoMA 是付费平台：冒烟通过也只启用手动直选，不进 433 自动切换链。
+ */
+async function checkMomaHealth(account: Account, apiKey: string | undefined, started: number): Promise<KeyHealthResult> {
+  const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
+    ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
+  })
+  if (!apiKey) {
+    return done({
+      status: 'pending', latencyMs: 0,
+      message: '待实测：保险箱未解锁，无法用你的 Key 做模型列表与聊天冒烟；解锁后重新点健康检查，通过后才启用（MoMA 无公开余额接口，本检查不查余额）',
+    })
+  }
+  const eff: Account = { ...account, apiUrl: account.apiUrl?.trim() || MOMA_BASE }
+  let models: string[]
+  try {
+    models = await fetchProviderModels(eff, apiKey)
+  } catch (e) {
+    const state = momaStateFromError(e)
+    const text = momaErrorText(e)
+    recordMomaVerification(account, 'failed', state, `模型列表拉取失败：${text}`)
+    return done({ status: momaHealthStatus(state), message: `冒烟未通过（${MOMA_STATE_LABEL[state]}）：模型列表拉取失败：${text}` })
+  }
+  const smokeModel = pickMomaSmokeModel(models)
+  if (!smokeModel) {
+    recordMomaVerification(account, 'failed', 'model_unavailable', '模型列表里没有可用于冒烟的对话模型')
+    return done({ status: 'model', modelCount: models.length, message: `冒烟未通过（${MOMA_STATE_LABEL.model_unavailable}）：模型列表里没有可用于冒烟的对话模型` })
+  }
+  try {
+    const res = await callChat(eff, apiKey, [{ role: 'user', content: 'Reply with OK' }], smokeModel)
+    if (!res.ok || res.error) throw new Error(res.error || '聊天接口无有效回复')
+    if (!res.text?.trim()) throw new Error('聊天接口返回空回复')
+  } catch (e) {
+    const state = momaStateFromError(e)
+    const text = momaErrorText(e)
+    recordMomaVerification(account, 'failed', state, `聊天冒烟失败：${text}`)
+    return done({ status: momaHealthStatus(state), modelCount: models.length, message: `冒烟未通过（${MOMA_STATE_LABEL[state]}）：聊天测试失败：${text}` })
+  }
+  const message = `冒烟通过，已启用：${models.length} 个模型 · ${smokeModel} 聊天可用 · ${momaEstimateText(account.id)}（冒烟优先用九天自营模型：请到 MoMA 控制台核对这次调用扣的是 2500 万免费试用额度还是按量余额；MoMA 为付费平台，不进入自动切换链）`
+  recordMomaVerification(account, 'verified', 'available', message, smokeModel)
+  return done({ status: 'ok', modelCount: models.length, message })
+}
+
 export async function checkKeyHealth(account: Account, apiKey?: string): Promise<KeyHealthResult> {
   const started = Date.now()
   const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
@@ -245,6 +313,7 @@ export async function checkKeyHealth(account: Account, apiKey?: string): Promise
     if (account.providerId === 'inferbase') return await checkInferbaseHealth(account, apiKey, started)
     if (account.providerId === 'oneai') return await checkOneAiHealth(account, apiKey, started)
     if (account.providerId === 'anyapi') return await checkAnyApiHealth(account, apiKey, started)
+    if (account.providerId === 'moma') return await checkMomaHealth(account, apiKey, started)
     if (isLocalProvider(account.providerId)) {
       const base = (account.apiUrl || '').trim()
       if (!base) return done({ status: 'skipped', latencyMs: 0, message: '未填写本地服务地址' })
