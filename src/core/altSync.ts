@@ -21,6 +21,9 @@ export interface WebdavConfig {
   passcode: string
   /** 远程文件路径（相对服务器根），如 AI魔方/sync.json */
   path: string
+  /** 允许 http 地址（自建服务器，v0.1.444）：默认关；开后远程 http 不再被桌面端 SSRF 校验拦截。
+   *  与整个 WebDAV 配置一样只存本机 localStorage（键 acm.webdav.config.v1），永不进同步/备份载荷 */
+  allowHttp: boolean
 }
 
 const WEBDAV_KEY = 'acm.webdav.config.v1'
@@ -30,6 +33,7 @@ export const DEFAULT_WEBDAV: WebdavConfig = {
   username: '',
   passcode: '',
   path: 'AI魔方/sync.json',
+  allowHttp: false,
 }
 
 export function loadWebdavConfig(): WebdavConfig {
@@ -41,6 +45,23 @@ export function loadWebdavConfig(): WebdavConfig {
 }
 export function saveWebdavConfig(cfg: WebdavConfig): void {
   try { localStorage.setItem(WEBDAV_KEY, JSON.stringify(cfg)) } catch { /* 忽略 */ }
+}
+
+/**
+ * WebDAV 地址是否会被「http 仅限本机」规则拦截（v0.1.444）：与桌面端 Rust
+ * validate_proxy_url 的判定口径一致——http 且主机非本机（localhost / 回环 IP / 0.0.0.0）
+ * 时拦截；allowHttp 开后不拦截。供设置页即时提示与单测使用；真正的放行/拦截在
+ * 桌面端 Rust 侧执行（davRequest 把 cfg.allowHttp 随 plugin_http 调用传入）。
+ */
+export function webdavHttpBlocked(url: string, allowHttp: boolean): boolean {
+  if (allowHttp) return false
+  let u: URL
+  try { u = new URL(url.trim()) } catch { return false }
+  if (u.protocol !== 'http:') return false
+  const host = u.hostname.toLowerCase()
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::1') return false
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return false
+  return true
 }
 
 export interface IcloudSyncConfig { enabled: boolean }
@@ -134,6 +155,8 @@ async function davRequest(cfg: WebdavConfig, method: string, url: string, body?:
   if (w.__TAURI_INTERNALS__?.invoke) {
     const raw = await w.__TAURI_INTERNALS__.invoke('plugin_http', {
       url, method, headersJson: JSON.stringify(headers), body: body ?? null,
+      // 「允许 http（自建服务器）」开关随每次调用传入 Rust 侧校验（测试连接/立即同步/自动同步共用本函数，一处收口）
+      allowRemoteHttp: cfg.allowHttp === true,
     })
     const parsed = JSON.parse(raw) as { status: number; body: string }
     return { status: parsed.status, body: parsed.body }

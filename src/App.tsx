@@ -84,7 +84,7 @@ import { UpdateModal } from './components/UpdateModal'
 import { APP_VERSION, currentPlatform } from './core/updater'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
-import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, type ChannelIO } from './core/altSync'
+import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, webdavHttpBlocked, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { autoCheckinTick, resolveAutoCheckinPassword } from './core/checkinRun'
 import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult } from './core/freeGames'
@@ -5861,9 +5861,16 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             <SettingsRow title="启用 WebDAV 同步" desc="开启后自动同步（启动时、每 45 秒、切回前台时），规则与云同步一致：静默覆盖、新盖旧">
               <Toggle checked={wcfg.enabled} onChange={v => patchW({ ...wcfg, enabled: v })} />
             </SettingsRow>
-            <SettingsRow title="服务器地址" desc="坚果云默认已填好；其他支持 WebDAV 的网盘改这里（需 https）">
+            <SettingsRow title="服务器地址" desc="坚果云默认已填好；其他支持 WebDAV 的网盘改这里；自建服务器用 http 地址时打开下方开关">
               <input className="input" style={{ width: 250 }} value={wcfg.url} onChange={e => patchW({ ...wcfg, url: e.target.value })} placeholder="https://dav.jianguoyun.com/dav/" />
             </SettingsRow>
+            {webdavHttpBlocked(wcfg.url, wcfg.allowHttp) && (
+              <p className="set-note" style={{ color: 'var(--danger, #c0392b)' }}>当前填的是远程 http 地址：未打开下方「允许 http 地址」开关时会被拦截（http 仅允许本机地址）。</p>
+            )}
+            <SettingsRow title="允许 http 地址（自建服务器）" desc="你的 WebDAV 服务器只有 http 地址（如自建小站）时打开；坚果云等正规网盘不用开。此开关只保存在本机">
+              <Toggle checked={wcfg.allowHttp} onChange={v => patchW({ ...wcfg, allowHttp: v })} />
+            </SettingsRow>
+            <p className="set-note">http 是明文传输，账号密码与数据在网络上不加密。同步内容本身是加密密文，但仍建议只在可信网络下、连接你自己的服务器时开启。</p>
             <SettingsRow title="账号" desc="坚果云填你的登录邮箱">
               <input className="input" style={{ width: 250 }} value={wcfg.username} onChange={e => patchW({ ...wcfg, username: e.target.value })} placeholder="邮箱" />
             </SettingsRow>

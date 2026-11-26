@@ -80,8 +80,15 @@ async fn call_cloud_llm(endpoint: String, publishable_key: String, body_json: St
 /// 校验代理目标 URL，防止 SSRF 与 API Key 外泄。
 /// - https：允许公网域名；字面量的内网/回环/链路本地/云元数据地址拒绝，
 ///   域名解析结果由 validate_resolved_public 在请求前另行校验（防解析到内网的域名）
-/// - http：仅允许本机（localhost / 127.0.0.0/8 / ::1），供本地 Ollama 等模型使用
+/// - http：仅允许本机（localhost / 127.0.0.0/8 / ::1），供本地 Ollama 等模型使用；
+///   allow_remote_http=true 时放行远程 http——仅供 WebDAV 同步在用户显式打开
+///   「允许 http 地址（自建服务器）」开关后经 plugin_http 传入（v0.1.444），
+///   其余一切调用方（含插件）不传该参数、行为不变。
 fn validate_proxy_url(raw: &str) -> Result<reqwest::Url, String> {
+    validate_proxy_url_opts(raw, false)
+}
+
+fn validate_proxy_url_opts(raw: &str, allow_remote_http: bool) -> Result<reqwest::Url, String> {
     let u = reqwest::Url::parse(raw).map_err(|_| "URL 格式不合法".to_string())?;
     let scheme = u.scheme();
     if scheme != "https" && scheme != "http" {
@@ -93,7 +100,7 @@ fn validate_proxy_url(raw: &str) -> Result<reqwest::Url, String> {
         || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
         || host == "0.0.0.0";
     if scheme == "http" {
-        if !is_local {
+        if !is_local && !allow_remote_http {
             return Err("http 仅允许本机地址（localhost / 127.0.0.1 / ::1）".into())
         }
         return Ok(u)
@@ -316,9 +323,15 @@ mod req {
 /// 按插件清单校验。与 call_provider_api 不同：不强制 Bearer 头、不要求成功状态码，
 /// 状态码与响应体原样回传给插件自行判断。
 #[tauri::command]
-async fn plugin_http(url: String, method: String, headers_json: Option<String>, body: Option<String>) -> Result<String, String> {
-    let parsed = validate_proxy_url(&url)?;
-    validate_resolved_public(&parsed).await?;
+async fn plugin_http(url: String, method: String, headers_json: Option<String>, body: Option<String>, allow_remote_http: Option<bool>) -> Result<String, String> {
+    // allow_remote_http 仅 WebDAV 同步在用户显式开启「允许 http（自建服务器）」时传 true：
+    // 放行远程 http 且跳过其 DNS 解析校验（自建服务器可能就在局域网内，用户自担明文风险）；
+    // 不传/传 false 时与原行为完全一致，https 的解析校验不受影响。
+    let allow_http = allow_remote_http.unwrap_or(false);
+    let parsed = validate_proxy_url_opts(&url, allow_http)?;
+    if !(allow_http && parsed.scheme() == "http") {
+        validate_resolved_public(&parsed).await?;
+    }
     let url = parsed.to_string();
     let m = method.to_uppercase();
     let parsed_method = reqwest::Method::from_bytes(m.as_bytes())

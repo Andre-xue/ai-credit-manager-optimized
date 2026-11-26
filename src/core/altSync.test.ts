@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contentStamp, davFileUrl, loadWebdavConfig, parsePayload, DEFAULT_WEBDAV, type WebdavConfig } from './altSync'
+import { contentStamp, davFileUrl, loadWebdavConfig, saveWebdavConfig, parsePayload, webdavHttpBlocked, DEFAULT_WEBDAV, type WebdavConfig } from './altSync'
 import { prepareSyncPayload } from './sync'
 import type { AppState } from './types'
 
@@ -40,10 +40,39 @@ describe('altSync 配置与载荷', () => {
     expect(cfg.url).toBe('https://dav.jianguoyun.com/dav/')
     expect(cfg.enabled).toBe(false)
   })
+  it('allowHttp 默认关，保存后能读回（仅本机配置键）', () => {
+    localStorage.removeItem('acm.webdav.config.v1')
+    expect(loadWebdavConfig().allowHttp).toBe(false)
+    saveWebdavConfig({ ...DEFAULT_WEBDAV, allowHttp: true })
+    expect(loadWebdavConfig().allowHttp).toBe(true)
+    saveWebdavConfig({ ...DEFAULT_WEBDAV })
+  })
   it('parsePayload 拒绝非同步数据', () => {
     expect(parsePayload('not json')).toBeNull()
     expect(parsePayload('{"a":1}')).toBeNull()
     expect(parsePayload('{"clientAt":"2026-01-01T00:00:00.000Z","appState":{}}')).not.toBeNull()
+  })
+})
+
+describe('altSync.webdavHttpBlocked（v0.1.444 允许 http 开关口径）', () => {
+  it('开关关：远程 http 被拦，本机 http 与 https 放行', () => {
+    expect(webdavHttpBlocked('http://dav.example.com:8080/dav/', false)).toBe(true)
+    expect(webdavHttpBlocked('http://192.168.1.10:5005/dav/', false)).toBe(true)
+    expect(webdavHttpBlocked('http://localhost:8080/dav/', false)).toBe(false)
+    expect(webdavHttpBlocked('http://127.0.0.1:8080/dav/', false)).toBe(false)
+    expect(webdavHttpBlocked('https://dav.jianguoyun.com/dav/', false)).toBe(false)
+  })
+  it('开关开：远程 http 不再被拦', () => {
+    expect(webdavHttpBlocked('http://dav.example.com:8080/dav/', true)).toBe(false)
+    expect(webdavHttpBlocked('http://192.168.1.10:5005/dav/', true)).toBe(false)
+  })
+  it('非法地址不误报拦截', () => {
+    expect(webdavHttpBlocked('not a url', false)).toBe(false)
+    expect(webdavHttpBlocked('', false)).toBe(false)
+  })
+  it('同步载荷不含 allowHttp 偏好（仅本机，不进同步/备份）', () => {
+    const payload = prepareSyncPayload(baseState, null)
+    expect(JSON.stringify(payload)).not.toContain('allowHttp')
   })
 })
 
