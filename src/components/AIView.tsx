@@ -472,6 +472,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [chainMode, setChainModeState] = useState<ChainMode>(() => loadChainMode())
   const [apisFreeState, setApisFreeState] = useState<ApisFreeState>(() => loadApisFreeState())
   const [apisFreeTesting, setApisFreeTesting] = useState(false)
+  // v0.1.448：模型菜单里 APIsFreeLLM 块的长规格默认收起，点「详情」才展开
+  const [apisFreeDetailOpen, setApisFreeDetailOpen] = useState(false)
   useEffect(() => {
     const refresh = () => { setApisFreeState(loadApisFreeState()); setChainModeState(loadChainMode()) }
     window.addEventListener(APISFREE_CHANGED_EVENT, refresh)
@@ -1403,22 +1405,16 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       {currentModel} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
-      <div className="ai-model-option" style={{ cursor: 'default' }}>
-        <span>🔀 免费路线切换</span>
-        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn sm" disabled={chainMode === 'auto'} onClick={() => changeChainMode('auto')}>自动切换</button>
-          <button className="btn sm" disabled={chainMode === 'locked'} onClick={() => changeChainMode('locked')}>手动锁定</button>
-          {chainMode === 'auto' ? '首选失败自动切下一条免费路线并说明原因' : '只用所选路线，失败只报真实原因'}
-        </small>
-      </div>
-      {category === '免费模型' && <div className="ai-model-option" style={{ cursor: 'default' }}>
+      {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
+      {category === '免费模型' && <div className="ai-model-block">
         <span>🛟 APIsFreeLLM 兜底通道（免 Key）</span>
-        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <small style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
           <button className="btn sm" onClick={() => void toggleApisFree(!apisFreeState.enabled)}>{apisFreeState.enabled ? '关闭' : '开启'}</button>
           <button className="btn sm" disabled={apisFreeTesting} onClick={() => void runApisFreeTest()}>{apisFreeTesting ? '测活中…' : '测活'}</button>
-          {!apisFreeState.enabled ? '未开启' : apisFreeState.verifiedAt > 0 ? `已测通 · ${apisFreeRateText(apisFreeState.rate)}` : `未测通${apisFreeState.lastError ? `：${apisFreeState.lastError}` : '（点测活在你当前网络下验证）'}`}
+          <button className="btn sm ghost" onClick={() => setApisFreeDetailOpen(v => !v)}>{apisFreeDetailOpen ? '收起' : '详情'}</button>
+          <span>{!apisFreeState.enabled ? '未开启' : apisFreeState.verifiedAt > 0 ? `已测通 · ${apisFreeRateText(apisFreeState.rate)}` : `未测通${apisFreeState.lastError ? `：${apisFreeState.lastError}` : '（点测活在你当前网络下验证）'}`}</span>
         </small>
-        <small>{APISFREE_LIMITS_TEXT}</small>
+        {apisFreeDetailOpen && <div className="ai-model-block-detail">{APISFREE_LIMITS_TEXT}</div>}
       </div>}
       {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('自动标出哪些还能用，并选到第一个可用的')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}

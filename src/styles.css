@@ -569,9 +569,20 @@ tbody tr:hover { background: var(--panel-2); }
 .ai-model-btn:hover { border-color: var(--primary); color: var(--primary); }
 .ai-model-menu {
   position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 180px; max-height: 320px; overflow: auto;
+  min-width: 250px; max-width: min(360px, 92vw); max-height: 320px; overflow: auto;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow); padding: 5px;
+}
+/* v0.1.448：菜单内的信息块（如 APIsFreeLLM 通道）走普通块级流式布局，不再套 .ai-model-option 的 flex 两栏，避免长文案被挤成窄列 */
+.ai-model-block {
+  display: block; width: 100%; box-sizing: border-box; text-align: left;
+  padding: 8px 10px; border-radius: 6px; cursor: default;
+  color: var(--text-2); font-size: 12.5px;
+}
+.ai-model-block:hover { background: var(--panel-2); }
+.ai-model-block-detail {
+  margin-top: 6px; font-size: 11px; line-height: 1.55; color: var(--text-3);
+  overflow-wrap: break-word;
 }
 .ai-model-option {
   display: block; width: 100%; text-align: left; padding: 8px 10px;
