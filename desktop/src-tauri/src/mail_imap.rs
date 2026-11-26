@@ -409,18 +409,32 @@ async fn login_conn_x(
         let tag = conn.next_tag();
         conn.write_line(&format!("{tag} AUTHENTICATE XOAUTH2 {b64}"))
             .await?;
-        // 失败时服务器先回一行 "+ <详情>" 质询：回空行后再等完成行；成功则直接是完成行
-        let mut line = conn
-            .read_line_step("等待 OAuth 登录响应", IDLE_STEP_TIMEOUT_SECS)
-            .await?;
-        if line.starts_with('+') {
-            conn.write_line("").await?;
-            line = conn
+        // v0.1.460：按 IMAP 响应语法读到带 tag 的完成行为止，不能只读一行。
+        // Gmail 在 AUTHENTICATE 成功后、tagged OK 之前会先发一行无标签的
+        // * CAPABILITY ...——旧实现只读一行就要求是 tagged OK，把这行
+        // 误判为失败并把整行原文当错误抛出（Ethan 实机：Gmail OAuth 账户
+        // 「已保存但连接失败」，错误原文就是 CAPABILITY 行）。
+        // 失败时服务器先回一行 "+ <详情>" 质询：回空行后服务器才发 tagged NO。
+        loop {
+            let line = conn
                 .read_line_step("等待 OAuth 登录响应", IDLE_STEP_TIMEOUT_SECS)
                 .await?;
-        }
-        if !line.starts_with(&format!("{tag} OK")) {
-            return Err(line);
+            if line.starts_with('+') {
+                conn.write_line("").await?;
+                continue;
+            }
+            if line.starts_with(&format!("{tag} ")) {
+                if line.starts_with(&format!("{tag} OK")) {
+                    break;
+                }
+                // tagged NO/BAD：服务器拒绝原文即错误（真实原因，不加工）
+                return Err(line);
+            }
+            if line.starts_with("* BYE") {
+                return Err(line);
+            }
+            // 其余无标签行（* CAPABILITY / * OK 等）是响应的一部分，
+            // 消费掉并继续等带 tag 的完成行
         }
     } else {
         conn.command_t(
