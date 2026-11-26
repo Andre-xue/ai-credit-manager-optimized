@@ -253,4 +253,7 @@ export const PART_MISC: Record<string, Partial<Record<Lang, string>>> = {
   '正在确认最新版本…': { 'zh-TW': '正在確認最新版本…', en: 'Confirming the latest version…', ja: '最新バージョンを確認中…', ko: '최신 버전 확인 중…' },
   '网络抖动，正在重试…': { 'zh-TW': '網絡抖動，正在重試…', en: 'Network hiccup — retrying…', ja: 'ネットワークが不安定です。再試行中…', ko: '네트워크가 불안정하여 다시 시도 중…' },
   '重新检查': { 'zh-TW': '重新檢查', en: 'Check again', ja: '再確認', ko: '다시 확인' },
+  '同步与备份': { 'zh-TW': '同步與備份', en: 'Sync & backup', ja: '同期とバックアップ', ko: '동기화 및 백업' },
+  '保险箱': { 'zh-TW': '保險箱', en: 'Vault', ja: '保管庫', ko: '금고' },
+  '审计日志': { 'zh-TW': '稽核日誌', en: 'Audit log', ja: '監査ログ', ko: '감사 로그' },
 }

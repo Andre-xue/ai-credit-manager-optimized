@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
+import { visibleSettingsSubTabs, readSavedSettingsSubTabs, saveSettingsSubTab, resolveSettingsSubTab, type SettingsCategory } from './core/settingsTabs'
 import { loadPatrolHours, savePatrolHours, patrolDue, refreshAllBalances, PATROL_AT_KEY, PATROL_HOUR_OPTIONS } from './core/balancePatrol'
 import { loadToolCallingEnabled, saveToolCallingEnabled } from './core/toolChat'
 import { loadViewerPrefs, saveViewerPrefs, listMediaApps, type ViewerPrefs, type MediaAppInfo } from './core/viewerPrefs'
@@ -5402,6 +5403,25 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   // 手机客户端没有本机服务概念：「本地模型服务」整段不渲染（判定与 App 壳 isPhone 一致）
   const phoneShell = isNativeApp() || (typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone')))
 
+  // ---- 右侧横向页签（v0.1.478）：每个大类内部按现有分段归组，点哪个页签只显示哪一组；
+  // 选择仅本机记忆（acm.settings.subTabs.v1），不进云同步/备份 ----
+  const [savedSubTabs, setSavedSubTabs] = useState(readSavedSettingsSubTabs)
+  const subCtx = { hasLocal: !phoneShell || desktopShell }
+  const genSub = resolveSettingsSubTab('general', savedSubTabs.general, subCtx)
+  const dataSub = resolveSettingsSubTab('data', savedSubTabs.data, subCtx)
+  const secSub = resolveSettingsSubTab('security', savedSubTabs.security, subCtx)
+  const pickSubTab = (cat: SettingsCategory, id: string) => {
+    setSavedSubTabs(prev => ({ ...prev, [cat]: id }))
+    saveSettingsSubTab(cat, id)
+  }
+  const subTabChips = (cat: SettingsCategory, current: string) => (
+    <div className="ws-chips" style={{ marginBottom: 10 }}>
+      {visibleSettingsSubTabs(cat, subCtx).map(d => (
+        <button key={d.id} className={`chip-btn ${current === d.id ? 'on' : ''}`} onClick={() => pickSubTab(cat, d.id)}>{t(d.label)}</button>
+      ))}
+    </div>
+  )
+
   // 各服务实时运行状态（null=未检测/非桌面端，字符串=运行中的地址，''=未运行）
   const [serviceStatus, setServiceStatus] = useState<Partial<Record<LocalServiceKey, string | null>>>({})
   const [managedKeys, setManagedKeys] = useState<Partial<Record<LocalServiceKey, boolean>>>({})
@@ -5590,7 +5610,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
 
       <div className="set-content" key={setTab}>
         {setTab === 'general' && <>
-          <SettingsSection title="外观设计" desc="界面风格与动态效果" icon={Palette} tone="indigo">
+          {subTabChips('general', genSub)}
+          {genSub === 'appearance' && (<SettingsSection title="外观设计" desc="界面风格与动态效果" icon={Palette} tone="indigo">
             <SettingsRow title="语言" desc="界面显示语言，切换立即生效并同步到其他设备">
               <select className="select" value={(s.language as Lang | undefined) ?? 'zh-CN'} onChange={e => onChange({ language: e.target.value as Lang })}>
                 <option value="zh-CN">简体中文</option>
@@ -5620,9 +5641,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             {isPhone && <SettingsRow title="底部菜单栏" desc="开启后底部固定显示菜单栏；关闭则用左上角按钮打开侧边栏切换页面，聊天等页面全屏无遮挡">
               <Toggle checked={!!s.showBottomNav} onChange={v => onChange({ showBottomNav: v })} />
             </SettingsRow>}
-          </SettingsSection>
+          </SettingsSection>)}
 
-          <SettingsSection title="AI 行为" desc="对话推理与思考偏好，全局生效" icon={Sparkles} tone="indigo">
+          {genSub === 'ai' && (<><SettingsSection title="AI 行为" desc="对话推理与思考偏好，全局生效" icon={Sparkles} tone="indigo">
             <SettingsRow title="AI 思考模式" desc="开启后 AI 对话默认深度推理（答案更严谨，但更慢、消耗更高）；仍可在聊天框单独调整等级。文档问答等模块同步生效。">
               <Toggle checked={!!s.thinkingMode} onChange={v => onChange({ thinkingMode: v })} />
             </SettingsRow>
@@ -5647,9 +5668,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </div>
               </SettingsRow>
             ))}
-          </SettingsSection>
+          </SettingsSection></>)}
 
-          {!phoneShell && (<SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">
+          {genSub === 'local' && !phoneShell && (<SettingsSection title="本地模型服务" desc="App 内按需启用，不影响系统服务与其他软件" icon={HardDrive} tone="green">
             <div className="local-mem-info">
               <span className="local-mem-badge">
                 {memDetected ? t('已检测物理内存 {gb} GB', { gb: memGb.toFixed(1) }) : t('未获取到系统内存（请在下方选择档位）')}
@@ -5725,7 +5746,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             )}
           </SettingsSection>)}
 
-          <SettingsSection title="通用" desc="提醒与预警行为" icon={Settings} tone="indigo">
+          {genSub === 'misc' && (<><SettingsSection title="通用" desc="提醒与预警行为" icon={Settings} tone="indigo">
             <SettingsRow title="签到提醒" desc="在看板与侧栏显示 AI Agent 工具今日待签到数量">
               <Toggle checked={s.checkinReminder} onChange={v => onChange({ checkinReminder: v })} />
             </SettingsRow>
@@ -5854,9 +5875,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             {(s.shortcutAi || s.shortcutMini) && <SettingsRow title="恢复默认快捷键" desc="回到 ⌘/Ctrl+Shift+A（AI 助手）与 ⌘/Ctrl+Shift+M（迷你窗）">
               <button className="btn sm" onClick={() => onChange({ shortcutAi: undefined, shortcutMini: undefined })}>{t('恢复默认')}</button>
             </SettingsRow>}
-          </SettingsSection>}
+          </SettingsSection>}</>)}
 
-          {desktopShell && <SettingsSection title="本地统一网关" desc="在本机开一个 OpenAI 兼容接口（仅 127.0.0.1），Cursor 等工具填这个地址即可用管家里的 Key；按模型名路由，同模型多账户自动故障转移；真实 Key 只存内存，停止即清除" icon={Network} tone="indigo">
+          {genSub === 'local' && desktopShell && <SettingsSection title="本地统一网关" desc="在本机开一个 OpenAI 兼容接口（仅 127.0.0.1），Cursor 等工具填这个地址即可用管家里的 Key；按模型名路由，同模型多账户自动故障转移；真实 Key 只存内存，停止即清除" icon={Network} tone="indigo">
             <SettingsRow title={gwStatus?.running ? t('运行中 · {models} 个模型 / {routes} 条路由 · 已处理 {reqs} 次请求', { models: gwStatus.modelCount, routes: gwStatus.routeCount, reqs: gwStatus.requests }) : '网关未运行'} desc="开启需要先解锁保险箱（解密 Key 注册路由，只存内存不落盘）">
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn sm" onClick={() => void refreshGw()}>{t('刷新')}</button>
@@ -5888,7 +5909,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
         </>}
 
         {setTab === 'data' && <>
-          <SettingsSection title="云同步" desc="同一账号跨 Web / 桌面 / 安卓 / 小程序自动同步" icon={Cloud} tone="indigo">
+          {subTabChips('data', dataSub)}
+          {dataSub === 'sync' && (<><SettingsSection title="云同步" desc="同一账号跨 Web / 桌面 / 安卓 / 小程序自动同步" icon={Cloud} tone="indigo">
             <SettingsRow
               title={cloudUser ? (cloudUser.name ? t('已登录：{name}', { name: cloudUser.name }) : t('已登录')) : '未登录（仅本机存储）'}
               desc={cloudUser
@@ -5995,9 +6017,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </div>
               )))}
             <p className="set-note">快照是某个时间点的整份数据副本：误删、改坏后可一键回到当时。恢复前会自动把当前状态也存一份快照防手滑。快照内容与云同步口径一致（密钥为密文、本地模型账户默认不含）。</p>
-          </SettingsSection>
+          </SettingsSection></>)}
 
-          <SettingsSection title="账号管理" desc="已登录账号、登录方式与本机可见设备" icon={Fingerprint} tone="blue">
+          {dataSub === 'account' && (<SettingsSection title="账号管理" desc="已登录账号、登录方式与本机可见设备" icon={Fingerprint} tone="blue">
             <SettingsRow title="当前账号" desc="已登录账号的 ID 与登录来源">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {/* 账号信息必须渲染为可见内容：主题会隐藏 settings-row-desc，写进 desc 等于不显示 */}
@@ -6024,9 +6046,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             ))}
             <div className="voice-hint"><Info size={13} /> {t('当前云服务接口不提供服务端会话列表，这里显示的是本机登记过的设备；同一账号的实际登录设备请到官方账号中心查看。')}</div>
             <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setDevices([...loadDevices()])}><RefreshCw size={13} /> {t('刷新设备列表')}</button>
-          </SettingsSection>
+          </SettingsSection>)}
 
-          <SettingsSection title="应用更新" desc={t('当前版本 v{ver} · 检查并安装新版本', { ver: APP_VERSION })} icon={RefreshCw} tone="green">
+          {dataSub === 'update' && (<SettingsSection title="应用更新" desc={t('当前版本 v{ver} · 检查并安装新版本', { ver: APP_VERSION })} icon={RefreshCw} tone="green">
             <SettingsRow title="检查更新" desc={isDesktopApp()
               ? '桌面端自动下载安装，完成后自动重启生效'
               : currentPlatform() === 'docker'
@@ -6041,9 +6063,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <Toggle checked={autoUpdEnabled} onChange={v => { setAutoUpdEnabled(v); saveAutoUpdateEnabled(v) }} />
               </SettingsRow>
             )}
-          </SettingsSection>
+          </SettingsSection>)}
 
-          <SettingsSection title="数据管理" desc="备份、恢复与清理" icon={HardDrive} tone="amber">
+          {dataSub === 'datamgmt' && (<SettingsSection title="数据管理" desc="备份、恢复与清理" icon={HardDrive} tone="amber">
             <SettingsRow title="备份提醒" desc="超过设定天数未备份时在界面提示（全平台通用）">
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <select className="select" style={{ width: 76 }} value={s.backupReminderDays ?? 7}
@@ -6076,7 +6098,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </div>
               ))}
             </div>
-          </SettingsSection>
+          </SettingsSection>)}
           {clearConfirmOpen && (
             <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setClearConfirmOpen(false) }}>
               <div className="modal" style={{ maxWidth: 420 }}>
@@ -6096,7 +6118,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </div>
           )}
 
-          <SettingsSection title="数据备份" desc="导出/导入完整数据文件，不依赖云同步" icon={Database} tone="green">
+          {dataSub === 'sync' && (<SettingsSection title="数据备份" desc="导出/导入完整数据文件，不依赖云同步" icon={Database} tone="green">
             <SettingsRow title="导出完整备份" desc="账户、额度、签到、用量与设置导出为一个 JSON 文件；密钥只含加密密文，文件请妥善保管">
               <button className="btn sm" onClick={doExportBackup}><Download size={13} /> {t('导出备份')}</button>
             </SettingsRow>
@@ -6104,9 +6126,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <button className="btn sm" onClick={() => backupInputRef.current?.click()}><Upload size={13} /> {t('选择备份文件')}</button>
               <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={e => void onBackupFile(e)} />
             </SettingsRow>
-          </SettingsSection>
+          </SettingsSection>)}
 
-          {isDesktopApp() && (<>
+          {dataSub === 'datamgmt' && isDesktopApp() && (<>
           {!phoneShell && isDesktopApp() && (
           <SettingsSection title="照片图库授权" desc="macOS 要求获得许可后，AI 魔方才能读取照片图库与它的数据库（仅本机）" icon={Folder} tone="blue">
             <SettingsRow title="照片权限" desc="点「打开系统照片权限」去系统设置里给 AI 魔方打开开关（请选完全访问）；或点「触发授权弹窗」让系统直接弹窗询问。应用更新后若再被问一次，是安装包签名变化所致，重新允许即可">
@@ -6171,7 +6193,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             </div>
           )}
 
-          <div className="set-grid-2">
+          {dataSub === 'datamgmt' && (<div className="set-grid-2">
             <SettingsSection title="数据概览" desc="当前本地存储的内容" icon={Database} tone="blue">
               <div className="set-stat"><span>{t('账户')}</span><b>{state.accounts.length}</b></div>
               <div className="set-stat"><span>{t('额度快照')}</span><b>{state.quotas.length}</b></div>
@@ -6183,11 +6205,12 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <div className="set-stat"><span>{t('定位')}</span><b style={{ fontSize: 12 }}>{t('本地优先 · 个人资源管理工具')}</b></div>
               <div className="set-about-note"><ShieldCheck size={14} /> {t('数据仅存本机，密钥经 AES-256-GCM 加密，不上传明文')}</div>
             </SettingsSection>
-          </div>
+          </div>)}
         </>}
 
         {setTab === 'security' && <>
-          <SettingsSection title="操作审计日志" desc="查看/复制/删除 Key、导出、改密码、云登录等敏感操作的时间线（只记动作，不记密钥内容；随云同步跨端合并）" icon={ClipboardList} tone="indigo">
+          {subTabChips('security', secSub)}
+          {secSub === 'audit' && (<SettingsSection title="操作审计日志" desc="查看/复制/删除 Key、导出、改密码、云登录等敏感操作的时间线（只记动作，不记密钥内容；随云同步跨端合并）" icon={ClipboardList} tone="indigo">
             {(auditEntries ?? []).length === 0
               ? <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '6px 2px' }}>{t('暂无审计记录。进行查看 Key、导出备份等敏感操作后会出现在这里。')}</div>
               : <>
@@ -6204,8 +6227,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   <button className="btn sm ghost" onClick={onClearAudit}>{t('清空日志')}</button>
                 </div>
               </>}
-          </SettingsSection>
-          <SettingsSection title="密钥保险箱" desc="本地 AES-256-GCM 加密存储" icon={ShieldCheck} tone="green">
+          </SettingsSection>)}
+          {secSub === 'vault' && (<><SettingsSection title="密钥保险箱" desc="本地 AES-256-GCM 加密存储" icon={ShieldCheck} tone="green">
             <SettingsRow title="保险箱状态" desc={s.vaultInitialized ? '已启用 · API Key 加密保存' : '未创建 · API Key 将无法加密保存'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span className={`set-status-dot ${s.vaultInitialized ? 'ok' : ''}`} />
@@ -6279,7 +6302,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               )}
             </SettingsRow>
           </SettingsSection>
-          <p className="set-note"><Lock size={13} /> {t('主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。')}</p>
+          <p className="set-note"><Lock size={13} /> {t('主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。')}</p></>)}
         </>}
       </div>
 
