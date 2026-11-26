@@ -6,6 +6,8 @@ import {
   parseListFolders, parseFetchHeaders, parseSearchUids, resolveDeleteMode, parseMimeMessage,
   htmlToText, sanitizeMailHtml, prepareMailHtml, htmlHasVisibleText, MAIL_IMG_PLACEHOLDER, loadMailVisibility, saveMailVisibility, isAccountVisible,
   buildOAuthUrl, raceTimeout, mailConnectTimeoutMs, MAIL_CONNECT_TIMEOUT_MS,
+  decodeJwtPayload, diagnoseOAuthTokenForImap, MAIL_NOT_CONNECTED_GUIDANCE,
+  type MailAccountMeta,
   mailInvoke, mailStepTimeoutMs, displayMailError, isMailInternalError, shouldSuggestCredentialCheck,
   OAUTH_REGISTER_GUIDES, describeOAuthCallbackError, mailOAuthAuthorize, OAUTH_CANCELLED,
   loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
@@ -421,6 +423,80 @@ describe('错误文本显示清洗与后缀决策（447）', () => {
     expect(shouldSuggestCredentialCheck('a1 NO Login failed: authentication rejected')).toBe(true)
     expect(shouldSuggestCredentialCheck('等待服务器问候语超时（10 秒内服务器没有响应）')).toBe(false)
     expect(shouldSuggestCredentialCheck('')).toBe(false)
+  })
+})
+
+describe('OAuth 令牌声明校验与 not connected 映射（458）', () => {
+  const b64url = (s: string) => Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const makeJwt = (payload: Record<string, unknown>) =>
+    `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify(payload))}.fakesig`
+  const outlookAcct: MailAccountMeta = {
+    id: 'mail-ms-1', platformId: 'outlook', email: 'ethan458@outlook.com',
+    label: 'ethan458@outlook.com', host: 'outlook.office365.com', port: 993,
+  }
+  const goodPayload = {
+    aud: 'https://outlook.office.com',
+    scp: 'openid profile IMAP.AccessAsUser.All',
+    upn: 'ethan458@outlook.com',
+  }
+
+  it('JWT 解码：三段式解出 payload，非 JWT / 坏 JSON 返回 null', () => {
+    expect(decodeJwtPayload(makeJwt({ aud: 'x', n: 1 }))).toEqual({ aud: 'x', n: 1 })
+    expect(decodeJwtPayload('at-446-opaque')).toBeNull()
+    expect(decodeJwtPayload('a.b')).toBeNull()
+    expect(decodeJwtPayload(`h.${b64url('not json')}.s`)).toBeNull()
+    expect(decodeJwtPayload('')).toBeNull()
+  })
+
+  it('声明全对 → 放行（upn 大小写不同也算同一个）', () => {
+    expect(diagnoseOAuthTokenForImap(outlookAcct, makeJwt(goodPayload))).toBeNull()
+    expect(diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, upn: 'Ethan458@Outlook.com' }))).toBeNull()
+    expect(diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, aud: 'https://outlook.office365.com' }))).toBeNull()
+    expect(diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, scp: 'https://outlook.office.com/IMAP.AccessAsUser.All' }))).toBeNull()
+  })
+
+  it('aud 不是 Outlook 资源 → 令牌权限不对、要求重新授权', () => {
+    const msg = diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, aud: 'https://graph.microsoft.com' }))
+    expect(msg).toContain('令牌权限不对')
+    expect(msg).toContain('请删除账户后重新授权')
+  })
+
+  it('scp 缺 IMAP.AccessAsUser.All → 令牌权限不对（缺 IMAP 权限）', () => {
+    const msg = diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, scp: 'openid profile email' }))
+    expect(msg).toBe('令牌权限不对（缺 IMAP 权限），请删除账户后重新授权')
+  })
+
+  it('upn 与填写邮箱不一致 → 精确点名两个账户（preferred_username 同样拦）', () => {
+    const msg = diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ ...goodPayload, upn: 'other458@outlook.com' }))
+    expect(msg).toBe('授权登录的账户是 other458@outlook.com，与填写的邮箱 ethan458@outlook.com 不是同一个，请重新授权并在浏览器里选对账户')
+    const msg2 = diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ aud: goodPayload.aud, scp: goodPayload.scp, preferred_username: 'third458@outlook.com' }))
+    expect(msg2).toContain('third458@outlook.com')
+    expect(msg2).toContain('选对账户')
+  })
+
+  it('解不出 JWT / 声明缺失 → 不拦截（诊断不当新故障源）', () => {
+    expect(diagnoseOAuthTokenForImap(outlookAcct, 'ya29.opaque-google-style')).toBeNull()
+    expect(diagnoseOAuthTokenForImap(outlookAcct, makeJwt({ exp: 1 }))).toBeNull()
+  })
+
+  it('非微软平台不做此校验（Gmail 账户拿 JWT 形令牌也放行）', () => {
+    const gmailAcct: MailAccountMeta = {
+      id: 'mail-g-1', platformId: 'gmail', email: 'ethan458@gmail.com',
+      label: 'ethan458@gmail.com', host: 'imap.gmail.com', port: 993,
+    }
+    expect(diagnoseOAuthTokenForImap(gmailAcct, makeJwt({ aud: 'https://graph.microsoft.com', upn: 'x@y.com' }))).toBeNull()
+  })
+
+  it('「authenticated but not connected」映射：指引在前、原文保留、重复调用不叠加', () => {
+    const raw = 'a1 NO User is authenticated but not connected.'
+    const out = displayMailError(raw)
+    expect(out.startsWith(MAIL_NOT_CONNECTED_GUIDANCE)).toBe(true)
+    expect(out).toContain('浏览器里授权登录的账户与填写的邮箱不是同一个')
+    expect(out).toContain('IMAP 已开启')
+    expect(out.endsWith(raw)).toBe(true)
+    const twice = displayMailError(out)
+    expect(twice.split('没把它连上这个邮箱').length - 1).toBe(1)
+    expect(displayMailError('a1 NO Login failed')).toBe('a1 NO Login failed')
   })
 })
 

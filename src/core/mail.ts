@@ -887,12 +887,24 @@ export function raceTimeout<T>(p: Promise<T>, ms: number, label: string): Promis
  * 换行会变成字面量「\n」两字符（Ethan 实机截图里整段报错带着 \n 显示），
  * 这里把字面 \n / \r / \" 还原，再把连续空白压成单个空格，保证错误条里可读。
  */
+/**
+ * v0.1.458：Outlook 服务器原文「User is authenticated but not connected」的人话指引。
+ * 含义是微软认了令牌、但没把它绑到 user= 指定的邮箱上（XOAUTH2 的 SASL 用户名），
+ * 不是密码/授权码问题。displayMailError 命中时把指引放前面、原文保留在后面；
+ * 已带指引的文本不重复拼（同步错误会多层经过 displayMailError）。
+ */
+export const MAIL_NOT_CONNECTED_GUIDANCE = '微软认了这张令牌，但没把它连上这个邮箱：最常见的原因是浏览器里授权登录的账户与填写的邮箱不是同一个，或这个邮箱还没开启 IMAP 访问。处理：删除账户后重新添加并重新授权，授权时在浏览器里确认登录的是同一个账户；也可以先去 Outlook 网页版设置里确认 IMAP 已开启。服务器原文：'
+
 export function displayMailError(raw: string): string {
-  return raw
+  const cleaned = raw
     .replace(/\\r\\n|\\n|\\r/g, ' ')
     .replace(/\\"/g, '"')
     .replace(/\s+/g, ' ')
     .trim()
+  if (/User is authenticated but not connected/i.test(cleaned) && !cleaned.includes('没把它连上这个邮箱')) {
+    return `${MAIL_NOT_CONNECTED_GUIDANCE}${cleaned}`
+  }
+  return cleaned
 }
 
 /**
@@ -970,6 +982,58 @@ export function mailForgetSession(accountId: string): void {
   liveSessions.delete(accountId)
 }
 
+/**
+ * v0.1.458：本地解 JWT payload（只解码、不验签，仅作连接前诊断）。
+ * 解不出（不是三段式 / 不是 JSON / Google 那种不透明令牌）一律返回 null，调用方不拦截。
+ */
+function base64UrlToUtf8(seg: string): string | null {
+  try {
+    const b64 = seg.replace(/-/g, '+').replace(/_/g, '/')
+    const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new TextDecoder().decode(bytes)
+  } catch { return null }
+}
+
+export function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = String(token ?? '').split('.')
+  if (parts.length !== 3) return null
+  const text = base64UrlToUtf8(parts[1])
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch { return null }
+}
+
+const OUTLOOK_TOKEN_AUDIENCES = ['https://outlook.office.com', 'https://outlook.office365.com']
+
+/**
+ * v0.1.458：连接前校验微软 access token 的声明（aud / scp / upn），把「服务器认令牌
+ * 但不绑邮箱」（a1 NO User is authenticated but not connected）这类问题在本地拦下，
+ * 给出精确原因而不是让用户对着服务器原文猜。只对微软 JWT 令牌生效：声明缺失的项
+ * 跳过不拦、解不出 JWT 不拦——诊断不许成为新的故障源。返回 null = 放行连接。
+ */
+export function diagnoseOAuthTokenForImap(account: MailAccountMeta, accessTok: string): string | null {
+  if (mailPlatform(account.platformId).oauthProvider !== 'microsoft') return null
+  const payload = decodeJwtPayload(accessTok)
+  if (!payload) return null
+  const aud = String(payload['aud'] ?? '').replace(/\/$/, '')
+  if (aud && !OUTLOOK_TOKEN_AUDIENCES.includes(aud)) {
+    return '令牌权限不对（这张令牌不是发给 Outlook 邮箱服务的），请删除账户后重新授权'
+  }
+  const scp = String(payload['scp'] ?? '')
+  if (scp && !scp.split(/\s+/).some(s => s === 'IMAP.AccessAsUser.All' || s.endsWith('/IMAP.AccessAsUser.All'))) {
+    return '令牌权限不对（缺 IMAP 权限），请删除账户后重新授权'
+  }
+  const identity = String(payload['upn'] ?? payload['preferred_username'] ?? '')
+  if (identity && identity.toLowerCase() !== account.email.trim().toLowerCase()) {
+    return `授权登录的账户是 ${identity}，与填写的邮箱 ${account.email} 不是同一个，请重新授权并在浏览器里选对账户`
+  }
+  return null
+}
+
 async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, pwd: string): Promise<MailSecret> {
   if (secret.kind !== 'oauth') return secret
   if (secret.expiresAt > Date.now() + 60_000) return secret
@@ -1023,6 +1087,12 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string,
   let secret = await loadMailSecret(account.id, pwd)
   if (!secret) throw new Error('保险箱里没有这个账户的凭据，请删除后重新添加')
   secret = await refreshOAuthSecret(account, secret, pwd)
+  // v0.1.458：发连接前先验令牌声明（仅微软 JWT）：aud/scp/upn 任一可证伪就不发连接，
+  // 直接报精确原因，省得服务器回「authenticated but not connected」让用户猜。
+  if (secret.kind === 'oauth') {
+    const tokenProblem = diagnoseOAuthTokenForImap(account, secret.accessTok)
+    if (tokenProblem) throw new Error(tokenProblem)
+  }
   const timeoutMs = mailConnectTimeoutMs()
   let unlisten: (() => void) | undefined
   if (onStep) {

@@ -912,9 +912,13 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
       const msg = displayMailError(e instanceof Error ? e.message : String(e))
       // v0.1.447：「请检查服务器/授权码」只对服务器/凭据类错误拼；
       // panic 等内部错误拼这句只会误导（与授权码无关）。
-      setError(shouldSuggestCredentialCheck(msg)
-        ? `账户已保存，但连接失败：${msg}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
-        : `账户已保存，但连接失败：${msg}。可在收件箱点「刷新」重试。`)
+      // v0.1.458：OAuth 账户根本没有授权码，这句后缀对它不适用——改给重新授权类指引；
+      // 若错误本身已带「重新授权」指引（458 令牌声明校验 / 令牌失效 / not connected 映射），不再叠加。
+      setError(secret.kind === 'oauth'
+        ? `账户已保存，但连接失败：${msg}${/重新授权/.test(msg) ? '' : '。请删除账户后重新连接并授权，或在收件箱点「刷新」重试。'}`
+        : shouldSuggestCredentialCheck(msg)
+          ? `账户已保存，但连接失败：${msg}。请检查服务器/授权码后，在收件箱点「刷新」重试。`
+          : `账户已保存，但连接失败：${msg}。可在收件箱点「刷新」重试。`)
       setBusy('')
       return
     }
