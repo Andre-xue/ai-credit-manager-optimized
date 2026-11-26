@@ -90,6 +90,20 @@ jobs:
       - name: Build frontend (tauri-build 需要 frontendDist)
         run: npm run build
 
+      # tauri-build 的 feature/allowlist 校验：macos-private-api 特征要求配置里有
+      # app.macOSPrivateApi=true——正式构建时由 Tauri CLI 注入合并配置，
+      # 裸 cargo test 没有 CLI，这里在 CI 工作区内补上同一项（不提交回仓库）。
+      - name: Inject macOSPrivateApi for plain cargo build
+        run: |
+          python3 - <<'EOF'
+          import json
+          p = 'desktop/src-tauri/tauri.conf.json'
+          d = json.load(open(p))
+          d.setdefault('app', {})['macOSPrivateApi'] = True
+          json.dump(d, open(p, 'w'), indent=2)
+          print('macOSPrivateApi injected for cargo test build')
+          EOF
+
       - name: Run mail TLS integration test
         working-directory: desktop/src-tauri
         run: cargo test --test mail_tls_integration -- --nocapture
