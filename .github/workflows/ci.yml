@@ -114,10 +114,12 @@ jobs:
   # 的预检 FFI（453 加的 ax_trusted_opts / screen_names_visible 从未在真机
   # 被证实跑通，无头 stub 验不到）。本 job 在 macOS（arm64，与 Ethan 的 M1
   # 同架构）runner 上进程内逐个真跑这批 FFI：哪个段错误，测试进程就死在
-  # 哪个测试上。此后每个版本都会被它守住。
+  # 哪个测试上。此后每个版本都会被它守住。runner 用 macos-latest（与
+  # release.yml 的 macOS 构建同款 arm64 镜像；macos-14 标签在本仓库的
+  # runner 配置下不可用，首跑 1 秒被拒）。
   rust-translator-ffi:
     name: Rust translator FFI test (macOS)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
