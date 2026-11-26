@@ -39,7 +39,7 @@ export const MAIL_PLATFORMS: MailPlatformPreset[] = [
     id: 'outlook', name: 'Outlook', imapHost: 'outlook.office365.com', imapPort: 993, auth: 'oauth', oauthProvider: 'microsoft',
     secretLabel: '应用密码',
     guide: [
-      '两种添加方式：①浏览器授权登录（推荐）：不交出密码，在浏览器里登录微软账户点允许即可；需要先按下方步骤卡在 Azure 免费注册一个应用（约 5 分钟）。②应用密码：在微软账户的安全页里生成应用密码填进来。',
+      '两种添加方式：①浏览器授权登录（推荐）：不交出密码，在浏览器里登录微软账户点允许即可；授权页会请你同意「读取和写入邮件」权限，邮件走微软 Graph 接口收取，不用开 IMAP；需要先按下方步骤卡在 Azure 免费注册一个应用（约 5 分钟）。②应用密码：在微软账户的安全页里生成应用密码填进来（这条走 IMAP）。',
       'Outlook.com 已逐步关闭基础密码登录；若密码登录被拒，请改用浏览器授权登录。',
     ],
   },
@@ -118,7 +118,14 @@ export type MailSecret =
       expiresAt: number
       clientId: string
       clientSecret: string
+      /** v0.1.459：这张令牌实际拿到的授权范围（令牌端点回的 scope，缺失时记请求值）。
+       *  微软 v2 一个令牌只对一个资源：据此区分 Graph 令牌与 459 前的 IMAP 旧令牌；
+       *  459 前保存的秘钥没有这个字段 = 旧令牌，走迁移检出。 */
+      scope?: string
     }
+
+/** 传输通道：imap = Rust IMAP 传输；graph = 微软 Graph REST（仅 Outlook OAuth 账户，v0.1.459） */
+export type MailTransport = 'imap' | 'graph'
 
 export interface MailAccountMeta {
   id: string
@@ -127,6 +134,9 @@ export interface MailAccountMeta {
   label: string
   host: string
   port: number
+  /** v0.1.459：同步/连接时按凭据定下的通道，落盘供无凭据在手的界面操作（标记/删除）判定路由；
+   *  旧账户没有这个字段，首次同步时回填。 */
+  transport?: MailTransport
 }
 
 interface StoredAccount extends MailAccountMeta {
@@ -155,7 +165,16 @@ function readAccountsFile(): StoredAccount[] {
 }
 
 export function listMailAccounts(): MailAccountMeta[] {
-  return readAccountsFile().map(({ id, platformId, email, label, host, port }) => ({ id, platformId, email, label, host, port }))
+  return readAccountsFile().map(({ id, platformId, email, label, host, port, transport }) => ({ id, platformId, email, label, host, port, transport }))
+}
+
+/** v0.1.459：把账户的传输通道回填进账户文件（只改元信息，不动加密凭据） */
+export function setMailAccountTransport(id: string, transport: MailTransport): void {
+  const accounts = readAccountsFile()
+  const entry = accounts.find(a => a.id === id)
+  if (!entry || entry.transport === transport) return
+  entry.transport = transport
+  writeJson(ACCOUNTS_KEY, { accounts })
 }
 
 export async function addMailAccount(
@@ -223,9 +242,12 @@ export function isAccountVisible(v: MailVisibility, a: MailAccountMeta): boolean
 // ---------------- 邮件数据与缓存 ----------------
 
 export interface MailFolder {
+  /** IMAP 文件夹名；Graph 账户这里是文件夹 id（不透明串），显示名在 label */
   name: string
   flags: string[]
   role: MailFolderRole
+  /** v0.1.459：Graph 文件夹的显示名（name 是 id 时用它展示/判角色） */
+  label?: string
 }
 
 export interface MailMessage {
@@ -233,6 +255,8 @@ export interface MailMessage {
   accountId: string
   folder: string
   uid: number
+  /** v0.1.459：Graph 邮件的不透明 id（Graph 账户专用；uid 是它的稳定哈希，仅作本地 key 用） */
+  graphId?: string
   from: string
   fromAddr: string
   subject: string
@@ -895,14 +919,20 @@ export function raceTimeout<T>(p: Promise<T>, ms: number, label: string): Promis
  */
 export const MAIL_NOT_CONNECTED_GUIDANCE = '微软认了这张令牌，但没把它连上这个邮箱：最常见的原因是浏览器里授权登录的账户与填写的邮箱不是同一个，或这个邮箱还没开启 IMAP 访问。处理：删除账户后重新添加并重新授权，授权时在浏览器里确认登录的是同一个账户；也可以先去 Outlook 网页版设置里确认 IMAP 已开启。服务器原文：'
 
-export function displayMailError(raw: string): string {
+/**
+ * v0.1.459：同一句服务器原文，Graph 通道账户用人话指引的 Graph 版——
+ * Graph 账户根本不走 IMAP，「确认 IMAP 已开启」对它不适用、不许出现。
+ */
+export const MAIL_NOT_CONNECTED_GUIDANCE_GRAPH = '微软认了这张令牌，但没把它连上这个邮箱：最常见的原因是浏览器里授权登录的账户与填写的邮箱不是同一个。处理：删除账户后重新添加并重新授权，授权时在浏览器里确认登录的是同一个账户。（这个账户走微软 Graph 通道，不涉及 IMAP 开关。）服务器原文：'
+
+export function displayMailError(raw: string, opts?: { transport?: MailTransport }): string {
   const cleaned = raw
     .replace(/\\r\\n|\\n|\\r/g, ' ')
     .replace(/\\"/g, '"')
     .replace(/\s+/g, ' ')
     .trim()
   if (/User is authenticated but not connected/i.test(cleaned) && !cleaned.includes('没把它连上这个邮箱')) {
-    return `${MAIL_NOT_CONNECTED_GUIDANCE}${cleaned}`
+    return `${opts?.transport === 'graph' ? MAIL_NOT_CONNECTED_GUIDANCE_GRAPH : MAIL_NOT_CONNECTED_GUIDANCE}${cleaned}`
   }
   return cleaned
 }
@@ -978,8 +1008,12 @@ interface LiveSession {
 
 const liveSessions = new Map<string, LiveSession>()
 
+/** v0.1.459：Graph 账户的会话缓存（令牌 + caps='GRAPH'），与 IMAP 的 liveSessions 并行 */
+const graphSessions = new Map<string, LiveSession>()
+
 export function mailForgetSession(accountId: string): void {
   liveSessions.delete(accountId)
+  graphSessions.delete(accountId)
 }
 
 /**
@@ -1034,20 +1068,81 @@ export function diagnoseOAuthTokenForImap(account: MailAccountMeta, accessTok: s
   return null
 }
 
+// ---------------- 微软 Graph 通道（v0.1.459：Outlook OAuth 账户默认走这条路） ----------------
+// 背景：个人 Outlook.com 账户走 IMAP+OAuth 时微软服务端自 2024-12 起有回归问题，
+// 成功授权后 XOAUTH2 回「User is authenticated but not connected」（Mailbird/MailVault
+// 等多家厂商有专门文档），令牌再正确也被拒。厂商共识是绕开 IMAP 走 Graph REST。
+// 微软 v2 端点一个令牌只对一个资源：Graph 令牌 aud=https://graph.microsoft.com，
+// 与 IMAP 令牌（aud=outlook.office.com）互不通用，scope 与刷新按资源分开处理。
+
+/** 微软 Graph 授权范围（一期只收不发，不要 Mail.Send） */
+export const MS_GRAPH_SCOPE = 'https://graph.microsoft.com/Mail.ReadWrite offline_access'
+/** 459 前微软 IMAP 授权范围（仅存量识别/注释用，新授权不再请求它） */
+export const MS_IMAP_SCOPE = 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access'
+export const GRAPH_TOKEN_AUDIENCE = 'https://graph.microsoft.com'
+
+/** 旧 IMAP 令牌迁移的重新授权原因（走 446 的 acm.mail.reauth.v1 标记与入口展示） */
+export const MAIL_GRAPH_MIGRATION_MESSAGE = '邮箱已改走微软 Graph 通道，这张旧令牌只有 IMAP 权限、调不了 Graph，需要重新授权一次并同意「读取和写入邮件」权限'
+
+/** 这个账户的凭据是否走 Graph：OAuth + 微软平台（Outlook）。授权码账户仍走 IMAP。 */
+export function mailSecretUsesGraph(account: MailAccountMeta, secret: MailSecret): boolean {
+  return secret.kind === 'oauth' && mailPlatform(account.platformId).oauthProvider === 'microsoft'
+}
+
+/** 无凭据在手时按账户元信息判路由（transport 是同步/连接时按凭据回填的） */
+export function mailMetaUsesGraph(account: MailAccountMeta): boolean {
+  return account.transport === 'graph' || graphSessions.has(account.id)
+}
+
+/**
+ * v0.1.459：Graph 版令牌声明校验，与 diagnoseOAuthTokenForImap 并行、按传输分开：
+ * aud 必须是 Graph 资源、scp 必须含 Mail.ReadWrite、upn 必须与填写邮箱一致。
+ * 同样只对可证伪的声明拦截，解不出 JWT / 声明缺失一律放行。
+ */
+export function diagnoseOAuthTokenForGraph(account: MailAccountMeta, accessTok: string): string | null {
+  if (mailPlatform(account.platformId).oauthProvider !== 'microsoft') return null
+  const payload = decodeJwtPayload(accessTok)
+  if (!payload) return null
+  const aud = String(payload['aud'] ?? '').replace(/\/$/, '')
+  if (aud && aud !== GRAPH_TOKEN_AUDIENCE) {
+    return '令牌权限不对（这张令牌不是发给微软 Graph 邮件服务的），请删除账户后重新授权'
+  }
+  const scp = String(payload['scp'] ?? '')
+  if (scp && !scp.split(/\s+/).some(s => s === 'Mail.ReadWrite' || s.endsWith('/Mail.ReadWrite'))) {
+    return '令牌权限不对（缺邮件读写权限），请删除账户后重新授权'
+  }
+  const identity = String(payload['upn'] ?? payload['preferred_username'] ?? '')
+  if (identity && identity.toLowerCase() !== account.email.trim().toLowerCase()) {
+    return `授权登录的账户是 ${identity}，与填写的邮箱 ${account.email} 不是同一个，请重新授权并在浏览器里选对账户`
+  }
+  return null
+}
+
 async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, pwd: string): Promise<MailSecret> {
   if (secret.kind !== 'oauth') return secret
   if (secret.expiresAt > Date.now() + 60_000) return secret
   const preset = mailPlatform(account.platformId)
+  const isMicrosoft = preset.oauthProvider === 'microsoft'
   const form = new URLSearchParams()
   form.set('grant_type', 'refresh_' + 'token')
   form.set('refresh_' + 'token', secret.refreshTok)
   form.set('client_id', secret.clientId)
   if (secret.clientSecret) form.set('client_' + 'secret', secret.clientSecret)
+  // v0.1.459：微软刷新显式按 Graph 范围换令牌（v2 一个令牌只对一个资源，不写 scope
+  // 会按旧授权的资源发令牌，Graph 调不动）。Google 刷新不带 scope，口径不变。
+  if (isMicrosoft) form.set('scope', MS_GRAPH_SCOPE)
   const url = preset.oauthProvider === 'microsoft'
     ? 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
     : 'https://oauth2.googleapis.com/token'
   const res = await pluginHttpDesktop(url, 'POST', { 'Content-Type': 'application/x-www-form-urlencoded' }, form.toString())
   if (res.status < 200 || res.status >= 300) {
+    // v0.1.459：旧令牌迁移——459 前的 refresh token 只同意过 IMAP 范围，按 Graph 范围
+    // 刷新会被拒（invalid_grant / 未同意新权限类）。这不是撤销，是通道迁移：标记重新
+    // 授权并写明原因。判据是秘钥里没有 Graph 范围标记（新令牌刷新失败不走这条）。
+    if (isMicrosoft && (res.status === 400 || res.status === 401) && !secret.scope?.includes('Mail.ReadWrite')) {
+      setMailReauthFlag(account.id, MAIL_GRAPH_MIGRATION_MESSAGE)
+      throw new Error(`${MAIL_GRAPH_MIGRATION_MESSAGE}（服务器返回 ${res.status}）：${res.text.slice(0, 200)}`)
+    }
     // v0.1.446：invalid_grant = 刷新令牌被撤销/过期，光重试没用，标记该账户需要重新授权，
     // 界面会标红并给出「重新授权」入口；其它失败（限流/服务器错误）仍只报原文，不误标。
     if ((res.status === 400 || res.status === 401) && res.text.includes('invalid_grant')) {
@@ -1064,9 +1159,295 @@ async function refreshOAuthSecret(account: MailAccountMeta, secret: MailSecret, 
     ...secret,
     accessTok,
     expiresAt: Date.now() + Number(data['expires_in'] ?? 3600) * 1000,
+    ...(isMicrosoft ? { scope: String(data['scope'] ?? MS_GRAPH_SCOPE) } : {}),
   }
   await saveMailSecret(account.id, next, pwd)
   return next
+}
+
+// ---------------- Graph HTTP 与数据操作（v0.1.459） ----------------
+
+export const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0'
+
+export interface GraphHttpResult {
+  status: number
+  text: string
+  bytes: Uint8Array
+}
+
+/**
+ * Graph 请求统一走 Rust 的 plugin_http_b64（二进制安全）：$value 原始 MIME 里有
+ * 8bit 字节，plugin_http 的文本通道会 UTF-8 有损解码弄坏正文/附件。
+ * 状态码与响应体原样带回，成败由 assertGraphOk 按微软原文报错，不吞。
+ */
+export async function graphHttp(accessTok: string, method: string, pathOrUrl: string, body?: unknown): Promise<GraphHttpResult> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessTok}` }
+  let bodyStr: string | null = null
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    bodyStr = JSON.stringify(body)
+  }
+  const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${GRAPH_API_BASE}${pathOrUrl}`
+  const raw = await tauriInvoke<string>('plugin_http_b64', {
+    url, method, headersJson: JSON.stringify(headers), body: bodyStr,
+  })
+  const parsed = JSON.parse(raw) as { status: number; bodyBase64?: string }
+  const bytes = parsed.bodyBase64 ? b64ToBytes(parsed.bodyBase64) : new Uint8Array()
+  return { status: parsed.status, text: new TextDecoder().decode(bytes), bytes }
+}
+
+/** 微软 Graph 错误体翻成一行：HTTP 状态 + error.code + error.message（非 JSON 时用原文） */
+export function graphErrorDetail(status: number, text: string): string {
+  let detail = text.slice(0, 300)
+  try {
+    const j = JSON.parse(text) as { error?: { code?: string; message?: string } }
+    if (j.error && (j.error.code || j.error.message)) {
+      detail = `${j.error.code ?? ''} ${j.error.message ?? ''}`.trim()
+    }
+  } catch { /* 非 JSON 错误体：用原文 */ }
+  return `微软 Graph 接口返回 ${status}：${detail}`
+}
+
+function assertGraphOk(res: GraphHttpResult, label: string): void {
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`Graph ${label}失败（${graphErrorDetail(res.status, res.text)}）`)
+  }
+}
+
+export interface GraphFolderInfo extends MailFolder {
+  total: number
+  unread: number
+}
+
+const GRAPH_WELL_KNOWN_ROLES: [string, MailFolderRole][] = [
+  ['inbox', 'inbox'], ['sentitems', 'sent'], ['drafts', 'drafts'],
+  ['deleteditems', 'trash'], ['junkemail', 'junk'], ['archive', 'archive'],
+]
+
+/** Graph 文件夹 JSON → 现有 MailFolder 结构：name 存文件夹 id、label 存显示名、role 优先按知名文件夹 id 判定 */
+export function mapGraphFolder(raw: Record<string, unknown>, roleOverride?: MailFolderRole): GraphFolderInfo {
+  const displayName = String(raw['displayName'] ?? '')
+  return {
+    name: String(raw['id'] ?? ''),
+    label: displayName,
+    flags: [],
+    role: roleOverride ?? folderRole(displayName, []),
+    total: Number(raw['totalItemCount'] ?? 0) || 0,
+    unread: Number(raw['unreadItemCount'] ?? 0) || 0,
+  }
+}
+
+const GRAPH_FOLDER_FIELDS = 'id,displayName,totalItemCount,unreadItemCount,childFolderCount'
+
+/** 文件夹列表（含计数）：先用知名文件夹端点定 id→role，再分页拉全量并逐层展开子文件夹 */
+export async function graphListFolders(accessTok: string): Promise<GraphFolderInfo[]> {
+  const roleById = new Map<string, MailFolderRole>()
+  await Promise.all(GRAPH_WELL_KNOWN_ROLES.map(async ([wk, role]) => {
+    try {
+      const res = await graphHttp(accessTok, 'GET', `/me/mailFolders/${wk}?$select=id`)
+      if (res.status >= 200 && res.status < 300) {
+        const j = JSON.parse(res.text) as Record<string, unknown>
+        if (j['id']) roleById.set(String(j['id']), role)
+      }
+    } catch { /* 单个知名文件夹查不到不阻断整体，role 回落显示名判定 */ }
+  }))
+  const folders: GraphFolderInfo[] = []
+  const seen = new Set<string>()
+  const pullLevel = async (firstUrl: string, depth: number): Promise<void> => {
+    let next: string | null = firstUrl
+    while (next && folders.length < 200) {
+      const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next)
+      assertGraphOk(res, '拉取文件夹列表')
+      const j = JSON.parse(res.text) as { value?: Record<string, unknown>[]; '@odata.nextLink'?: string }
+      for (const rawF of j.value ?? []) {
+        const info = mapGraphFolder(rawF, roleById.get(String(rawF['id'] ?? '')))
+        if (!info.name || seen.has(info.name)) continue
+        seen.add(info.name)
+        folders.push(info)
+        if (Number(rawF['childFolderCount'] ?? 0) > 0 && depth < 3) {
+          await pullLevel(`/me/mailFolders/${encodeURIComponent(info.name)}/childFolders?$top=100&$select=${GRAPH_FOLDER_FIELDS}`, depth + 1)
+        }
+      }
+      next = j['@odata.nextLink'] ?? null
+    }
+  }
+  await pullLevel(`/me/mailFolders?$top=100&$select=${GRAPH_FOLDER_FIELDS}`, 0)
+  return folders
+}
+
+/** Graph 邮件 id → 稳定数值 uid（FNV-1a）：只作本地 key/排序用，真实 id 在 graphId 里 */
+export function hashGraphId(id: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0) || 1
+}
+
+/** Graph 邮件 JSON → 现有 MailMessage 头结构（分类沿用现有规则） */
+export function mapGraphMessage(raw: Record<string, unknown>, accountId: string, folderId: string): MailMessage {
+  const graphId = String(raw['id'] ?? '')
+  const fromObj = (raw['from'] as { emailAddress?: { name?: string; address?: string } } | null)?.emailAddress ?? {}
+  const fromAddr = String(fromObj.address ?? '')
+  const flags: string[] = []
+  if (raw['isRead']) flags.push('\\Seen')
+  if ((raw['flag'] as { flagStatus?: string } | null)?.flagStatus === 'flagged') flags.push('\\Flagged')
+  const uid = hashGraphId(graphId)
+  const msg: MailMessage = {
+    key: `${accountId}|${folderId}|${uid}`,
+    accountId,
+    folder: folderId,
+    uid,
+    graphId,
+    from: String(fromObj.name ?? '') || fromAddr,
+    fromAddr,
+    subject: String(raw['subject'] ?? '') || '(无主题)',
+    date: Date.parse(String(raw['receivedDateTime'] ?? '')) || 0,
+    snippet: String(raw['bodyPreview'] ?? '').replace(/\s+/g, ' ').trim().slice(0, 140),
+    flags,
+    hasAttach: !!raw['hasAttachments'],
+    size: 0,
+    category: 'personal',
+  }
+  msg.category = classifyMessage(msg)
+  return msg
+}
+
+const GRAPH_MESSAGE_FIELDS = 'id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,flag'
+
+/** 按文件夹分页拉邮件头（跟 @odata.nextLink，直到 limit 或拉完） */
+export async function graphListMessages(accessTok: string, accountId: string, folderId: string, limit: number): Promise<MailMessage[]> {
+  const out: MailMessage[] = []
+  let next: string | null = `/me/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${Math.min(100, Math.max(1, limit))}&$orderby=receivedDateTime%20desc&$select=${GRAPH_MESSAGE_FIELDS}`
+  while (next && out.length < limit) {
+    const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next)
+    assertGraphOk(res, '拉取邮件列表')
+    const j = JSON.parse(res.text) as { value?: Record<string, unknown>[]; '@odata.nextLink'?: string }
+    for (const rawM of j.value ?? []) {
+      if (out.length >= limit) break
+      out.push(mapGraphMessage(rawM, accountId, folderId))
+    }
+    next = j['@odata.nextLink'] ?? null
+  }
+  return out
+}
+
+/** 取一封邮件的原始 MIME（$value），字节原样交给 parseMimeMessage（附件随 MIME 一并解析） */
+export async function graphFetchMessageMime(accessTok: string, graphId: string): Promise<Uint8Array> {
+  const res = await graphHttp(accessTok, 'GET', `/me/messages/${encodeURIComponent(graphId)}/$value`)
+  assertGraphOk(res, '拉取邮件正文')
+  return res.bytes
+}
+
+export async function graphPatchMessage(accessTok: string, graphId: string, patch: Record<string, unknown>): Promise<void> {
+  const res = await graphHttp(accessTok, 'PATCH', `/me/messages/${encodeURIComponent(graphId)}`, patch)
+  assertGraphOk(res, '更新邮件标记')
+}
+
+export async function graphMoveMessage(accessTok: string, graphId: string, destFolderId: string): Promise<void> {
+  const res = await graphHttp(accessTok, 'POST', `/me/messages/${encodeURIComponent(graphId)}/move`, { destinationId: destFolderId })
+  assertGraphOk(res, '移动邮件')
+}
+
+export async function graphDeleteMessage(accessTok: string, graphId: string): Promise<void> {
+  const res = await graphHttp(accessTok, 'DELETE', `/me/messages/${encodeURIComponent(graphId)}`)
+  assertGraphOk(res, '删除邮件')
+}
+
+export interface GraphBatchRequest {
+  id: string
+  method: string
+  /** $batch 内的相对路径，如 /me/messages/{id}/move */
+  url: string
+  body?: unknown
+}
+
+export interface GraphBatchItemResult {
+  id: string
+  status: number
+  text: string
+}
+
+/** $batch 批量（微软上限 20 条/批，自动分片）；批本身失败按原文抛，单条成败看返回的 status */
+export async function graphBatch(accessTok: string, requests: GraphBatchRequest[]): Promise<GraphBatchItemResult[]> {
+  const results: GraphBatchItemResult[] = []
+  for (let i = 0; i < requests.length; i += 20) {
+    const chunk = requests.slice(i, i + 20)
+    const res = await graphHttp(accessTok, 'POST', '/$batch', {
+      requests: chunk.map(r => ({
+        id: r.id,
+        method: r.method,
+        url: r.url,
+        ...(r.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: r.body } : {}),
+      })),
+    })
+    assertGraphOk(res, '批量操作')
+    const j = JSON.parse(res.text) as { responses?: { id: string; status: number; body?: unknown }[] }
+    for (const item of j.responses ?? []) {
+      results.push({
+        id: String(item.id),
+        status: Number(item.status),
+        text: typeof item.body === 'string' ? item.body : JSON.stringify(item.body ?? ''),
+      })
+    }
+  }
+  return results
+}
+
+/** 一个文件夹的全部邮件 id（删全部用，分页跟 nextLink） */
+export async function graphListAllMessageIds(accessTok: string, folderId: string): Promise<string[]> {
+  const ids: string[] = []
+  let next: string | null = `/me/mailFolders/${encodeURIComponent(folderId)}/messages?$top=999&$select=id`
+  while (next) {
+    const res: GraphHttpResult = await graphHttp(accessTok, 'GET', next)
+    assertGraphOk(res, '搜索邮件')
+    const j = JSON.parse(res.text) as { value?: { id?: string }[]; '@odata.nextLink'?: string }
+    for (const v of j.value ?? []) if (v.id) ids.push(String(v.id))
+    next = j['@odata.nextLink'] ?? null
+  }
+  return ids
+}
+
+/**
+ * Graph 账户的「连接」：旧令牌本地检出 → 必要时刷新（微软按 Graph 范围）→ 声明校验 →
+ * 轻探活（GET 文件夹第一页）。成功后回填 transport='graph' 并清重新授权标记。
+ */
+async function ensureGraphConnected(account: MailAccountMeta, secret0: MailSecret, pwd: string): Promise<LiveSession> {
+  const cached = graphSessions.get(account.id)
+  if (cached) return cached
+  let secret = secret0
+  if (secret.kind === 'oauth') {
+    // 本地迁移检出（不发网络）：手里的 access token 若 aud 是 Outlook 资源，就是
+    // 459 前的 IMAP 旧令牌；秘钥记录的 scope 没有 Mail.ReadWrite 同理。都走重新授权。
+    const payload = decodeJwtPayload(secret.accessTok)
+    const aud = String(payload?.['aud'] ?? '').replace(/\/$/, '')
+    const legacyByAud = !!aud && OUTLOOK_TOKEN_AUDIENCES.includes(aud)
+    const legacyByScope = !!secret.scope && !secret.scope.includes('Mail.ReadWrite')
+    if (legacyByAud || legacyByScope) {
+      setMailReauthFlag(account.id, MAIL_GRAPH_MIGRATION_MESSAGE)
+      throw new Error(MAIL_GRAPH_MIGRATION_MESSAGE)
+    }
+  }
+  secret = await refreshOAuthSecret(account, secret, pwd)
+  if (secret.kind !== 'oauth') throw new Error('这个账户的凭据不是 OAuth 令牌，无法走 Graph 通道')
+  const tokenProblem = diagnoseOAuthTokenForGraph(account, secret.accessTok)
+  if (tokenProblem) throw new Error(tokenProblem)
+  const probe = await graphHttp(secret.accessTok, 'GET', '/me/mailFolders?$top=1&$select=id')
+  assertGraphOk(probe, '连接验证')
+  const session: LiveSession = { secret, caps: 'GRAPH' }
+  graphSessions.set(account.id, session)
+  setMailAccountTransport(account.id, 'graph')
+  account.transport = 'graph'
+  clearMailReauthFlag(account.id)
+  return session
+}
+
+/** 界面操作（标记/删除/移动）在无凭据参数时取 Graph 令牌：来自同步/连接时建的会话 */
+function graphSessionToken(account: MailAccountMeta): string {
+  const s = graphSessions.get(account.id)
+  if (!s || s.secret.kind !== 'oauth') throw new Error('Graph 连接未建立，请先点「刷新」同步一次再操作')
+  return s.secret.accessTok
 }
 
 /** v0.1.450：连接进度步骤（Rust 侧 mail_connect_step 事件回告），验证按钮据此分步显示 */
@@ -1080,12 +1461,22 @@ export const MAIL_CONNECT_STEP_LABELS: Record<MailConnectStep, string> = {
 
 export const MAIL_CONNECT_STEP_EVENT = 'mail_connect_step'
 
-/** 确保账户已连接（必要时刷新 OAuth 令牌）；返回能力串。onStep 收到连接进度步骤（尽力而为，事件通道不可用时不回调） */
+/** 确保账户已连接（必要时刷新 OAuth 令牌）；返回能力串。onStep 收到连接进度步骤（尽力而为，事件通道不可用时不回调）。
+ *  v0.1.459：Outlook OAuth 账户分流到 Graph（ensureGraphConnected），其余账户走原 IMAP 连接。 */
 export async function mailEnsureConnected(account: MailAccountMeta, pwd: string, onStep?: (step: MailConnectStep) => void): Promise<LiveSession> {
-  const existing = liveSessions.get(account.id)
-  if (existing) return existing
+  // 已知通道时先查会话缓存，省掉每次解密（IMAP 旧行为一致）
+  if (account.transport === 'graph') {
+    const g = graphSessions.get(account.id)
+    if (g) return g
+  } else if (account.transport === 'imap') {
+    const existing0 = liveSessions.get(account.id)
+    if (existing0) return existing0
+  }
   let secret = await loadMailSecret(account.id, pwd)
   if (!secret) throw new Error('保险箱里没有这个账户的凭据，请删除后重新添加')
+  if (mailSecretUsesGraph(account, secret)) return ensureGraphConnected(account, secret, pwd)
+  const existing = liveSessions.get(account.id)
+  if (existing) return existing
   secret = await refreshOAuthSecret(account, secret, pwd)
   // v0.1.458：发连接前先验令牌声明（仅微软 JWT）：aud/scp/upn 任一可证伪就不发连接，
   // 直接报精确原因，省得服务器回「authenticated but not connected」让用户猜。
@@ -1127,6 +1518,8 @@ export async function mailEnsureConnected(account: MailAccountMeta, pwd: string,
   }
   const session: LiveSession = { secret, caps }
   liveSessions.set(account.id, session)
+  setMailAccountTransport(account.id, 'imap') // v0.1.459：回填通道，界面操作据此判路由
+  account.transport = 'imap'
   clearMailReauthFlag(account.id) // v0.1.446：连上了就说明授权有效，清掉可能残留的重新授权标记
   return session
 }
@@ -1158,6 +1551,25 @@ export interface MailSyncOutcome {
 export async function mailSyncAccount(account: MailAccountMeta, pwd: string, headerLimit = 60): Promise<MailSyncOutcome> {
   try {
     const session = await mailEnsureConnected(account, pwd)
+    // v0.1.459：Graph 账户同步——文件夹/计数与逐文件夹邮件头都走 Graph REST，
+    // 缓存结构与 IMAP 完全一致；Graph 没有 IDLE，idleSupported=false → 界面如实标轮询。
+    if (account.transport === 'graph' && session.secret.kind === 'oauth') {
+      const tok = session.secret.accessTok
+      const folders = await graphListFolders(tok)
+      if (!folders.length) throw new Error('微软 Graph 没有返回任何文件夹')
+      const prev = loadMailCache()[account.id]
+      const prevKeys = new Set((prev?.messages ?? []).map(m => m.key))
+      const messages: MailMessage[] = []
+      for (const folder of folders) {
+        messages.push(...await graphListMessages(tok, account.id, folder.name, headerLimit))
+      }
+      const cache = loadMailCache()
+      cache[account.id] = { folders, messages, caps: session.caps, updatedAt: Date.now() }
+      saveMailCache(cache)
+      const newKeys = prev ? messages.filter(m => !prevKeys.has(m.key) && !m.flags.includes('\\Seen')).map(m => m.key) : []
+      void prefetchMailBodies(account, messages)
+      return { accountId: account.id, ok: true, newKeys, caps: session.caps, idleSupported: false }
+    }
     const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
     const folders = parseListFolders(listRaw)
     if (!folders.length) throw new Error('服务器没有返回任何文件夹')
@@ -1190,7 +1602,7 @@ export async function mailSyncAccount(account: MailAccountMeta, pwd: string, hea
     return { accountId: account.id, ok: true, newKeys, caps: session.caps, idleSupported: session.caps.includes('IDLE') }
   } catch (e) {
     mailForgetSession(account.id)
-    return { accountId: account.id, ok: false, error: displayMailError(e instanceof Error ? e.message : String(e)), newKeys: [], caps: '', idleSupported: false }
+    return { accountId: account.id, ok: false, error: displayMailError(e instanceof Error ? e.message : String(e), { transport: account.transport }), newKeys: [], caps: '', idleSupported: false }
   }
 }
 
@@ -1203,7 +1615,15 @@ function patchCacheMessages(accountId: string, fn: (messages: MailMessage[]) => 
 }
 
 export async function mailSetFlag(account: MailAccountMeta, msg: MailMessage, flag: '\\Seen' | '\\Flagged', add: boolean): Promise<void> {
-  await mailInvoke('mail_imap_store_flags', { accountId: account.id, folder: msg.folder, uids: [msg.uid], flag, add }, '更新邮件标记（STORE）')
+  if (mailMetaUsesGraph(account)) {
+    // v0.1.459：Graph 账户走 PATCH：已读=isRead，星标=flag.flagStatus
+    if (!msg.graphId) throw new Error('这封邮件缺少 Graph 标识，请刷新后重试')
+    const tok = graphSessionToken(account)
+    if (flag === '\\Seen') await graphPatchMessage(tok, msg.graphId, { isRead: add })
+    else await graphPatchMessage(tok, msg.graphId, { flag: { flagStatus: add ? 'flagged' : 'notFlagged' } })
+  } else {
+    await mailInvoke('mail_imap_store_flags', { accountId: account.id, folder: msg.folder, uids: [msg.uid], flag, add }, '更新邮件标记（STORE）')
+  }
   patchCacheMessages(account.id, list => list.map(m => {
     if (m.key !== msg.key) return m
     const flags = add ? [...new Set([...m.flags, flag])] : m.flags.filter(f => f !== flag)
@@ -1219,9 +1639,18 @@ export async function mailMoveMessages(account: MailAccountMeta, msgs: MailMessa
     byFolder.set(m.folder, [...(byFolder.get(m.folder) ?? []), m])
   }
   for (const [folder, list] of byFolder) {
-    await mailInvoke('mail_imap_delete_messages', {
-      accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: destFolder,
-    }, '移动邮件（COPY/删除）')
+    if (mailMetaUsesGraph(account)) {
+      // v0.1.459：Graph 有原生 move，不用 IMAP 的复制+删除
+      const tok = graphSessionToken(account)
+      for (const m of list) {
+        if (!m.graphId) throw new Error('这封邮件缺少 Graph 标识，请刷新后重试')
+        await graphMoveMessage(tok, m.graphId, destFolder)
+      }
+    } else {
+      await mailInvoke('mail_imap_delete_messages', {
+        accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: destFolder,
+      }, '移动邮件（COPY/删除）')
+    }
     const destRole = loadMailCache()[account.id]?.folders.find(f => f.name === destFolder)?.role ?? 'other'
     void destRole
     dropCachedBodies(list.map(m => m.key)) // 移动后 key 变了，旧 key 的正文缓存作废
@@ -1239,9 +1668,28 @@ export async function mailDeleteMessages(account: MailAccountMeta, msgs: MailMes
   for (const [folder, list] of byFolder) {
     const decision = resolveDeleteMode(folders, folder)
     if (decision.mode === 'trash') mode = 'trash'
-    await mailInvoke('mail_imap_delete_messages', {
-      accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: decision.trashFolder ?? null,
-    }, '删除邮件')
+    if (mailMetaUsesGraph(account)) {
+      // v0.1.459：Graph 删除——移入垃圾箱走 move 到已删除文件夹 id，彻底删走 DELETE；
+      // $batch 分片执行，单条失败如实汇总抛错（已成功的以服务器为准，下次同步对齐）
+      const tok = graphSessionToken(account)
+      const reqs: GraphBatchRequest[] = list.map((m, i) => {
+        if (!m.graphId) throw new Error('这封邮件缺少 Graph 标识，请刷新后重试')
+        return decision.mode === 'trash'
+          ? { id: String(i), method: 'POST', url: `/me/messages/${encodeURIComponent(m.graphId)}/move`, body: { destinationId: decision.trashFolder } }
+          : { id: String(i), method: 'DELETE', url: `/me/messages/${encodeURIComponent(m.graphId)}` }
+      })
+      const results = await graphBatch(tok, reqs)
+      const failed = results.filter(r => r.status < 200 || r.status >= 300)
+      const missing = list.length - results.length
+      if (failed.length || missing > 0) {
+        const first = failed[0]
+        throw new Error(`删除邮件部分失败（${failed.length + missing}/${list.length} 封）${first ? `：${graphErrorDetail(first.status, first.text)}` : ''}`)
+      }
+    } else {
+      await mailInvoke('mail_imap_delete_messages', {
+        accountId: account.id, folder, uids: list.map(m => m.uid), trashFolder: decision.trashFolder ?? null,
+      }, '删除邮件')
+    }
     const keys = new Set(list.map(m => m.key))
     dropCachedBodies(list.map(m => m.key))
     patchCacheMessages(account.id, all => all.filter(m => !keys.has(m.key)))
@@ -1293,6 +1741,18 @@ export function dropCachedBodies(keys: string[]): void {
  * 成功后写入正文缓存，阅读页下次打开先显缓存。
  */
 export async function mailFetchBody(account: MailAccountMeta, msg: MailMessage): Promise<MailBodyResult> {
+  // v0.1.459：Graph 账户取 $value 原始 MIME 喂现有 parseMimeMessage（附件随 MIME
+  // 一并解析出 base64，保存时直接用），验证码提取与正文缓存与 IMAP 路径共用。
+  if (mailMetaUsesGraph(account)) {
+    if (!msg.graphId) throw new Error('这封邮件缺少 Graph 标识，请刷新后重试')
+    const bytes = await graphFetchMessageMime(graphSessionToken(account), msg.graphId)
+    if (!bytes.length) throw new Error('微软 Graph 未返回邮件正文')
+    const gbody = parseMimeMessage(bytes)
+    const gcode = extractVerifyCode(`${msg.subject}\n${gbody.text || htmlToText(gbody.html)}`)
+    const gout: MailBodyResult = { ...gbody, code: gcode }
+    saveCachedBody(msg.key, gout)
+    return gout
+  }
   let body: MailBodyContent | null = null
   try {
     const structRaw = await mailInvoke<string>('mail_imap_fetch_structure', { accountId: account.id, folder: msg.folder, uid: msg.uid }, '读取邮件结构（FETCH）')
@@ -1338,6 +1798,8 @@ async function prefetchMailBodies(account: MailAccountMeta, messages: MailMessag
 /** 附件按需拉取（v0.1.450）：正文阶段没拉附件数据，保存时按段现拉这一段 */
 export async function mailFetchAttachment(account: MailAccountMeta, msg: MailMessage, att: MailAttachment): Promise<string> {
   if (att.base64) return att.base64
+  // v0.1.459：Graph 正文是整封 MIME 解析的，附件本应带 base64；没有就是数据不完整
+  if (mailMetaUsesGraph(account)) throw new Error('这封邮件的附件数据不完整，请刷新邮件后重试')
   if (!att.section) throw new Error('这封邮件的附件缺少段信息，请刷新后重试')
   const json = await mailInvoke<string>('mail_imap_fetch_sections', {
     accountId: account.id, folder: msg.folder, uid: msg.uid, sections: [att.section],
@@ -1363,6 +1825,64 @@ export interface MailDeleteAllReport {
   error?: string
 }
 
+/**
+ * v0.1.459：Graph 账户的一键删除全部——非垃圾箱文件夹先 $batch 移入已删除文件夹，
+ * 垃圾箱最后 $batch 彻底删；计数口径与 IMAP 版一致（垃圾箱只计原本就在里面的，
+ * 避免把刚移入的重复计数）。部分失败不中断：报告里如实写失败封数与首个微软原文。
+ */
+async function graphDeleteAll(account: MailAccountMeta, report: MailDeleteAllReport, onProgress?: (email: string, deletedSoFar: number) => void): Promise<void> {
+  const tok = graphSessionToken(account)
+  const folders = await graphListFolders(tok)
+  const trash = folders.find(f => f.role === 'trash')
+  const initialTrashIds = new Set(trash ? await graphListAllMessageIds(tok, trash.name) : [])
+  let usedTrash = false
+  let usedPermanent = false
+  let failedCount = 0
+  let firstError = ''
+  const runBatch = async (reqs: GraphBatchRequest[]): Promise<Set<string>> => {
+    const okIds = new Set<string>()
+    if (!reqs.length) return okIds
+    const results = await graphBatch(tok, reqs)
+    const byId = new Map(results.map(r => [r.id, r]))
+    for (const r of reqs) {
+      const item = byId.get(r.id)
+      if (item && item.status >= 200 && item.status < 300) okIds.add(r.id)
+      else {
+        failedCount += 1
+        if (!firstError) firstError = item ? graphErrorDetail(item.status, item.text) : '批量操作没有返回这一条的结果'
+      }
+    }
+    return okIds
+  }
+  const ordered = [...folders.filter(f => f.role !== 'trash'), ...folders.filter(f => f.role === 'trash')]
+  for (const folder of ordered) {
+    const ids = await graphListAllMessageIds(tok, folder.name)
+    if (!ids.length) continue
+    if (trash && folder.role !== 'trash') {
+      usedTrash = true
+      const okIds = await runBatch(ids.map(id => ({
+        id, method: 'POST', url: `/me/messages/${encodeURIComponent(id)}/move`, body: { destinationId: trash.name },
+      })))
+      report.deleted += okIds.size
+    } else {
+      usedPermanent = true
+      const okIds = await runBatch(ids.map(id => ({ id, method: 'DELETE', url: `/me/messages/${encodeURIComponent(id)}` })))
+      // 清垃圾箱这一步删的含刚移入的邮件，只计快照内原本就在垃圾箱的数量（与 IMAP 版同口径）
+      report.deleted += folder.role === 'trash' ? [...okIds].filter(id => initialTrashIds.has(id)).length : okIds.size
+    }
+    onProgress?.(account.email, report.deleted)
+  }
+  report.mode = usedTrash && usedPermanent ? 'mixed' : usedTrash ? 'trash' : 'permanent'
+  if (failedCount > 0) report.error = `有 ${failedCount} 封删除失败：${firstError}`
+  if (failedCount === 0) {
+    const cache = loadMailCache()
+    if (cache[account.id]) {
+      cache[account.id] = { ...cache[account.id], messages: [], updatedAt: Date.now() }
+      saveMailCache(cache)
+    }
+  }
+}
+
 /** 删除全部邮件的预检：每账户各文件夹的邮件数 + 预计删除方式（确认框展示用） */
 export async function mailDeleteAllPreview(accounts: MailAccountMeta[], pwd: string): Promise<{
   perAccount: { account: MailAccountMeta; total: number; mode: 'trash' | 'permanent' | 'mixed'; error?: string }[]
@@ -1373,6 +1893,21 @@ export async function mailDeleteAllPreview(accounts: MailAccountMeta[], pwd: str
   for (const account of accounts) {
     try {
       await mailEnsureConnected(account, pwd)
+      if (account.transport === 'graph') {
+        // v0.1.459：Graph 预检——文件夹计数直接来自 mailFolders 的 totalItemCount
+        const gfolders = await graphListFolders(graphSessionToken(account))
+        let gsum = 0
+        let gHasNonTrashMail = false
+        for (const f of gfolders) {
+          gsum += f.total
+          if (f.total > 0 && f.role !== 'trash') gHasNonTrashMail = true
+        }
+        const gHasTrash = !!gfolders.find(f => f.role === 'trash')
+        const gmode: 'trash' | 'permanent' | 'mixed' = !gHasTrash ? 'permanent' : gHasNonTrashMail ? 'mixed' : 'permanent'
+        perAccount.push({ account, total: gsum, mode: gmode })
+        total += gsum
+        continue
+      }
       const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
       const folders = parseListFolders(listRaw)
       const countsRaw = await mailInvoke<string>('mail_imap_folder_counts', { accountId: account.id, folders: folders.map(f => f.name) }, '统计各文件夹邮件数')
@@ -1406,6 +1941,10 @@ export async function mailDeleteAll(
     const report: MailDeleteAllReport = { accountId: account.id, email: account.email, deleted: 0, mode: 'permanent' }
     try {
       await mailEnsureConnected(account, pwd)
+      if (account.transport === 'graph') {
+        // v0.1.459：Graph 账户走 graphDeleteAll（移入已删除 + 清空），与 IMAP 账户在同一份报告里分别汇总
+        await graphDeleteAll(account, report, onProgress)
+      } else {
       const listRaw = await mailInvoke<string>('mail_imap_list_folders', { accountId: account.id }, '拉取文件夹列表（LIST）')
       const folders = parseListFolders(listRaw)
       const trash = folders.find(f => f.role === 'trash')
@@ -1443,8 +1982,9 @@ export async function mailDeleteAll(
         cache[account.id] = { ...cache[account.id], messages: [], updatedAt: Date.now() }
         saveMailCache(cache)
       }
+      }
     } catch (e) {
-      report.error = displayMailError(e instanceof Error ? e.message : String(e))
+      report.error = displayMailError(e instanceof Error ? e.message : String(e), { transport: account.transport })
     }
     reports.push(report)
   }
@@ -1470,7 +2010,7 @@ export function buildOAuthUrl(provider: 'google' | 'microsoft', clientId: string
   q.set('redirect_uri', redirect)
   q.set('response_type', 'code')
   q.set('response_mode', 'query')
-  q.set('scope', 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access')
+  q.set('scope', MS_GRAPH_SCOPE) // v0.1.459：微软改走 Graph 资源（Mail.ReadWrite），不再请求 IMAP 范围
   return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${q.toString()}`
 }
 
@@ -1487,7 +2027,7 @@ export async function mailOAuthExchange(
   if (clientSecret) form.set('client_' + 'secret', clientSecret)
   form.set('redirect_uri', `http://127.0.0.1:${port}`)
   form.set('grant_type', 'authorization_code')
-  if (provider === 'microsoft') form.set('scope', 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access')
+  if (provider === 'microsoft') form.set('scope', MS_GRAPH_SCOPE)
   const url = provider === 'microsoft'
     ? 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
     : 'https://oauth2.googleapis.com/token'
@@ -1506,6 +2046,9 @@ export async function mailOAuthExchange(
     expiresAt: Date.now() + Number(data['expires_in'] ?? 3600) * 1000,
     clientId,
     clientSecret,
+    // v0.1.459：记下令牌实际拿到的范围（微软回 scope 字段；没有就记请求值），
+    // 后续据此区分 Graph 令牌与旧 IMAP 令牌。Google 不记（不透明令牌、无此需求）。
+    ...(provider === 'microsoft' ? { scope: String(data['scope'] ?? MS_GRAPH_SCOPE) } : {}),
   }
 }
 
@@ -1527,7 +2070,8 @@ export async function mailOAuthListenStop(): Promise<void> {
 // ---------------- OAuth 客户端注册引导（v0.1.446，与上面的实现口径逐项对齐） ----------------
 // 实现口径（buildOAuthUrl / mailOAuthExchange）：redirect_uri = http://127.0.0.1:<随机端口>；
 // Google scope=https://mail.google.com/（桌面应用客户端，需 ID+Secret）；
-// Microsoft scope=https://outlook.office.com/IMAP.AccessAsUser.All + offline_access（公共客户端，只需 ID）。
+// Microsoft scope=https://graph.microsoft.com/Mail.ReadWrite + offline_access（公共客户端，只需 ID；
+// v0.1.459 起 Outlook OAuth 走 Graph 通道，不再请求 IMAP 范围）。
 
 export interface OAuthRegisterGuide {
   /** 表单是否需要 Client Secret 输入框：Google 桌面客户端需要，微软公共客户端不需要 */
@@ -1556,7 +2100,7 @@ export const OAUTH_REGISTER_GUIDES: Record<'google' | 'microsoft', OAuthRegister
       '进新应用的「身份验证」页 →「添加平台」→ 选「移动和桌面应用程序」，在重定向 URI 里填 http://127.0.0.1（见下方回调说明），保存。',
       '回到「概述」页，复制「应用程序(客户端) ID」，粘到下面输入框，点「连接并授权」，浏览器会打开微软官方页面，登录并点允许即可。',
     ],
-    callbackNote: '重定向 URI 填 http://127.0.0.1，不要带端口：App 实际用 http://127.0.0.1 的随机端口接收回调，Azure 对本机回环地址不校验端口，与你填的这条一致。另外这是「公共客户端」，微软不发 Client Secret，所以本表单没有密码输入框——只填 ID 是对的。',
+    callbackNote: '重定向 URI 填 http://127.0.0.1，不要带端口：App 实际用 http://127.0.0.1 的随机端口接收回调，Azure 对本机回环地址不校验端口，与你填的这条一致。另外这是「公共客户端」，微软不发 Client Secret，所以本表单没有密码输入框——只填 ID 是对的。授权页会列出「读取和写入邮件（Mail.ReadWrite）」权限——邮箱走微软 Graph 接口收邮件用的，点允许即可。',
   },
 }
 

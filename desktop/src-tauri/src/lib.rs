@@ -356,6 +356,40 @@ async fn plugin_http(url: String, method: String, headers_json: Option<String>, 
     Ok(serde_json::json!({ "status": status, "body": text, "headers": headers_map }).to_string())
 }
 
+/// 二进制安全版网络代理（v0.1.459，邮箱 Graph 通道取原始 MIME 用）：与 plugin_http
+/// 同样的 SSRF 校验与不跟随重定向口径，区别只有响应体按字节读、base64 回传——
+/// plugin_http 的 resp.text() 是 UTF-8 有损解码，会把原始 MIME 里的 8bit 字节
+/// （GBK 正文、二进制附件）弄坏，Graph 的 /messages/{id}/$value 必须走这条。
+#[tauri::command]
+async fn plugin_http_b64(url: String, method: String, headers_json: Option<String>, body: Option<String>) -> Result<String, String> {
+    let parsed = validate_proxy_url_opts(&url, false)?;
+    validate_resolved_public(&parsed).await?;
+    let url = parsed.to_string();
+    let m = method.to_uppercase();
+    let parsed_method = reqwest::Method::from_bytes(m.as_bytes())
+        .map_err(|_| format!("不支持的请求方法：{}", m))?;
+    let client = shared_provider_client(); // 与 plugin_http 一致：禁用重定向
+    let mut req = client.request(parsed_method, &url);
+    if let Some(hj) = headers_json.as_deref() {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(hj) {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() { req = req.header(k, s); }
+            }
+        }
+    }
+    if let Some(b) = body { req = req.body(b); }
+    let resp = req.send().await.map_err(|e| format!("请求失败：{}", e))?;
+    let status = resp.status().as_u16();
+    let mut headers_map = serde_json::Map::new();
+    for (k, v) in resp.headers().iter() {
+        if let Ok(s) = v.to_str() { headers_map.insert(k.as_str().to_string(), serde_json::Value::String(s.to_string())); }
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败：{}", e))?;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(serde_json::json!({ "status": status, "bodyBase64": b64, "headers": headers_map }).to_string())
+}
+
 /// 媒体探测取正文（v0.1.411）：供看剧源体检真验流用——拉 m3u8 播放列表验分片。
 /// 与 plugin_http 的区别：校验用 validate_media_url（公网 http(s) 都放行，
 /// 只拦本机/内网/保留字面地址），因为直播流地址大多是 http；plugin_http 的
@@ -4428,7 +4462,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

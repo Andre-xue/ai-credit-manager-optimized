@@ -433,6 +433,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
       {reauthTarget && (
         <MailReauthModal
           account={reauthTarget}
+          reason={reauthFlags[reauthTarget.id]}
           pwd={pwd}
           notify={notify}
           onClose={() => setReauthTarget(null)}
@@ -1043,8 +1044,10 @@ function MailAddAccount({ pwd, notify, onBack, onAdded }: {
 
 // ---------------- 重新授权（OAuth 令牌失效时，v0.1.446） ----------------
 
-function MailReauthModal({ account, pwd, notify, onClose, onDone }: {
+function MailReauthModal({ account, reason, pwd, notify, onClose, onDone }: {
   account: MailAccountMeta
+  /** v0.1.459：重新授权标记里记的具体原因（如 Graph 通道迁移），有就如实展示 */
+  reason?: string
   pwd: string
   notify: (msg: string) => void
   onClose: () => void
@@ -1102,8 +1105,10 @@ function MailReauthModal({ account, pwd, notify, onClose, onDone }: {
           {!busy && <button className="btn sm ghost" onClick={onClose}><X size={14} /></button>}
         </div>
         <p className="mail-modal-desc">
-          「{account.email}」的授权令牌已失效（常见原因：你在 {preset.name} 后台撤销过授权、改过密码，或刷新令牌到期）。
-          重新走一遍浏览器授权就能恢复，不用删账户，邮件与本机缓存都在。
+          {reason
+            ? <>「{account.email}」需要重新授权：{reason}。重新走一遍浏览器授权就能恢复，不用删账户，邮件与本机缓存都在。</>
+            : <>「{account.email}」的授权令牌已失效（常见原因：你在 {preset.name} 后台撤销过授权、改过密码，或刷新令牌到期）。
+              重新走一遍浏览器授权就能恢复，不用删账户，邮件与本机缓存都在。</>}
         </p>
         <div className="mail-form">
           {provider

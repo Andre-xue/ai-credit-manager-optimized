@@ -15,6 +15,10 @@ import {
   parseBodyStructure, assembleBodyFromParts, bytesToBase64,
   loadCachedBody, saveCachedBody, dropCachedBodies, MAIL_CONNECT_STEP_LABELS,
   type MailFolder, type MailBodyResult,
+  MS_GRAPH_SCOPE, MAIL_GRAPH_MIGRATION_MESSAGE, diagnoseOAuthTokenForGraph,
+  mapGraphFolder, mapGraphMessage, hashGraphId, graphListFolders, graphErrorDetail,
+  mailSyncAccount, addMailAccount, listMailAccounts, loadMailCache,
+  type MailSecret,
 } from './mail'
 import { initVault } from './crypto'
 
@@ -368,7 +372,9 @@ describe('OAuth URL', () => {
     expect(g).toContain('127.0.0.1%3A18765')
     const m = buildOAuthUrl('microsoft', 'cid-2', 18766)
     expect(m).toContain('login.microsoftonline.com')
-    expect(m).toContain('IMAP.AccessAsUser.All')
+    // v0.1.459：微软改走 Graph 资源，scope 是 Mail.ReadWrite，不再是 IMAP 范围
+    expect(m).toContain('Mail.ReadWrite')
+    expect(m).not.toContain('IMAP.AccessAsUser.All')
   })
 
   // v0.1.457 钉死端点形状：微软 v2 授权端点是 /authorize，写成 /auth（Google 的结尾）线上直接 404，
@@ -382,7 +388,8 @@ describe('OAuth URL', () => {
     expect(u.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:18766')
     expect(u.searchParams.get('response_type')).toBe('code')
     expect(u.searchParams.get('response_mode')).toBe('query')
-    expect(u.searchParams.get('scope')).toBe('https://outlook.office.com/IMAP.AccessAsUser.All offline_access')
+    // v0.1.459：scope 改 Graph（Ethan 拍板 Outlook OAuth 走 Graph 通道）；457 钉的 IMAP scope 就此作废
+    expect(u.searchParams.get('scope')).toBe('https://graph.microsoft.com/Mail.ReadWrite offline_access')
   })
 
   it('Google 授权 URL 的 host+path 精确等于 /o/oauth2/v2/auth 且带必需参数', () => {
@@ -701,5 +708,184 @@ describe('v0.1.450 正文缓存与连接步骤文案', () => {
     expect(MAIL_CONNECT_STEP_LABELS.connecting).toContain('正在连接')
     expect(MAIL_CONNECT_STEP_LABELS.handshaking).toContain('握手')
     expect(MAIL_CONNECT_STEP_LABELS['logging-in']).toContain('登录验证')
+  })
+})
+
+/* ================= v0.1.459：Outlook OAuth 走 Microsoft Graph 通道 ================= */
+
+const OUTLOOK_META: MailAccountMeta = { id: 'acc-459', email: 'someone@outlook.com', platformId: 'outlook', label: 'someone@outlook.com', host: 'outlook.office365.com', port: 993 }
+
+function graphJwt(payload: Record<string, unknown>): string {
+  const seg = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  return `${seg({ alg: 'RS256', typ: 'JWT' })}.${seg(payload)}.sig`
+}
+
+function stubTauriInvoke(handler: (cmd: string, args: Record<string, unknown>) => unknown) {
+  const g = globalThis as unknown as { window: unknown }
+  g.window = { __TAURI_INTERNALS__: { invoke: (cmd: string, args: Record<string, unknown>) => handler(cmd, args ?? {}) } }
+}
+
+function b64Json(status: number, obj: unknown) {
+  return JSON.stringify({ status, bodyBase64: Buffer.from(JSON.stringify(obj)).toString('base64'), headers: {} })
+}
+
+describe('v0.1.459 Graph scope 与令牌自检', () => {
+  it('Graph scope 常量就是 Mail.ReadWrite + offline_access', () => {
+    expect(MS_GRAPH_SCOPE).toBe('https://graph.microsoft.com/Mail.ReadWrite offline_access')
+  })
+  it('Graph 令牌全对（aud=graph、scp 含 Mail.ReadWrite、upn 一致）→ 放行', () => {
+    const tok = graphJwt({ aud: 'https://graph.microsoft.com', scp: 'openid profile Mail.ReadWrite', upn: 'someone@outlook.com', exp: 9999999999 })
+    expect(diagnoseOAuthTokenForGraph(OUTLOOK_META, tok)).toBeNull()
+  })
+  it('aud 还是 outlook.office.com（旧 IMAP 令牌）→ 报发给错资源', () => {
+    const tok = graphJwt({ aud: 'https://outlook.office.com', scp: 'IMAP.AccessAsUser.All', upn: 'someone@outlook.com', exp: 9999999999 })
+    expect(diagnoseOAuthTokenForGraph(OUTLOOK_META, tok)).toContain('不是发给微软 Graph')
+  })
+  it('scp 缺 Mail.ReadWrite → 报缺邮件读写权限', () => {
+    const tok = graphJwt({ aud: 'https://graph.microsoft.com', scp: 'openid profile User.Read', upn: 'someone@outlook.com', exp: 9999999999 })
+    expect(diagnoseOAuthTokenForGraph(OUTLOOK_META, tok)).toContain('缺邮件读写权限')
+  })
+  it('upn 与账户邮箱不一致 → 点名两个地址', () => {
+    const tok = graphJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite', upn: 'other@outlook.com', exp: 9999999999 })
+    const msg = diagnoseOAuthTokenForGraph(OUTLOOK_META, tok) ?? ''
+    expect(msg).toContain('other@outlook.com')
+    expect(msg).toContain('someone@outlook.com')
+  })
+  it('解不出的令牌、Gmail 账户 → 放行（不误拦）', () => {
+    expect(diagnoseOAuthTokenForGraph(OUTLOOK_META, 'not-a-jwt')).toBeNull()
+    const gmailTok = graphJwt({ aud: 'x', scp: 'y', upn: 'z@z.z' })
+    expect(diagnoseOAuthTokenForGraph({ ...OUTLOOK_META, platformId: 'gmail', email: 'a@gmail.com' }, gmailTok)).toBeNull()
+  })
+  it('not connected 指引按通道分开：Graph 账户不再提 IMAP 开关，IMAP 账户保持原样', () => {
+    const raw = 'IMAP 错误：User is authenticated but not connected'
+    const g = displayMailError(raw, { transport: 'graph' })
+    expect(g).toContain('Graph')
+    expect(g).not.toContain('IMAP 已开启')
+    expect(displayMailError(raw)).toContain('IMAP 已开启')
+  })
+})
+
+describe('v0.1.459 Graph 响应映射', () => {
+  it('文件夹：name 存 id、label 存显示名、角色与计数映射', () => {
+    const f = mapGraphFolder({ id: 'fid-1', displayName: 'Deleted Items', totalItemCount: 7, unreadItemCount: 2 })
+    expect(f.name).toBe('fid-1')
+    expect(f.label).toBe('Deleted Items')
+    expect(f.role).toBe('trash')
+    expect(f.total).toBe(7)
+    expect(f.unread).toBe(2)
+    // 知名文件夹的角色以端点语义为准，不靠显示名猜
+    expect(mapGraphFolder({ id: 'fid-2', displayName: '收件箱' }, 'inbox').role).toBe('inbox')
+  })
+  it('消息：字段映射、已读/星标转 flags、验证码分类、uid 稳定', () => {
+    const raw = {
+      id: 'AAMk-1', subject: '您的验证码是 123456',
+      from: { emailAddress: { name: '服务台', address: 'notice@service.example' } },
+      receivedDateTime: '2026-11-26T07:00:00Z', isRead: false, hasAttachments: true,
+      bodyPreview: '您的验证码是 123456', flag: { flagStatus: 'flagged' },
+    }
+    const m = mapGraphMessage(raw, 'acc-459', 'fid-1')
+    expect(m.graphId).toBe('AAMk-1')
+    expect(m.from).toBe('服务台')
+    expect(m.fromAddr).toBe('notice@service.example')
+    expect(m.flags).toContain('\\Flagged')
+    expect(m.flags).not.toContain('\\Seen')
+    expect(m.hasAttach).toBe(true)
+    expect(m.category).toBe('code')
+    expect(m.key).toBe(`acc-459|fid-1|${m.uid}`)
+    expect(m.uid).toBe(hashGraphId('AAMk-1'))
+    expect(mapGraphMessage({ ...raw, isRead: true }, 'acc-459', 'fid-1').flags).toContain('\\Seen')
+    expect(hashGraphId('AAMk-1')).not.toBe(hashGraphId('AAMk-2'))
+    expect(hashGraphId('AAMk-1')).toBeGreaterThan(0)
+  })
+  it('Graph 错误透传：JSON 错误体提取 code 与 message；非 JSON 用原文', () => {
+    const d = graphErrorDetail(401, '{"error":{"code":"InvalidAuthenticationToken","message":"Access token is empty."}}')
+    expect(d).toContain('401')
+    expect(d).toContain('InvalidAuthenticationToken')
+    expect(d).toContain('Access token is empty.')
+    expect(graphErrorDetail(500, 'raw boom')).toContain('500')
+    expect(graphErrorDetail(500, 'raw boom')).toContain('raw boom')
+  })
+  it('graphListFolders 遇 401 → 抛错带状态码与微软原文，不吞', async () => {
+    stubTauriInvoke((cmd) => {
+      if (cmd === 'plugin_http_b64') return b64Json(401, { error: { code: 'InvalidAuthenticationToken', message: 'bad token' } })
+      throw new Error(`unexpected ${cmd}`)
+    })
+    await expect(graphListFolders('tok')).rejects.toThrow(/401/)
+    await expect(graphListFolders('tok')).rejects.toThrow(/InvalidAuthenticationToken/)
+  })
+})
+
+describe('v0.1.459 旧令牌迁移检出与 Graph 同步', () => {
+  const PWD = 'test1234'
+  beforeEach(() => localStorage.clear())
+
+  it('未过期旧 IMAP 令牌（aud=outlook、无 scope 记录）→ 同步失败给迁移原因 + 打 reauth 标记 + 不发 Graph 请求', async () => {
+    await initVault(PWD)
+    const legacyTok = graphJwt({ aud: 'https://outlook.office.com', scp: 'IMAP.AccessAsUser.All', upn: 'someone@outlook.com', exp: 9999999999 })
+    const secret: MailSecret = { kind: 'oauth', accessTok: legacyTok, refreshTok: 'rt-old', expiresAt: Date.now() + 3600_000, clientId: 'cid', clientSecret: '' }
+    const acc = await addMailAccount({ email: 'someone@outlook.com', platformId: 'outlook', label: 'someone@outlook.com', host: 'outlook.office365.com', port: 993 }, secret, PWD)
+    const calls: string[] = []
+    stubTauriInvoke((cmd) => { calls.push(cmd); throw new Error('不应发网络') })
+    const out = await mailSyncAccount(acc, PWD)
+    expect(out.ok).toBe(false)
+    expect(out.error).toContain('Graph 通道')
+    expect(out.error).toContain('重新授权')
+    expect(loadMailReauthFlags()[acc.id]).toContain('Graph 通道')
+    expect(calls).not.toContain('plugin_http_b64')
+    expect(calls).not.toContain('mail_imap_connect')
+  })
+
+  it('已过期旧令牌刷新被拒（invalid_grant 且无 Graph 范围）→ 同样走迁移文案与标记', async () => {
+    await initVault(PWD)
+    const secret: MailSecret = { kind: 'oauth', accessTok: 'opaque-old', refreshTok: 'rt-old', expiresAt: 1, clientId: 'cid', clientSecret: '' }
+    const acc = await addMailAccount({ email: 'someone@outlook.com', platformId: 'outlook', label: 'someone@outlook.com', host: 'outlook.office365.com', port: 993 }, secret, PWD)
+    stubTauriInvoke((cmd) => {
+      if (cmd === 'plugin_http') return JSON.stringify({ status: 400, body: JSON.stringify({ error: 'invalid_grant', error_description: 'grant expired' }), headers: {} })
+      throw new Error(`unexpected ${cmd}`)
+    })
+    const out = await mailSyncAccount(acc, PWD)
+    expect(out.ok).toBe(false)
+    expect(out.error).toContain(MAIL_GRAPH_MIGRATION_MESSAGE)
+    expect(loadMailReauthFlags()[acc.id]).toBeTruthy()
+  })
+
+  it('Graph 令牌账户：同步走 plugin_http_b64 出邮件、回填 transport=graph、轮询档（idleSupported=false）、正文预取走 $value', async () => {
+    await initVault(PWD)
+    const tok = graphJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite', upn: 'someone@outlook.com', exp: 9999999999 })
+    const secret: MailSecret = { kind: 'oauth', accessTok: tok, refreshTok: 'rt-g', expiresAt: Date.now() + 3600_000, clientId: 'cid', clientSecret: '', scope: MS_GRAPH_SCOPE }
+    const acc = await addMailAccount({ email: 'someone@outlook.com', platformId: 'outlook', label: 'someone@outlook.com', host: 'outlook.office365.com', port: 993 }, secret, PWD)
+    const inbox = { id: 'fid-inbox', displayName: 'Inbox', totalItemCount: 1, unreadItemCount: 1, childFolderCount: 0 }
+    const trash = { id: 'fid-trash', displayName: 'Deleted Items', totalItemCount: 0, unreadItemCount: 0, childFolderCount: 0 }
+    const msg = {
+      id: 'AAMk-9', subject: '459 同步测试', from: { emailAddress: { name: 'Boss', address: 'boss@example.com' } },
+      receivedDateTime: '2026-11-26T07:00:00Z', isRead: false, hasAttachments: false, bodyPreview: 'hi', flag: { flagStatus: 'notFlagged' },
+    }
+    const mime = 'From: Boss <boss@example.com>\r\nSubject: 459\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nGraph body 459\r\n'
+    const imapCalls: string[] = []
+    stubTauriInvoke((cmd, args) => {
+      if (cmd.startsWith('mail_imap')) { imapCalls.push(cmd); throw new Error('Graph 账户不许走 IMAP') }
+      if (cmd !== 'plugin_http_b64') throw new Error(`unexpected ${cmd}`)
+      const url = String(args['url'])
+      if (url.includes('/mailFolders/inbox?')) return b64Json(200, { id: 'fid-inbox' })
+      if (/\/mailFolders\/(sentitems|drafts|deleteditems|junkemail|archive)\?/.test(url)) return b64Json(404, { error: { code: 'ErrorFolderNotFound', message: 'no' } })
+      if (url.includes('/messages/') && url.includes('$value')) return JSON.stringify({ status: 200, bodyBase64: Buffer.from(mime).toString('base64'), headers: {} })
+      if (url.includes('/mailFolders/fid-inbox/messages')) return b64Json(200, { value: [msg] })
+      if (url.includes('/messages?')) return b64Json(200, { value: [] })
+      if (url.includes('/mailFolders?')) return b64Json(200, { value: [inbox, trash] })
+      throw new Error(`unrouted ${url}`)
+    })
+    const out = await mailSyncAccount(acc, PWD)
+    expect(out.ok).toBe(true)
+    expect(out.caps).toBe('GRAPH')
+    expect(out.idleSupported).toBe(false) // Graph 无 IDLE：界面如实标轮询
+    expect(imapCalls).toEqual([])
+    const cached = loadMailCache()[acc.id]
+    expect(cached.messages).toHaveLength(1)
+    expect(cached.messages[0].graphId).toBe('AAMk-9')
+    expect(cached.folders.map(f => f.role)).toContain('trash')
+    expect(listMailAccounts().find(a => a.id === acc.id)?.transport).toBe('graph')
+    // 正文预取（450 缓存层）走 $value：等微任务跑完后缓存里应有正文
+    await new Promise(r => setTimeout(r, 30))
+    expect(loadCachedBody(cached.messages[0].key)?.text).toContain('Graph body 459')
   })
 })
