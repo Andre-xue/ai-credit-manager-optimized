@@ -9,5 +9,11 @@ fn main() {
     if args.iter().any(|a| a == "--acm-ocr") {
         std::process::exit(ai_credit_manager_lib::translator::run_ocr_cli(&args));
     }
+    // 翻译助手 OCR 常驻预热进程（v0.1.473）：主进程以 `--acm-ocr-server` 自启
+    // 本 exe 做常驻识别服务（行协议，见 translator::run_ocr_server）——进程与
+    // Vision 引擎跨次截图复用，把冷启动藏进用户框选拖动的时间里。
+    if args.iter().any(|a| a == "--acm-ocr-server") {
+        std::process::exit(ai_credit_manager_lib::translator::run_ocr_server());
+    }
     ai_credit_manager_lib::run()
 }

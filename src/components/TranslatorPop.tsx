@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import {
   speakLangOf, sourceLangLabel, removeSmartNewlines, readClipboard, setPopAlwaysOnTop,
+  loadTranslatorSettings,
   TRANSLATOR_LANGS, type OpsDisplay,
 } from '../core/translator'
 
@@ -15,6 +16,10 @@ interface PopPayload {
   sourceLang?: string
   error: string | null
   ops: OpsDisplay
+  /** v0.1.473：'input' = 输入翻译模式（Alt+E 呼出）；缺省/result = 译文展示 */
+  mode?: string
+  /** v0.1.473：译文流式到达中（先行弹窗 + 增量填入） */
+  streaming?: boolean
 }
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
@@ -41,6 +46,15 @@ export function TranslatorPop() {
   const [copied, setCopied] = useState<'src' | 'dst' | null>(null)
   const stateRef = useRef({ draft: '', targetSel: '简体中文', sourceSel: '' })
   stateRef.current = { draft, targetSel, sourceSel }
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // 输入模式（v0.1.473）：窗口显形后把焦点送进输入框，能直接打字
+  useEffect(() => {
+    if (payload?.mode === 'input') {
+      const t = window.setTimeout(() => inputRef.current?.focus(), 60)
+      return () => window.clearTimeout(t)
+    }
+  }, [payload?.mode])
 
   useEffect(() => {
     // 窗口底色由 main.tsx 的 trs-popwin 标记 + styles.css 统一管（不透明）；
@@ -48,8 +62,14 @@ export function TranslatorPop() {
     let unlisten: (() => void) | undefined
     const apply = (p: PopPayload) => {
       setPayload(p)
-      setDraft(p.source ?? '')
-      if (p.targetLang) setTargetSel(p.targetLang)
+      if (p.mode === 'input') {
+        // 输入模式：空稿起步，目标语言取设置里的默认目标
+        setDraft('')
+        setTargetSel(loadTranslatorSettings().targetLang)
+      } else {
+        setDraft(p.source ?? '')
+        if (p.targetLang) setTargetSel(p.targetLang)
+      }
       setSourceSel('')
       setBusy(false)
     }
@@ -68,7 +88,30 @@ export function TranslatorPop() {
     return () => { unlisten?.(); window.removeEventListener('keydown', onKey) }
   }, [])
 
-  const close = async () => { try { await inv()?.('translator_hide_pop') } catch { /* 忽略 */ } }
+  const close = async () => {
+    // v0.1.473 面包屑：输入模式的关闭与 Rust 的 input-show 成对落盘
+    if (payload?.mode === 'input') {
+      try { await inv()?.('translator_diag_note', { note: 'input-hide' }) } catch { /* 忽略 */ }
+    }
+    try { await inv()?.('translator_hide_pop') } catch { /* 忽略 */ }
+  }
+
+  // 输入模式提交（v0.1.473）：文本发给主窗口宿主翻译（translator-input-submit），
+  // 结果以 result 模式载荷回到本窗；宿主无响应时 20 秒兜底解除忙碌（同 retranslate）
+  const submitInput = async () => {
+    const text = stateRef.current.draft
+    if (!text.trim() || busy) return
+    setBusy(true)
+    try {
+      const { emit } = await import('@tauri-apps/api/event')
+      await emit('translator-input-submit', { text, targetLang: stateRef.current.targetSel })
+    } catch { setBusy(false) }
+    window.setTimeout(() => setBusy(false), 20000)
+  }
+  const pasteIntoInput = async () => {
+    const text = await readClipboard()
+    if (text) setDraft(text)
+  }
 
   const retranslate = async (next?: { source?: string; targetLang?: string; sourceSel?: string }) => {
     const cur = stateRef.current
@@ -145,7 +188,37 @@ export function TranslatorPop() {
       {payload?.error && (
         <div className="trs-pop-error"><AlertTriangle size={15} /> <span>{payload.error}</span></div>
       )}
-      {payload && !payload.error && (
+      {payload && !payload.error && payload.mode === 'input' && (
+        <>
+          <textarea
+            ref={inputRef}
+            className="trs-pop-src-edit"
+            value={draft}
+            rows={4}
+            placeholder="输入要翻译的文本（⌘/Ctrl + Enter 翻译）"
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submitInput() }}
+          />
+          <div className="trs-pop-langrow">
+            <span className="trs-pop-detected">自动检测</span>
+            <ArrowLeftRight size={13} className="trs-pop-swap" />
+            <select className="trs-pop-langsel" value={targetSel}
+              onChange={e => setTargetSel(e.target.value)}>
+              {TRANSLATOR_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <button className="trs-pop-retranslate" disabled={busy || !draft.trim()} onClick={() => void submitInput()} title="翻译（⌘/Ctrl + Enter）">
+              {busy ? <Loader2 size={13} className="spin" /> : <Languages size={13} />} 翻译
+            </button>
+          </div>
+          <div className="trs-pop-bar">
+            <button onClick={() => void pasteIntoInput()}>
+              {showIcon && <ClipboardPaste size={14} />}{showText && <span>粘贴</span>}
+            </button>
+            <span className="trs-pop-detected">在任何应用里按快捷键呼出 · Esc 关闭</span>
+          </div>
+        </>
+      )}
+      {payload && !payload.error && payload.mode !== 'input' && (
         <>
           <textarea
             className="trs-pop-src-edit"
@@ -189,7 +262,14 @@ export function TranslatorPop() {
           </div>
 
           <div className="trs-pop-dst">
-            {busy ? <span className="trs-pop-loading"><Loader2 size={14} className="spin" /> 翻译中…</span> : payload.translated}
+            {busy || (payload.streaming && !payload.translated)
+              ? <span className="trs-pop-loading"><Loader2 size={14} className="spin" /> 翻译中…</span>
+              : (
+                <>
+                  {payload.translated}
+                  {payload.streaming && <span className="trs-pop-loading" style={{ marginLeft: 6 }}><Loader2 size={12} className="spin" /></span>}
+                </>
+              )}
           </div>
           <div className="trs-pop-bar">
             <button onClick={() => speak(payload.translated, targetSel)}>

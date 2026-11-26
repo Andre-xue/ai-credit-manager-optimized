@@ -240,15 +240,19 @@ function usageTokensOf(json: any): number {
   return p + c
 }
 
-/** 对话：OpenAI 兼容 chat completions（非流式，简化处理） */
+/** 对话：OpenAI 兼容 chat completions（非流式，简化处理）。
+ * maxTokens（v0.1.473）：可选输出上限，翻译等短任务场景传入；不传则不带
+ * max_tokens、行为与旧版一致。被平台以 400 拒绝时随可选参数一并剥离重试。 */
 export async function callChat(
   account: Account, apiKey: string, messages: { role: string; content: string }[],
   engineId?: string, reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high',
+  maxTokens?: number,
 ): Promise<ProviderCallResult> {
   try {
     const url = chatUrl(account)
     const model = engineId || account.label
     const body: Record<string, unknown> = { model, messages, stream: false }
+    if (maxTokens && maxTokens > 0) body.max_tokens = maxTokens
     const pid = (account.providerId || '').toLowerCase()
     const isDeepSeek = pid.includes('deepseek') || /deepseek/i.test(model) || /deepseek/i.test(account.apiUrl || '')
     if (isDeepSeek) {
@@ -278,7 +282,7 @@ export async function callChat(
       const slim = (b: Record<string, unknown>): Record<string, unknown> | null => {
         const next = { ...b }
         let changed = false
-        for (const k of ['reasoning_effort', 'thinking', 'temperature']) {
+        for (const k of ['reasoning_effort', 'thinking', 'temperature', 'max_tokens']) {
           if (k in next) { delete next[k]; changed = true }
         }
         return changed ? next : null

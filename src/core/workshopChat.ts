@@ -112,6 +112,13 @@ export interface WorkshopChatParams {
   user: string
   /** 自动切换发生时回调（界面明示实际路线与原因）；不传则切换仍发生但无额外提示 */
   onChainNote?: (msg: string) => void
+  /** 流式增量回调（累计全文，v0.1.473 翻译助手用）：仅云端免费路线真回调，
+   * 其余路线（上游免费/自有账户/账号池）传输层非流式、不回调，整段返回 */
+  onPartial?: (full: string) => void
+  /** 输出 token 上限（v0.1.473 翻译请求瘦身）：目前仅自有账户路线透传给 callChat */
+  maxTokens?: number
+  /** 思考强度（v0.1.473 翻译请求瘦身）：翻译场景传 minimal 压思考耗时 */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
 }
 
 /** 单条路线跑一次单轮对话（system + user），返回纯文本；不做任何切换 */
@@ -129,7 +136,7 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   if (route.kind === 'free') {
     const opt = freeOptions.find(o => `free:${o.key}` === route.key)
     if (!opt) throw new Error('所选免费模型已不可用，请换一个')
-    return await freeAiChat(opt, system, user)
+    return await freeAiChat(opt, system, user, { onPartial: params.onPartial, reasoningEffort: params.reasoningEffort })
   }
   const acct = accounts.find(a => a.id === route.accountId)
   if (!acct) throw new Error('所选账户不存在')
@@ -155,7 +162,7 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   const r = await callChat(acct, key, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], resolveWorkshopModel(acct, route))
+  ], resolveWorkshopModel(acct, route), params.reasoningEffort, params.maxTokens)
   if (!r.ok) throw new Error(r.error || r.text || '调用失败')
   return r.text
 }

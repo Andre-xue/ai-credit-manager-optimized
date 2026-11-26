@@ -11,7 +11,7 @@ import {
   getTranslatorPermissions, requestAccessibility, requestScreenCapture, openPermissionSettings,
   preprocessText, pickTargetLang, translateWithRoutes, speakLangOf, writeClipboard,
   noteTranslatorDiag,
-  saveTranslatorRouteKey, takePendingTranslatorTab, getInvalidTranslatorShortcutFields,
+  saveTranslatorRouteKey, getInvalidTranslatorShortcutFields,
   TRANSLATOR_LANGS, type TranslatorSettings, type TranslatorPermissions, type OpsDisplay,
   type TranslatorShortcutField,
 } from '../core/translator'
@@ -128,7 +128,8 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
   const { perms, refresh: refreshPerms } = usePermissions()
   const { data, routeKey, setRouteKey } = useRouteData(accounts)
 
-  useEffect(() => { takePendingTranslatorTab() }, [])
+  // v0.1.473：旧版这里消费 pending 输入页签（Alt+E 跳页机制）——该机制已
+  // 随输入小窗直开删除，takePendingTranslatorTab 一并移除，勿恢复。
   // v0.1.462 面包屑：页面挂载落一行——若闪退时日志里连这行都没有，问题在
   // 组件挂载之前；有这行没 perm-open，就是死在首次 invoke 的路上。
   useEffect(() => { void noteTranslatorDiag('tool-mount') }, [])

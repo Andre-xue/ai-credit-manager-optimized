@@ -66,12 +66,17 @@ export async function loadFreeAiOptions(): Promise<FreeAiOption[]> {
   return out
 }
 
-/** 用所选免费模型完成一次对话（翻译场景：system 提示 + 单条文本） */
-export async function freeAiChat(opt: FreeAiOption, system: string, text: string): Promise<string> {
+/** 用所选免费模型完成一次对话（翻译场景：system 提示 + 单条文本）。
+ * opts（v0.1.473）：onPartial 仅云端路线（streamChat）真回调增量，其余路线
+ * 传输层非流式、不回调；reasoningEffort 透传云端与上游（压思考耗时）。 */
+export async function freeAiChat(
+  opt: FreeAiOption, system: string, text: string,
+  opts?: { onPartial?: (full: string) => void; reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' },
+): Promise<string> {
   if (opt.source === 'cloud') {
     // 独立 conversationId，避免与 AI 助手页面的对话流互相冲突被网关拒绝
     const convId = `tr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    return streamChat(opt.modelId, [], text, () => {}, undefined, undefined, undefined, system, convId)
+    return streamChat(opt.modelId, [], text, opts?.onPartial ?? (() => {}), undefined, undefined, opts?.reasoningEffort, system, convId)
   }
   if (opt.source === 'apisfree') {
     return chatApisFree([
@@ -82,7 +87,7 @@ export async function freeAiChat(opt: FreeAiOption, system: string, text: string
   return chatUpstream(opt.source, opt.modelId, [
     { role: 'system', content: system },
     { role: 'user', content: text },
-  ])
+  ], opts?.reasoningEffort)
 }
 
 export interface FreeAiTestResult { ok: boolean; ms: number; error?: string }

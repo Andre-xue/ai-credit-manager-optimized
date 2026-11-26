@@ -23,6 +23,8 @@
 //! 提示，不阻塞调用，只断言不崩、返回值可读）。
 //!
 //! v0.1.468：新增 t08——截图翻译的 Vision OCR 真跑（见 t08 注释）。
+//! v0.1.473：新增 t09（常驻 OCR 进程帧协议编解码往返）与 t10（预热图
+//! 真跑 OCR）——预热层只许加速、不许把 468 已修好的可用性拉低。
 #![cfg(target_os = "macos")]
 
 use ai_credit_manager_lib::translator::{ffi_probe, permissions_snapshot};
@@ -117,6 +119,51 @@ fn t08_vision_ocr_known_text() {
         }
         Ok(Err(e)) => panic!("t08 OCR 返回错误: {e}"),
         Err(_) => panic!("t08 OCR 25 秒未返回——子进程卡死在 runner 上复现（v0.1.468 根因）"),
+    }
+}
+
+/// v0.1.473：常驻 OCR 子进程（--acm-ocr-server）的行协议帧编解码往返。
+/// 父进程与子进程靠 `OK <len>\n<原文>` / `ERR <原因>\n` 帧通信：编解码
+/// 错位（多行文本被截断、长度算错）会让父进程等帧等到 30 秒超时——
+/// 与 468 的卡死同症状。本测试调生产编解码本体（ffi_probe 转发）钉死。
+#[test]
+fn t09_ocr_frame_codec_roundtrip() {
+    println!("t09 OCR 常驻进程帧协议编解码往返（生产 ocr_frame_ok/err + ocr_read_frame）");
+    assert!(
+        ffi_probe::ocr_frame_codec_ok(),
+        "帧编解码往返应全部一致（多行/空文本/含 OK 前缀/错误帧/EOF）"
+    );
+    println!("t09 通过：帧协议往返一致");
+}
+
+/// v0.1.473：预热图真跑。常驻子进程的预热请求就是把内置 HELLO 图
+/// （ffi_probe::warmup_png → 生产 WARMUP_PNG）走一遍 vision_ocr_path；
+/// 本测试在 runner 上同路真跑（25 秒守卫）：必须返回且识别出 HELLO——
+/// 预热图本身解码/识别有问题的话，真机预热就是白跑、冷启动照样压在
+/// 用户松手之后。
+#[test]
+fn t10_warmup_png_ocr() {
+    println!("t10 预热图 Vision OCR 真跑：内置 HELLO PNG → 生产 OCR 入口（25s 守卫）");
+    let bytes = ffi_probe::warmup_png();
+    assert!(bytes.len() > 100, "预热图字节数异常: {}", bytes.len());
+    let path = std::env::temp_dir().join(format!("acm-t10-warmup-{}.png", std::process::id()));
+    std::fs::write(&path, &bytes).expect("预热图写盘失败");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p2 = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(ffi_probe::ocr_png(&p2));
+    });
+    let out = rx.recv_timeout(std::time::Duration::from_secs(25));
+    let _ = std::fs::remove_file(&path);
+    match out {
+        Ok(Ok(text)) => {
+            println!("t10 识别结果: {text:?}");
+            let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(flat.contains("HELLO"), "预热图应识别出 HELLO，实际: {text:?}");
+            println!("t10 通过：预热图可解码且识别出 HELLO");
+        }
+        Ok(Err(e)) => panic!("t10 预热图 OCR 返回错误: {e}"),
+        Err(_) => panic!("t10 预热图 OCR 25 秒未返回——预热路径在 runner 上卡死"),
     }
 }
 

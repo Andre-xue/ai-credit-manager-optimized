@@ -1604,9 +1604,10 @@ function App() {
 
           {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={setSessionPwd} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
 
-          {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗 */}
-          <TranslatorHost accounts={state.accounts} sessionPwd={sessionPwd} notify={notify}
-            onOpenInput={() => { openTab('workshop'); setWsSignal({ tool: 'translator', n: Date.now() }) }} />
+          {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗。
+              v0.1.473：Alt+E 输入翻译改开置顶输入小窗（宿主直连 Rust），不再
+              经 onOpenInput 跳工坊页（旧链在其他应用里按键毫无动静） */}
+          <TranslatorHost accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} />
 
           {tab === 'usage' && <UsageView state={state} notify={notify}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}

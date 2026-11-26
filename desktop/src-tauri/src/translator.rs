@@ -163,6 +163,10 @@ fn diag_perm(ax: bool, screen: bool) {
     }
 }
 
+fn default_pop_mode() -> String {
+    "result".to_string()
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PopPayload {
@@ -175,6 +179,14 @@ pub struct PopPayload {
     pub source_lang: String,
     pub error: Option<String>,
     pub ops: String,
+    /// 小窗模式（v0.1.473）：result = 译文/错误展示；input = 输入翻译窗
+    /// （Alt+E 呼出，空原文 + 输入框）。旧载荷缺此字段时按 result 处理。
+    #[serde(default = "default_pop_mode")]
+    pub mode: String,
+    /// 流式进行中标记（v0.1.473）：true 时小窗先行显示原文与已到达的部分
+    /// 译文（或「翻译中…」），最终以 streaming=false 的更新收尾。
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 static POP_PAYLOAD: Mutex<Option<PopPayload>> = Mutex::new(None);
@@ -400,6 +412,37 @@ pub mod ffi_probe {
         }
     }
 
+    /// v0.1.473：常驻 OCR 子进程的行协议帧编解码往返（生产 ocr_frame_ok /
+    /// ocr_frame_err / ocr_read_frame 本体，含多行文本与空文本）——协议错位
+    /// 会让父进程等帧等到超时，CI t09 把这组纯函数钉死。
+    pub fn ocr_frame_codec_ok() -> bool {
+        use std::io::Cursor;
+        let cases: [&str; 4] = ["HELLO 12345", "多行\n文本\n三行", "", "带 OK 前缀\nOK 3\nabc"];
+        for text in cases {
+            let frame = super::ocr_frame_ok(text);
+            let mut cur = Cursor::new(frame);
+            match super::ocr_read_frame(&mut cur) {
+                Ok(Some(Ok(got))) if got == text => {}
+                _ => return false,
+            }
+        }
+        let frame = super::ocr_frame_err("识别失败：某\n原因");
+        let mut cur = Cursor::new(frame);
+        match super::ocr_read_frame(&mut cur) {
+            Ok(Some(Err(msg))) if !msg.contains('\n') && msg.contains("识别失败") => {}
+            _ => return false,
+        }
+        // 流结束应回 Ok(None)，不许把 EOF 当错误帧
+        let mut empty = Cursor::new(Vec::new());
+        matches!(super::ocr_read_frame(&mut empty), Ok(None))
+    }
+
+    /// v0.1.473：预热图字节（生产 WARMUP_PNG 本体）——CI t10 把它写盘后走
+    /// ocr_png 真跑 Vision，验预热图本身可解码、可识别、不挂死。
+    pub fn warmup_png() -> Vec<u8> {
+        super::WARMUP_PNG.to_vec()
+    }
+
     /// v0.1.468：Vision OCR 核心入口——与 --acm-ocr 子进程（run_ocr_cli）走的
     /// 是同一个生产函数（mac::vision_ocr_path），CI 集成测试 t08 用它对已知
     /// 文字 PNG 真跑 OCR，子进程与测试共用一份实现，不许测试里另写一份。
@@ -482,10 +525,13 @@ pub fn translator_shortcuts_apply(
             }
             match kind {
                 "selection" => emit_to_main(&h, "translator-hotkey", serde_json::json!({ "action": "selection" })),
-                "input" => {
-                    crate::show_main_window(&h, Some("workshop"));
-                    emit_to_main(&h, "translator-hotkey", serde_json::json!({ "action": "input" }));
-                }
+                // v0.1.473：旧实现在这里先 show_main_window 把主窗口拽到工坊页
+                // 再发事件——用户在其他应用里按 Alt+E 时，主窗口在后台静默
+                // 切页、屏幕上毫无动静（实机日志 hotkey-fired 后零后续），且
+                // 全链路无一条面包屑。改为与 selection 同构：只发事件，宿主
+                // 收到后 invoke translator_show_input 开真正的置顶输入小窗
+                // （input-show 落盘），失败走错误小窗，绝不静默。
+                "input" => emit_to_main(&h, "translator-hotkey", serde_json::json!({ "action": "input" })),
                 _ => {
                     if let Err(e) = start_capture(&h) {
                         let (mx, my) = current_mouse(&h);
@@ -652,31 +698,8 @@ fn ensure_pop_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     Ok(w)
 }
 
-#[tauri::command]
-pub fn translator_show_pop(
-    app: AppHandle,
-    source: String,
-    translated: String,
-    target_lang: String,
-    source_lang: Option<String>,
-    error: Option<String>,
-    ops: String,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
-    let payload = PopPayload {
-        source,
-        translated,
-        target_lang,
-        source_lang: source_lang.unwrap_or_default(),
-        error,
-        ops,
-    };
-    if let Ok(mut g) = POP_PAYLOAD.lock() {
-        *g = Some(payload.clone());
-    }
-    let w = ensure_pop_window(&app)?;
-    // 定位：x/y 是逻辑点（鼠标位置 + 前端已加的偏移），换算成物理像素并夹在屏幕内
+/// 小窗定位：x/y 是逻辑点（鼠标位置 + 前端已加的偏移），换算成物理像素并夹在屏幕内
+fn position_pop(w: &WebviewWindow, x: f64, y: f64) {
     if let Ok(Some(monitor)) = w.primary_monitor() {
         let scale = monitor.scale_factor();
         let mon_w = monitor.size().width as i32;
@@ -694,17 +717,115 @@ pub fn translator_show_pop(
         }
         let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px.max(edge), py.max(edge))));
     }
+}
+
+fn store_pop_payload(payload: &PopPayload) {
+    if let Ok(mut g) = POP_PAYLOAD.lock() {
+        *g = Some(payload.clone());
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn translator_show_pop(
+    app: AppHandle,
+    source: String,
+    translated: String,
+    target_lang: String,
+    source_lang: Option<String>,
+    error: Option<String>,
+    ops: String,
+    x: f64,
+    y: f64,
+    mode: Option<String>,
+    streaming: Option<bool>,
+) -> Result<(), String> {
+    let payload = PopPayload {
+        source,
+        translated,
+        target_lang,
+        source_lang: source_lang.unwrap_or_default(),
+        error,
+        ops,
+        mode: mode.unwrap_or_else(default_pop_mode),
+        streaming: streaming.unwrap_or(false),
+    };
+    store_pop_payload(&payload);
+    let w = ensure_pop_window(&app)?;
+    position_pop(&w, x, y);
     let _ = w.show();
     // v0.1.465 流水线面包屑：小窗已 show（错误与结果都记）——实机「松手后
     // 小窗不出现」时，日志有 pop-show 就是窗口层问题，没有就是死在更前面。
     diag("pop-show", &format!(
         "kind={} src-chars={} dst-chars={} at={x:.0},{y:.0}",
-        if payload.error.is_some() { "error" } else { "result" },
+        if payload.error.is_some() { "error" } else if payload.mode == "input" { "input" } else { "result" },
         payload.source.chars().count(),
         payload.translated.chars().count(),
     ));
     let _ = w.emit("translator-pop-data", payload);
     Ok(())
+}
+
+/// 流式更新（v0.1.473）：只换载荷并通知小窗重渲染，不动窗口位置/显隐/焦点
+/// （show_pop 每帧调会反复抢焦点）。截图/划词先以 streaming=true 的
+/// show_pop 把窗口与原文亮出来，译文增量与最终结果都走这里。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn translator_update_pop(
+    app: AppHandle,
+    source: String,
+    translated: String,
+    target_lang: String,
+    source_lang: Option<String>,
+    error: Option<String>,
+    ops: String,
+    streaming: Option<bool>,
+) -> Result<(), String> {
+    let payload = PopPayload {
+        source,
+        translated,
+        target_lang,
+        source_lang: source_lang.unwrap_or_default(),
+        error,
+        ops,
+        mode: default_pop_mode(),
+        streaming: streaming.unwrap_or(false),
+    };
+    store_pop_payload(&payload);
+    if let Some(w) = app.get_webview_window(POP_LABEL) {
+        let _ = w.emit("translator-pop-data", payload);
+    }
+    Ok(())
+}
+
+/// 打开输入翻译小窗（v0.1.473）：与译文小窗同一个窗口、同一置顶层级
+/// （ensure_pop_window 建窗时 always_on_top + skip_taskbar），定位在鼠标
+/// 旁（+ 前端下发的偏移），show 后 set_focus 让输入框能直接打字。
+/// 返回最终逻辑坐标（宿主据此在同位置回填译文结果）。失败返回 Err，
+/// 宿主转错误小窗——Alt+E 的终点必须是可见窗口或可见报错，不许静默。
+#[tauri::command]
+pub fn translator_show_input(app: AppHandle, offset_x: f64, offset_y: f64) -> Result<(f64, f64), String> {
+    let (mx, my) = current_mouse(&app);
+    let x = mx + offset_x;
+    let y = my + offset_y;
+    let payload = PopPayload {
+        source: String::new(),
+        translated: String::new(),
+        target_lang: String::new(),
+        source_lang: String::new(),
+        error: None,
+        ops: "both".to_string(),
+        mode: "input".to_string(),
+        streaming: false,
+    };
+    store_pop_payload(&payload);
+    let w = ensure_pop_window(&app)?;
+    position_pop(&w, x, y);
+    let _ = w.show();
+    let _ = w.set_focus();
+    diag("input-show", &format!("at={x:.0},{y:.0}"));
+    let _ = w.emit("translator-pop-data", payload);
+    Ok((x, y))
 }
 
 #[tauri::command]
@@ -714,6 +835,8 @@ pub fn translator_pop_payload() -> Option<PopPayload> {
 
 #[tauri::command]
 pub fn translator_hide_pop(app: AppHandle) {
+    // v0.1.473：与 pop-show / input-show 成对落盘，三模式窗口生命周期可审计
+    diag("pop-hide", "");
     if let Some(w) = app.get_webview_window(POP_LABEL) {
         let _ = w.hide();
     }
@@ -808,6 +931,10 @@ fn start_capture(app: &AppHandle) -> Result<(), String> {
             diag("capture-busy", "stale-flag-cleared");
         }
     }
+    // v0.1.473 预热：热键按下、框选层刚打开时就把常驻 OCR 子进程拉起来并
+    // 让它先跑一次预热识别——用户拖框选的那几秒正好把进程启动与 Vision
+    // 引擎冷加载（实机冷态 perform 曾跑 27 秒）藏掉，松手时直接喂真图。
+    ocr_warmup_async();
     let session = CAPTURE_SESSION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     diag("capture-start", &format!("n={session}"));
     let w = match ensure_capture_window(app) {
@@ -878,13 +1005,19 @@ pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64)
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<String, String> {
             #[cfg(target_os = "macos")]
             let out = {
+                // v0.1.473 分段计时：截图段（screencapture 外部命令）与 OCR 段
+                // 分开落盘，与前端 translate / pop 段拼成全链路耗时
+                let t_cap = std::time::Instant::now();
                 let png = mac::capture_shot(x, y, w, h)?;
+                diag("timing-capture", &format!("ms={}", t_cap.elapsed().as_millis()));
                 // v0.1.465 流水线面包屑：截图落盘与 OCR 启动分开记——「松手后
                 // 没下文」时看缺哪一行就知道死在截图还是识别
                 let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
                 diag("capture-done", &format!("png-bytes={bytes}"));
                 diag("ocr-start", "subprocess");
+                let t_ocr = std::time::Instant::now();
                 let text = ocr_via_subprocess(&png);
+                diag("timing-ocr", &format!("ms={} ok={}", t_ocr.elapsed().as_millis(), text.is_ok()));
                 let _ = std::fs::remove_file(&png);
                 text
             };
@@ -920,9 +1053,288 @@ pub fn translator_capture_finish(app: AppHandle, x: f64, y: f64, w: f64, h: f64)
     });
 }
 
+// ---------------- OCR 常驻预热子进程（v0.1.473） ----------------
+// 背景（实机 diag 分段）：468 修好卡死后，OCR 热态 perform 约 1 秒，但冷态
+// 首次 perform 曾跑 27 秒——进程启动 + Vision 引擎冷加载全压在用户松手
+// 之后。本层在截图热键按下时（start_capture）就把子进程拉起并跑一次
+// 预热识别，子进程与引擎跨次截图复用；468 的 vision_ocr_path 本体不动，
+// 常驻进程里调的仍是同一个生产函数。
+//
+// 协议（stdin/stdout 行协议）：父进程每行写一个 PNG 路径（或预热令牌
+// __warmup__），子进程每请求回一帧：成功 `OK <字节数>\n<原文>`，失败
+// `ERR <单行原因>\n`。请求严格串行（截图单会话约束保证同一时刻至多一个
+// 真请求，预热与真请求共用同一把锁串行化）。
+
+/// 预热图：222x66 白底黑字点阵「HELLO」PNG（193 字节）。用真文字图预热是
+/// 为了让解码→请求→perform→读结果整条链都真跑一遍，而不是空转。
+const WARMUP_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 222, 0, 0, 0, 66, 8, 0, 0, 0,
+    0, 29, 168, 55, 83, 0, 0, 0, 136, 73, 68, 65, 84, 120, 218, 237, 214, 65, 10, 128, 48, 12, 4, 192,
+    252, 255, 211, 10, 94, 77, 37, 16, 133, 80, 103, 143, 101, 105, 58, 167, 38, 142, 173, 19, 120, 120,
+    120, 120, 120, 120, 120, 120, 120, 195, 120, 113, 37, 41, 221, 206, 227, 49, 149, 59, 43, 83, 42, 253, 213, 92, 60, 60, 60, 188, 153, 188, 119, 31, 221, 111, 38, 239, 196, 195, 195, 195, 195, 195, 195, 195, 195, 27, 201, 171, 47, 202, 165, 165, 22, 15, 15, 15, 239, 7, 60, 255, 30, 30, 30, 30, 30, 30, 30, 30, 30, 222, 28, 94, 103, 249, 238, 52, 87, 253, 164, 131, 135, 135, 135, 247, 49, 111, 191, 224, 225, 225, 225, 225, 225, 225, 225, 225, 13, 200, 9, 129, 105, 203, 187, 244, 164, 172, 31, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+const OCR_WARMUP_TOKEN: &str = "__warmup__";
+
+/// 编码一帧成功响应（纯函数，CI 集成测试 t09 往返钉住协议）
+fn ocr_frame_ok(text: &str) -> Vec<u8> {
+    let mut v = format!("OK {}\n", text.len()).into_bytes();
+    v.extend_from_slice(text.as_bytes());
+    v
+}
+
+/// 编码一帧失败响应（原因压成单行）
+fn ocr_frame_err(msg: &str) -> Vec<u8> {
+    let clean: String = msg.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+    format!("ERR {clean}\n").into_bytes()
+}
+
+/// 从字节流读一帧（父进程读子进程 stdout 用；纯逻辑，t09 往返钉住）：
+/// Ok(Some(Ok(text))) 成功帧、Ok(Some(Err(msg))) 失败帧、Ok(None) 流结束。
+fn ocr_read_frame<R: std::io::BufRead>(r: &mut R) -> std::io::Result<Option<Result<String, String>>> {
+    let mut head = String::new();
+    let n = r.read_line(&mut head)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let head = head.trim_end_matches(['\n', '\r']);
+    if let Some(rest) = head.strip_prefix("OK ") {
+        let len: usize = rest.trim().parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "OCR 帧长度非法")
+        })?;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf)?;
+        Ok(Some(Ok(String::from_utf8_lossy(&buf).into_owned())))
+    } else if let Some(msg) = head.strip_prefix("ERR ") {
+        Ok(Some(Err(msg.to_string())))
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "OCR 帧头非法"))
+    }
+}
+
+struct WarmOcr {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    rx: std::sync::mpsc::Receiver<Result<String, String>>,
+}
+
+struct WarmOcrState {
+    proc: Option<WarmOcr>,
+    warmed: bool,
+}
+
+static WARM_OCR: Mutex<WarmOcrState> = Mutex::new(WarmOcrState { proc: None, warmed: false });
+
+fn warm_spawn() -> Result<WarmOcr, String> {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| format!("找不到程序本体（{e}）"))?;
+    let mut child = Command::new(&exe)
+        .arg("--acm-ocr-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("无法启动常驻识别进程（{e}）"))?;
+    let stdin = child.stdin.take().ok_or("常驻识别进程 stdin 不可用")?;
+    let stdout = child.stdout.take().ok_or("常驻识别进程 stdout 不可用")?;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            match ocr_read_frame(&mut reader) {
+                Ok(Some(frame)) => {
+                    if tx.send(frame).is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = tx.send(Err("常驻识别进程输出已结束".to_string()));
+    });
+    diag("ocr-warm-spawn", &format!("exe={}", exe.display()));
+    Ok(WarmOcr { child, stdin, rx })
+}
+
+fn warm_kill(state: &mut WarmOcrState) {
+    if let Some(mut p) = state.proc.take() {
+        let _ = p.child.kill();
+        let _ = p.child.wait();
+    }
+    state.warmed = false;
+}
+
+/// 向常驻 OCR 进程发一个请求（路径或 __warmup__ 令牌），deadline 内等回帧。
+/// 全程持 WARM_OCR 锁串行化（预热线程与真请求不会交错帧）；锁被占时按
+/// 50ms 轮询 try_lock，deadline 到点未拿到锁直接 Err（调用方回退一次性
+/// 子进程）。任何通信失败都杀进程清状态，下次请求重新拉起。
+fn ocr_warm_request(req: &str, deadline: std::time::Instant) -> Result<String, String> {
+    use std::io::Write;
+    let mut guard = loop {
+        match WARM_OCR.try_lock() {
+            Ok(g) => break g,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err("常驻识别进程正忙（等待超时）".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("常驻识别进程状态异常".to_string());
+            }
+        }
+    };
+    // 进程已退出 → 清掉重拉
+    if let Some(p) = guard.proc.as_mut() {
+        if matches!(p.child.try_wait(), Ok(Some(_)) | Err(_)) {
+            guard.proc = None;
+            guard.warmed = false;
+        }
+    }
+    if guard.proc.is_none() {
+        match warm_spawn() {
+            Ok(p) => guard.proc = Some(p),
+            Err(e) => return Err(e),
+        }
+    }
+    // 写请求 + 等回帧在借用作用域内完成、只带出结论，杀进程在借用释放后做
+    enum WarmOutcome {
+        Frame(Result<String, String>),
+        Kill(String),
+    }
+    let outcome = {
+        let proc = guard.proc.as_mut().expect("warm proc just ensured");
+        let remain = deadline.saturating_duration_since(std::time::Instant::now());
+        if remain.is_zero() {
+            WarmOutcome::Kill("常驻识别进程响应超时".to_string())
+        } else if writeln!(proc.stdin, "{req}").and_then(|_| proc.stdin.flush()).is_err() {
+            WarmOutcome::Kill("常驻识别进程写入失败".to_string())
+        } else {
+            match proc.rx.recv_timeout(remain) {
+                Ok(frame) => WarmOutcome::Frame(frame),
+                Err(_) => WarmOutcome::Kill("常驻识别进程响应超时".to_string()),
+            }
+        }
+    };
+    match outcome {
+        WarmOutcome::Frame(frame) => frame,
+        WarmOutcome::Kill(e) => {
+            warm_kill(&mut guard);
+            Err(e)
+        }
+    }
+}
+
+/// 预热（start_capture 调用）：已预热过就跳过；否则后台线程发预热令牌，
+/// 子进程对内置 HELLO 图跑一次完整 vision_ocr_path。回帧（成功或失败帧）
+/// 都算引擎已 exercising 过、标记 warmed；进程级失败（超时/断连）不标记，
+/// 真请求时再试常驻或回退一次性子进程。
+fn ocr_warmup_async() {
+    {
+        let Ok(state) = WARM_OCR.lock() else { return };
+        if state.warmed && state.proc.is_some() {
+            return;
+        }
+    }
+    std::thread::spawn(|| {
+        let t0 = std::time::Instant::now();
+        let deadline = t0 + Duration::from_secs(20);
+        match ocr_warm_request(OCR_WARMUP_TOKEN, deadline) {
+            Ok(_) => {
+                if let Ok(mut state) = WARM_OCR.lock() {
+                    state.warmed = true;
+                }
+                diag("ocr-warm-ready", &format!("ms={}", t0.elapsed().as_millis()));
+            }
+            Err(e) => {
+                // 失败帧（Err(String) 经 Ok 通道回来的是进程内错误文案）与
+                // 通信失败都记一行；前者引擎其实已跑过，标记 warmed 防反复预热
+                if let Ok(mut state) = WARM_OCR.lock() {
+                    if state.proc.is_some() {
+                        state.warmed = true;
+                    }
+                }
+                diag("ocr-warm-fail", &e);
+            }
+        }
+    });
+}
+
+/// 常驻 OCR 子进程主循环（main.rs 拦截 --acm-ocr-server 走这里）：
+/// 逐行读路径（或预热令牌），每行跑一次 468 的 vision_ocr_path 并回一帧；
+/// stdin 关闭（主进程退出/杀进程）即退出。单请求内部耗时落盘分段。
+pub fn run_ocr_server() -> i32 {
+    use std::io::{BufRead, Write};
+    diag("ocr-server-start", "");
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let stdout = std::io::stdout();
+    while let Some(Ok(line)) = lines.next() {
+        let req = line.trim();
+        if req.is_empty() {
+            continue;
+        }
+        let t0 = std::time::Instant::now();
+        let result = run_ocr_server_one(req);
+        diag(
+            "ocr-server-perform",
+            &format!("ms={} ok={}", t0.elapsed().as_millis(), result.is_ok()),
+        );
+        let frame = match &result {
+            Ok(text) => ocr_frame_ok(text),
+            Err(e) => ocr_frame_err(e),
+        };
+        let mut out = stdout.lock();
+        if out.write_all(&frame).and_then(|_| out.flush()).is_err() {
+            break;
+        }
+    }
+    diag("ocr-server-exit", "");
+    0
+}
+
+fn run_ocr_server_one(req: &str) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if req == OCR_WARMUP_TOKEN {
+            let path = std::env::temp_dir().join(format!("acm-ocr-warmup-{}.png", std::process::id()));
+            std::fs::write(&path, WARMUP_PNG).map_err(|e| format!("预热图写盘失败：{e}"))?;
+            let r = mac::vision_ocr_path(&path);
+            let _ = std::fs::remove_file(&path);
+            return r;
+        }
+        mac::vision_ocr_path(std::path::Path::new(req))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = req;
+        Err("OCR 仅支持 macOS".to_string())
+    }
+}
+
+/// OCR 执行分发（v0.1.473）：优先走常驻预热子进程（--acm-ocr-server，
+/// 进程与 Vision 引擎跨次复用，见 ocr_warm_request）；常驻进程不可用/
+/// 超时/回错时回退到 468 的一次性子进程路径，结果口径与超时不变——
+/// 预热层只许加速、不许把可用性拉低。
+fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
+    let t0 = std::time::Instant::now();
+    let deadline = t0 + Duration::from_secs(30);
+    match ocr_warm_request(&png.to_string_lossy(), deadline) {
+        Ok(text) => {
+            diag("ocr-done", &format!("via=warm ms={}", t0.elapsed().as_millis()));
+            Ok(text)
+        }
+        Err(e) => {
+            diag("ocr-warm-fallback", &e);
+            ocr_via_subprocess_oneshot(png)
+        }
+    }
+}
+
 /// 以当前 exe 自启 OCR 子进程（--acm-ocr 隐藏模式，见 main.rs 的拦截）：
 /// 30 秒超时强杀（v0.1.465 起，旧为 25 秒）；子进程崩溃/非零退出只变成 Err，绝不影响主进程。
-fn ocr_via_subprocess(png: &std::path::Path) -> Result<String, String> {
+fn ocr_via_subprocess_oneshot(png: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| format!("识别失败：找不到程序本体（{e}）"))?;
@@ -1017,7 +1429,12 @@ fn run_ocr_cli_inner(args: &[String]) -> i32 {
     let _ = &image; // 非 macOS 分支不用它，消 unused 警告
     #[cfg(target_os = "macos")]
     {
-        match mac::vision_ocr_path(std::path::Path::new(&image)) {
+        let t0 = std::time::Instant::now();
+        let r = mac::vision_ocr_path(std::path::Path::new(&image));
+        // v0.1.473 分段计时：一次性子进程内 OCR 总耗时（与常驻进程的
+        // ocr-server-perform 对照，验收预热收益时两条路径都有数）
+        diag("ocr-child-total", &format!("ms={} ok={}", t0.elapsed().as_millis(), r.is_ok()));
+        match r {
             Ok(text) => {
                 diag("ocr-child-ocr-done", &format!("chars={}", text.chars().count()));
                 use std::io::Write;

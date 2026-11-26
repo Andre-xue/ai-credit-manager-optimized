@@ -290,10 +290,35 @@ export async function getSelectedText(): Promise<SelectionOutcome> {
 
 export async function showTranslatorPop(payload: {
   source: string; translated: string; targetLang: string; sourceLang?: string; error: string | null; ops: OpsDisplay; x: number; y: number
+  /** v0.1.473：result（默认）= 译文/错误小窗；input = 输入翻译窗（走 showTranslatorInput，一般不用这里） */
+  mode?: 'result' | 'input'
+  /** v0.1.473：流式进行中——小窗已先行显示原文，译文随后经 updateTranslatorPop 填入 */
+  streaming?: boolean
 }): Promise<void> {
   const inv = tauriInvoke()
   if (!inv) return
-  await inv('translator_show_pop', { sourceLang: '', ...payload } as unknown as Record<string, unknown>)
+  await inv('translator_show_pop', { sourceLang: '', mode: 'result', streaming: false, ...payload } as unknown as Record<string, unknown>)
+}
+
+/** 流式更新小窗内容（v0.1.473）：只换载荷不抢焦点；streaming=false 为最终结果 */
+export async function updateTranslatorPop(payload: {
+  source: string; translated: string; targetLang: string; sourceLang?: string; error: string | null; ops: OpsDisplay; streaming?: boolean
+}): Promise<void> {
+  const inv = tauriInvoke()
+  if (!inv) return
+  await inv('translator_update_pop', { sourceLang: '', streaming: false, ...payload } as unknown as Record<string, unknown>)
+}
+
+/**
+ * 打开输入翻译小窗（v0.1.473）：Rust 侧在鼠标旁建窗/显窗/聚焦（与译文小窗
+ * 同一置顶层级），返回小窗最终逻辑坐标。失败抛错——宿主必须转成可见报错，
+ * 这是 Alt+E 链路的终点之一，不许静默（473 前旧链就是死在这里无声无息）。
+ */
+export async function showTranslatorInput(offsetX: number, offsetY: number): Promise<[number, number]> {
+  const inv = tauriInvoke()
+  if (!inv) throw new Error('输入翻译仅在桌面端可用')
+  const r = await inv('translator_show_input', { offsetX, offsetY }) as [number, number]
+  return [Number(r?.[0] ?? 0), Number(r?.[1] ?? 0)]
 }
 
 export async function writeClipboard(text: string): Promise<void> {
@@ -322,6 +347,17 @@ export async function setPopAlwaysOnTop(on: boolean): Promise<void> {
 
 export interface TranslateOutcome { translated: string; targetLang: string; usedLabel: string }
 
+/**
+ * 翻译请求的输出上限（v0.1.473 请求瘦身，纯函数）：译文长度与原文同量级，
+ * 按原文字符数给 max_tokens——下限 256（短句也够用）、上限 4096（8000 字
+ * 长文不截断）。配合 reasoningEffort=minimal 关/压思考，短文本不再为
+ * 思考链与无界输出买单（实机译 15 字曾耗时约 6 秒）。
+ */
+export function translationMaxTokens(sourceChars: number): number {
+  const n = Math.max(0, Math.floor(sourceChars))
+  return Math.min(4096, Math.max(256, Math.ceil(n * 1.5) + 64))
+}
+
 async function runTranslate(opts: {
   accounts: Account[]
   sessionPwd: string
@@ -329,6 +365,8 @@ async function runTranslate(opts: {
   targetLang: string
   sourceLangName?: string
   onChainNote?: (msg: string) => void
+  /** 流式增量回调（累计全文）：支持流式的路线（云端）逐段回调；其余路线不回调、整段返回 */
+  onPartial?: (full: string) => void
 }): Promise<TranslateOutcome> {
   const { accounts, sessionPwd, targetLang } = opts
   const data = await loadWorkshopRoutes(accounts)
@@ -342,6 +380,9 @@ async function runTranslate(opts: {
     system: `你是专业翻译。${hint}把用户给出的文本翻译成${targetLang}。只输出译文，不要解释、不要加引号、不要保留原文。保留原有的段落与换行结构。`,
     user: opts.text.slice(0, 8000),
     onChainNote: opts.onChainNote,
+    onPartial: opts.onPartial,
+    maxTokens: translationMaxTokens(opts.text.length),
+    reasoningEffort: 'minimal',
   })
   return { translated: translated.trim(), targetLang, usedLabel: route.label }
 }
@@ -352,11 +393,12 @@ export async function translateWithRoutes(opts: {
   text: string
   settings: TranslatorSettings
   onChainNote?: (msg: string) => void
+  onPartial?: (full: string) => void
 }): Promise<TranslateOutcome> {
   const targetLang = pickTargetLang(opts.text, opts.settings)
   return runTranslate({
     accounts: opts.accounts, sessionPwd: opts.sessionPwd, text: opts.text,
-    targetLang, onChainNote: opts.onChainNote,
+    targetLang, onChainNote: opts.onChainNote, onPartial: opts.onPartial,
   })
 }
 
@@ -368,6 +410,7 @@ export async function translateToTarget(opts: {
   targetLang: string
   sourceLangName?: string
   onChainNote?: (msg: string) => void
+  onPartial?: (full: string) => void
 }): Promise<TranslateOutcome> {
   return runTranslate(opts)
 }
@@ -379,12 +422,9 @@ const SPEAK_LANG: Record<string, string> = {
 }
 export function speakLangOf(name: string): string { return SPEAK_LANG[name] ?? 'zh-CN' }
 
-// ---------------- 输入翻译入口（快捷键 → 打开工具页输入页签） ----------------
-
-let pendingTab: 'input' | null = null
-export function setPendingTranslatorTab(tab: 'input'): void { pendingTab = tab }
-export function takePendingTranslatorTab(): 'input' | null {
-  const t = pendingTab
-  pendingTab = null
-  return t
-}
+// ---------------- 输入翻译入口（v0.1.473 已改制，勿恢复旧机制） ----------------
+// 旧机制（440–472）：Alt+E → 宿主 setPendingTranslatorTab + 跳主窗口工坊页。
+// 实机证明是死胡同：用户在其他应用时主窗口在后台静默切页、屏幕零动静，
+// 且全链路无面包屑（diag 只有 hotkey-fired 一行）。473 起 Alt+E 直接开
+// 置顶输入小窗（showTranslatorInput → Rust translator_show_input），
+// pending 页签机制整个删除。

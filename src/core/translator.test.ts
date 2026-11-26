@@ -16,6 +16,7 @@ import {
   loadTranslatorSettings, saveTranslatorSettings, DEFAULT_TRANSLATOR_SETTINGS,
   getInvalidTranslatorShortcutFields, TRANSLATOR_SETTINGS_KEY,
   parseTranslatorPermissions, noteTranslatorDiag,
+  translationMaxTokens, showTranslatorInput, showTranslatorPop, updateTranslatorPop,
 } from './translator'
 
 beforeEach(() => { ;(localStorage as any).clear() })
@@ -148,5 +149,66 @@ describe('removeSmartNewlines / sourceLangLabel', () => {
 describe('noteTranslatorDiag（v0.1.462 打开路径面包屑）', () => {
   it('无 Tauri 环境时静默跳过、不抛错', async () => {
     await expect(noteTranslatorDiag('tool-mount')).resolves.toBeUndefined()
+  })
+})
+
+describe('v0.1.473 translationMaxTokens（翻译请求瘦身）', () => {
+  it('短文本给下限 256', () => {
+    expect(translationMaxTokens(0)).toBe(256)
+    expect(translationMaxTokens(15)).toBe(256)
+    expect(translationMaxTokens(100)).toBe(256)
+  })
+  it('随原文长度增长（1.5 倍 + 64）', () => {
+    expect(translationMaxTokens(200)).toBe(364)
+    expect(translationMaxTokens(1000)).toBe(1564)
+  })
+  it('长文封顶 4096 不截断 8000 字原文的译文', () => {
+    expect(translationMaxTokens(8000)).toBe(4096)
+    expect(translationMaxTokens(100000)).toBe(4096)
+  })
+  it('负数/小数输入不炸', () => {
+    expect(translationMaxTokens(-5)).toBe(256)
+    expect(translationMaxTokens(10.9)).toBe(256)
+  })
+})
+
+describe('v0.1.473 小窗 invoke 契约（字段名与 Rust 命令逐字对齐）', () => {
+  const calls: { cmd: string; args: any }[] = []
+  const mockInvoke = async (cmd: string, args?: any) => {
+    calls.push({ cmd, args })
+    if (cmd === 'translator_show_input') return [321, 654]
+    return null
+  }
+  beforeEach(() => {
+    calls.length = 0
+    ;(globalThis as any).__TAURI_INTERNALS__ = { invoke: mockInvoke }
+  })
+  it('showTranslatorInput 调 translator_show_input 并原样带 offsetX/offsetY、回坐标', async () => {
+    await expect(showTranslatorInput(12, 16)).resolves.toEqual([321, 654])
+    expect(calls).toHaveLength(1)
+    expect(calls[0].cmd).toBe('translator_show_input')
+    expect(calls[0].args).toEqual({ offsetX: 12, offsetY: 16 })
+  })
+  it('showTranslatorInput 在 invoke 失败时抛错（宿主据此转可见报错，不许静默）', async () => {
+    ;(globalThis as any).__TAURI_INTERNALS__ = { invoke: async () => { throw new Error('建窗失败') } }
+    await expect(showTranslatorInput(0, 0)).rejects.toThrow('建窗失败')
+  })
+  it('showTranslatorPop 透传 mode/streaming（弹窗先行靠 streaming=true）', async () => {
+    await showTranslatorPop({
+      source: 'Hello', translated: '', targetLang: '简体中文', error: null,
+      ops: 'both', x: 10, y: 20, streaming: true,
+    })
+    expect(calls[0].cmd).toBe('translator_show_pop')
+    expect(calls[0].args.streaming).toBe(true)
+    expect(calls[0].args.mode).toBe('result')
+    expect(calls[0].args.source).toBe('Hello')
+  })
+  it('updateTranslatorPop 调 translator_update_pop 且默认 streaming=false 收尾', async () => {
+    await updateTranslatorPop({
+      source: 'Hello', translated: '你好', targetLang: '简体中文', error: null, ops: 'both',
+    })
+    expect(calls[0].cmd).toBe('translator_update_pop')
+    expect(calls[0].args.streaming).toBe(false)
+    expect(calls[0].args.translated).toBe('你好')
   })
 })
