@@ -1576,3 +1576,15 @@ Object.assign(D, {
   '全部折叠': { 'zh-TW': '全部摺疊', en: 'Collapse all', ja: 'すべて折りたたむ', ko: '모두 접기' },
   '全部展开': { 'zh-TW': '全部展開', en: 'Expand all', ja: 'すべて展開', ko: '모두 펼치기' },
 })
+
+// ---- 补齐批次 48：Key 管理页顶部改造（v0.1.479） ----
+Object.assign(D, {
+  '筛选': { 'zh-TW': '篩選', en: 'Filter', ja: '絞り込み', ko: '필터' },
+  '按类型筛选': { 'zh-TW': '按類型篩選', en: 'Filter by type', ja: 'タイプで絞り込み', ko: '유형으로 필터' },
+  '全部类型 ({n})': { 'zh-TW': '全部類型 ({n})', en: 'All types ({n})', ja: 'すべてのタイプ ({n})', ko: '전체 유형({n})' },
+  '按平台筛选': { 'zh-TW': '按平台篩選', en: 'Filter by platform', ja: 'プラットフォームで絞り込み', ko: '플랫폼으로 필터' },
+  '全部平台 ({n})': { 'zh-TW': '全部平台 ({n})', en: 'All platforms ({n})', ja: 'すべてのプラットフォーム ({n})', ko: '전체 플랫폼({n})' },
+  '额度 · {g} ¥{remain}': { 'zh-TW': '額度 · {g} ¥{remain}', en: 'Quota · {g} ¥{remain}', ja: 'クォータ · {g} ¥{remain}', ko: '할당량 · {g} ¥{remain}' },
+  '按分组看剩余额度并筛选': { 'zh-TW': '按分組看剩餘額度並篩選', en: 'View remaining quota by group and filter', ja: 'グループ別の残りクォータ表示と絞り込み', ko: '그룹별 잔액 보기 및 필터' },
+  '点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后上方「额度」下拉会按组统计剩余额度，也可按组筛选。': { 'zh-TW': '點任意 Key 的「編輯」填寫分組（如 工作 / 個人 / 專案），或新增帳戶時直接填；分好組後上方「額度」下拉會按組統計剩餘額度，也可按組篩選。', en: 'Click Edit on any key to set its group (e.g. Work / Personal / Project), or set it when adding an account. Once grouped, the Quota dropdown above totals the remaining quota per group and can filter by group.', ja: '任意のキーの「編集」からグループ（例：仕事 / 個人 / プロジェクト）を入力するか、アカウント追加時に入力してください。グループ分け後は上部の「クォータ」ドロップダウンでグループ別の残量集計と絞り込みができます。', ko: '아무 키의 「편집」에서 그룹(예: 업무 / 개인 / 프로젝트)을 입력하거나 계정 추가 시 바로 입력하세요. 그룹을 나누면 위쪽 「할당량」 드롭다운에서 그룹별 잔액을 집계하고 그룹으로 필터링할 수 있습니다.' },
+})

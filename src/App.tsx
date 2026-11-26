@@ -108,6 +108,7 @@ const PluginsView = lazy(() => import('./components/PluginsView').then(m => ({ d
 import { appendAudit, makeAuditEntry } from './core/auditLog'
 import { loadDevices, touchCurrentDevice, type DeviceRecord } from './core/accountDevices'
 import { checkKeyHealth, loadKeyHealth, saveKeyHealth, HEALTH_LABEL, type KeyHealthResult } from './core/healthCheck'
+import { KEY_FILTER_ALL, KEY_FILTER_NONE, keyCategories, keyGroups, keyPlatforms, filterKeyAccounts, keyQuotaStats, quotaSelectionDisplay, type KeyQuotaStats } from './core/keyFilters'
 import { inferbaseLimitsText } from './core/inferbase'
 import { oneAiLimitsText } from './core/oneai'
 import { anyApiLimitsText } from './core/anyapi'
@@ -1605,9 +1606,9 @@ function App() {
 
           {!isPhone && tab === 'local-video' && <div className="set-content"><button className="btn sm ghost sd-back" onClick={() => openWorkshopTool('video')}><X size={15} /> {t('返回 AI 视频')}</button><LocalVideoView notify={notify} serviceController={serviceController} /></div>}
 
-          {tab === 'keys' && <div className="page-action-row"><button className="btn" onClick={() => setPasteOpen(true)}><ClipboardPaste size={16} /> {t('智能粘贴')}</button><button className="btn primary" onClick={() => setAddOpen(true)}><Plus size={16} /> {t('添加账户')}</button></div>}
           {tab === 'keys' && <KeysView
             state={state} notify={notify} isPhone={isPhone}
+            onSmartPaste={() => setPasteOpen(true)} onAddAccount={() => setAddOpen(true)}
             onRefresh={() => void doGlobalRefresh()} refreshing={globalRefreshing}
             onAudit={audit}
             onImportFile={handleImportFile} onImportText={handleImportText}
@@ -2608,8 +2609,49 @@ function AgentToolsView({ checkins, notify, onToggle, catalogNews, onCatalogNews
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onImportText, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing }: {
+/** 「额度」下拉（v0.1.479 替代分组额度胶囊排）：按钮显示当前选中分组与剩余 ¥，
+ * 菜单逐项列各分组的账户数与剩余额度；选中即按该分组筛选（与「分组」下拉共用同一状态） */
+function QuotaFilterDropdown({ value, stats, onChange }: { value: string; stats: KeyQuotaStats; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open ])
+  const cur = quotaSelectionDisplay(value, stats, { all: t('全部'), none: t('未分组') })
+  const items: { value: string; name: string; count: number; remain: number }[] = [
+    { value: KEY_FILTER_ALL, name: t('全部'), count: stats.all.count, remain: stats.all.remain },
+    ...stats.byGroup.map(g => ({ value: g.group, name: g.group, count: g.count, remain: g.remain })),
+    { value: KEY_FILTER_NONE, name: t('未分组'), count: stats.none.count, remain: stats.none.remain },
+  ]
+  return (
+    <div className="keys-quota-dd" ref={ref}>
+      <button type="button" className="btn sm keys-quota-btn" onClick={() => setOpen(o => !o)} title={t('按分组看剩余额度并筛选')} aria-haspopup="listbox" aria-expanded={open}>
+        {t('额度 · {g} ¥{remain}', { g: cur.name, remain: cur.remain })} <ChevronDown size={14} />
+      </button>
+      {open && (
+        <div className="keys-quota-menu" role="listbox">
+          {items.map(it => (
+            <button type="button" key={it.value} role="option" aria-selected={value === it.value}
+              className={`keys-quota-item ${value === it.value ? 'on' : ''}`}
+              onClick={() => { onChange(it.value); setOpen(false) }}>
+              <span>{t('{g} · {n} 个账户 · 剩余 ¥{remain}', { g: it.name, n: it.count, remain: it.remain.toFixed(1) })}</span>
+              {value === it.value && <Check size={14} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onImportText, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing, onSmartPaste, onAddAccount }: {
   state: AppState; notify: (m: string) => void; onOpenVault: () => void; isPhone?: boolean;
+  onSmartPaste?: () => void; onAddAccount?: () => void;
   onImportFile: (file?: File) => void; onImportText?: (text: string) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
   onRequestBackup: (ids: string[], title: string, confirmLabel: string, after: () => void, backupOnly?: boolean) => void;
@@ -2631,6 +2673,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [unlockOpen, setUnlockOpen] = useState(false)
   const [category, setCategory] = useState('__all__')
   const [groupFilter, setGroupFilter] = useState('__all__')
+  const [platform, setPlatform] = useState('__all__')
   const [page, setPage] = useState(1)
   const [pasteImportOpen, setPasteImportOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
@@ -2669,7 +2712,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     return () => window.removeEventListener('acm-autolock', onAutoLock)
   }, [])
   // 筛选条件变化时重置页码
-  useEffect(() => { setPage(1) }, [category])
+  useEffect(() => { setPage(1) }, [category, platform])
 
   const unlockWith = async (pwd: string) => {
     setBusy(true)
@@ -2710,14 +2753,16 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     }
   }, [initialPwd])
 
-  /** 从备注提取分类：取 [ xxx ] 或冒号前的部分 */
+  /** 从备注提取分类：取 [ xxx ] 或冒号前的部分（keyFilters 内部同口径） */
   const categoryOf = noteCategory
-  const categories = Array.from(new Set(keyAccounts.map(a => categoryOf(a.note)))).sort()
+  const categories = keyCategories(keyAccounts)
   /** 保险箱分组（账户 group 字段）：已有分组名列表 */
-  const groups = Array.from(new Set(keyAccounts.map(a => a.group).filter((g): g is string => !!g))).sort()
-  const filtered = keyAccounts.filter(a =>
-    (category === '__all__' || categoryOf(a.note) === category) &&
-    (groupFilter === '__all__' || (groupFilter === '__none__' ? !a.group : a.group === groupFilter)))
+  const groups = keyGroups(keyAccounts)
+  /** 平台筛选列表：只列有账户的平台（v0.1.479 新增维度） */
+  const platforms = keyPlatforms(keyAccounts)
+  /** 「额度」下拉数据：计数按 keyAccounts、剩余按全部账户成员集（与旧版分组额度胶囊同口径） */
+  const quotaStats = keyQuotaStats(keyAccounts, state.accounts, state.quotas, groups)
+  const filtered = filterKeyAccounts(keyAccounts, { category, group: groupFilter, platform })
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages)
   const pageItems = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
@@ -2824,75 +2869,58 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
 
   return (
     <>
-      <div className="keys-header">
-        <div>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('API Key 管理')}</h2>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>{t('{n} 个密钥 · 本地加密存储', { n: keyAccounts.length })}</div>
-        </div>
-        <div className="keys-header-tools">
-          <GlobalRefreshButton refreshing={globalRefreshing} onRefresh={onRefresh} />
-          <button className="btn sm" disabled={checking.size > 0 || keyAccounts.length === 0}
-            onClick={() => void runHealthCheck(keyAccounts)}
-            title={t('用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）')}>
-            <Activity size={14} /> {checking.size > 0 ? t('检查中（剩 {n}）', { n: checking.size }) : t('健康检查')}
-          </button>
-          {categories.length > 0 && (
-            <select className="select keys-filter-select" value={category} onChange={e => setCategory(e.target.value)}>
-              <option value="__all__">{t('全部分类 ({n})', { n: keyAccounts.length })}</option>
-              {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
-            </select>
+      <div className="keys-toolbar">
+        <GlobalRefreshButton refreshing={globalRefreshing} onRefresh={onRefresh} />
+        <button className="btn sm" disabled={checking.size > 0 || keyAccounts.length === 0}
+          onClick={() => void runHealthCheck(keyAccounts)}
+          title={t('用每个 Key 轻量调用一次平台接口，检查密钥是否可用、服务是否可达（云端 Key 需先解锁保险箱）')}>
+          <Activity size={14} /> {checking.size > 0 ? t('检查中（剩 {n}）', { n: checking.size }) : t('健康检查')}
+        </button>
+        <div className="keys-unlock-group">
+          <label className="btn sm" style={{ cursor: 'pointer' }} title={t('导入备份')}>
+            <Download size={14} style={{ transform: 'rotate(180deg)' }} /> {t('导入')}
+            <input type="file" accept=".json,.csv,.txt,application/json,text/csv" style={{ display: 'none' }} onChange={e => {
+              onImportFile(e.target.files?.[0]); e.target.value = ''
+            }} />
+          </label>
+          {onImportText && <button className="btn sm" onClick={() => setPasteImportOpen(true)} title={t('粘贴备份文本导入（备忘录里复制的备份也能粘）')}><ClipboardPaste size={14} /> {t('粘贴导入')}</button>}
+          <button className="btn sm" onClick={onExport} title={t('导出备份（不含密钥）')}><Download size={14} /> {t('导出')}</button>
+          {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> {t('创建保险箱')}</button>}
+          {vaultPwd ? (
+            <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); setShowBalance({}); setPendingView(null); notify('已锁定') }}><Lock size={14} /> {t('锁定')}</button>
+          ) : (
+            <button className="btn sm primary" onClick={() => setUnlockOpen(true)}><Unlock size={14} /> {t('解锁')}</button>
           )}
-          <select className="select keys-filter-select" value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title={t('按保险箱分组筛选（在编辑条目里给 Key 填分组）')}>
-            <option value="__all__">{t('全部分组 ({n})', { n: keyAccounts.length })}</option>
-            {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
-            <option value="__none__">{t('未分组 ({n})', { n: keyAccounts.filter(a => !a.group).length })}</option>
-          </select>
-          <div className="keys-unlock-group">
-            <label className="btn sm" style={{ cursor: 'pointer' }} title={t('导入备份')}>
-              <Download size={14} style={{ transform: 'rotate(180deg)' }} /> {t('导入')}
-              <input type="file" accept=".json,.csv,.txt,application/json,text/csv" style={{ display: 'none' }} onChange={e => {
-                onImportFile(e.target.files?.[0]); e.target.value = ''
-              }} />
-            </label>
-            {onImportText && <button className="btn sm" onClick={() => setPasteImportOpen(true)} title={t('粘贴备份文本导入（备忘录里复制的备份也能粘）')}><ClipboardPaste size={14} /> {t('粘贴导入')}</button>}
-            <button className="btn sm" onClick={onExport} title={t('导出备份（不含密钥）')}><Download size={14} /> {t('导出')}</button>
-            {!isVaultInitialized() && <button className="btn sm" onClick={onOpenVault}><ShieldCheck size={14} /> {t('创建保险箱')}</button>}
-            {vaultPwd ? (
-              <button className="btn sm" onClick={() => { setRevealed({}); setVaultPwd(''); setUnlockPwd(''); setRevealKeyTarget(null); setShowBalance({}); setPendingView(null); notify('已锁定') }}><Lock size={14} /> {t('锁定')}</button>
-            ) : (
-              <button className="btn sm primary" onClick={() => setUnlockOpen(true)}><Unlock size={14} /> {t('解锁')}</button>
-            )}
-          </div>
         </div>
+        <div className="keys-toolbar-end">
+          {onSmartPaste && <button className="btn" onClick={onSmartPaste}><ClipboardPaste size={16} /> {t('智能粘贴')}</button>}
+          {onAddAccount && <button className="btn primary" onClick={onAddAccount}><Plus size={16} /> {t('添加账户')}</button>}
+        </div>
+      </div>
+      <div className="keys-filter-row">
+        <span className="keys-filter-label">{t('筛选')}</span>
+        {categories.length > 0 && (
+          <select className="select keys-filter-select" value={category} onChange={e => setCategory(e.target.value)} title={t('按类型筛选')}>
+            <option value="__all__">{t('全部类型 ({n})', { n: keyAccounts.length })}</option>
+            {categories.map(c => <option key={c} value={c}>{c} ({keyAccounts.filter(a => categoryOf(a.note) === c).length})</option>)}
+          </select>
+        )}
+        <select className="select keys-filter-select" value={groupFilter} onChange={e => { setGroupFilter(e.target.value); setPage(1) }} title={t('按保险箱分组筛选（在编辑条目里给 Key 填分组）')}>
+          <option value="__all__">{t('全部分组 ({n})', { n: keyAccounts.length })}</option>
+          {groups.map(g => <option key={g} value={g}>{g} ({keyAccounts.filter(a => a.group === g).length})</option>)}
+          <option value="__none__">{t('未分组 ({n})', { n: keyAccounts.filter(a => !a.group).length })}</option>
+        </select>
+        <QuotaFilterDropdown value={groupFilter} stats={quotaStats} onChange={v => { setGroupFilter(v); setPage(1) }} />
+        <select className="select keys-filter-select" value={platform} onChange={e => setPlatform(e.target.value)} title={t('按平台筛选')}>
+          <option value="__all__">{t('全部平台 ({n})', { n: keyAccounts.length })}</option>
+          {platforms.map(p => <option key={p.id} value={p.id}>{PROVIDER_MAP[p.id]?.shortName ?? p.id} ({p.count})</option>)}
+        </select>
       </div>
 
       {groups.length === 0 && keyAccounts.length > 0 && (
         <div className="group-stats">
           <span className="group-stats-label">{t('保险箱分组')}</span>
-          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{t('点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后这里会按组统计剩余额度，表头下拉可按组筛选。')}</span>
-        </div>
-      )}
-      {groups.length > 0 && (
-        <div className="group-stats">
-          <span className="group-stats-label">{t('分组额度')}</span>
-          {groups.map(g => {
-            const members = state.accounts.filter(a => a.group === g)
-            const remain = members.reduce((sum, a) => {
-              const q = latestQuota(state.quotas, a.id)
-              return q && q.unit === 'currency' ? sum + Math.max(0, q.total - q.used) : sum
-            }, 0)
-            return (
-              <button key={g} className={`group-stat-chip ${groupFilter === g ? 'active' : ''}`}
-                onClick={() => { setGroupFilter(groupFilter === g ? '__all__' : g); setPage(1) }}
-                title={t('点击按此分组筛选')}>
-                {t('{g} · {n} 个账户 · 剩余 ¥{remain}', { g, n: members.length, remain: remain.toFixed(1) })}
-              </button>
-            )
-          })}
-          <button className={`group-stat-chip ${groupFilter === '__none__' ? 'active' : ''}`}
-            onClick={() => { setGroupFilter(groupFilter === '__none__' ? '__all__' : '__none__'); setPage(1) }}>
-            {t('未分组 · {n} 个密钥', { n: keyAccounts.filter(a => !a.group).length })}
-          </button>
+          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{t('点任意 Key 的「编辑」填写分组（如 工作 / 个人 / 项目），或添加账户时直接填；分好组后上方「额度」下拉会按组统计剩余额度，也可按组筛选。')}</span>
         </div>
       )}
 

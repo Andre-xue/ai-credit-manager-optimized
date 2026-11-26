@@ -651,15 +651,33 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* ===== API Key 管理：筛选下拉宽度（原内联 150px 改类名，方便手机端自适应） ===== */
 .keys-filter-select { width: 150px; }
 
+/* ===== v0.1.479 Key 管理页顶部改造：无标题区，工具栏一行置顶 + 筛选行四个紧凑下拉同高 ===== */
+.keys-filter-select { width: auto; max-width: 240px; }
+.keys-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.keys-toolbar .keys-unlock-group { padding-left: 16px; }
+.keys-toolbar-end { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.keys-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.keys-filter-label { font-size: 12px; color: var(--text-3); flex: none; }
+.keys-filter-row .select, .keys-filter-row .keys-quota-btn { height: 34px; }
+.keys-filter-row .select { padding-top: 0; padding-bottom: 0; }
+.keys-quota-dd { position: relative; flex: none; }
+.keys-quota-btn { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.keys-quota-menu { position: absolute; top: calc(100% + 6px); left: 0; min-width: 264px; max-width: min(330px, 90vw); max-height: 320px; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(16, 24, 40, .14); padding: 5px; z-index: 60; }
+.keys-quota-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; border: none; background: none; padding: 8px 10px; border-radius: 7px; font-size: 12.5px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
+.keys-quota-item:hover { background: var(--panel-2); }
+.keys-quota-item.on { background: var(--primary-soft); color: var(--primary); }
+
 /* ===== API Key 管理手机布局（Ethan 录屏 2026-11-20：表格 8 列定宽合计约 960px，
    手机上只能横滚、操作列够不着，观感混乱）。≤680px 时：工具区纵向收紧；
    表格变卡片——每行一张卡，名称+健康状态一行、余额/Key 一行、链接整行、操作整行平铺，
    备注列手机隐藏（编辑弹窗里可看）。规则只作用于 .key-table-wrap 内的主表，
    导入预览弹窗里的 .key-table 不受影响。 ===== */
 @media (max-width: 680px) {
-  .keys-header { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 12px; }
-  .keys-header-tools { gap: 8px; }
-  .keys-filter-select { width: auto; flex: 1 1 150px; }
+  .keys-toolbar { gap: 8px; margin-bottom: 10px; }
+  .keys-filter-row { gap: 8px; }
+  .keys-filter-select { width: auto; flex: 1 1 140px; }
+  .keys-quota-dd { flex: 1 1 140px; }
+  .keys-quota-btn { width: 100%; justify-content: space-between; }
   .keys-unlock-group { padding-left: 0; border-left: none; flex-wrap: wrap; }
   .key-table-wrap { overflow-x: visible; }
   .key-table-wrap .key-table { display: block; }
