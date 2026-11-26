@@ -86,15 +86,19 @@ jobs:
       # 每版都变，TCC 按 cdhash 认人——这正是翻译助手授权「装新版就丢」的根源。
       # 仓库 secrets 配齐 APPLE_CERTIFICATE（自签 .p12 的 base64 单行）/
       # APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 才启用；未配则保持
-      # ad-hoc，行为与之前完全一致。Tauri CLI 构建时读这三个环境变量完成
-      # 临时钥匙串导入与签名。注意：身份切换后的第一个版本，旧授权会最后失效
-      # 一次（requirement 从 cdhash 变为证书），之后跨版本保留。
-      # v0.1.449 补修（第三关）：自签证书的信任设置不随 .p12 导出。Tauri 把证书
-      # 导入它自己的临时钥匙串、私钥导入成功后，用 find-identity -v（仅 valid）
-      # 解析身份时不认未受信任的自签证书，直接报 "failed to resolve signing
-      # identity"。故在下方步骤里先自建构建钥匙串导入同一张证书并补齐信任
-      # （add-trusted-cert，trustRoot + codeSign）：信任按证书本身在用户/Admin
-      # 域生效，Tauri 临时钥匙串里的同一张证书随之成为 valid identity。
+      # ad-hoc，行为与之前完全一致。注意：身份切换后的第一个版本，旧授权会
+      # 最后失效一次（requirement 从 cdhash 变为证书），之后跨版本保留。
+      # v0.1.449 补修（第三关，真根因以 tauri-macos-sign 2.12.5 源码为准）：
+      # Tauri 的 with_certificate 路径（传 APPLE_CERTIFICATE 时走）解析身份不用
+      # find-identity，而是拿一组写死的 Apple 证书名前缀（"Developer ID
+      # Application:"、"Apple Development:" 等九个）逐个 find-certificate，
+      # 还要求证书 subject 带 OU 字段——自签证书名不带 Apple 前缀、也没有 OU，
+      # 永远匹配不上，必然报 "failed to resolve signing identity"（与信任无关，
+      # 补信任实测无效即此因）。唯一活路是 with_signing_identity 路径：只传
+      # APPLE_SIGNING_IDENTITY、不传证书/密码，Tauri 直接 codesign -s "身份名"
+      # 在钥匙串搜索列表里按名匹配。故下方步骤自建构建钥匙串导入证书、设分区
+      # 授权、补信任（让 find-identity -v 认它、codesign 匹配更稳），只把身份
+      # 名写进 GITHUB_ENV，证书与密码绝不传给 Tauri。
       - name: Prepare macOS fixed signing identity (optional)
         if: runner.os == 'macOS'
         shell: bash
@@ -104,8 +108,8 @@ jobs:
           ACM_APPLE_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           if [ -n "$ACM_APPLE_CERT_B64" ] && [ -n "$ACM_APPLE_CERT_PWD" ] && [ -n "$ACM_APPLE_SIGN_ID" ]; then
-            echo "APPLE_CERTIFICATE=$ACM_APPLE_CERT_B64" >> "$GITHUB_ENV"
-            echo "APPLE_CERTIFICATE_PASSWORD=$ACM_APPLE_CERT_PWD" >> "$GITHUB_ENV"
+            # 只传身份名：APPLE_CERTIFICATE/PASSWORD 一旦出现，Tauri 就走
+            # with_certificate 死路（只认 Apple 前缀证书名），见上方注释。
             echo "APPLE_SIGNING_IDENTITY=$ACM_APPLE_SIGN_ID" >> "$GITHUB_ENV"
             echo "已启用固定签名身份：$ACM_APPLE_SIGN_ID"
 
