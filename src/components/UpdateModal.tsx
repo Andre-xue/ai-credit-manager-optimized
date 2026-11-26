@@ -4,7 +4,7 @@ import { X, RefreshCw, Download, RotateCw, ExternalLink, Copy, Check, Info, Load
 import {
   APP_VERSION, currentPlatform, checkDesktopUpdate, checkReleaseUpdate,
   installDesktopUpdate, relaunchApp, dockerUpdateCommands, latestApkUrl,
-  checkMiniappUpdate, type UpdatePlatform,
+  checkMiniappUpdate, type UpdatePlatform, type DesktopCheckStage,
 } from '../core/updater'
 import { openExternal } from '../core/openExternal'
 import { t } from '../core/i18n'
@@ -23,16 +23,26 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   const [apkUrl, setApkUrl] = useState<string | null>(null)
   const [fallback, setFallback] = useState(false)
   const [autoErr, setAutoErr] = useState('')
+  // 检查阶段文案（v0.1.464）：连接中/确认中/重试中，不再只有一个干转的「正在检查更新…」
+  const [stage, setStage] = useState<DesktopCheckStage>('connecting')
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
     let alive = true
+    setPhase('checking')
+    setErrMsg('')
+    setAutoErr('')
+    setStage('connecting')
     ;(async () => {
       if (platform === 'desktop') {
-        const u = await checkDesktopUpdate()
+        const u = await checkDesktopUpdate((s) => { if (alive) setStage(s) })
         if (!alive) return
-        if (u && !u.error) { setLatest(u.version); setNotes(u.body ?? ''); setPhase('available'); return }
+        // 已是最新：立刻定论，不再多走一遍 GitHub 回退流程（旧实现白等十几秒）
+        if (u.upToDate) { setLatest(u.version); setPhase('latest'); return }
+        if (!u.error) { setLatest(u.version); setNotes(u.body ?? ''); setPhase('available'); return }
         // 自动更新检查失败：记住原因，继续走手动通道，保证用户仍可下载
-        if (u?.error) setAutoErr(u.error)
+        if (u.error) setAutoErr(u.error)
+        setStage('comparing')
         // 没有签名更新清单时退回 GitHub Releases 检查：提示手动下载安装包
         // 传 true：若最新版桌面包仍在构建，自动回退到最近一个带完整安装包的版本
         const info = await checkReleaseUpdate(true)
@@ -56,6 +66,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         if (alive) setPhase('manual')
         return
       }
+      setStage('comparing')
       const info = await checkReleaseUpdate()
       if (!alive) return
       if (!info || info.error) { setErrMsg(info?.error ?? t('检查更新失败')); setPhase('error'); return }
@@ -71,7 +82,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
       }
     })()
     return () => { alive = false }
-  }, [platform, notify])
+  }, [platform, notify, nonce])
 
   const doInstall = async () => {
     setPhase('downloading')
@@ -94,11 +105,16 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         <div className="modal-body">
           <div className="upd-current">{t('当前版本')} <b>v{APP_VERSION}</b> · {t(isDesktop ? '桌面客户端' : platform === 'android' ? '安卓客户端' : platform === 'docker' ? 'Docker 版' : platform === 'miniapp' ? '微信小程序' : '网页版')}</div>
 
-          {phase === 'checking' && <div className="upd-state"><Loader2 size={18} className="spin" /> {t('正在检查更新…')}</div>}
+          {phase === 'checking' && <div className="upd-state"><Loader2 size={18} className="spin" /> {stage === 'retrying' ? t('网络抖动，正在重试…') : stage === 'comparing' ? t('正在确认最新版本…') : t('正在连接更新服务器…')}</div>}
 
           {phase === 'latest' && <div className="upd-state ok"><Check size={18} /> {t('当前已是最新版本')}</div>}
 
           {phase === 'error' && <div className="upd-state"><Info size={18} /> {errMsg || t('检查更新失败，请稍后重试')}</div>}
+          {phase === 'error' && errMsg && (
+            <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={() => setNonce(n => n + 1)}>
+              <RefreshCw size={14} /> {t('重新检查')}
+            </button>
+          )}
 
           {(phase === 'available' || phase === 'downloading') && (
             <div className="upd-box">

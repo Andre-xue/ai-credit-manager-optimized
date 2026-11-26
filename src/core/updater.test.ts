@@ -77,7 +77,7 @@ describe('检查更新：桌面安装包齐全性判断与回退', () => {
   })
 })
 
-import { parseLatestJson, apkUrlForVersion } from './updater'
+import { parseLatestJson, apkUrlForVersion, withTimeout, CheckTimeoutError, DESKTOP_CHECK_BUDGET_MS } from './updater'
 
 describe('更新检查走 latest.json 直链（v0.1.311，绕开 GitHub API 限流）', () => {
   it('解析 Tauri 更新清单', () => {
@@ -102,5 +102,21 @@ describe('更新检查走 latest.json 直链（v0.1.311，绕开 GitHub API 限�
     expect(info?.latest).toBe('0.1.311')
     expect(info?.installersReady).toBe(true)
     expect(fetchMock.mock.calls.every(c => String(c[0]).includes('latest.json'))).toBe(true)
+  })
+})
+
+describe('检查更新超时上限（v0.1.464）', () => {
+  it('桌面检查总预算 20 秒量级（不许无限转圈）', () => {
+    expect(DESKTOP_CHECK_BUDGET_MS).toBe(20_000)
+  })
+  it('withTimeout：按时完成原样返回', async () => {
+    await expect(withTimeout(Promise.resolve(42), 1_000)).resolves.toBe(42)
+  })
+  it('withTimeout：超时以 CheckTimeoutError 拒绝，不再干等', async () => {
+    const slow = new Promise<string>(r => setTimeout(() => r('late'), 5_000))
+    await expect(withTimeout(slow, 30)).rejects.toBeInstanceOf(CheckTimeoutError)
+  })
+  it('withTimeout：底层错误原样透传（不包装成超时）', async () => {
+    await expect(withTimeout(Promise.reject(new Error('boom')), 1_000)).rejects.toThrow('boom')
   })
 })

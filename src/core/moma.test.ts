@@ -14,6 +14,7 @@ import {
   momaCooldownFor, recordMomaRouteFailure, recordMomaRouteSuccess,
   recordMomaLocalUsage, loadMomaLocalUsage, momaEstimateText, momaLimitsText,
   pickMomaSmokeModel, getMomaSmokeModel, isMomaChatCandidate,
+  isMomaSelfOperated, momaModelBillingNote, orderMomaProbeModels,
   MOMA_BASE, MOMA_RATE_COOLDOWN_MS, MOMA_QUOTA_COOLDOWN_MS,
 } from './moma'
 import { CHAIN_KIND_ORDER } from './freeChain'
@@ -83,6 +84,22 @@ describe('MoMA 状态归类', () => {
     expect(momaStateFromError(new Error('Failed to fetch'))).toBe('network_error')
     expect(momaStateFromError(new MomaApiError('x', 'quota_exceeded'))).toBe('quota_exceeded')
   })
+  // v0.1.464：网关对不在聊天端点上的模型回 400 model_not_found（2026-11-27 沙箱
+  // 无 Key 实测同款报文，模型校验先于鉴权）。旧归类只认带空格的 "not found"，
+  // 对官方措辞（code=model_not_found + "is not available"）失配落兜底 error。
+  const COSY_400 = '调用失败：接口返回 400 [POST https://zhenze-huhehaote.cmecloud.cn/v1/chat/completions body={"model":"CosyVoice","messages":[{"role":"user","content":"ping"}],"stream":false}]：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint.","param":"model","type":"invalid_request_error"}}'
+  it('400 model_not_found 如实归类为模型不可用（HTTP 与文本两路）', () => {
+    expect(classifyMomaHttp(400, 'The requested model is not available on this endpoint.').state).toBe('model_unavailable')
+    expect(classifyMomaHttp(400, 'model_not_found').state).toBe('model_unavailable')
+    expect(momaStateFromError(new Error(COSY_400))).toBe('model_unavailable')
+  })
+  it('model_not_found 不给账户上冷却（区别于限流/额度）', () => {
+    const rt = recordMomaRouteFailure('mm-model404', new Error(COSY_400), Date.UTC(2026, 10, 27))
+    expect(rt.lastState).toBe('model_unavailable')
+    expect(rt.cooldownUntil).toBe(0)
+    expect(rt.authInvalid).toBeFalsy()
+    expect(momaCooldownFor('model_unavailable', undefined, Date.UTC(2026, 10, 27))).toBeNull()
+  })
 })
 
 describe('MoMA 冷却口径', () => {
@@ -124,6 +141,34 @@ describe('MoMA 冒烟模型挑选（只从真实返回里挑，自营优先）',
     expect(isMomaChatCandidate('qwen3-vl-32b-instruct')).toBe(false)
     expect(pickMomaSmokeModel(['CosyVoice', 'SenseVoice', 'jiutian-safe-40b'])).toBeUndefined()
     expect(pickMomaSmokeModel([])).toBeUndefined()
+  })
+  it('非对话剔除覆盖 172 条真实目录的全部非对话类（v0.1.464 补齐向量/视频/多模态）', () => {
+    // 形态全部取自 2026-11-27 实拉的公开目录
+    for (const id of [
+      'aitc-qwen3-asr-1.7b', 'qwen/qwen3-tts-flash', 'qwen/cosyvoice-v3.5-flash',
+      'hncm/qwen-image-2512', 'qwen/text-embedding-v4', 'bge-m3', 'bge-base-zh-v1.5',
+      'bge-reranker-v2-m3', 'cmiot/kitchen-video-detection-model', 'qwen/happyhorse-1.1-t2v',
+      'hncm/wan2.2-ti2v-5b-diffusers', 'doubao-seedance-2.5', 'Qwen3Guard-Gen-8B',
+      'qwen/qwen3.5-omni-plus-realtime', 'qwen/qwen-mt-plus', 'hacm/qwen2.5-vl-32b-instruct',
+    ]) {
+      expect(isMomaChatCandidate(id), id).toBe(false)
+    }
+    for (const id of ['JIUTIAN-75B-8K-Chat', 'jiutian-236b-256k-chat', 'jiutian-35b-256k-chat', 'deepseek-v3', 'qwen/qwen4-max', 'glm-5.3', 'kimi/kimi-k3.1-pro']) {
+      expect(isMomaChatCandidate(id), id).toBe(true)
+    }
+  })
+  it('探测顺序：九天对话 → 其他九天 → 其余（v0.1.464）', () => {
+    const ids = ['ahcm/deepseek-v4-flash-0731', 'JIUTIAN-75B-32K', 'deepseek-v3', 'jiutian-236b-256k-chat', 'JIUTIAN-75B-8K-Chat']
+    expect(orderMomaProbeModels(ids)).toEqual([
+      'jiutian-236b-256k-chat', 'JIUTIAN-75B-8K-Chat', 'JIUTIAN-75B-32K',
+      'ahcm/deepseek-v4-flash-0731', 'deepseek-v3',
+    ])
+  })
+  it('计费标注只标能坐实的：九天=自营可用试用，其余=可能走按量（v0.1.464）', () => {
+    expect(isMomaSelfOperated('jiutian-35b-256k-chat')).toBe(true)
+    expect(isMomaSelfOperated('ahcm/deepseek-v4-flash-0731')).toBe(false)
+    expect(momaModelBillingNote('JIUTIAN-75B-8K-Chat')).toBe('移动云自营 · 可用免费试用额度')
+    expect(momaModelBillingNote('deepseek-v3')).toBe('可能走按量付费')
   })
   it('没有自营时依次 free 标记 → 开源家族 → 第一个对话候选', () => {
     expect(pickMomaSmokeModel(['gpt-x-pro', 'some-model-free'])).toBe('some-model-free')

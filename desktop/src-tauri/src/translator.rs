@@ -78,29 +78,15 @@ struct HotkeyConfig {
 static CONFIG: Mutex<HotkeyConfig> = Mutex::new(HotkeyConfig { disable_fullscreen: false });
 static TRANSLATOR_SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 
-// 权限查询诊断节流状态（v0.1.453）：(ax, axOpts, screen, namesVisible) 与上次落盘秒数。
-// 前端每 2.5 秒轮询一次权限命令，无节流会把 diag.log 刷爆；状态变化必记、
-// 无变化最多每分钟一条。Ethan 实机「系统设置已开、App 恒报未授权」靠这行定性：
-// 四个读数互相交叉（两条官方 API + WithOptions 读数 + 窗口名功能探针），
-// 再带 current_exe 路径——运行的若不是 /Applications 里的正本，一眼可见。
-static LAST_PERM_DIAG: Mutex<Option<((bool, bool, bool, bool), u64)>> = Mutex::new(None);
+// 权限查询诊断节流状态（v0.1.453；v0.1.464 起只剩官方两读数）：(ax, screen)
+// 与上次落盘秒数。前端每 2.5 秒轮询一次权限命令，无节流会把 diag.log 刷爆；
+// 状态变化必记、无变化最多每分钟一条。再带 current_exe 路径——运行的若不是
+// /Applications 里的正本，一眼可见。
+static LAST_PERM_DIAG: Mutex<Option<((bool, bool), u64)>> = Mutex::new(None);
 
 // 权限命令调用计数（v0.1.462）：打开路径面包屑只详记前 5 次调用，避免 2.5 秒
 // 轮询把 diag.log 刷爆；崩溃发生在第一次打开时，前 5 次足够定位。
 static PERM_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// 诊断探针的 panic 隔离（v0.1.462）：探针是纯诊断用途，其内部 Rust 级
-/// panic 只落一行 perm-probe-panic 并回 false，不许带走命令乃至整个进程。
-/// （段错误 catch_unwind 拦不住——那靠 perm-open 的 step 面包屑定位。）
-fn probe_unwind(name: &str, f: fn() -> bool) -> bool {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(v) => v,
-        Err(_) => {
-            diag("perm-probe-panic", &format!("probe={name}"));
-            false
-        }
-    }
-}
 
 /// 进程级 panic 落盘钩子（v0.1.462，lib.rs 的 run() 开头安装）：任何线程的
 /// Rust panic 先把位置与消息写进本 diag.log，再链回默认钩子保持原行为。
@@ -142,12 +128,12 @@ pub fn translator_diag_note(note: String) {
     diag("fe-note", &clean);
 }
 
-fn diag_perm(ax: bool, ax_opts: bool, screen: bool, names_visible: bool) {
+fn diag_perm(ax: bool, screen: bool) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let cur = (ax, ax_opts, screen, names_visible);
+    let cur = (ax, screen);
     let should = {
         let Ok(mut guard) = LAST_PERM_DIAG.lock() else { return };
         let due = match *guard {
@@ -165,7 +151,7 @@ fn diag_perm(ax: bool, ax_opts: bool, screen: bool, names_visible: bool) {
             .unwrap_or_else(|_| "?".to_string());
         diag(
             "perm-check",
-            &format!("ax={ax} axOpts={ax_opts} screen={screen} namesVisible={names_visible} exe={exe}"),
+            &format!("ax={ax} screen={screen} exe={exe}"),
         );
     }
 }
@@ -242,22 +228,17 @@ pub fn permissions_snapshot() -> TranslatorPermissions {
         }
         let screen_capture = mac::screen_ok();
         if trace {
-            diag("perm-open", &format!("call={call} step=ax-opts screen={screen_capture}"));
+            diag("perm-open", &format!("call={call} step=done screen={screen_capture}"));
         }
-        // v0.1.453 交叉核对 + 落盘原始读数：axOpts 是 WithOptions（空字典、不弹窗）
-        // 的第二读数，namesVisible 是「窗口名可见」功能探针（不依赖录屏 preflight）。
-        // 返回给前端的仍是官方两 API 的读数，交叉读数只进 diag.log 供定性。
-        // v0.1.462：两个探针是纯诊断用途，套 catch_unwind——它们内部的 Rust 级
-        // panic 不许再带走命令乃至进程（panic 发生时全局钩子也会落盘 perm 行）。
-        let ax_opts = probe_unwind("ax-opts", mac::ax_trusted_opts);
-        if trace {
-            diag("perm-open", &format!("call={call} step=names axOpts={ax_opts}"));
-        }
-        let names_visible = probe_unwind("names", mac::screen_names_visible);
-        if trace {
-            diag("perm-open", &format!("call={call} step=done names={names_visible}"));
-        }
-        diag_perm(accessibility, ax_opts, screen_capture, names_visible);
+        // v0.1.464：453 的两个诊断探针（ax_trusted_opts / screen_names_visible）
+        // 已整个摘除。定案证据是 Ethan 实机 diag.log（462 面包屑）：点开翻译页后
+        // step=ax（false）、step=screen（false）都正常返回，日志停在
+        // 「step=ax-opts」一行后进程即死、无 panic 行——死在紧随其后的
+        // ax_trusted_opts()（objc_msgSend 拼 NSMutableDictionary 调
+        // AXIsProcessTrustedWithOptions）内部，是 catch_unwind 拦不住的段错误；
+        // screen_names_visible 根本没执行到。两个探针只是权限交叉核对、非功能
+        // 必需，官方两 API 的读数已由日志证明在真机正常，权限判定只用它们。
+        diag_perm(accessibility, screen_capture);
         TranslatorPermissions { macos: true, accessibility, screen_capture }
     }
     #[cfg(not(target_os = "macos"))]
@@ -319,10 +300,11 @@ pub fn translator_open_settings(kind: String) -> Result<(), String> {
 // ---------------- FFI 探针（v0.1.462，CI 集成测试专用） ----------------
 // tests/translator_ffi_integration.rs 在 macOS runner 上逐个真跑这些预检类
 // FFI（进程内调用）：哪个函数有段错误，测试进程就死在哪个测试上。背景：
-// translator_permissions 是全 App 只有翻译页会调的命令，453 给它加的两个
-// 交叉核对（ax_trusted_opts / screen_names_visible）从未在真机被证实跑通，
-// 而无头 stub 验不到真 FFI——本模块把它们拉出来逐个过堂。生产代码不走这里
-// （命令走 permissions_snapshot 与各命令本体），探针只做同一函数的转发。
+// translator_permissions 是全 App 只有翻译页会调的命令，而无头 stub 验不到
+// 真 FFI——本模块把生产函数拉出来逐个过堂。生产代码不走这里（命令走
+// permissions_snapshot 与各命令本体），探针只做同一函数的转发。
+// v0.1.464：453 的 ax_trusted_opts / screen_names_visible 两探针已被实机
+// diag.log 钉死为闪退元凶并整个删除，本模块随之去掉对应转发。
 #[doc(hidden)]
 pub mod ffi_probe {
     /// AXIsProcessTrusted
@@ -337,35 +319,11 @@ pub mod ffi_probe {
         }
     }
 
-    /// AXIsProcessTrustedWithOptions（空字典，objc 拼 NSMutableDictionary）
-    pub fn ax_opts() -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            super::mac::ax_trusted_opts()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
-    }
-
     /// CGPreflightScreenCaptureAccess
     pub fn screen() -> bool {
         #[cfg(target_os = "macos")]
         {
             super::mac::screen_ok()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
-    }
-
-    /// CGWindowList 窗口名功能探针（CF 数组/字典迭代 + objc UTF8String）
-    pub fn names_visible() -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            super::mac::screen_names_visible()
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1116,69 +1074,8 @@ mod mac {
         }
     }
 
-    /// AXIsProcessTrusted 的第二读数：WithOptions + 空字典（不带 prompt，不弹窗）。
-    /// 与无参版同源但不同入口，两者不一致本身就是诊断信息（v0.1.453）。
-    pub fn ax_trusted_opts() -> bool {
-        unsafe {
-            let dict_cls = class("NSMutableDictionary");
-            if dict_cls.is_null() {
-                return AXIsProcessTrusted();
-            }
-            let dict = msg_id(dict_cls, sel("dictionary"));
-            if dict.is_null() {
-                return AXIsProcessTrusted();
-            }
-            AXIsProcessTrustedWithOptions(dict as *const c_void)
-        }
-    }
-
     pub fn screen_ok() -> bool {
         unsafe { CGPreflightScreenCaptureAccess() }
-    }
-
-    /// 录屏权限的功能探针（v0.1.453）：没有录屏权限时，CGWindowList 返回的其他
-    /// 应用窗口一律没有 kCGWindowName（被系统抹掉）；有权限时能读到窗口标题。
-    /// 跳过 layer 非 0 与本进程自己的窗口（自家窗口名无需权限也可读，会假阳性）。
-    /// 只用作 diag.log 交叉核对，不参与返回给前端的权限判定。
-    pub fn screen_names_visible() -> bool {
-        unsafe {
-            // kCGWindowListOptionOnScreenOnly(1) | kCGWindowListExcludeDesktopElements(16)
-            let arr = CGWindowListCopyWindowInfo(0x1 | 0x10, 0);
-            if arr.is_null() {
-                return false;
-            }
-            let own_pid = std::process::id() as i32;
-            let n = CFArrayGetCount(arr);
-            let mut found = false;
-            for i in 0..n {
-                let dict = CFArrayGetValueAtIndex(arr, i);
-                if dict.is_null() {
-                    continue;
-                }
-                if dict_i32(dict, "kCGWindowLayer") != Some(0) {
-                    continue;
-                }
-                if dict_i32(dict, "kCGWindowOwnerPID") == Some(own_pid) {
-                    continue;
-                }
-                let key = cf_key("kCGWindowName");
-                if key.is_null() {
-                    continue;
-                }
-                let v = CFDictionaryGetValue(dict, key);
-                CFRelease(key);
-                if !v.is_null() {
-                    if let Some(name) = ns_utf8(v as Id) {
-                        if !name.trim().is_empty() {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            CFRelease(arr);
-            found
-        }
     }
 
     pub fn screen_request() -> bool {

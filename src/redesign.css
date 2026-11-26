@@ -914,6 +914,8 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .engine-probe { font-size: 11px; white-space: nowrap; }
 .engine-probe.ok { color: #16a34a; }
 .engine-probe.fail { color: var(--red); }
+.engine-probe.skip { color: var(--text-3); }
+.engine-billing-note { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
 
 /* 多会话列表 */
 .ai-sessions-panel { border-bottom: 1px solid var(--border); padding: 10px 14px; display: grid; gap: 6px; max-height: 300px; overflow-y: auto; }

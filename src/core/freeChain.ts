@@ -47,6 +47,10 @@ export function classifyChainError(e: unknown): ChainClassified {
   const low = message.toLowerCase()
   let kind: ChainErrorKind = 'other'
   if (/已停止|aborted|aborterror/.test(low)) kind = 'abort'
+  // v0.1.464：网关不认此模型（400 model_not_found）是请求本身的问题，不是路线
+  // 健康问题——明确归 other（不切换、不冷却、原文透传），且必须排在额度/限流
+  // 判定之前，防文案里沾上 quota 类词被误判并给路线上冷却（与四平台同口径）。
+  else if (/model_not_found|model.*(?:not found|not available|does not exist|no such model)|no such model|模型(?:不存在|不可用|未找到|已下线)/.test(low)) kind = 'other'
   else if (status === 401 || status === 403 || /unauthor|invalid[_\s]?api[_\s]?key|invalid_api_key|密钥失效|auth_invalid|authentication failed/.test(low)) kind = 'auth'
   else if (status === 402 || /quota|额度|insufficient|plan_limit|freeusagelimit|余额不足/.test(low)) kind = 'quota'
   else if (status === 429 || /rate[_\s]?limit|限流|too many requests/.test(low)) kind = 'rate'

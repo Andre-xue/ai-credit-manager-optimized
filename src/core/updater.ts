@@ -213,23 +213,77 @@ function friendlyUpdateError(e: unknown): string {
   return m.slice(0, 200)
 }
 
-/** 桌面端：用 Tauri updater 检查。网络抖动时自动重试一次。返回 { update, error } */
-export async function checkDesktopUpdate(): Promise<{
-  version: string; currentVersion: string; body?: string; error?: string
-} | null> {
+/**
+ * 桌面检查更新的总超时预算（v0.1.464）：20 秒封顶，含 latest.json 竞速、插件
+ * 检查与一次重试。旧实现对插件 check() 没有任何超时——它按 tauri.conf 的
+ * 端点串行查（gh-proxy → ghproxy → github 直连），某个镜像端点挂死就能无限
+ * 转圈（Ethan 实机录屏 13 秒以上无结果；沙箱实测同款端点：gh-proxy 25 秒
+ * 未返回、ghproxy 12.7 秒、github 直连 1.7 秒——沙箱网络与本机 Clash 路径
+ * 不同，只作量级参考）。到点必须如实报超时，不许无限转。
+ */
+export const DESKTOP_CHECK_BUDGET_MS = 20_000
+/** 插件单次检查的等待上限（总预算内还要留重试与回退的余量） */
+const PLUGIN_CHECK_ATTEMPT_MS = 12_000
+
+export type DesktopCheckStage = 'connecting' | 'comparing' | 'retrying'
+
+export class CheckTimeoutError extends Error {
+  constructor(ms: number) { super(`timeout after ${ms}ms`); this.name = 'CheckTimeoutError' }
+}
+
+/** 给任意 Promise 套硬超时：到点以 CheckTimeoutError 拒绝（底层请求不取消，但不再等它） */
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new CheckTimeoutError(ms)), ms)),
+  ])
+}
+
+/**
+ * 桌面端检查更新（v0.1.464 重做检查环节，下载/安装流程不动）：
+ * 1) 先走 latest.json 多源竞速（单源 6 秒、谁先完整返回用谁）——已是最新时
+ *    立刻回 upToDate，不再等插件串行慢查（旧实现插件回「无更新」后界面还要
+ *    再走一遍 GitHub 回退流程，白等十几秒）；
+ * 2) 有新版或清单不可达时再调插件 check() 拿可安装的更新对象，单次等待
+ *    有上限、失败重试一次，全程不超过 DESKTOP_CHECK_BUDGET_MS；
+ * 3) 超时/失败如实回 error（超时有专属文案），插件失败但清单已确认有新版时
+ *    把版本号一并交出，界面可直接走手动下载通道。
+ */
+export async function checkDesktopUpdate(onStage?: (s: DesktopCheckStage) => void): Promise<{
+  version: string; currentVersion: string; body?: string; error?: string; upToDate?: boolean
+}> {
+  const deadline = Date.now() + DESKTOP_CHECK_BUDGET_MS
+  const remain = () => Math.max(0, deadline - Date.now())
+  onStage?.('connecting')
+  let viaJson: UpdateInfo | null = null
+  try { viaJson = await checkViaLatestJson() } catch { /* 清单不可达 → 继续走插件检查 */ }
+  if (viaJson && !viaJson.hasUpdate) {
+    return { version: viaJson.latest, currentVersion: APP_VERSION, upToDate: true }
+  }
+  onStage?.('comparing')
   let lastErr = ''
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      if (remain() <= 2_000) break
+      onStage?.('retrying')
+      await new Promise(r => setTimeout(r, 1500)) // 网络抖动重试
+      if (remain() <= 1_000) break
+    }
     try {
       const { check } = await import('@tauri-apps/plugin-updater')
-      const update = await check()
-      if (!update) return null
+      const update = await withTimeout(check(), Math.min(PLUGIN_CHECK_ATTEMPT_MS, remain()))
+      if (!update) return { version: APP_VERSION, currentVersion: APP_VERSION, upToDate: true }
       return { version: update.version, currentVersion: update.currentVersion, body: update.body }
     } catch (e) {
-      lastErr = friendlyUpdateError(e)
-      if (attempt === 0) await new Promise(r => setTimeout(r, 1500)) // 网络抖动重试
+      lastErr = e instanceof CheckTimeoutError
+        ? '检查超时：网络慢或连不上更新服务器，请稍后重试'
+        : friendlyUpdateError(e)
     }
   }
-  return { version: '', currentVersion: APP_VERSION, error: lastErr }
+  if (viaJson?.hasUpdate) {
+    return { version: viaJson.latest, currentVersion: APP_VERSION, body: viaJson.notes, error: lastErr || '自动更新通道暂时不可用' }
+  }
+  return { version: '', currentVersion: APP_VERSION, error: lastErr || '检查更新失败，请稍后重试' }
 }
 
 export interface InstallProgress { downloaded: number }

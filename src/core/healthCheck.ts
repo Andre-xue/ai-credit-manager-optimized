@@ -42,6 +42,12 @@ const STORE_KEY = 'acm.keyHealth.v1'
 export function classifyHealthError(e: unknown): { status: KeyHealthStatus; message: string } {
   const msg = (e instanceof Error ? e.message : String(e ?? '')).slice(0, 160)
   const lower = msg.toLowerCase()
+  // v0.1.464：网关不认此模型（400 model_not_found，官方措辞 "is not available"）
+  // 必须最先归类——旧顺序里它排在额度判定之后且只认带空格的 "not found"，
+  // 对官方实际报文失配，会被误吞成额度不足/兜底异常（与四平台分类器同口径）。
+  if (/model_not_found|model.*(?:not found|not available|does not exist|no such model)|no such model|模型(?:不存在|不可用|未找到|已下线)/.test(lower)) {
+    return { status: 'model', message: `网关不认此模型：${msg}` }
+  }
   if (/401|403|unauthorized|forbidden|invalid api key|invalid_api_key|api key.*(无效|错误|过期)|密钥.*(无效|错误|过期)|authentication/.test(lower)) {
     return { status: 'auth', message: `密钥无效或无权限：${msg}` }
   }

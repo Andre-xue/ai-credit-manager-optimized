@@ -233,4 +233,8 @@ export const PART_MISC: Record<string, Partial<Record<Lang, string>>> = {
   '优点': { 'zh-TW': '優點', en: 'Pros', ja: '長所', ko: '장점' },
   '缺点 / 注意': { 'zh-TW': '缺點 / 注意', en: 'Cons / Notes', ja: '短所 / 注意', ko: '단점 / 주의' },
   '适合：{best}': { 'zh-TW': '適合：{best}', en: 'Best for: {best}', ja: '適している用途：{best}', ko: '적합: {best}' },
+  '正在连接更新服务器…': { 'zh-TW': '正在連接更新伺服器…', en: 'Connecting to the update server…', ja: '更新サーバーに接続中…', ko: '업데이트 서버에 연결 중…' },
+  '正在确认最新版本…': { 'zh-TW': '正在確認最新版本…', en: 'Confirming the latest version…', ja: '最新バージョンを確認中…', ko: '최신 버전 확인 중…' },
+  '网络抖动，正在重试…': { 'zh-TW': '網絡抖動，正在重試…', en: 'Network hiccup — retrying…', ja: 'ネットワークが不安定です。再試行中…', ko: '네트워크가 불안정하여 다시 시도 중…' },
+  '重新检查': { 'zh-TW': '重新檢查', en: 'Check again', ja: '再確認', ko: '다시 확인' },
 }

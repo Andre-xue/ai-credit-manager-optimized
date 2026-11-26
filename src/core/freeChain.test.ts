@@ -48,6 +48,12 @@ describe('classifyChainError 错误分类', () => {
     expect(c.kind).toBe('other')
     expect(failoverEligible(c.kind)).toBe(false)
   })
+  it('400 model_not_found（官方 code 措辞）→ other，不许误判 quota/rate（v0.1.464）', () => {
+    const c = classifyChainError(new Error('接口返回 400：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint."}}'))
+    expect(c.kind).toBe('other')
+    expect(failoverEligible(c.kind)).toBe(false)
+    expect(c.message).toContain('model_not_found')
+  })
   it('extractHttpStatus 结构化优先、文案兜底', () => {
     expect(extractHttpStatus(new ApisFreeError('x', 429))).toBe(429)
     expect(extractHttpStatus(new Error('接口返回 503：x'))).toBe(503)

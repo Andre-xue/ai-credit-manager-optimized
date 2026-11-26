@@ -155,6 +155,9 @@ describe('Inferbase 状态机（供 433 自动切换链消费）', () => {
   })
   it('文本错误归类：模型不存在 / 网络 / CORS', () => {
     expect(inferbaseStateFromError(new Error("Model 'x' does not exist"))).toBe('model_unavailable')
+    // v0.1.464：400 model_not_found（官方措辞 code + "is not available"）如实归类
+    expect(classifyInferbaseHttp(400, 'The requested model is not available on this endpoint.').state).toBe('model_unavailable')
+    expect(inferbaseStateFromError(new Error('接口返回 400：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint."}}'))).toBe('model_unavailable')
     expect(inferbaseStateFromError(new TypeError('Failed to fetch'))).toBe('network_error')
     expect(inferbaseStateFromError(new InferbaseApiError('x', 'quota_exceeded', 402))).toBe('quota_exceeded')
   })

@@ -81,11 +81,23 @@ export class MomaApiError extends Error {
   }
 }
 
+/**
+ * 「网关不认此模型」的强特征（v0.1.464）：网关对不在聊天端点上的模型回
+ * 400 {"error":{"code":"model_not_found","message":"The requested model is not
+ * available on this endpoint."}}（2026-11-27 沙箱无 Key 实测同款报文——模型
+ * 校验先于鉴权）。旧归类只认「not found」（带空格）/「unavailable」，对官方
+ * 实际措辞（下划线 code + "is not available"）完全失配、落进兜底 error；且
+ * model 判定排在额度/限流之后，文案里只要沾上 quota 类词就会被误判成额度
+ * 不足并给账户上 10 分钟冷却。故 model 判定一律最先做、只认强特征。
+ */
+export const MOMA_MODEL_NOT_FOUND_RE = /model_not_found|model.*(?:not found|not available|does not exist|no such model)|no such model|模型(?:不存在|不可用|未找到|已下线)/i
+
 /** 从 HTTP 状态 + 官方错误原文归类状态（错误信封 {error:{code,message}}，401 实测 code 1001） */
 export function classifyMomaHttp(status: number, message: string, retryAfterSec?: number): MomaApiError {
   const msg = message || `MoMA 接口返回 ${status}`
   let state: MomaRouteState = 'error'
-  if (status === 401 || status === 403) state = 'auth_invalid'
+  if ((status === 400 || status === 404) && MOMA_MODEL_NOT_FOUND_RE.test(msg)) state = 'model_unavailable'
+  else if (status === 401 || status === 403) state = 'auth_invalid'
   else if (status === 402) state = 'quota_exceeded'
   else if (status === 429) state = 'rate_limited'
   else if (status === 404 && /model/i.test(msg)) state = 'model_unavailable'
@@ -96,6 +108,8 @@ export function classifyMomaHttp(status: number, message: string, retryAfterSec?
 export function momaStateFromError(e: unknown): MomaRouteState {
   if (e instanceof MomaApiError) return e.state
   const msg = e instanceof Error ? e.message : String(e ?? '')
+  // 网关不认此模型必须最先归类：不许落进额度/限流（更不许因此给账户上冷却）
+  if (MOMA_MODEL_NOT_FOUND_RE.test(msg)) return 'model_unavailable'
   if (/401|403|authentication|unauthenticated|unable to authenticate|invalid api key|unauthorized|密钥/i.test(msg)) return 'auth_invalid'
   if (/402|insufficient|quota|余额不足|额度不足|欠费/i.test(msg)) return 'quota_exceeded'
   if (/429|rate.?limit|too many requests|限流/i.test(msg)) return 'rate_limited'
@@ -239,14 +253,50 @@ export function momaEstimateText(accountId: string, nowMs: number = Date.now()):
 // ---------------- 冒烟模型挑选（从 /v1/models 真实返回里挑，不编造） ----------------
 
 /**
- * 模型广场的公开列表混有非对话模型（语音 CosyVoice/SenseVoice、生图 Flux/qwen-image、
- * 视频 seedance/wan、视觉 VL、安全分类 Qwen3Guard/jiutian-safe 等），这些不能作对话冒烟，
- * 先剔除。剔除只是「不拿它冒烟」，不影响用户在模型列表里手动选其他模型。
+ * 模型广场的公开列表混有非对话模型，这些不能作对话冒烟/探测，先剔除。剔除只是
+ * 「不拿它发聊天请求」，不影响用户在模型列表里看到它们。判定规则（按模型名特征，
+ * 对照 2026-11-27 实拉的 172 条目录逐类核过）：
+ * - 语音合成/识别：cosyvoice / sensevoice / tts / asr（如 qwen3-tts-flash、aitc-qwen3-asr）
+ * - 生图：image / flux / diffusers / kolors（如 qwen-image、Flux.1-dev）
+ * - 视频：seedance / wan+数字 / video / happyhorse（如 doubao-seedance、wan2.2-ti2v、
+ *   cmiot/kitchen-video-detection-model、happyhorse-1.1-t2v）
+ * - 向量/重排：embedding / bge / rerank（如 text-embedding-v4、bge-m3、bge-reranker）
+ * - 安全分类：guard / jiutian-safe（如 Qwen3Guard-Gen、jiutian-safe-40b）
+ * - 视觉/多模态/实时/翻译专用：-vl- / qwen+数字-vl / omni / realtime / qwen-mt /
+ *   livetranslate（纯文本聊天探测不拿它们，口径与 456 冒烟一致）
+ * - ocr
  */
-const MOMA_NON_CHAT_RE = /(cosyvoice|sensevoice|flux|seedance|wan\s?\d|image|asr|tts|guard|jiutian-safe|embedding|rerank|ocr|diffusers|-vl-|qwen\d?-vl)/i
+const MOMA_NON_CHAT_RE = /(cosyvoice|sensevoice|flux|seedance|wan\s?\d|image|asr|tts|guard|jiutian-safe|embedding|rerank|ocr|diffusers|-vl-|qwen\d?-vl|bge|video|happyhorse|realtime|omni|kolors|qwen-mt|livetranslate)/i
 
 export function isMomaChatCandidate(id: string): boolean {
   return typeof id === 'string' && id.length > 0 && !MOMA_NON_CHAT_RE.test(id)
+}
+
+/** 是否移动云自营（九天系列）：/v1/models 无服务商字段，能坐实的只有九天品牌本身 */
+export function isMomaSelfOperated(id: string): boolean {
+  return typeof id === 'string' && /jiutian/i.test(id)
+}
+
+/**
+ * 模型列表计费标注（v0.1.464，只标能坐实的）：九天 = 移动云自营、可用 2500 万
+ * 免费试用额度（仅自营可抵扣，官方口径）；其余一律如实注「可能走按量付费」，
+ * 不许靠前缀猜自营/合作归属（公开目录无服务商字段）。
+ */
+export function momaModelBillingNote(id: string): string {
+  return isMomaSelfOperated(id) ? '移动云自营 · 可用免费试用额度' : '可能走按量付费'
+}
+
+/**
+ * AI 助手「探测可用性」的 MoMA 探测顺序（v0.1.464）：九天对话模型最先（自营、
+ * 烧免费试用、最可能在统一地址上真通），其次其他九天，其余保持原顺序。
+ * 旧探测按名称字母序取前 12 个，172 个模型里排在前面的全是 asr/bge/视频/语音
+ * 与合作池模型，九天根本轮不到——这是「探测全红」的主因之一。
+ */
+export function orderMomaProbeModels(ids: string[]): string[] {
+  const jiutianChat = ids.filter(id => isMomaSelfOperated(id) && /chat/i.test(id))
+  const jiutianRest = ids.filter(id => isMomaSelfOperated(id) && !/chat/i.test(id))
+  const rest = ids.filter(id => !isMomaSelfOperated(id))
+  return [...jiutianChat, ...jiutianRest, ...rest]
 }
 
 /**

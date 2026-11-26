@@ -30,7 +30,7 @@ import { detectModelCapability, capabilityChatCapable } from '../core/modelCapab
 import { inferbaseGate } from '../core/inferbase'
 import { oneAiGate, ONEAI_SMOKE_MODEL } from '../core/oneai'
 import { anyApiGate, getAnyApiSmokeModel } from '../core/anyapi'
-import { momaGate } from '../core/moma'
+import { momaGate, isMomaChatCandidate, orderMomaProbeModels, momaModelBillingNote, MOMA_PROVIDER_ID } from '../core/moma'
 import { dedupeSameKeyAccounts } from '../core/adapters'
 import { loadState } from '../core/store'
 import { t, locale } from '../core/i18n'
@@ -65,7 +65,7 @@ import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { AttachmentPicker } from './AttachmentPicker'
 import { ServiceSwitch } from './ServiceSwitch'
 import {
-  enginesFor, enginesFromRemote, hasCatalog, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
+  enginesFor, enginesFromRemote, hasCatalog, isChatProbeCandidate, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
   type ReasoningLevel,
 } from '../data/engines'
 
@@ -1186,8 +1186,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }))
     setGenerating(false)
   }
-  // ---- 引擎可用性探测（给当前账户的每个引擎发一条极短消息验证真能出话） ----
-  const [probeResults, setProbeResults] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
+  // ---- 引擎可用性探测（给当前账户的对话引擎发一条极短消息验证真能出话） ----
+  // v0.1.464：只探测真对话模型。聚合型 /v1/models 列表混有语音/生图/视频/向量等
+  // 非对话模型，旧实现按列表顺序取前 12 个照单全 ping——MoMA 172 个模型按名称
+  // 排序后前面全是 asr/bge/视频/语音与合作池模型，自营九天根本轮不到，且非对话
+  // 模型回的 400 model_not_found 还会污染结论（实机「探测全红」主因）。现改为：
+  // 非对话模型直接标记跳过（不发请求）、MoMA 先按九天自营优先排序再取前 12。
+  const [probeResults, setProbeResults] = useState<Record<string, { ok: boolean; ms: number; error?: string; skipped?: boolean }>>({})
   const [probing, setProbing] = useState(false)
   const probeEngines = async () => {
     if (!currentAccount?.encryptedKey) { notify(t('当前账户未配置 Key，无法探测')); return }
@@ -1195,9 +1200,20 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     if (!pwd) { notify(t('请先解锁保险箱，再探测引擎可用性')); return }
     let apiKey = ''
     try { apiKey = await decryptSecret(currentAccount.encryptedKey, pwd) } catch { notify(t('Key 解密失败，无法探测')); return }
+    const isMoma = currentAccount.providerId === MOMA_PROVIDER_ID
+    const isCandidate = (id: string) => isMoma ? isMomaChatCandidate(id) : isChatProbeCandidate(id)
+    const skipped = engines.filter(e => !isCandidate(e.id))
+    const candidateIds = engines.filter(e => isCandidate(e.id)).map(e => e.id)
+    const orderedIds = isMoma ? orderMomaProbeModels(candidateIds) : candidateIds
+    const targetIds = orderedIds.slice(0, 12)
+    const targets = targetIds
+      .map(id => engines.find(e => e.id === id))
+      .filter((e): e is NonNullable<typeof e> => !!e)
     setProbing(true)
-    setProbeResults({})
-    const targets = engines.slice(0, 12)
+    setProbeResults(Object.fromEntries(skipped.map(e => [e.id, {
+      ok: false, ms: 0, skipped: true,
+      error: t('非对话模型（语音/图像/视频/向量等），不参与聊天探测'),
+    }])))
     await Promise.all(targets.map(async (e) => {
       const t0 = Date.now()
       try {
@@ -1801,7 +1817,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             </div>
             <div className="engine-probe-bar">
               <button className="btn sm" disabled={probing} onClick={() => void probeEngines()}>{probing ? t('探测中…') : t('探测可用性')}</button>
-              <span>{t('给每个引擎发一条极短消息，验证真能出话（最多 12 个，会消耗极少量额度）')}</span>
+              <span>{t('只给对话模型发一条极短消息验证真能出话（非对话模型自动跳过，最多 12 个，会消耗极少量额度）')}</span>
             </div>
             <div className="engine-list">
               {engines.map(e => (
@@ -1813,12 +1829,19 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                       {e.tag && <em className={`engine-tag ${e.tag === '夜间折扣' ? 'discount' : e.tag === '订阅优先' ? 'sub' : ''}`}>{t(e.tag)}</em>}
                     </span>
                     <span className="engine-id">{e.id}</span>
+                    {currentAccount.providerId === MOMA_PROVIDER_ID && (
+                      <span className="engine-billing-note">{t(momaModelBillingNote(e.id))}</span>
+                    )}
                   </span>
                   <span className="engine-multi">{e.multiplier.toFixed(2)}x</span>
                   {probeResults[e.id] && (
-                    <span className={`engine-probe ${probeResults[e.id].ok ? 'ok' : 'fail'}`} title={probeResults[e.id].error ?? ''}>
-                      {probeResults[e.id].ok ? `● ${probeResults[e.id].ms}ms` : t('● 不可用')}
-                    </span>
+                    probeResults[e.id].skipped ? (
+                      <span className="engine-probe skip" title={probeResults[e.id].error ?? ''}>{t('○ 非对话模型')}</span>
+                    ) : (
+                      <span className={`engine-probe ${probeResults[e.id].ok ? 'ok' : 'fail'}`} title={probeResults[e.id].error ?? ''}>
+                        {probeResults[e.id].ok ? `● ${probeResults[e.id].ms}ms` : t('● 不可用')}
+                      </span>
+                    )
                   )}
                   {engineId === e.id && <span className="engine-check">✓</span>}
                 </button>

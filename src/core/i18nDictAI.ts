@@ -237,4 +237,9 @@ export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
   '例如：请注意': { 'zh-TW': '例如：請注意', en: 'e.g. Please note', ja: '例：ご注意', ko: '예: 주의하세요' },
   '每次回答开头会显示“昵称：短语”，例如“小明：请注意”。': { 'zh-TW': '每次回答開頭會顯示「暱稱：短語」，例如「小明：請注意」。', en: 'Each reply starts with “Nickname: phrase”, e.g. “Xiaoming: Please note”.', ja: '各回答の冒頭に「ニックネーム：フレーズ」と表示されます。例：「小明：ご注意」。', ko: '매 답변 시작 부분에 "닉네임: 문구"가 표시됩니다. 예: "샤오밍: 주의하세요".' },
   '完成': { 'zh-TW': '完成', en: 'Done', ja: '完了', ko: '완료' },
+  '只给对话模型发一条极短消息验证真能出话（非对话模型自动跳过，最多 12 个，会消耗极少量额度）': { 'zh-TW': '只給對話模型發一條極短消息驗證真能出話（非對話模型自動跳過，最多 12 個，會消耗極少量額度）', en: 'Sends one short message to chat models only to verify they respond (non-chat models are skipped automatically, up to 12, uses a tiny amount of quota)', ja: '対話モデルにだけ短いメッセージを送って応答できるか確認します（非対話モデルは自動でスキップ、最大12個、ごく少量のクォータを消費）', ko: '대화 모델에만 짧은 메시지를 보내 응답 가능한지 확인합니다(비대화 모델은 자동 건너뜀, 최대 12개, 극소량의 할당량 사용)' },
+  '非对话模型（语音/图像/视频/向量等），不参与聊天探测': { 'zh-TW': '非對話模型（語音/圖像/視頻/向量等），不參與聊天探測', en: 'Non-chat model (voice/image/video/embedding, etc.) — not included in the chat probe', ja: '非対話モデル（音声/画像/動画/ベクトルなど）のため、チャット確認の対象外です', ko: '비대화 모델(음성/이미지/동영상/벡터 등)이라 채팅 탐지에 참여하지 않습니다' },
+  '○ 非对话模型': { 'zh-TW': '○ 非對話模型', en: '○ Non-chat model', ja: '○ 非対話モデル', ko: '○ 비대화 모델' },
+  '移动云自营 · 可用免费试用额度': { 'zh-TW': '移動雲自營 · 可用免費試用額度', en: 'China Mobile self-operated · free trial quota applies', ja: '中国移動の自営 · 無料トライアル枠が使えます', ko: '차이나모바일 자체 운영 · 무료 체험 할당량 사용 가능' },
+  '可能走按量付费': { 'zh-TW': '可能走按量付費', en: 'May be billed pay-as-you-go', ja: '従量課金になる場合があります', ko: '종량제로 과금될 수 있습니다' },
 }

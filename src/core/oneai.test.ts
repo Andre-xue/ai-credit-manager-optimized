@@ -67,6 +67,10 @@ describe('One AI 状态归类', () => {
     expect(classifyOneAiHttp(429, 'too many', 30).retryAfterSec).toBe(30)
     expect(classifyOneAiHttp(404, 'model not found').state).toBe('model_unavailable')
     expect(classifyOneAiHttp(500, 'boom').state).toBe('error')
+    // v0.1.464：400 model_not_found（官方措辞 code + "is not available"）如实归类
+    expect(classifyOneAiHttp(400, 'The requested model is not available on this endpoint.').state).toBe('model_unavailable')
+    expect(classifyOneAiHttp(400, 'model_not_found').state).toBe('model_unavailable')
+    expect(oneAiStateFromError(new Error('接口返回 400：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint."}}'))).toBe('model_unavailable')
   })
   it('文本错误归类保留原文', () => {
     expect(oneAiStateFromError(new Error('接口返回 429：rate limit'))).toBe('rate_limited')

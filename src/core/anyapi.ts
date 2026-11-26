@@ -70,11 +70,17 @@ export class AnyApiApiError extends Error {
   }
 }
 
+/** 「网关不认此模型」强特征（v0.1.464，与 moma.ts 同口径）：官方措辞是 code
+ * model_not_found + "is not available"，旧判定只认带空格的 "not found" 会失配；
+ * 且 model 判定必须最先做，不许被额度/限流误吞并给账户上冷却。 */
+export const ANYAPI_MODEL_NOT_FOUND_RE = /model_not_found|model.*(?:not found|not available|does not exist|no such model)|no such model|模型(?:不存在|不可用|未找到|已下线)/i
+
 /** 从 HTTP 状态 + 官方错误原文归类状态（错误信封 {error:{message,type,code}}，401 实测为 auth_error） */
 export function classifyAnyApiHttp(status: number, message: string, retryAfterSec?: number): AnyApiApiError {
   const msg = message || `AnyAPI 接口返回 ${status}`
   let state: AnyApiRouteState = 'error'
-  if (status === 401 || status === 403) state = 'auth_invalid'
+  if ((status === 400 || status === 404) && ANYAPI_MODEL_NOT_FOUND_RE.test(msg)) state = 'model_unavailable'
+  else if (status === 401 || status === 403) state = 'auth_invalid'
   else if (status === 402) state = 'quota_exceeded'
   else if (status === 429) state = 'rate_limited'
   else if (status === 404 && /model/i.test(msg)) state = 'model_unavailable'
@@ -85,6 +91,7 @@ export function classifyAnyApiHttp(status: number, message: string, retryAfterSe
 export function anyApiStateFromError(e: unknown): AnyApiRouteState {
   if (e instanceof AnyApiApiError) return e.state
   const msg = e instanceof Error ? e.message : String(e ?? '')
+  if (ANYAPI_MODEL_NOT_FOUND_RE.test(msg)) return 'model_unavailable'
   if (/401|403|invalid credentials|invalid api key|unauthorized|authentication/i.test(msg)) return 'auth_invalid'
   if (/402|insufficient|quota|plan_limit|额度不足|余额不足|anytokens/i.test(msg)) return 'quota_exceeded'
   if (/429|rate.?limit|too many requests|限流/i.test(msg)) return 'rate_limited'

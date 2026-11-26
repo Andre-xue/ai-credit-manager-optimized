@@ -30,6 +30,12 @@ describe('classifyHealthError', () => {
     expect(r.status).toBe('error')
     expect(r.message).toContain('500')
   })
+  it('400 model_not_found 归为 model（网关不认此模型），不许吞成额度（v0.1.464）', () => {
+    const r = classifyHealthError(new Error('接口返回 400：{"error":{"code":"model_not_found","message":"The requested model is not available on this endpoint."}}'))
+    expect(r.status).toBe('model')
+    expect(r.message).toContain('网关不认此模型')
+    expect(r.message).toContain('model_not_found')
+  })
 })
 
 describe('keyHealth 持久化', () => {

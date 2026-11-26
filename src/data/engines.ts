@@ -172,6 +172,21 @@ export function hasCatalog(providerId: string): boolean {
   return (ENGINE_CATALOG[providerId]?.length ?? 0) > 0
 }
 
+/**
+ * 模型 id 是否可作「聊天探测」候选（v0.1.464，AI 助手探测可用性用）：聚合型
+ * /v1/models 列表混有语音/生图/视频/向量/重排/安全分类等非对话模型，拿它们
+ * 发 chat 请求只会换回 400 model_not_found 并污染结论，一律跳过。按模型名
+ * 特征判定：语音（cosyvoice/sensevoice/tts/asr）、生图（image/flux/diffusers/
+ * kolors）、视频（seedance/wan+数字/video）、向量/重排（embedding/bge/rerank）、
+ * 安全分类（guard）、ocr。视觉（-vl）与 omni 多模态模型在多数平台能正常走
+ * chat 接口，不在此列；MoMA 另有更严的 isMomaChatCandidate（core/moma）。
+ */
+const NON_CHAT_PROBE_RE = /(cosyvoice|sensevoice|tts|asr|image|flux|diffusers|kolors|seedance|wan\s?\d|video|embedding|bge|rerank|guard|ocr)/i
+
+export function isChatProbeCandidate(id: string): boolean {
+  return typeof id === 'string' && id.length > 0 && !NON_CHAT_PROBE_RE.test(id)
+}
+
 /** 推理等级：界面四档 → SDK reasoning_effort */
 export type ReasoningLevel = 'Off' | 'Low' | 'High' | 'Max'
 export const REASONING_LEVELS: ReasoningLevel[] = ['Off', 'Low', 'High', 'Max']
