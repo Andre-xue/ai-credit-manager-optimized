@@ -168,7 +168,9 @@
   padding: 24px; animation: set-fade .18s ease both;
 }
 .claude-ui .set-modal {
-  width: min(920px, 96vw); max-height: min(88vh, 860px);
+  /* v0.1.482：固定高度（= 改前 max-height 上限），切大类/页签时外框不再随
+     内容高矮伸缩、居中位置不再上下跳；超高内容由 .set-content 内滚承接 */
+  width: min(920px, 96vw); height: min(860px, 88vh); max-height: min(88vh, 860px);
   background: #fff; border-radius: 16px; overflow: hidden;
   display: flex; flex-direction: column;
   box-shadow: 0 24px 80px rgba(16, 24, 40, .22);
@@ -199,13 +201,19 @@
   white-space: nowrap; flex-shrink: 0;
 }
 .claude-ui .set-tabs button.active { background: #ebebe8; color: #1f2023; font-weight: 600; }
-.claude-ui .set-content { flex: 1 1 auto; min-width: 0; padding: 24px 28px 40px; overflow-y: auto; }
+.claude-ui .set-content { flex: 1 1 auto; min-width: 0; padding: 24px 28px 40px; overflow-y: auto; scrollbar-gutter: stable; }
+/* v0.1.482：弹窗内切换内容不播入场动画——styles.css 的 set-content-in
+   （淡入+下移+缩放）在切大类重挂载时重播，新内容半透明透出背后界面成
+   「叠影」、画面跟着位移。仅弹窗内关掉，页面版 .set-content 不受影响；
+   卡片到达即最终态，手动折叠/展开的手势过渡（chevron）保留。 */
+.claude-ui .set-modal .set-content { animation: none; }
 
 /* 手机端：弹窗改为上下布局，分类导航变横向 tab 条，内容全宽 —— 根治窄屏内容被挤成竖排 */
 @media (max-width: 680px) {
   .claude-ui .set-modal-backdrop { padding: 0; align-items: flex-end; }
   .claude-ui .set-modal {
-    width: 100%; max-width: 100%; max-height: 92dvh;
+    /* v0.1.482：手机 sheet 同样定高，切换时不随内容伸缩 */
+    width: 100%; max-width: 100%; height: 92dvh; max-height: 92dvh;
     border-radius: 18px 18px 0 0;
   }
   .claude-ui .set-modal-head { padding: 16px 20px; }
