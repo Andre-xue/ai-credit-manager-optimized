@@ -199,8 +199,8 @@ export interface AppSettings {
   unitPrices: Record<string, number>
   /** 是否把本地模型账户（Ollama/ComfyUI 等）也纳入云同步，默认否（仅本机） */
   syncLocalProviders?: boolean
-  /** 界面主题：system 跟随系统 / light 浅色 / dark 深色（缺省 system） */
-  theme?: 'system' | 'light' | 'dark'
+  /** 界面主题：system 跟随系统 / light 浅色 / dark 深色 / warm 暖色（缺省 system） */
+  theme?: 'system' | 'light' | 'dark' | 'warm'
   /** 分平台月预算（元），key 为 providerId；未设置的平台只受总预算约束 */
   providerBudgets?: Record<string, number>
   /** 分账户月预算（元），key 为 accountId；比平台预算更细一层，独立提醒 */

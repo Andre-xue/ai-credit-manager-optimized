@@ -129,6 +129,8 @@ export function MiniView() {
 
   const themePref = state.settings.theme ?? 'system'
   const dark = themePref === 'dark' || (themePref === 'system' && systemDark)
+  // v0.1.494：暖色主题下迷你窗顺带用暖色板（与主窗口 --side/--bg 同色系）
+  const warm = themePref === 'warm'
 
   const balances = useMemo(
     () =>
@@ -157,7 +159,9 @@ export function MiniView() {
 
   const c = dark
     ? { bg: '#14161c', card: '#1d2027', border: '#2a2e38', text: '#e8eaee', sub: '#9aa1ad', faint: '#6b7280' }
-    : { bg: '#ffffff', card: '#f6f6f8', border: '#e7e7ea', text: '#191a1e', sub: '#5f6368', faint: '#9aa0a6' }
+    : warm
+      ? { bg: '#fffdf8', card: '#faf3e0', border: '#eae0c6', text: '#2e2417', sub: '#6f6151', faint: '#a6967e' }
+      : { bg: '#ffffff', card: '#f6f6f8', border: '#e7e7ea', text: '#191a1e', sub: '#5f6368', faint: '#9aa0a6' }
   const card: React.CSSProperties = { background: c.card, border: `1px solid ${c.border}`, borderRadius: 14, padding: '12px 14px' }
   const btn: React.CSSProperties = { border: `1px solid ${c.border}`, background: c.card, color: c.text, borderRadius: 10, padding: '7px 10px', fontSize: 12.5, cursor: 'pointer' }
   const fmt = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
@@ -170,7 +174,7 @@ export function MiniView() {
       onKeyDownCapture={() => void invoke?.('mini_interacted')}
       style={{ height: '100vh', overflowY: 'auto', background: c.bg, color: c.text, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ width: 26, height: 26, borderRadius: 8, background: 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
+        <span style={{ width: 26, height: 26, borderRadius: 8, background: warm ? 'linear-gradient(135deg,#b85c09,#e09a3e)' : 'linear-gradient(135deg,#6d28d9,#9333ea)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✦</span>
         <b style={{ fontSize: 14 }}>{t('AI 魔方')}</b>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: c.faint }}>{t('更新于 {time}', { time: updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })}</span>
         <button onClick={hide} title={t('收起')} style={{ ...btn, padding: '2px 8px', fontSize: 13 }}>×</button>

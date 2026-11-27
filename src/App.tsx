@@ -991,11 +991,13 @@ function App() {
   const portfolioValue = totalPortfolioValue(state)
   const healthRows = useMemo(() => scoreAccounts(state), [state])
 
-  // ---- 主题（深色模式）：system 跟随系统，其余按设置固定；写入 <html data-theme> ----
+  // ---- 主题：system 跟随系统，light/dark/warm 按设置固定；写入 <html data-theme> ----
   const themePref = state.settings.theme ?? 'system'
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const apply = () => {
+      // v0.1.494：暖色是独立的浅色系主题（暖米色侧栏 + 暖白内容区），不随系统深浅变化
+      if (themePref === 'warm') { document.documentElement.dataset.theme = 'warm'; return }
       const dark = themePref === 'dark' || (themePref === 'system' && mq.matches)
       document.documentElement.dataset.theme = dark ? 'dark' : 'light'
     }
@@ -5926,9 +5928,9 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 <option value="ko">한국어</option>
               </select>
             </SettingsRow>
-            <SettingsRow title="主题" desc="深色模式护眼省电；跟随系统时随系统外观自动切换">
+            <SettingsRow title="主题" desc="深色护眼省电；暖色是暖米色侧栏配暖白内容区的柔和风格；跟随系统时随系统外观自动切换">
               <div className="seg-control">
-                {([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] as const).map(([v, label]) => (
+                {([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色'], ['warm', '暖色']] as const).map(([v, label]) => (
                   <button key={v} className={`seg-btn ${(s.theme ?? 'system') === v ? 'active' : ''}`} onClick={() => onChange({ theme: v })}>{t(label)}</button>
                 ))}
               </div>

@@ -642,6 +642,72 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 :root[data-theme="dark"] .claude-ui .compliance{background:#2e230a;border-color:#57451a;color:var(--text-2)}
 :root[data-theme="dark"] .claude-ui .brand{border-bottom-color:var(--border)}
 
+/* ===== v0.1.494：暖色主题（data-theme=warm，设置→外观设计→主题→暖色） =====
+   MangoDisk 式暖色调：侧边栏暖米色（--side-bg #faf3e0）、内容区暖白色（--bg #fffdf8），
+   两者色相一致但明度/饱和拉开，一眼可辨；强调色由靛蓝紫换成深暖橙 #b85c09
+   （白字按钮与深字文本的对比度均达标），语义色绿/红保持原口径。
+   与深色块同法：变量同时定义在 :root 与 .claude-ui 两个作用域，
+   claude-ui.css 里带 !important 的字面色表面逐项以更高优先级覆盖。 */
+:root[data-theme="warm"]{ color-scheme: light; }
+:root[data-theme="warm"],
+:root[data-theme="warm"] .claude-ui{
+  --bg:#fffdf8; --panel:#ffffff; --panel-2:#faf4e4; --panel-3:#f3ead2;
+  --border:#eae0c6; --border-strong:#dccfa9;
+  --text:#2e2417; --text-2:#6f6151; --text-3:#a6967e;
+  --primary:#b85c09; --primary-2:#d97e1e; --primary-soft:#faedd0; --primary-hover:#9e4e06;
+  --amber:#b54708; --amber-soft:#fdf3e0;
+  --side-bg:#faf3e0; --side-label:#a08c66; --side-active-bg:#f5dfb0;
+  --side-card-bg:#f4e9cb; --side-card-border:#e5d5ab; --side-menu-bg:#fffdf8;
+  --shadow:0 1px 2px rgba(120,84,20,.06),0 1px 3px rgba(120,84,20,.05);
+  --shadow-md:0 4px 16px -4px rgba(120,84,20,.10),0 2px 6px -2px rgba(120,84,20,.06);
+  --shadow-lg:0 16px 40px -12px rgba(120,84,20,.22);
+}
+:root[data-theme="warm"] body{background:var(--bg);color:var(--text)}
+:root[data-theme="warm"] ::selection{background:#f3d9a4}
+:root[data-theme="warm"] .claude-ui{background:var(--bg);color:var(--text)}
+:root[data-theme="warm"] .claude-ui.app-shell{background:var(--bg)}
+:root[data-theme="warm"] .claude-ui.phone-shell{background:var(--bg)!important}
+:root[data-theme="warm"] .claude-ui .ai-page{background:var(--bg)}
+:root[data-theme="warm"] .claude-ui .topbar{background:var(--panel)!important;border-bottom-color:var(--border)}
+:root[data-theme="warm"] .claude-ui .stat-card,
+:root[data-theme="warm"] .claude-ui .panel,
+:root[data-theme="warm"] .claude-ui .set-section,
+:root[data-theme="warm"] .claude-ui .agent-card,
+:root[data-theme="warm"] .claude-ui .account-card{background:var(--panel)!important;border-color:var(--border)!important}
+:root[data-theme="warm"] .claude-ui .set-modal{background:var(--panel);color:var(--text)}
+:root[data-theme="warm"] .claude-ui .set-modal-head{border-bottom-color:var(--border)}
+:root[data-theme="warm"] .claude-ui .set-tabs{background:var(--panel-2);border-right-color:var(--border)}
+:root[data-theme="warm"] .claude-ui .set-tabs button{color:var(--text-2)}
+:root[data-theme="warm"] .claude-ui .set-tabs button.active{background:var(--panel-3);color:var(--text)}
+:root[data-theme="warm"] .claude-ui .ai-model-btn{background:var(--panel-2);border-color:var(--border);color:var(--text-2)}
+:root[data-theme="warm"] .claude-ui .reasoning-btn{background:var(--panel-2);border-color:var(--border);color:var(--text-2)}
+:root[data-theme="warm"] .claude-ui .ai-quick-card:hover{background:var(--panel-2)}
+:root[data-theme="warm"] .claude-ui .brand{border-bottom-color:var(--border)}
+:root[data-theme="warm"] .claude-ui.phone-shell .sidebar{background:var(--side-bg)!important;border-right-color:var(--border)!important}
+/* 硬编码紫色渐变的主要视觉面 → 暖橙渐变（白字保持可读） */
+:root[data-theme="warm"] .btn.primary{background:linear-gradient(120deg,#a34e06,#cf7317);border-color:transparent}
+:root[data-theme="warm"] .btn.primary:hover{background:linear-gradient(120deg,#8f4305,#bd660f);border-color:transparent}
+:root[data-theme="warm"] .dash-hero{background:linear-gradient(120deg,#7a4710 0%,#b85c09 55%,#dd9435 100%);box-shadow:0 18px 36px -16px rgba(158,94,10,.5)}
+:root[data-theme="warm"] .bento-main{background:linear-gradient(135deg,#8a4d0d,#c06a10 58%,#e09a3e);color:#fff}
+:root[data-theme="warm"] .bento-main:hover{box-shadow:0 18px 36px -16px rgba(176,102,16,.5)}
+:root[data-theme="warm"] .bento-cta{color:#8a4d0d}
+:root[data-theme="warm"] .bento-tile{background:var(--panel)}
+:root[data-theme="warm"] .onboarding-card{background:linear-gradient(135deg,#fdf3da,#fbeed0)}
+:root[data-theme="warm"] .cg-bar i{background:linear-gradient(90deg,#b85c09,#e09a3e)}
+:root[data-theme="warm"] .sd-brand-mark{background:linear-gradient(135deg,var(--primary),#e09a3e)}
+:root[data-theme="warm"] .sd-generate{background:linear-gradient(135deg,var(--primary),#d97e1e)}
+:root[data-theme="warm"] .gen-progress-fill{background:linear-gradient(90deg,var(--primary),#e09a3e)}
+/* 硬编码浅紫小面：页签 chip 选中态 / 目录上新条 / 导航紫点 / 顶栏眉题 */
+:root[data-theme="warm"] .chip-btn.on{background:var(--primary-soft);color:var(--primary)}
+:root[data-theme="warm"] .ws-tab.on{color:var(--primary);border-bottom-color:var(--primary)}
+:root[data-theme="warm"] .ws-tab.on .ws-tab-n{background:var(--primary-soft);color:var(--primary)}
+:root[data-theme="warm"] .ws-open{color:var(--primary)}
+:root[data-theme="warm"] .fm-hit-via{color:var(--primary);background:var(--primary-soft)}
+:root[data-theme="warm"] .catalog-news-bar{background:#fdf3da;border-color:#ecd9a8;color:#7a4a08}
+:root[data-theme="warm"] .catalog-news-bar button{background:var(--panel);color:var(--primary);border-color:var(--border-strong)}
+:root[data-theme="warm"] .nav-new-dot{background:var(--primary-2)}
+:root[data-theme="warm"] .topbar-eyebrow{color:var(--primary)}
+
 /* ==== v0.1.195：AI 对话输入框聚焦不再出现紫色框；语音输入麦克风按钮 ==== */
 .claude-ui .ai-textarea:focus, .claude-ui .ai-textarea:focus-visible, .ai-textarea:focus, .ai-textarea:focus-visible { outline: none !important; box-shadow: none !important; }
 .claude-ui .ai-compose-box:focus-within { border-color: #e3e3e0; box-shadow: 0 2px 12px rgba(16, 24, 40, .04); }
