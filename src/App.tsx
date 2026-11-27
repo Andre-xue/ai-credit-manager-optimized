@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, lazy, Suspense, Fragment } from 'react'
+import { createPortal } from 'react-dom'
+import { sidebarMenuItems, sidebarUpdateHasDot, SETTINGS_AUDIT_TARGET, SETTINGS_ACCOUNT_TARGET, HELP_FEEDBACK_URL, type SettingsNavTarget } from './core/sidebarMenu'
 import { SESSIONS_EVENT, TOGGLE_HISTORY_EVENT, loadSessionList, loadArchivedList, setSessionArchived, clearSessionsData, requestOpenSession, requestNewSession, updateSessionTitle, deleteStoredSession } from './core/chatSessions'
 import { saveArchivedSessionToFolder } from './core/archiveExport'
 import { loadStoragePrefs, saveStoragePrefs, storageDir, type StoragePrefs } from './core/storagePrefs'
@@ -318,31 +320,9 @@ function App() {
   // 预览参数仅用于浏览器验收手机端界面，生产环境不会带此参数
   const phonePreview = typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone'))
   const isPhone = isNativeApp() || phonePreview
-  // v0.1.485/491：桌面顶部自绘条——条左侧留 82px 空位（485 时为 Overlay 预期下给红绿灯
-  // 让位；491 起条内已无标题文字，此留白仅为视觉延续、布局不动）；其余桌面/网页端不留。
-  const isMacDesktop = isDesktopApp() && typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent ?? '')
-  // 标题栏拖动（沿用 480 小窗的显式口径：声明式 drag-region 在真机不可靠）：
-  // 按下点落在按钮等交互元素上时不拖（按钮照常可点），其余区域拖动窗口；双击切换最大化。
-  const onTitlebarMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0 || !isDesktopApp()) return
-    if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [data-no-drag]')) return
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        await getCurrentWindow().startDragging()
-      } catch { /* 非桌面/无权限时忽略 */ }
-    })()
-  }
-  const onTitlebarDoubleClick = (e: React.MouseEvent) => {
-    if (!isDesktopApp()) return
-    if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [data-no-drag]')) return
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        await getCurrentWindow().toggleMaximize()
-      } catch { /* 非桌面/无权限时忽略 */ }
-    })()
-  }
+  // v0.1.493：485/491 的桌面自绘标题栏条（.app-titlebar）整条撤销——491 已坐实 macOS 真机
+  // 走原生标题栏、自绘条只是白占 40px；全局搜索按钮改放侧边栏顶部标题行右端（原折叠
+  // 按钮的位置），窗口拖动由系统原生标题栏承担，条上的拖动/双击最大化处理一并删除。
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
@@ -356,7 +336,30 @@ function App() {
     try { return localStorage.getItem('acm.sidebar.visible') !== '0' } catch { return true }
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // v0.1.493：设置弹窗深链（侧边栏菜单「操作历史」直达 安全隐私→审计日志、账户项直达
+  // 账户与数据）：打开时把目标大类+页签作为一次性信号传给 SettingsView，普通打开为 null。
+  const [settingsNav, setSettingsNav] = useState<(SettingsNavTarget & { n: number }) | null>(null)
+  const openSettingsAt = (target: SettingsNavTarget) => { setSettingsNav({ ...target, n: Date.now() }); setSettingsOpen(true) }
+  const closeSettings = () => { setSettingsOpen(false); setSettingsNav(null) }
   const toggleSidebar = () => setSidebarVisible(v => !v)
+  // v0.1.493：桌面侧边栏底部弹出菜单（点底部状态卡向上弹）与「关于」小弹窗
+  const [sideMenuOpen, setSideMenuOpen] = useState(false)
+  const [sideMenuPos, setSideMenuPos] = useState<{ left: number; bottom: number }>({ left: 12, bottom: 76 })
+  const sideCardRef = useRef<HTMLButtonElement | null>(null)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const toggleSideMenu = () => {
+    if (!sideMenuOpen && sideCardRef.current) {
+      const r = sideCardRef.current.getBoundingClientRect()
+      setSideMenuPos({ left: Math.round(r.left), bottom: Math.round(window.innerHeight - r.top + 8) })
+    }
+    setSideMenuOpen(v => !v)
+  }
+  useEffect(() => {
+    if (!sideMenuOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSideMenuOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sideMenuOpen])
   // 侧边栏导航分组折叠（v0.1.260）：点分组标题收起该组入口，状态记忆；图标条模式下不生效（图标始终全显）
   const [closedNavGroups, setClosedNavGroups] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('acm.nav.closedGroups') || '[]') } catch { return [] }
@@ -377,7 +380,7 @@ function App() {
   const openTab = (id: Tab) => {
     // 手机客户端已移除文档问答与本地生成：任何残留入口跳到这些页时回落到 AI 页
     if (isPhone && (id === 'local-image' || id === 'local-video')) id = 'ai'
-    if (id === 'settings') { setSettingsOpen(true); if (isPhone) setSidebarVisible(false); return }
+    if (id === 'settings') { setSettingsNav(null); setSettingsOpen(true); if (isPhone) setSidebarVisible(false); return }
     setTab(id)
     if (isPhone) setSidebarVisible(false)
     window.scrollTo(0, 0)
@@ -1433,36 +1436,47 @@ function App() {
 
   return (
     <div className={shellClass}>
-      {/* v0.1.485：全局搜索按钮统一搬到窗口顶部自绘条右端，全页面共用一处；条身即拖动区
-          （显式 startDragging，按钮除外），右端只放一颗纯放大镜按钮。
-          v0.1.491：条内不再写标题文字——Ethan 真机截图里窗口标题出现两次：macOS 构建实际
-          走 tauri.macos.conf.json 的窗口定义（未带 base 配置的 titleBarStyle:Overlay 与
-          hiddenTitle），系统原生标题栏照常显示「AI 魔方」，自绘条又写一遍且叠在原生栏
-          下方。按 Ethan 定案：原生栏标题保留为唯一窗口标题，自绘条只留搜索按钮。
-          手机壳没有这条，不渲染（搜索入口保持 481 手机形态，见下方与 AIView）。 */}
-      {!isPhone && (
-        <div className={`app-titlebar${isMacDesktop ? ' mac' : ''}`} onMouseDown={onTitlebarMouseDown} onDoubleClick={onTitlebarDoubleClick}>
-          <span className="app-titlebar-spacer" />
-          <button className="app-titlebar-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
-            <Search size={16} />
-          </button>
-        </div>
-      )}
+      {/* v0.1.493：自绘标题栏条已整条删除（见上方 isPhone 处注释），页面整体上移；
+          桌面全局搜索按钮在侧边栏顶部标题行右端（下方 brand 行内），手机壳保持 481 形态。 */}
       {/* 手机端抽屉遮罩：点击关闭侧栏 */}
       {isPhone && sidebarVisible && <button className="phone-scrim" aria-label={t('关闭菜单')} onClick={() => setSidebarVisible(false)} />}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 魔方')} className="app-mark-img" /></div>
-          <div className="brand-text">
-            <div className="brand-name">{t('AI 魔方')}</div>
-            <div className="brand-sub">AI CREDIT MANAGER</div>
-          </div>
-          {isPhone && <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title={t('关闭菜单')}><X size={19} /></button>}
-          {!isPhone && <button className="icon-btn sidebar-toggle sidebar-head-toggle" onClick={toggleSidebar} title={sidebarVisible ? t('收起侧边栏（只显示图标）') : t('展开侧边栏')} aria-label={t('切换侧边栏')}>{sidebarVisible ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>}
+          {isPhone ? (
+            <>
+              <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 魔方')} className="app-mark-img" /></div>
+              <div className="brand-text">
+                <div className="brand-name">{t('AI 魔方')}</div>
+                <div className="brand-sub">AI CREDIT MANAGER</div>
+              </div>
+              <button className="icon-btn sidebar-toggle" onClick={() => setSidebarVisible(false)} title={t('关闭菜单')}><X size={19} /></button>
+            </>
+          ) : sidebarVisible ? (
+            <>
+              {/* v0.1.493：桌面展开态顶部只留「AI 魔方」文字标题（去掉品牌大图标块），
+                  右端是全局搜索按钮（原折叠按钮的位置；折叠改走底部卡菜单） */}
+              <div className="brand-text">
+                <div className="brand-name">{t('AI 魔方')}</div>
+              </div>
+              <button className="icon-btn sidebar-search-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+                <Search size={17} />
+              </button>
+            </>
+          ) : (
+            <>
+              {/* v0.1.493：桌面折叠态（图标栏）顶部显示 App 方块图标，其下是搜索图标按钮 */}
+              <div className="brand-mark"><img src="./pwa-512.png" alt={t('AI 魔方')} className="app-mark-img" /></div>
+              <button className="icon-btn sidebar-search-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+                <Search size={17} />
+              </button>
+            </>
+          )}
         </div>
         <nav className="nav" aria-label={t('主导航')}>
           {navGroups.map((group) => {
-            const visibleIds = group.ids.filter((id) => (isPhone ? drawerTabs : tabs.map((t) => t.id)).includes(id))
+            // v0.1.493：桌面端导航删「设置」项（设置只走底部卡弹出菜单，系统组只剩语音/插件）；
+            // 手机壳导航与设置入口保持不动。
+            const visibleIds = group.ids.filter((id) => (isPhone ? drawerTabs : tabs.map((t) => t.id)).includes(id) && (isPhone || id !== 'settings'))
             if (!visibleIds.length) return null
             const groupClosed = sidebarVisible && closedNavGroups.includes(group.label)
             return (
@@ -1497,64 +1511,160 @@ function App() {
             )
           })}
         </nav>
-        <button
-          className="sync-status-bar"
-          onClick={() => {
-            if (!cloudUser) { setLoginOpen(true); return }
-            if (!syncing) void pullCloud()
-          }}
-          title={!cloudUser ? t('登录后开启云同步') : syncError ? t('同步失败：{err}，点击重试', { err: syncError }) : t('点击立即同步')}
-        >
-          <span className={`status-dot ${!cloudUser ? 'off' : syncing ? 'busy' : syncError ? 'err' : 'ok'}`} />
-          <div className="sync-status-text">
-            <b>{!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}</b>
-            <span>{!cloudUser
-              ? t('未登录云同步 · 点此登录')
-              : syncing
-                ? (cloudUser.name ?? cloudUser.email ?? t('正在与云端同步'))
-                : syncError
-                  ? t('点此重试')
-                  : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
+        {isPhone ? (
+          <>
+            {/* 手机壳底部保持原样：同步状态条（点=登录/重试同步）+ 本地优先脚注 */}
+            <button
+              className="sync-status-bar"
+              onClick={() => {
+                if (!cloudUser) { setLoginOpen(true); return }
+                if (!syncing) void pullCloud()
+              }}
+              title={!cloudUser ? t('登录后开启云同步') : syncError ? t('同步失败：{err}，点击重试', { err: syncError }) : t('点击立即同步')}
+            >
+              <span className={`status-dot ${!cloudUser ? 'off' : syncing ? 'busy' : syncError ? 'err' : 'ok'}`} />
+              <div className="sync-status-text">
+                <b>{!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}</b>
+                <span>{!cloudUser
+                  ? t('未登录云同步 · 点此登录')
+                  : syncing
+                    ? (cloudUser.name ?? cloudUser.email ?? t('正在与云端同步'))
+                    : syncError
+                      ? t('点此重试')
+                      : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
+              </div>
+              <span className="sync-status-icon">{!cloudUser ? <CloudOff size={16} /> : syncError ? <AlertTriangle size={16} /> : <Cloud size={16} />}</span>
+            </button>
+            <div className="sidebar-foot">
+              <div className="sidebar-status">
+                <span className="status-dot" />
+                <div><b>{t('本地优先')}</b><span>{t('数据只保存在此设备')}</span></div>
+              </div>
+              <div className="compliance">
+                {t('仅只读官方接口 · 签到跳转官方页本人操作')}
+              </div>
+            </div>
+          </>
+        ) : (
+          /* v0.1.493 桌面底部（MangoDisk 式）：状态卡只以 App 图标开头（无状态圆点），
+             主/副文案沿用原同步状态条的真实状态逻辑；点击不再直接登录，而是向上弹出
+             菜单（账户项承接原点击行为；474 的独立更新行删除，状态并入菜单项与卡上红点） */
+          <div className="sidebar-bottom">
+            <button
+              ref={sideCardRef}
+              type="button"
+              className="side-card"
+              aria-haspopup="menu"
+              aria-expanded={sideMenuOpen}
+              aria-label={!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}
+              onClick={toggleSideMenu}
+            >
+              <span className="side-card-mark"><img src="./pwa-512.png" alt="" className="app-mark-img" /></span>
+              {sidebarVisible && (
+                <span className="side-card-text">
+                  <b>{!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}</b>
+                  <span>{!cloudUser
+                    ? t('未登录云同步 · 点此登录')
+                    : syncing
+                      ? (cloudUser.name ?? cloudUser.email ?? t('正在与云端同步'))
+                      : syncError
+                        ? t('点此重试')
+                        : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
+                </span>
+              )}
+              {sidebarVisible && sidebarUpdateHasDot(autoUpd) && <span className="side-card-dot" />}
+              {sidebarVisible && <ChevronUp size={15} className={`side-card-chev${sideMenuOpen ? ' open' : ''}`} />}
+              {!sidebarVisible && sidebarUpdateHasDot(autoUpd) && <span className="side-card-dot rail" />}
+            </button>
+            {sideMenuOpen && createPortal(
+              <>
+                <div className="side-menu-scrim" onClick={() => setSideMenuOpen(false)} />
+                <div className="side-menu" role="menu" style={{ left: sideMenuPos.left, bottom: sideMenuPos.bottom }}>
+                  <button
+                    type="button"
+                    className="side-menu-item side-menu-account"
+                    role="menuitem"
+                    onClick={() => {
+                      setSideMenuOpen(false)
+                      if (!cloudUser) { setLoginOpen(true); return }
+                      openSettingsAt(SETTINGS_ACCOUNT_TARGET)
+                    }}
+                  >
+                    <span className="side-menu-mark"><img src="./pwa-512.png" alt="" className="app-mark-img" /></span>
+                    <span className="side-menu-text">
+                      <b>{!cloudUser ? t('登录云同步') : (cloudUser.name ?? cloudUser.email ?? t('已云同步'))}</b>
+                      <span>{!cloudUser
+                        ? t('未登录云同步 · 点此登录')
+                        : syncing
+                          ? t('同步中…')
+                          : syncError
+                            ? t('同步失败')
+                            : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
+                    </span>
+                  </button>
+                  <div className="side-menu-sep" />
+                  {sidebarMenuItems(autoUpd, { isDesktop: isDesktopApp() }).map((item) => {
+                    if (item.id === 'update') {
+                      return (
+                        <button
+                          key="update"
+                          type="button"
+                          className="side-menu-item"
+                          role="menuitem"
+                          title={autoUpd.kind === 'deferred'
+                            ? t('已安排在关闭窗口时自动安装')
+                            : autoUpd.kind === 'available' || autoUpd.kind === 'ready'
+                              ? t('更新到 v{ver}', { ver: autoUpd.version })
+                              : t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
+                          onClick={() => {
+                            setSideMenuOpen(false)
+                            if (autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') reopenUpdatePrompt()
+                            else setUpdateOpen(true)
+                          }}
+                        >
+                          {item.busy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                          <span className="side-menu-label">
+                            {autoUpd.kind === 'idle' && t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
+                            {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && t('更新到 v{ver}', { ver: autoUpd.version })}
+                            {autoUpd.kind === 'downloading' && (autoUpd.total
+                              ? t('正在下载更新 {pct}%', { pct: Math.min(100, Math.round(autoUpd.downloaded / autoUpd.total * 100)) })
+                              : t('正在下载更新…'))}
+                            {autoUpd.kind === 'installing' && t('正在安装更新…')}
+                          </span>
+                          {item.dot && <span className="side-menu-dot" />}
+                        </button>
+                      )
+                    }
+                    const conf = {
+                      settings: { icon: <Settings size={16} />, label: t('设置'), run: () => { setSettingsNav(null); setSettingsOpen(true) } },
+                      audit: { icon: <ClipboardList size={16} />, label: t('操作历史'), run: () => openSettingsAt(SETTINGS_AUDIT_TARGET) },
+                      help: { icon: <CircleHelp size={16} />, label: t('帮助与反馈'), run: () => { void openExternal(HELP_FEEDBACK_URL) } },
+                      about: { icon: <Info size={16} />, label: t('关于 AI 魔方'), run: () => setAboutOpen(true) },
+                      collapse: {
+                        icon: sidebarVisible ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />,
+                        label: sidebarVisible ? t('收起侧边栏') : t('展开侧边栏'),
+                        run: () => toggleSidebar(),
+                      },
+                    }[item.id as 'settings' | 'audit' | 'help' | 'about' | 'collapse']
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="side-menu-item"
+                        role="menuitem"
+                        onClick={() => { setSideMenuOpen(false); conf.run() }}
+                      >
+                        {conf.icon}
+                        <span className="side-menu-label">{conf.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </>,
+              document.body,
+            )}
           </div>
-          <span className="sync-status-icon">{!cloudUser ? <CloudOff size={16} /> : syncError ? <AlertTriangle size={16} /> : <Cloud size={16} />}</span>
-        </button>
-        {isDesktopApp() && (
-          <button
-            type="button"
-            className={`sidebar-update${autoUpd.kind === 'available' || autoUpd.kind === 'ready' ? ' has-update' : ''}`}
-            title={autoUpd.kind === 'deferred'
-              ? t('已安排在关闭窗口时自动安装')
-              : autoUpd.kind === 'available' || autoUpd.kind === 'ready'
-                ? t('更新到 v{ver}', { ver: autoUpd.version })
-                : t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
-            onClick={() => {
-              if (autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') reopenUpdatePrompt()
-              else setUpdateOpen(true)
-            }}
-          >
-            {autoUpd.kind === 'downloading' || autoUpd.kind === 'installing'
-              ? <Loader2 size={15} className="spin" />
-              : <RefreshCw size={15} />}
-            <span className="sidebar-update-label">
-              {autoUpd.kind === 'idle' && t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
-              {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && t('更新到 v{ver}', { ver: autoUpd.version })}
-              {autoUpd.kind === 'downloading' && (autoUpd.total
-                ? t('正在下载更新 {pct}%', { pct: Math.min(100, Math.round(autoUpd.downloaded / autoUpd.total * 100)) })
-                : t('正在下载更新…'))}
-              {autoUpd.kind === 'installing' && t('正在安装更新…')}
-            </span>
-            {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && <span className="sidebar-update-dot" />}
-          </button>
         )}
-        <div className="sidebar-foot">
-          <div className="sidebar-status">
-            <span className="status-dot" />
-            <div><b>{t('本地优先')}</b><span>{t('数据只保存在此设备')}</span></div>
-          </div>
-          <div className="compliance">
-            {t('仅只读官方接口 · 签到跳转官方页本人操作')}
-          </div>
-        </div>
       </aside>
 
       <main className="main">
@@ -1786,6 +1896,7 @@ function App() {
       {/* 设置中心：Claude 风为居中模态弹窗，其他风格仍可经 tab 打开 */}
       {settingsOpen && (() => {
         const node = <SettingsView
+          navSignal={settingsNav}
           isPhone={isPhone}
           onClearData={(cats) => {
             const doClear = () => {
@@ -1884,11 +1995,11 @@ function App() {
           altStatus={altStatus}
         />
         return (
-          <div className="set-modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="set-modal-backdrop" onClick={closeSettings}>
             <div className="set-modal" onClick={e => e.stopPropagation()}>
               <div className="set-modal-head">
                 <h2>{t('设置')}</h2>
-                <button className="icon-btn" onClick={() => setSettingsOpen(false)} title={t('关闭')}><X size={18} /></button>
+                <button className="icon-btn" onClick={closeSettings} title={t('关闭')}><X size={18} /></button>
               </div>
               <div className="set-modal-body">{node}</div>
             </div>
@@ -2067,7 +2178,7 @@ function App() {
         }}
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
-      {/* 全局搜索入口：桌面端已统一到窗口标题栏右端（v0.1.485，见根节点 app-titlebar）。
+      {/* 全局搜索入口：桌面端在侧边栏顶部标题行右端（v0.1.493，485/491 的标题栏条已撤）。
           这里只保留手机壳形态（v0.1.481）：非 AI 页用同款胶囊按钮落在手机顶部预留带内；
           手机 AI 页的按钮在 AIView 顶栏胶囊内（onOpenSearch 仅手机端传入）。 */}
       {isPhone && tab !== 'ai' && (
@@ -2078,6 +2189,26 @@ function App() {
       {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
       {updateOpen && <UpdateModal onClose={() => setUpdateOpen(false)} notify={notify} />}
       <UpdateReadyPrompt />
+      {/* v0.1.493：「关于 AI 魔方」小弹窗（侧边栏底部菜单进入；内容与设置→关于分段同口径） */}
+      {aboutOpen && (
+        <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setAboutOpen(false) }}>
+          <div className="modal" style={{ maxWidth: 380 }}>
+            <div className="modal-head">
+              <h3>{t('关于 AI 魔方')}</h3>
+              <button className="icon-btn" onClick={() => setAboutOpen(false)} title={t('关闭')}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="about-box">
+                <img src="./pwa-512.png" alt={t('AI 魔方')} className="about-mark" />
+                <div className="about-name">{t('AI 魔方')}</div>
+                <div className="about-ver">v{APP_VERSION}</div>
+                <div className="about-note">{t('本地优先 · 个人资源管理工具')}</div>
+                <div className="set-about-note"><ShieldCheck size={14} /> {t('数据仅存本机，密钥经 AES-256-GCM 加密，不上传明文')}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {undo && <div className="undo-bar">
         <span><Check size={15} /> {undo.label}</span>
         <button onClick={doUndo}><RotateCcw size={14} /> {t('撤回')}</button>
@@ -5282,9 +5413,11 @@ const AI_TOOLBAR_LABELS: Record<string, string> = {
   myData: '引用我的数据', webSearch: '联网搜索', compare: '多模型对比', sessions: '会话列表', prompts: '提示词', clearChat: '清空对话',
 }
 
-function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onAltSync, altSyncing, altStatus, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, onRestoreSnapshot, isPhone, onClearData }: {
+function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangePassword, onResetVault, onBioAvailable, onBioUnlock, bioLabel, sessionPwd, cloudUser, syncing, syncError, lastSyncAt, onLogin, onLogout, onSync, onAltSync, altSyncing, altStatus, onCheckUpdate, auditEntries, onClearAudit, onImportBackup, onRestoreSnapshot, isPhone, onClearData, navSignal }: {
   onClearData?: (cats: ClearCat[]) => void
   isPhone?: boolean
+  /** v0.1.493 深链信号：打开时直达指定大类+页签（侧边栏菜单「操作历史」用），null=普通打开 */
+  navSignal?: (SettingsNavTarget & { n: number }) | null
   state: AppState
   onChange: (patch: Partial<AppState['settings']>) => void
   notify: (m: string) => void
@@ -5579,6 +5712,13 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     setSavedSubTabs(prev => ({ ...prev, [cat]: id }))
     saveSettingsSubTab(cat, id)
   }
+  // v0.1.493：深链信号生效（弹窗每次打开都是新挂载，挂载时应用一次即可）
+  useEffect(() => {
+    if (!navSignal) return
+    setSetTab(navSignal.cat)
+    if (navSignal.sub) pickSubTab(navSignal.cat, navSignal.sub)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navSignal?.n])
   const subTabChips = (cat: SettingsCategory, current: string) => (
     <div className="ws-chips" style={{ marginBottom: 10 }}>
       {visibleSettingsSubTabs(cat, subCtx).map(d => (
