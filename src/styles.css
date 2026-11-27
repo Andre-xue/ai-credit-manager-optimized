@@ -2996,22 +2996,15 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .trs-pop-open-settings:hover { background: var(--pop-hover); }
 .trs-pop-error { display: flex; gap: 8px; align-items: flex-start; color: var(--red); padding-right: 16px; line-height: 1.5; }
 .trs-pop-loading { opacity: .6; padding: 6px 0; }
-/* 小窗错误态（v0.1.480）：人话标题 + 建议 + 换家重试 + 原始错误可展开 */
-.trs-pop-errview { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 2px; }
+/* 小窗错误态（v0.1.480 并入新小窗；v0.1.484 与输入/成功态统一骨架）：
+   errview 是错误态根容器——内装同一套语言行 + 左右对照两栏 + 底部整宽
+   .trs-pop-go「重试」按钮，自身只负责纵向撑满；错误内容在右栏内竖排 */
+.trs-pop-errview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.trs-pop-errbody { display: flex; flex-direction: column; gap: 8px; }
+/* 错误态底部占位脚行：与 .trs-pop-elapsed（margin 5 + 行高约 18）等高，
+   使错误态的按钮行位置与成功/输入态一致 */
+.trs-pop-footspace { flex: none; height: 18px; margin-top: 5px; }
 .trs-pop-errhint { margin: 0; font-size: 12.5px; color: var(--pop-text-2); line-height: 1.6; }
-.trs-pop-errsrc {
-  margin: 0; font-size: 12px; color: var(--pop-text-2); line-height: 1.55;
-  background: var(--pop-hover); border-radius: 8px; padding: 6px 9px; word-break: break-all;
-}
-.trs-pop-errrow { display: flex; gap: 8px; align-items: center; }
-.trs-pop-errrow .trs-pop-provider { flex: 1; min-width: 0; }
-.trs-pop-errretry {
-  flex: none; display: inline-flex; align-items: center; gap: 5px;
-  border: none; background: var(--pop-green); color: #fff;
-  border-radius: 9px; padding: 7px 16px; font-size: 13px; cursor: pointer;
-}
-.trs-pop-errretry:hover:not(:disabled) { background: var(--pop-green-hover); }
-.trs-pop-errretry:disabled { opacity: .55; cursor: default; }
 .trs-pop-errtoggle {
   align-self: flex-start; border: none; background: none; padding: 0;
   color: var(--pop-text-2); font-size: 12px; cursor: pointer; text-decoration: underline;
