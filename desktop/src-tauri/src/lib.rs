@@ -1130,6 +1130,84 @@ struct UpdateDlProgress {
     total: u64,
 }
 
+// ---------------- 更新链诊断日志（v0.1.498） ----------------
+// ~/.ai-credit-manager/update/diag.log：检查、下载、安装、关窗闸门各环节
+// 记一行（事件名 + 版本/通道/字节/耗时/错误类别）。474/495 的更新链无头
+// 自测通过、真机未过且无从定位——本日志是下次真机出问题时的定位依据。
+// 口径仿 translator diag：只记事件与量，URL 只记主机名，不记任何凭据。
+
+fn update_diag_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join(".ai-credit-manager").join("update").join("diag.log"))
+}
+
+fn update_utc_stamp(secs: u64) -> String {
+    // unix 秒 → UTC YYYY-MM-DD HH:MM:SS（civil-from-days 算法，无外部依赖）
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z",
+        year, m, d,
+        tod / 3600, (tod % 3600) / 60, tod % 60
+    )
+}
+
+pub fn update_diag(event: &str, detail: &str) {
+    let Some(path) = update_diag_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let clean: String = detail.replace('\n', " ").chars().take(300).collect();
+    let line = format!("{} {} {}\n", update_utc_stamp(secs), event, clean);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// URL 只取主机名落盘（不记路径与查询参数）
+fn update_url_host(url: &str) -> String {
+    url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("").to_string()
+}
+
+/// 前端更新链事件落盘（check、gate、install 决策等 TS 侧事件经此进来）
+#[tauri::command]
+fn update_diag_note(event: String, detail: String) {
+    update_diag(&event, &detail);
+}
+
+/// 读诊断日志（设置页「复制日志」用；文件过长时只回尾部 64KB）
+#[tauri::command]
+fn update_diag_read() -> Result<String, String> {
+    let Some(path) = update_diag_path() else { return Err("拿不到日志路径".into()) };
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let start = data.len().saturating_sub(64 * 1024);
+    Ok(String::from_utf8_lossy(&data[start..]).to_string())
+}
+
+/// 诊断日志所在目录（设置页「打开目录」用；不存在时先建）
+#[tauri::command]
+fn update_diag_dir() -> Result<String, String> {
+    let Some(path) = update_diag_path() else { return Err("拿不到日志路径".into()) };
+    let dir = path.parent().ok_or("日志路径异常")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// 测速：对每个候选源拉前 32KB，按耗时排序（失败排最后）
 fn probe_mirror_order(path: &str) -> Vec<String> {
     let client = match reqwest::blocking::Client::builder()
@@ -1175,10 +1253,18 @@ fn download_update_package(
         .rsplit_once('/')
         .map(|(d, _)| format!("{d}/SHA256SUMS.txt"))
         .unwrap_or_default();
+    // read_timeout 是 v0.1.498 的关键修复：此前 client 只有 connect_timeout，
+    // 正文读取没有任何超时——镜像经本机代理中途掐流（连接不断、字节不再来）
+    // 时单次 read 可无限阻塞，下面的窗口看门狗只在 read 返回后才检查，永远
+    // 轮不到触发，前端便无限菊花（2026-11-27 真机实证）。read_timeout 让
+    // 「连续 20 秒无字节」以超时错误返回，看门狗/换源逻辑才真正生效。
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(8))
+        .read_timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
+    update_diag("download-start", &format!("file={file_name} channel=mirror"));
+    let dl_t0 = std::time::Instant::now();
     let mut expected: Option<String> = None;
     for base in UPDATE_MIRRORS {
         let url = format!("{base}/{UPDATE_REPO}/{sums_path}");
@@ -1212,18 +1298,30 @@ fn download_update_package(
                 used_url = url.clone();
                 break;
             }
-            Err(e) => last_err = e,
+            Err(e) => {
+                update_diag(
+                    "download-attempt-fail",
+                    &format!("host={} err={}", update_url_host(url), e.chars().take(80).collect::<String>()),
+                );
+                last_err = e;
+            }
         }
     }
     if used_url.is_empty() {
+        update_diag("download-fail", &format!("file={file_name} channel=mirror elapsed_ms={}", dl_t0.elapsed().as_millis()));
         return Err(format!("所有镜像下载失败：{last_err}"));
     }
     // 3) 校验完整性
     let bytes = std::fs::read(&dest).map_err(|e| e.to_string())?;
     let got = format!("{:x}", sha2::Sha256::digest(&bytes));
     if got != expected {
+        update_diag("download-checksum-fail", &format!("file={file_name} host={}", update_url_host(&used_url)));
         return Err("更新包校验不一致，已回退官方更新通道".into());
     }
+    update_diag(
+        "download-done",
+        &format!("file={file_name} channel=mirror host={} bytes={} elapsed_ms={}", update_url_host(&used_url), bytes.len(), dl_t0.elapsed().as_millis()),
+    );
     Ok((dest, used_url))
 }
 
@@ -1288,7 +1386,17 @@ fn download_with_watchdog(
     let mut window_start = std::time::Instant::now();
     let mut window_bytes: u64 = 0;
     loop {
-        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
+        // read_timeout（20 秒无字节）在此以超时错误返回：统一标成 stall-timeout，
+        // diag 里可与「速度过慢」「HTTP 错误」区分（v0.1.498）。
+        let n = resp.read(&mut buf).map_err(|e| {
+            let m = e.to_string();
+            let lower = m.to_lowercase();
+            if lower.contains("timed out") || lower.contains("timeout") {
+                "stall-timeout".to_string()
+            } else {
+                m
+            }
+        })?;
         if n == 0 {
             break;
         }
@@ -1310,8 +1418,22 @@ fn download_with_watchdog(
     Ok(())
 }
 
-/// 安装已下载并校验过的更新包（平台分支）
+/// 安装已下载并校验过的更新包（平台分支）。外层包一层 diag（v0.1.498）：
+/// install-start / install-done / install-fail 落盘，macOS 成功路径在内层
+/// exit(0) 退出进程，install-done 记在退出前由内层分支不可达，故成功以
+/// 「install-start 后进程重启、回来 consumeJustUpdated」为据，diag 里有
+/// start 无 done 且无 fail 即表示已交棒安装器。
 fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str) -> Result<(), String> {
+    update_diag("install-start", &format!("file={file_name}"));
+    let r = install_downloaded_update_inner(app, dest, file_name);
+    match &r {
+        Ok(()) => update_diag("install-done", &format!("file={file_name}")),
+        Err(e) => update_diag("install-fail", &format!("file={file_name} err={}", e.chars().take(80).collect::<String>())),
+    }
+    r
+}
+
+fn install_downloaded_update_inner(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = app;
@@ -4339,11 +4461,13 @@ static UPDATE_CLOSE_BYPASS: std::sync::atomic::AtomicBool = std::sync::atomic::A
 
 #[tauri::command]
 fn update_close_arm(armed: bool) {
+    update_diag("gate-arm", &format!("armed={armed}"));
     UPDATE_CLOSE_ARMED.store(armed, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]
 fn update_close_proceed(app: tauri::AppHandle, action: String) {
+    update_diag("gate-proceed", &format!("action={action}"));
     UPDATE_CLOSE_ARMED.store(false, std::sync::atomic::Ordering::SeqCst);
     UPDATE_CLOSE_BYPASS.store(true, std::sync::atomic::Ordering::SeqCst);
     if action == "exit" {
@@ -4359,6 +4483,7 @@ fn update_close_gate(app: &tauri::AppHandle, action: &str) -> bool {
     if UPDATE_CLOSE_ARMED.load(std::sync::atomic::Ordering::SeqCst)
         && !UPDATE_CLOSE_BYPASS.load(std::sync::atomic::Ordering::SeqCst)
     {
+        update_diag("gate-triggered", &format!("action={action}"));
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.emit("update-close-requested", action);
         }
@@ -4609,7 +4734,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

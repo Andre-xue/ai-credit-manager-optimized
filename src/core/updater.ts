@@ -5,6 +5,7 @@
 // - 安卓 APK：给出下载最新 APK 的链接（无法静默安装，需用户确认）
 
 import { isDesktopApp, isNativeApp } from './openExternal'
+import { withStallWatchdog, UpdateStallError } from './updateStall'
 
 import pkg from '../../package.json'
 
@@ -203,6 +204,44 @@ export async function checkReleaseUpdate(requireDesktopInstaller = false): Promi
   }
 }
 
+// ---- 更新链诊断日志（v0.1.498） ----
+// 事件经 Rust 命令 append 到 ~/.ai-credit-manager/update/diag.log（Rust 侧
+// 的下载/安装/闸门事件也在同一份日志里）。只记事件名与量（版本、通道、
+// 字节、耗时、错误类别），detail 由调用方保证不带凭据与敏感参数。
+
+/** 往更新诊断日志记一行（fire-and-forget，非桌面端静默跳过） */
+export function updateDiag(event: string, detail = ''): void {
+  if (!isDesktopApp()) return
+  void (async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('update_diag_note', { event, detail: detail.replace(/\s+/g, ' ').slice(0, 200) })
+    } catch { /* 日志失败不影响更新流程 */ }
+  })()
+}
+
+/** 读诊断日志全文（设置页「复制日志」用） */
+export async function readUpdateDiag(): Promise<string> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  return await invoke<string>('update_diag_read')
+}
+
+/** 诊断日志所在目录（设置页「打开目录」用） */
+export async function updateDiagDir(): Promise<string> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  return await invoke<string>('update_diag_dir')
+}
+
+/** 用系统文件管理器打开诊断日志所在目录 */
+export async function openUpdateDiagDir(): Promise<void> {
+  const dir = await updateDiagDir()
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('open_external_path', { path: dir })
+}
+
+/** 双通道都卡死/失败时给用户的人话错误（v0.1.498 定版文案） */
+export const UPDATE_STALL_USER_MSG = '下载卡住了，已自动重试仍失败，请检查网络或代理后点重试'
+
 /** 把更新器底层错误翻成可读中文 */
 function friendlyUpdateError(e: unknown): string {
   const m = String((e as Error)?.message ?? e ?? '')
@@ -254,10 +293,12 @@ export async function checkDesktopUpdate(onStage?: (s: DesktopCheckStage) => voi
 }> {
   const deadline = Date.now() + DESKTOP_CHECK_BUDGET_MS
   const remain = () => Math.max(0, deadline - Date.now())
+  updateDiag('check-start', `current=${APP_VERSION}`)
   onStage?.('connecting')
   let viaJson: UpdateInfo | null = null
   try { viaJson = await checkViaLatestJson() } catch { /* 清单不可达 → 继续走插件检查 */ }
   if (viaJson && !viaJson.hasUpdate) {
+    updateDiag('check-result', `uptodate latest=${viaJson.latest}`)
     return { version: viaJson.latest, currentVersion: APP_VERSION, upToDate: true }
   }
   onStage?.('comparing')
@@ -272,7 +313,11 @@ export async function checkDesktopUpdate(onStage?: (s: DesktopCheckStage) => voi
     try {
       const { check } = await import('@tauri-apps/plugin-updater')
       const update = await withTimeout(check(), Math.min(PLUGIN_CHECK_ATTEMPT_MS, remain()))
-      if (!update) return { version: APP_VERSION, currentVersion: APP_VERSION, upToDate: true }
+      if (!update) {
+        updateDiag('check-result', 'uptodate channel=plugin')
+        return { version: APP_VERSION, currentVersion: APP_VERSION, upToDate: true }
+      }
+      updateDiag('check-result', `found version=${update.version} channel=plugin`)
       return { version: update.version, currentVersion: update.currentVersion, body: update.body }
     } catch (e) {
       lastErr = e instanceof CheckTimeoutError
@@ -281,38 +326,60 @@ export async function checkDesktopUpdate(onStage?: (s: DesktopCheckStage) => voi
     }
   }
   if (viaJson?.hasUpdate) {
+    updateDiag('check-result', `found version=${viaJson.latest} channel=manifest-only`)
     return { version: viaJson.latest, currentVersion: APP_VERSION, body: viaJson.notes, error: lastErr || '自动更新通道暂时不可用' }
   }
+  updateDiag('check-result', `error msg=${(lastErr || 'unknown').slice(0, 80)}`)
   return { version: '', currentVersion: APP_VERSION, error: lastErr || '检查更新失败，请稍后重试' }
 }
 
 export interface InstallProgress { downloaded: number; total?: number }
 
+/** 最近一次手动安装失败的人话原因（弹窗报错用，不再只有一句「请稍后重试」） */
+let lastInstallError = ''
+export function getLastInstallError(): string { return lastInstallError }
+
 /** 桌面端：下载并安装更新。macOS/Linux 安装后需调用 relaunchApp() */
 export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => void): Promise<boolean> {
   // 先走镜像快速通道（v0.1.346）：测速选源、慢了自动换、SHA256 校验、本地安装；
-  // 任一步失败都回退下面的官方 updater，保证更新不会被镜像问题卡死
+  // 任一步失败都回退下面的官方 updater，保证更新不会被镜像问题卡死。
+  // v0.1.498：两条通道都套卡死看门狗（连续 20 秒无字节进展即放弃本通道），
+  // 镜像通道内部另有 Rust read_timeout 兜底，两边谁先触发谁生效。
+  lastInstallError = ''
+  let mirrorStalled = false
   try {
-    const fast = await installViaMirrorFast(onProgress)
-    if (fast) return true
-  } catch { /* 回退官方通道 */ }
+    const fast = await withStallWatchdog(note =>
+      installViaMirrorFast(p => { note(p.downloaded); onProgress?.(p) }))
+    if (fast) { updateDiag('install-done', 'channel=mirror'); return true }
+  } catch (e) {
+    mirrorStalled = e instanceof UpdateStallError
+    updateDiag(mirrorStalled ? 'download-stall' : 'install-fail', `channel=mirror msg=${String((e as Error)?.message ?? e).slice(0, 80)}`)
+  }
   try {
     const { check } = await import('@tauri-apps/plugin-updater')
-    const update = await check()
-    if (!update) return false
+    const update = await withTimeout(check(), PLUGIN_CHECK_ATTEMPT_MS)
+    if (!update) { lastInstallError = '未找到可安装的更新'; return false }
     let downloaded = 0
     let total = 0
-    await update.downloadAndInstall((event) => {
+    await withStallWatchdog(note => update.downloadAndInstall((event) => {
       if (event.event === 'Started') {
         total = event.data.contentLength ?? 0
+        note(0)
         onProgress?.({ downloaded: 0, total })
       } else if (event.event === 'Progress') {
         downloaded += event.data.chunkLength
+        note(downloaded)
         onProgress?.({ downloaded, total: total || undefined })
       }
-    })
+    }))
+    updateDiag('install-done', 'channel=plugin')
     return true
-  } catch { return false }
+  } catch (e) {
+    const stalled = e instanceof UpdateStallError
+    updateDiag(stalled ? 'download-stall' : 'install-fail', `channel=plugin msg=${String((e as Error)?.message ?? e).slice(0, 80)}`)
+    lastInstallError = (stalled || mirrorStalled) ? UPDATE_STALL_USER_MSG : friendlyUpdateError(e)
+    return false
+  }
 }
 
 /** 从 latest.json 解析本平台的镜像更新包（版本/相对路径/文件名）；无可用包返回 null */
@@ -348,6 +415,27 @@ async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): 
   channel.onmessage = (p) => onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
   await invoke('update_fast_install', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
   return true
+}
+
+/** 官方通道下载一件更新（只下载不安装），带卡死看门狗；进展同时喂外部回调 */
+async function downloadViaPlugin(onProgress?: (p: InstallProgress) => void): Promise<import('@tauri-apps/plugin-updater').Update | null> {
+  const { check } = await import('@tauri-apps/plugin-updater')
+  const update = await withTimeout(check(), PLUGIN_CHECK_ATTEMPT_MS)
+  if (!update) return null
+  let downloaded = 0
+  let total = 0
+  await withStallWatchdog(note => update.download((event) => {
+    if (event.event === 'Started') {
+      total = event.data.contentLength ?? 0
+      note(0)
+      onProgress?.({ downloaded: 0, total })
+    } else if (event.event === 'Progress') {
+      downloaded += event.data.chunkLength
+      note(downloaded)
+      onProgress?.({ downloaded, total: total || undefined })
+    }
+  }))
+  return update
 }
 
 // ---- 待安装更新（v0.1.474 后台自动更新） ----
@@ -435,49 +523,59 @@ export function consumeJustUpdated(): string | null {
 let pluginPendingUpdate: import('@tauri-apps/plugin-updater').Update | null = null
 
 /**
- * 后台下载更新包（不安装）：优先镜像通道（落盘、可跨进程）；镜像不可用时
- * 回退官方 updater 的 download()（只下载、对象留内存）。成功后待安装状态
- * 已持久化并返回；无更新/失败返回 null。
+ * 后台下载更新包（不安装）：优先镜像通道（落盘、可跨进程）；镜像卡死/失败
+ * 时回退官方 updater 的 download()（只下载、对象留内存）——两条通道互为
+ * 备份，各套 20 秒无进展卡死看门狗（v0.1.498；镜像通道内另有 Rust
+ * read_timeout）。成功后待安装状态已持久化；失败返回人话原因供界面呈现，
+ * 不再像旧版那样静默吞掉只留一个红点。
  */
-export async function downloadUpdateInBackground(onProgress?: (p: InstallProgress) => void): Promise<PendingUpdate | null> {
+export async function downloadUpdateInBackground(
+  onProgress?: (p: InstallProgress) => void,
+): Promise<{ pending: PendingUpdate | null; error?: string }> {
+  let mirrorStalled = false
   try {
     const pkg = await resolveMirrorPackage()
     if (pkg && versionGreater(pkg.version, APP_VERSION)) {
+      updateDiag('download-start', `version=${pkg.version} channel=mirror`)
       const { invoke, Channel } = await import('@tauri-apps/api/core')
-      const channel = new Channel<InstallProgress>()
-      channel.onmessage = (p) => onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
-      const filePath = await invoke<string>('update_fast_download', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
+      const filePath = await withStallWatchdog(note => new Promise<string>((resolve, reject) => {
+        const channel = new Channel<InstallProgress>()
+        channel.onmessage = (p) => {
+          note(p.downloaded)
+          onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
+        }
+        invoke<string>('update_fast_download', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
+          .then(resolve, reject)
+      }))
       const p: PendingUpdate = {
         version: pkg.version, notes: pkg.notes, via: 'mirror',
         filePath, fileName: pkg.fileName, downloadedAt: Date.now(), deferred: false,
       }
       savePendingUpdate(p)
-      return p
+      return { pending: p }
     }
-  } catch { /* 镜像不可用 → 回退官方通道 */ }
+  } catch (e) {
+    mirrorStalled = e instanceof UpdateStallError
+    updateDiag(mirrorStalled ? 'download-stall' : 'download-fail', `channel=mirror msg=${String((e as Error)?.message ?? e).slice(0, 80)}`)
+    /* 镜像不可用 → 回退官方通道 */
+  }
   try {
-    const { check } = await import('@tauri-apps/plugin-updater')
-    const update = await withTimeout(check(), PLUGIN_CHECK_ATTEMPT_MS)
-    if (!update) return null
-    let downloaded = 0
-    let total = 0
-    await update.download((event) => {
-      if (event.event === 'Started') {
-        total = event.data.contentLength ?? 0
-        onProgress?.({ downloaded: 0, total })
-      } else if (event.event === 'Progress') {
-        downloaded += event.data.chunkLength
-        onProgress?.({ downloaded, total: total || undefined })
-      }
-    })
+    updateDiag('download-start', 'channel=plugin')
+    const update = await downloadViaPlugin(onProgress)
+    if (!update) return { pending: null, error: '未找到可下载的更新' }
     pluginPendingUpdate = update
     const p: PendingUpdate = {
       version: update.version, notes: update.body, via: 'plugin',
       downloadedAt: Date.now(), deferred: false,
     }
     savePendingUpdate(p)
-    return p
-  } catch { return null }
+    updateDiag('download-done', `version=${update.version} channel=plugin`)
+    return { pending: p }
+  } catch (e) {
+    const stalled = e instanceof UpdateStallError
+    updateDiag(stalled ? 'download-stall' : 'download-fail', `channel=plugin msg=${String((e as Error)?.message ?? e).slice(0, 80)}`)
+    return { pending: null, error: (stalled || mirrorStalled) ? UPDATE_STALL_USER_MSG : friendlyUpdateError(e) }
+  }
 }
 
 /**
@@ -488,6 +586,7 @@ export async function downloadUpdateInBackground(onProgress?: (p: InstallProgres
  */
 export async function installPendingUpdate(p: PendingUpdate): Promise<boolean> {
   markJustUpdated(p.version)
+  updateDiag('install-start', `version=${p.version} via=${p.via}`)
   try {
     if (p.via === 'mirror' && p.filePath && p.fileName) {
       const { invoke } = await import('@tauri-apps/api/core')
@@ -499,6 +598,7 @@ export async function installPendingUpdate(p: PendingUpdate): Promise<boolean> {
       await pluginPendingUpdate.install()
       pluginPendingUpdate = null
       clearPendingUpdate()
+      updateDiag('install-done', `version=${p.version} via=plugin relaunch=1`)
       await relaunchApp()
       return true
     }
@@ -506,9 +606,11 @@ export async function installPendingUpdate(p: PendingUpdate): Promise<boolean> {
   const ok = await installDesktopUpdate()
   if (ok) {
     clearPendingUpdate()
+    updateDiag('install-done', `version=${p.version} via=refetch`)
     await relaunchApp()
     return true
   }
+  updateDiag('install-fail', `version=${p.version}`)
   clearJustUpdated()
   return false
 }

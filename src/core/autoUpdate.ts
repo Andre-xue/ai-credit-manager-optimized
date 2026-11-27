@@ -1,4 +1,5 @@
-// 后台自动更新状态机（v0.1.474，仅桌面端；v0.1.495 起「静默更新」新口径）：
+// 后台自动更新状态机（v0.1.474，仅桌面端；v0.1.495 起「静默更新」新口径；
+// v0.1.498 补静默接管与运行期复查）：
 // 启动延迟静默检查 → 后台把安装包下载好 → 静默更新开启时等空闲（appBusy）
 // 自动安装并重启（scheduleSilentAutoInstall），弹窗同时给出「现在更新 /
 // 稍后」供手动介入；关闭静默更新则只弹窗等用户点。选稍后则布防 Rust 关窗
@@ -6,21 +7,27 @@
 // 广播 update-close-requested，本模块等进行中的任务（邮件删除/同步、签到、
 // 图库索引等，见 appBusy）结束后再安装，不硬打断。闸门也是静默自动装等
 // 不到空闲时的兜底。状态经 subscribe 供侧边栏入口与弹窗渲染；持久化在 updater.ts。
+// v0.1.498：手动打开弹窗/手动检查发现新版同样被静默接管（takeoverUpdate
+// Discovery）；运行期间每 2 小时复查一次；下载双通道卡死有看门狗兜底、
+// 失败落 dlError 态带人话原因与重试，全链关键事件记 update diag 日志。
 import { isDesktopApp } from './openExternal'
 import {
   checkDesktopUpdate, loadAutoUpdateEnabled, loadPendingUpdate, savePendingUpdate,
   downloadUpdateInBackground, installPendingUpdate, consumeJustUpdated,
+  onSilentUpdatePrefChange, updateDiag,
   type PendingUpdate,
 } from './updater'
+import { shouldPeriodicRecheck } from './updateStall'
 import { isAppBusy } from './appBusy'
 
 export type AutoUpdateUiState =
   | { kind: 'idle' }
   | { kind: 'available'; version: string }
-  | { kind: 'downloading'; version: string; downloaded: number; total?: number }
+  | { kind: 'downloading'; version: string; downloaded: number; total?: number; since?: number }
   | { kind: 'ready'; version: string; promptOpen: boolean }
   | { kind: 'deferred'; version: string }
   | { kind: 'installing'; version: string; waitingBusy: boolean }
+  | { kind: 'dlError'; version: string; message: string }
 
 let uiState: AutoUpdateUiState = { kind: 'idle' }
 const listeners = new Set<() => void>()
@@ -51,6 +58,8 @@ export function noteManualUpToDate(): void {
 let notifyFn: (msg: string, kind?: 'ok' | 'err') => void = () => {}
 let initialized = false
 let installing = false
+/** 上次静默检查时刻（启动检查与运行期复查共用，复查间隔据此判定） */
+let lastCheckAt = 0
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   try {
@@ -159,8 +168,32 @@ async function onCloseRequested(action: 'hide' | 'exit'): Promise<void> {
   // 成功时安装器已接管进程（退出/重启），不再放行原关窗动作
 }
 
+/**
+ * 后台下载一段已发现的新版（v0.1.498 抽出）：启动检查、运行期复查、手动
+ * 发现接管、失败重试共用同一条链。下载全程状态机驱动悬浮卡/弹窗呈现；
+ * 双通道都失败时落 dlError 态（人话原因 + 重试），不再静默吞掉。
+ */
+async function startBackgroundDownload(version: string): Promise<void> {
+  if (uiState.kind === 'downloading' || uiState.kind === 'installing') return
+  const since = Date.now()
+  setUiState({ kind: 'downloading', version, downloaded: 0, since })
+  const { pending, error } = await downloadUpdateInBackground(pr => {
+    if (uiState.kind === 'downloading') {
+      setUiState({ kind: 'downloading', version, downloaded: pr.downloaded, total: pr.total, since })
+    }
+  })
+  if (!pending) {
+    updateDiag('download-fail', `version=${version} surfaced=1`)
+    setUiState({ kind: 'dlError', version, message: error || '下载失败，请检查网络后重试' })
+    return
+  }
+  setUiState({ kind: 'ready', version: pending.version, promptOpen: true })
+  scheduleSilentAutoInstall(pending.version)
+}
+
 async function silentCheckAndDownload(): Promise<void> {
   if (uiState.kind !== 'idle') return
+  lastCheckAt = Date.now()
   let version = ''
   try {
     const u = await checkDesktopUpdate()
@@ -168,17 +201,35 @@ async function silentCheckAndDownload(): Promise<void> {
     version = u.version
   } catch { return }
   if (!version) return
-  setUiState({ kind: 'downloading', version, downloaded: 0 })
-  const p = await downloadUpdateInBackground(pr => {
-    setUiState({ kind: 'downloading', version, downloaded: pr.downloaded, total: pr.total })
-  })
-  if (!p) {
-    // 下载失败不打扰用户：只在侧边栏留红点，点开可走手动流程
-    setUiState({ kind: 'available', version })
-    return
+  await startBackgroundDownload(version)
+}
+
+/**
+ * 静默接管（v0.1.498）：手动途径（打开更新弹窗/点检查更新）发现新版时，
+ * 只要静默更新开着就立即接管进后台下载链——旧版弹窗只点亮红点、仍摆手动
+ * 按钮等用户点，是 2026-11-27 真机「静默没生效」的实处。静默关时维持旧
+ * 行为（只点亮红点，手动流程在弹窗里走）。
+ */
+export function takeoverUpdateDiscovery(version: string): void {
+  if (!version) return
+  if (!loadAutoUpdateEnabled()) { noteManualUpdateFound(version); return }
+  if (uiState.kind === 'idle' || uiState.kind === 'available' || uiState.kind === 'dlError') {
+    updateDiag('takeover', `version=${version} from=manual`)
+    void startBackgroundDownload(version)
   }
-  setUiState({ kind: 'ready', version: p.version, promptOpen: true })
-  scheduleSilentAutoInstall(p.version)
+}
+
+/** 下载失败卡上的「重试」：对同一版本重走后台下载链 */
+export function retryBackgroundDownload(): void {
+  if (uiState.kind !== 'dlError') return
+  const { version } = uiState
+  updateDiag('download-retry', `version=${version}`)
+  void startBackgroundDownload(version)
+}
+
+/** 关掉下载失败卡：回落到红点态，点开弹窗仍可走手动/接管流程 */
+export function dismissDownloadError(): void {
+  if (uiState.kind === 'dlError') setUiState({ kind: 'available', version: uiState.version })
 }
 
 /** App 主窗口挂载时调用一次（桌面端）：刚更新提示、待安装恢复、启动静默检查、关窗闸门监听 */
@@ -196,6 +247,28 @@ export function initAutoUpdate(opts: { notify: (msg: string, kind?: 'ok' | 'err'
       })
     } catch { /* 非 Tauri 环境忽略 */ }
   })()
+  // 运行期定时复查（v0.1.498）：静默开时每 2 小时静默查一次新版——旧版只在
+  // 启动时查一次，App 长开期间发布的新版永远等不到，是真机「静默没生效」
+  // 的另一半原因。决策走纯函数 shouldPeriodicRecheck，复查不弹窗不打扰。
+  window.setInterval(() => {
+    if (shouldPeriodicRecheck({
+      enabled: loadAutoUpdateEnabled(),
+      stateKind: uiState.kind,
+      hasPending: !!loadPendingUpdate(),
+      now: Date.now(),
+      lastCheckAt,
+    })) {
+      updateDiag('recheck', 'periodic=1')
+      void silentCheckAndDownload()
+    }
+  }, 60_000)
+  // 静默开关从关→开时若已有手动发现的新版（红点态），立即接管下载
+  onSilentUpdatePrefChange(on => {
+    if (on && uiState.kind === 'available') {
+      updateDiag('takeover', `version=${uiState.version} from=pref-on`)
+      void startBackgroundDownload(uiState.version)
+    }
+  })
   const pending = loadPendingUpdate()
   if (pending) {
     // 上次已下载好但没装成（进程被强杀等）：直接再弹窗询问；曾选过「稍后」的重新布防
@@ -206,5 +279,6 @@ export function initAutoUpdate(opts: { notify: (msg: string, kind?: 'ok' | 'err'
     return
   }
   if (!loadAutoUpdateEnabled()) return
+  lastCheckAt = Date.now()
   window.setTimeout(() => { void silentCheckAndDownload() }, 6000)
 }

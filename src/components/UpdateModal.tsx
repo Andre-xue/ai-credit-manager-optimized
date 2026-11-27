@@ -5,10 +5,15 @@ import {
   APP_VERSION, currentPlatform, checkDesktopUpdate, checkReleaseUpdate,
   installDesktopUpdate, relaunchApp, dockerUpdateCommands, latestApkUrl,
   checkMiniappUpdate, markJustUpdated, loadAutoUpdateEnabled, saveAutoUpdateEnabled,
-  onSilentUpdatePrefChange, type UpdatePlatform, type DesktopCheckStage,
+  onSilentUpdatePrefChange, getLastInstallError, type UpdatePlatform, type DesktopCheckStage,
 } from '../core/updater'
 import { SilentUpdateSwitch } from './SilentUpdateSwitch'
-import { noteManualUpdateFound, noteManualUpToDate } from '../core/autoUpdate'
+import {
+  noteManualUpdateFound, noteManualUpToDate, takeoverUpdateDiscovery,
+  getAutoUpdateUiState, subscribeAutoUpdate, installDownloadedNow,
+  deferDownloadedInstall, dismissUpdatePrompt, retryBackgroundDownload,
+  type AutoUpdateUiState,
+} from '../core/autoUpdate'
 import { UpdateProgressBar } from './UpdateProgressBar'
 import { openExternal } from '../core/openExternal'
 import { t } from '../core/i18n'
@@ -34,6 +39,11 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   // 「静默更新」开关（v0.1.495）：与设置页签同一偏好，变更互相广播同步
   const [silentUpd, setSilentUpd] = useState(() => loadAutoUpdateEnabled())
   useEffect(() => onSilentUpdatePrefChange(v => setSilentUpd(v)), [])
+  // 后台更新状态机（v0.1.498）：静默开时弹窗呈现接管后的下载/就绪/失败态
+  const [autoUi, setAutoUi] = useState<AutoUpdateUiState>(() => getAutoUpdateUiState())
+  useEffect(() => subscribeAutoUpdate(() => setAutoUi(getAutoUpdateUiState())), [])
+  // 手动下载起始时刻（进度条算已等待时长/速率用）
+  const [dlStartedAt, setDlStartedAt] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -47,7 +57,13 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         if (!alive) return
         // 已是最新：立刻定论，不再多走一遍 GitHub 回退流程（旧实现白等十几秒）
         if (u.upToDate) { setLatest(u.version); setPhase('latest'); noteManualUpToDate(); return }
-        if (!u.error) { setLatest(u.version); setNotes(u.body ?? ''); setPhase('available'); noteManualUpdateFound(u.version); return }
+        if (!u.error) {
+          setLatest(u.version); setNotes(u.body ?? ''); setPhase('available')
+          // 静默开：立即接管进后台下载链，弹窗转呈现下载进度，不摆手动按钮
+          if (loadAutoUpdateEnabled()) takeoverUpdateDiscovery(u.version)
+          else noteManualUpdateFound(u.version)
+          return
+        }
         // 自动更新检查失败：记住原因，继续走手动通道，保证用户仍可下载
         if (u.error) setAutoErr(u.error)
         setStage('comparing')
@@ -65,6 +81,13 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
         if (info.installersReady === false) {
           setErrMsg(t('新版本已发布，但桌面安装包还在构建中（通常几分钟）。请稍后再点检查更新。'))
           setPhase('error'); return
+        }
+        // 静默开：签名通道暂时不可用也先接管——后台链会自己走镜像/官方双
+        // 通道下载，比引导去网页手动下载更符合静默语义；接管后弹窗转呈现态
+        if (platform === 'desktop' && loadAutoUpdateEnabled()) {
+          takeoverUpdateDiscovery(info.latest)
+          setPhase('available')
+          return
         }
         // 回退版本或没有签名通道：引导到对应版本的下载页手动安装（覆盖安装不丢数据）
         setPhase('manual')
@@ -93,15 +116,22 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
     return () => { alive = false }
   }, [platform, notify, nonce])
 
+  // 弹窗开着时发现新版、用户又把静默开关打开：立即接管（与偏好广播的接管互补）
+  useEffect(() => {
+    if (platform === 'desktop' && silentUpd && latest && phase === 'available') takeoverUpdateDiscovery(latest)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [silentUpd, phase, latest])
+
   const doInstall = async () => {
     setPhase('downloading')
     setDlBytes(0)
     setDlTotal(0)
+    setDlStartedAt(Date.now())
     const ok = await installDesktopUpdate(p => {
       setDlBytes(p.downloaded)
       if (p.total) setDlTotal(p.total)
     })
-    if (!ok) { setErrMsg(t('下载安装失败，请稍后重试')); setPhase('error'); return }
+    if (!ok) { setErrMsg(getLastInstallError() || t('下载安装失败，请稍后重试')); setPhase('error'); return }
     // v0.1.474：装完自动重启（旧流程停在「ready」等用户点重启，实机反馈
     // 以为没装上）。先落「刚更新」标记，重启回来会轻提示已更新到新版；
     // 自动重启没生效时 2.5 秒后回落到手动「重启应用」按钮，不卡死。
@@ -113,6 +143,15 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
 
   const versionText = latest ? `v${latest.replace(/^v/i, '')}` : ''
   const isDesktop = platform === 'desktop'
+  // 静默接管呈现（v0.1.498）：静默开且后台状态机正在处理同一版本时，弹窗
+  // 改呈现状态机的下载/就绪/失败态，不再摆「下载并安装」手动按钮。
+  const silentTracking = isDesktop && silentUpd && !!latest
+    && (autoUi.kind === 'downloading' || autoUi.kind === 'ready' || autoUi.kind === 'installing' || autoUi.kind === 'dlError')
+    && autoUi.version.replace(/^v/i, '') === latest.replace(/^v/i, '')
+  // 就绪态由本弹窗接管呈现时，收起独立的待安装提示弹窗避免双层叠加
+  useEffect(() => {
+    if (silentTracking && autoUi.kind === 'ready') dismissUpdatePrompt()
+  }, [silentTracking, autoUi.kind])
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -132,14 +171,47 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
             </button>
           )}
 
-          {(phase === 'available' || phase === 'downloading') && (
+          {silentTracking && autoUi.kind === 'downloading' && (
+            <div className="upd-box">
+              <div className="upd-new">{t('发现新版本')} <b>{versionText}</b></div>
+              <UpdateProgressBar downloaded={autoUi.downloaded} total={autoUi.total} startedAt={autoUi.since} />
+              <div className="upd-hint">{t('静默更新已开启，正在后台下载；下载完成后将在空闲时自动安装并重启，无需操作。')}</div>
+            </div>
+          )}
+
+          {silentTracking && autoUi.kind === 'ready' && (
+            <div className="upd-box">
+              <div className="upd-new"><Check size={16} /> {t('新版本 {ver} 已下载好', { ver: versionText })}</div>
+              <div className="upd-hint">{t('静默更新已开启，将在空闲时自动安装并重启；也可以现在立即更新，或选稍后在关闭窗口时安装。')}</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button className="btn" style={{ flex: 1 }} onClick={() => { void deferDownloadedInstall(); onClose() }}>{t('稍后')}</button>
+                <button className="btn primary" style={{ flex: 1 }} onClick={() => { void installDownloadedNow() }}>{t('现在更新')}</button>
+              </div>
+            </div>
+          )}
+
+          {silentTracking && autoUi.kind === 'installing' && (
+            <div className="upd-state"><Loader2 size={18} className="spin" /> {autoUi.waitingBusy ? t('正在等待当前任务完成，随后自动安装…') : t('正在安装更新…')}</div>
+          )}
+
+          {silentTracking && autoUi.kind === 'dlError' && (
+            <div className="upd-box">
+              <div className="upd-new">{t('发现新版本')} <b>{versionText}</b></div>
+              <div className="upd-state"><Info size={18} /> {autoUi.message}</div>
+              <button className="btn primary" style={{ width: '100%', marginTop: 10 }} onClick={() => retryBackgroundDownload()}>
+                <RefreshCw size={14} /> {t('重试下载')}
+              </button>
+            </div>
+          )}
+
+          {(phase === 'available' || phase === 'downloading') && !silentTracking && (
             <div className="upd-box">
               <div className="upd-new">{t('发现新版本')} <b>{versionText}</b></div>
               {notes && <pre className="upd-notes">{notes.slice(0, 600)}</pre>}
               {isDesktop && (
                 <>
                   <div className="upd-hint">{t('点击下方按钮自动下载并安装，完成后将自动重启应用。')}</div>
-                  {phase === 'downloading' && <UpdateProgressBar downloaded={dlBytes} total={dlTotal || undefined} />}
+                  {phase === 'downloading' && <UpdateProgressBar downloaded={dlBytes} total={dlTotal || undefined} startedAt={dlStartedAt || undefined} />}
                   <button className="btn primary" style={{ width: '100%' }} disabled={phase === 'downloading'} onClick={() => void doInstall()}>
                     <Download size={16} /> {phase === 'downloading' ? t('下载中…') : t('下载并安装')}
                   </button>

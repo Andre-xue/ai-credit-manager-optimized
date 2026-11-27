@@ -85,7 +85,7 @@ import { cloud, type CloudUser } from './core/cloud'
 import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror, restoreCloudSessionMirrorForce } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
 import { UpdateReadyPrompt } from './components/UpdateReadyPrompt'
-import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled, onSilentUpdatePrefChange } from './core/updater'
+import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled, onSilentUpdatePrefChange, readUpdateDiag, openUpdateDiagDir } from './core/updater'
 import { SilentUpdateSwitch } from './components/SilentUpdateSwitch'
 import { initAutoUpdate, getAutoUpdateUiState, subscribeAutoUpdate, reopenUpdatePrompt } from './core/autoUpdate'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
@@ -1625,6 +1625,7 @@ function App() {
                           <span className="side-menu-label">
                             {autoUpd.kind === 'idle' && t('检查更新 · 当前 v{ver}', { ver: APP_VERSION })}
                             {(autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred') && t('更新到 v{ver}', { ver: autoUpd.version })}
+                            {autoUpd.kind === 'dlError' && t('更新下载失败 · 点此重试')}
                             {autoUpd.kind === 'downloading' && (autoUpd.total
                               ? t('正在下载更新 {pct}%', { pct: Math.min(100, Math.round(autoUpd.downloaded / autoUpd.total * 100)) })
                               : t('正在下载更新…'))}
@@ -6367,6 +6368,19 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
             {isDesktopApp() && (
               <SettingsRow title={t('静默更新')} desc={autoUpdEnabled ? t('已开启 · 空闲时自动下载、安装并重启') : t('已关闭 · 需手动下载，下载后自动安装重启')}>
                 <SilentUpdateSwitch checked={autoUpdEnabled} onChange={v => { setAutoUpdEnabled(v); saveAutoUpdateEnabled(v) }} />
+              </SettingsRow>
+            )}
+            {isDesktopApp() && (
+              <SettingsRow title={t('更新诊断日志')} desc={t('记录检查、下载、安装各环节（不含凭据），更新异常时可打开目录取 diag.log 定位')}>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn sm" onClick={() => {
+                    void readUpdateDiag().then(txt => {
+                      if (!txt.trim()) { notify(t('暂无诊断日志')); return }
+                      void navigator.clipboard.writeText(txt).then(() => notify(t('诊断日志已复制')))
+                    }).catch(() => notify(t('暂无诊断日志')))
+                  }}>{t('复制日志')}</button>
+                  <button className="btn sm" onClick={() => { void openUpdateDiagDir().catch(() => notify(t('打开目录失败'))) }}>{t('打开目录')}</button>
+                </span>
               </SettingsRow>
             )}
           </SettingsSection>)}

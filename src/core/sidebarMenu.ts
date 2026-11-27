@@ -15,9 +15,9 @@ export interface SidebarMenuItem {
   busy?: boolean
 }
 
-/** 有新版可达/已下载待装/已推迟到关窗安装：菜单项与底部卡都带红点（沿用 474 口径） */
+/** 有新版可达/已下载待装/已推迟到关窗安装/下载失败待重试：菜单项与底部卡都带红点（沿用 474 口径，dlError 为 v0.1.498 新增） */
 export function sidebarUpdateHasDot(autoUpd: AutoUpdateUiState): boolean {
-  return autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred'
+  return autoUpd.kind === 'available' || autoUpd.kind === 'ready' || autoUpd.kind === 'deferred' || autoUpd.kind === 'dlError'
 }
 
 /** 更新进行中（下载/安装）：图标转圈、底部卡不带红点 */
