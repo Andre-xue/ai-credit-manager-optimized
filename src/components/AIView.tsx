@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback, Fragment, type React
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, ChevronRight, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, Check, Globe, Shuffle, Lock, Power,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, Check, Globe, Shuffle, Lock, Power, Gauge,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -62,7 +62,14 @@ import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
-import { groupOptionsByPlatform, platformKeyOf, modelNameOf } from '../core/modelCascade'
+import { groupOptionsByPlatform, platformKeyOf, platformNameOf, modelNameOf } from '../core/modelCascade'
+import {
+  loadProbeStore, syncProbeTargets, recordProbeOutcome, seedProbeOutcome, classifyProbeError,
+  probeSummary, unavailableTargets, rankProbeGroup, selectProbeBatch, medianSamples,
+  PROBE_CHANGED_EVENT, type ProbeTarget, type ProbeGroup,
+} from '../core/probeCenter'
+import { loadKeyHealth } from '../core/healthCheck'
+import { isVisionModelId } from '../core/galleryIndex'
 import {
   fileToAttachment, isTextAttachment, decodeAttachmentText, type PickedAttachment,
 } from '../core/attachments'
@@ -553,6 +560,240 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 三段选择器（v0.1.496）：当前分类的选项按平台分组（第二段的数据来源，纯视图分组）
   const platformGroups = useMemo(() => groupOptionsByPlatform(visibleOptions), [visibleOptions])
   const currentPlatform = platformGroups.find(g => g.platformKey === platformKey) ?? null
+
+  const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource; apisFree?: boolean }) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
+
+  // ---- v0.1.504：全局模型探测中心（AI 助手首个接入）----
+  // 一份结果全 App 共用（存储 acm.probeCenter.v1）；探测只影响排序与「推荐」标记，
+  // 绝不拦发送、绝不改已选（499 定案）。触发：进入 AI 助手时后台测一轮过期/未测项。
+  const [probeStore, setProbeStore] = useState(() => loadProbeStore())
+  useEffect(() => {
+    const f = () => setProbeStore(loadProbeStore())
+    window.addEventListener(PROBE_CHANGED_EVENT, f)
+    return () => window.removeEventListener(PROBE_CHANGED_EVENT, f)
+  }, [])
+  const [probeRunning, setProbeRunning] = useState(false)
+  const probingRef = useRef(false)
+  const [probePanelOpen, setProbePanelOpen] = useState(false)
+  const [probeFoldOpen, setProbeFoldOpen] = useState(false)
+  const [menuUnavailOpen, setMenuUnavailOpen] = useState(false)
+  const [probeSingleId, setProbeSingleId] = useState('')
+  const generatingRef = useRef(false)
+  useEffect(() => { generatingRef.current = generating }, [generating])
+
+  const probeTargets = useMemo<ProbeTarget[]>(() => {
+    const out: ProbeTarget[] = []
+    const groupOf = (c: ModelCategory): ProbeGroup => (c === '免费模型' ? 'free' : c === '通用型' ? 'general' : 'chat')
+    for (const o of allOptions) {
+      if (o.account) continue
+      out.push({
+        id: o.key, name: modelNameOf(o), platformName: platformNameOf(o), platformKey: platformKeyOf(o),
+        group: groupOf(o.category), vision: isVisionModelId(freeModelIdOf(o)),
+        price: o.free ? 0 : null, autoProbe: true,
+        // WorkBuddy 云端免费走账号池网关：同池每轮主动只测一个（护栏⑦），其余吃被动数据
+        poolKey: (!o.upstream && !o.apisFree && !o.localModel) ? 'wb-cloud' : undefined,
+      })
+    }
+    for (const o of ownOptions) {
+      const acct = o.account!
+      const gated = acct.providerId === 'inferbase' || acct.providerId === 'oneai' || acct.providerId === 'anyapi' || acct.providerId === 'moma'
+      for (const e of enginesFor(acct.providerId)) {
+        out.push({
+          id: `own:${acct.id}:${e.id}`, name: e.name, platformName: platformNameOf(o), platformKey: `own:${acct.id}`,
+          group: groupOf(o.category), vision: isVisionModelId(e.id), price: e.multiplier ?? null,
+          // 护栏：MoMA 只自动测自营九天（合作模型按量扣费不进自动探测，469 口径）；
+          // 门槛四平台的冒烟由健康检查负责，探测中心只吃其被动结果，不重复烧额度
+          autoProbe: acct.providerId === 'moma' ? isMomaAutoTestable(e.id) : !gated,
+          accountId: acct.id,
+        })
+      }
+    }
+    return out
+  }, [allOptions, ownOptions])
+  const probeTargetsRef = useRef(probeTargets)
+  probeTargetsRef.current = probeTargets
+  const allOptionsRef = useRef(allOptions)
+  allOptionsRef.current = allOptions
+  useEffect(() => { if (probeTargets.length) syncProbeTargets(probeTargets) }, [probeTargets])
+
+  const probeSummaryNow = probeSummary(probeTargets, probeStore.results)
+  const probeUnavail = unavailableTargets(probeTargets, probeStore.results)
+
+  /** 被动播种：健康检查（账户+Key 指纹冒烟）与四平台门槛的既有结论直接作探测结果，
+   *  同一事实不测两遍；只播种不覆盖（seedProbeOutcome 内部保证） */
+  const seedPassiveProbe = useCallback(() => {
+    const health = loadKeyHealth()
+    for (const o of ownOptions) {
+      const acct = o.account!
+      const eng = defaultChatEngine(acct.providerId) ?? enginesFor(acct.providerId)[0]?.id
+      if (!eng) continue
+      const id = `own:${acct.id}:${eng}`
+      const h = health[acct.id]
+      if (h && h.status !== 'pending' && h.status !== 'skipped') {
+        seedProbeOutcome(id, {
+          ok: h.status === 'ok', ms: h.latencyMs || undefined, source: 'passive',
+          failKind: h.status === 'auth' ? 'auth' : h.status === 'quota' || h.status === 'rate' ? 'quota' : h.status === 'model' ? 'model' : h.status === 'network' ? 'network' : 'other',
+          failReason: h.message?.slice(0, 80),
+        }, h.checkedAt)
+      }
+      const gate = acct.providerId === 'inferbase' ? inferbaseGate(acct)
+        : acct.providerId === 'oneai' ? oneAiGate(acct)
+        : acct.providerId === 'anyapi' ? anyApiGate(acct)
+        : acct.providerId === 'moma' ? momaGate(acct) : null
+      if (gate && gate.state !== 'pending_verification') {
+        seedProbeOutcome(id, {
+          ok: gate.enabled, source: 'passive',
+          failKind: gate.enabled ? undefined : 'other', failReason: gate.enabled ? undefined : gate.message.slice(0, 80),
+        }, Date.now())
+      }
+    }
+  }, [ownOptions])
+
+  /** 主动探测单个目标：分层——先列表接口验 Key/模型在不在，过关才发最小真请求测速 */
+  const probeOneTarget = async (t: ProbeTarget): Promise<void> => {
+    const opt = allOptionsRef.current.find(o => o.key === t.id)
+    if (opt && !opt.account) {
+      // 第一层：模型列表里在不在
+      if (opt.upstream && !upstreamModels.some(m => m.source === opt.upstream && m.id === freeModelIdOf(opt))) {
+        recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: 'model' })
+        return
+      }
+      if (opt.apisFree && !apisFreeReady(apisFreeState)) {
+        recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: 'other', failReason: '通道未开启或未测活' })
+        return
+      }
+      if (opt.localModel && !localModels.includes(opt.localModel)) {
+        recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: 'network', failReason: '本地服务未运行' })
+        return
+      }
+      // 第二层：最小真请求
+      if (opt.localModel) {
+        const t0 = Date.now()
+        try {
+          const r = await Promise.race([
+            callLocalChat('http://127.0.0.1:11434', opt.localModel, [{ role: 'user', content: 'Reply with OK' }]),
+            new Promise<never>((_, rej) => { setTimeout(() => rej(new Error('响应超时')), 12000) }),
+          ])
+          if (!r.ok) throw new Error(r.error || '本地模型调用失败')
+          recordProbeOutcome(t.id, { ok: true, ms: Date.now() - t0, source: 'active' })
+        } catch (e) { const c = classifyProbeError(e); recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec }) }
+        return
+      }
+      const r = await testFreeAiOption(toFreeAiOption(opt), 12000)
+      if (r.ok) recordProbeOutcome(t.id, { ok: true, ms: r.ms, source: 'active' })
+      else { const c = classifyProbeError(new Error(r.error || '测活失败')); recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec }) }
+      return
+    }
+    // 自有账户引擎：需要本次会话可用的凭据；没有凭据只吃被动数据，不在此报错
+    const acct = accounts.find(a => a.id === t.accountId)
+    if (!acct?.encryptedKey) return
+    const pwd = resolvePwd()
+    if (!pwd) return
+    const engineId = t.id.slice(`own:${acct.id}:`.length)
+    let key: string
+    try { key = await decryptSecret(acct.encryptedKey, pwd) } catch { return }
+    // 第一层：列表接口验 Key 有效与服务可达（拉不到才记失败）。
+    // 注意：内置引擎目录与平台实时清单常不一致，「列表里没有」不等于模型不存在——
+    // 真不存在由第二层真请求的 model_not_found 坐实，不在此误判（避免假不可用）。
+    try {
+      await fetchProviderModels(acct, key)
+    } catch (e) { const c = classifyProbeError(e); recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec }); return }
+    // 第二层：1-token 级真请求
+    const t0 = Date.now()
+    try {
+      const r = await callChat(acct, key, [{ role: 'user', content: 'Reply with OK' }], engineId)
+      if (!r.ok) throw new Error(r.error || r.text || '调用失败')
+      recordProbeOutcome(t.id, { ok: true, ms: Date.now() - t0, source: 'active' })
+    } catch (e) { const c = classifyProbeError(e); recordProbeOutcome(t.id, { ok: false, source: 'active', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec }) }
+  }
+  const probeOneTargetRef = useRef(probeOneTarget)
+  probeOneTargetRef.current = probeOneTarget
+
+  /** 一轮主动探测：到期清单由 selectProbeBatch 纯判定（新鲜/退避/护栏）；
+   *  执行侧礼让调度——用户正在聊天时暂停推进、每平台串行、全局并发 2 */
+  const runProbeRound = useCallback(async (force = false) => {
+    if (probingRef.current) return
+    const store = loadProbeStore()
+    const batch = selectProbeBatch(probeTargetsRef.current, store.results, Date.now(), { force })
+    if (!batch.length) return
+    probingRef.current = true
+    setProbeRunning(true)
+    try {
+      const queues = new Map<string, ProbeTarget[]>()
+      for (const t of batch) {
+        const arr = queues.get(t.platformKey) ?? []
+        arr.push(t)
+        queues.set(t.platformKey, arr)
+      }
+      const lanes = [...queues.values()]
+      let laneIdx = 0
+      const laneWorker = async () => {
+        while (laneIdx < lanes.length) {
+          const lane = lanes[laneIdx++]
+          for (const t of lane) {
+            // 礼让：用户正在聊天时等空档（最多等约 30 秒，仍不抢占发送）
+            for (let w = 0; w < 40 && generatingRef.current; w++) await new Promise(r => setTimeout(r, 750))
+            await probeOneTargetRef.current(t).catch(() => { /* 单项失败已记结果，不中断整轮 */ })
+          }
+        }
+      }
+      await Promise.all([laneWorker(), laneWorker()])
+      if (force) {
+        const after = loadProbeStore()
+        const cur = allOptionsRef.current.find(o => o.key === model)
+        const curTarget = cur ? probeTargetsRef.current.find(t => t.id === cur.key) : undefined
+        if (curTarget && after.results[curTarget.id] && !after.results[curTarget.id].ok) {
+          notify(t('当前所选模型 {name} 刚检测未通过，可换一个模型；直接发送时若开了自动切换会顺延到下一条免费路线', { name: curTarget.name }), 'err')
+        } else {
+          const s = probeSummary(probeTargetsRef.current, after.results)
+          notify(t('探测完成：{ok}/{total} 个模型可用', { ok: s.ok, total: s.total }))
+        }
+      }
+    } finally {
+      probingRef.current = false
+      setProbeRunning(false)
+    }
+  }, [model, notify, t])
+
+  // 进入 AI 助手：先播种被动事实，再后台测一轮过期/未测项（新鲜的直接用缓存）。
+  // 手机端只做轻量版：只播种被动数据，不主动发探测请求（护栏⑥）。
+  const probeKickRef = useRef(0)
+  useEffect(() => {
+    if (!probeTargets.length) return
+    seedPassiveProbe()
+    const now = Date.now()
+    if (now - probeKickRef.current < 60_000) return
+    probeKickRef.current = now
+    const isMobileShell = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 860px)').matches
+    if (!isMobileShell) void runProbeRound(false)
+  }, [probeTargets, seedPassiveProbe, runProbeRound])
+
+  /** 面板「单测」：单个目标立即测一次（护栏目标也可手动单测，如 MoMA 合作模型） */
+  const probeSingle = async (target: ProbeTarget) => {
+    if (probeSingleId) return
+    if (target.accountId && !resolvePwd()) { notify(t('单测自有账户模型需先在本页验证主密码')); return }
+    setProbeSingleId(target.id)
+    try { await probeOneTarget(target) } finally { setProbeSingleId('') }
+  }
+
+  /** 菜单/面板里点选一个探测目标（不可用也可点选：探测不拦发送、不拦选择） */
+  const selectProbeTarget = (t: ProbeTarget) => {
+    setModelOpen(false)
+    setProbePanelOpen(false)
+    if (t.accountId) {
+      const o = allOptionsRef.current.find(x => x.account?.id === t.accountId)
+      if (o) {
+        setCategory(o.category); setModel(o.key); saveModel(o.key)
+        setEngineId(t.id.slice(`own:${t.accountId}:`.length))
+      }
+      return
+    }
+    const o = allOptionsRef.current.find(x => x.key === t.id)
+    if (!o) return
+    setCategory(o.category)
+    if (o.free) selectFreeModel(o)
+    else { setModel(o.key); saveModel(o.key) }
+  }
   // 选中项变化时平台上下文跟随其所属平台（用户在第二段里临时浏览其他平台时不覆盖，
   // 只在选中项真正变化时同步，避免浏览态被弹回）
   const lastModelKeyRef = useRef('')
@@ -729,7 +970,29 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const ordered = orderChainCandidates(selectedKey ?? '', filtered)
       return { cands: ordered, byId: new Map(ordered.map(c => [c.id, c])) }
     }
+    // v0.1.504 被动探测：免费链每次真实尝试的成败顺手记入全局探测中心（零额外额度）。
+    // 候选→目标：免费选项=选项键；已验证自有账户=其默认引擎目标；账号池不是单个模型，不记。
     const aiChainAttempt = async (cand: AiCand, ctx: { markEmitted: () => void }): Promise<string> => {
+      const t0 = Date.now()
+      let firstDeltaAt = 0
+      const wrappedCtx = { markEmitted: () => { if (!firstDeltaAt) firstDeltaAt = Date.now(); ctx.markEmitted() } }
+      try {
+        const text = await aiChainAttemptInner(cand, wrappedCtx)
+        const targetId = cand.opt ? cand.id : cand.acct ? `own:${cand.acct.id}:${defaultChatEngine(cand.acct.providerId) ?? enginesFor(cand.acct.providerId)[0]?.id ?? ''}` : ''
+        if (targetId && probeTargetsRef.current.some(x => x.id === targetId)) {
+          recordProbeOutcome(targetId, { ok: true, ms: (firstDeltaAt || Date.now()) - t0, source: 'passive' })
+        }
+        return text
+      } catch (e) {
+        const targetId = cand.opt ? cand.id : cand.acct ? `own:${cand.acct.id}:${defaultChatEngine(cand.acct.providerId) ?? enginesFor(cand.acct.providerId)[0]?.id ?? ''}` : ''
+        if (targetId && probeTargetsRef.current.some(x => x.id === targetId)) {
+          const c = classifyProbeError(e)
+          recordProbeOutcome(targetId, { ok: false, source: 'passive', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec })
+        }
+        throw e
+      }
+    }
+    const aiChainAttemptInner = async (cand: AiCand, ctx: { markEmitted: () => void }): Promise<string> => {
       if (cand.pool) {
         const r = await poolChat(resolvePwd(), chainMsgs)
         return r.text
@@ -830,6 +1093,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             account: acct, apiKey, engineId: engForCall, reasoningEffort: effectiveReasoning, messages: msgs, collected,
             onToolStart: info => { if (!onDelta) setStreamingText(t('🔧 正在调用工具：{name}', { name: `${info.serverName} · ${info.toolName}` })) },
           })
+          { // v0.1.504 被动探测：工具循环真实调用成功记入探测中心
+            const probeId = `own:${acct.id}:${engForCall ?? defaultChatEngine(acct.providerId) ?? enginesFor(acct.providerId)[0]?.id ?? ''}`
+            if (probeTargetsRef.current.some(x => x.id === probeId)) recordProbeOutcome(probeId, { ok: true, source: 'passive' })
+          }
           let text = outcome.text
           if (outcome.events.length) {
             text += `\n\n${t('🔧 本次调用了 {n} 次工具：{list}', { n: String(outcome.events.length), list: outcome.events.map(e => `${e.serverName}·${e.toolName}${e.ok ? ' ✓' : ' ✗'}`).join('、') })}`
@@ -839,7 +1106,16 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           return text
         }
       }
+      const callT0 = Date.now()
       const r = await callByCategory(acct, apiKey, opt.category, msgs, engForCall, effectiveReasoning)
+      // v0.1.504 被动探测：自有账户真实调用结果记入探测中心对应引擎目标（零额外额度）
+      {
+        const probeId = `own:${acct.id}:${engForCall ?? defaultChatEngine(acct.providerId) ?? enginesFor(acct.providerId)[0]?.id ?? ''}`
+        if (probeTargetsRef.current.some(x => x.id === probeId)) {
+          if (r.ok) recordProbeOutcome(probeId, { ok: true, ms: Date.now() - callT0, source: 'passive', vision: images?.length ? true : undefined })
+          else { const c = classifyProbeError(new Error(r.error ?? '调用失败')); recordProbeOutcome(probeId, { ok: false, source: 'passive', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec, vision: images?.length ? false : undefined }) }
+        }
+      }
       if (!r.ok) {
         const errMsg = r.error ?? t('调用失败')
         // 自动切换（v0.1.433）：自有账户（含已验证的 Inferbase）聊天失败且属可切换类时，
@@ -871,8 +1147,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         ...voiceHistory.map(m => ({ role: m.role, content: m.content })),
         { role: 'user', content },
       ]
+      const localT0 = Date.now()
       const r = await callLocalChat('http://127.0.0.1:11434', opt.localModel, msgs, images)
-      if (!r.ok) throw new Error(r.error ?? t('本地模型调用失败'))
+      // v0.1.504 被动探测：本地模型真实调用结果记入探测中心（带图成功同时证明视觉可用）
+      if (!r.ok) {
+        const c = classifyProbeError(new Error(r.error ?? '本地模型调用失败'))
+        recordProbeOutcome(opt.key, { ok: false, source: 'passive', failKind: c.kind, failReason: c.reason, vision: images?.length ? false : undefined })
+        throw new Error(r.error ?? t('本地模型调用失败'))
+      }
+      recordProbeOutcome(opt.key, { ok: true, ms: Date.now() - localT0, source: 'passive', vision: images?.length ? true : undefined })
       return r.text
     }
     // 免费模型（云端免费 / Zen / Kilo / APIsFreeLLM）：自动模式走 freeChain 切换链——
@@ -1454,45 +1737,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     </div>}
   </div>
   // 免费模型：选中即测活，结果以通知反馈（v0.1.496 起第三段只展示模型名，列表内不再打标）
-  const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource; apisFree?: boolean }) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
-
-  const [probingAll, setProbingAll] = useState(false)
-  const lastProbeAtRef = useRef(0)
   const toFreeAiOption = (o: (typeof allOptions)[number]): FreeAiOption => ({
     key: o.key, label: o.label,
     group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
     source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: freeModelIdOf(o),
   })
-  /** 一键全测：并发 3 路逐个测活。v0.1.499 起检测只报告可用状态，绝不替用户改已选模型
-   * （497 真机录屏：仅打开菜单就触发检测、检测完把已选的 Zen/MiMo 换成 Kilo——已废除）。
-   * 发送路径的免费链自动切换是另一套既有机制（chainMode=auto、发送时兜底），不在这里。 */
-  const probeAllFree = async (fromButton: boolean) => {
-    if (probingAll) return
-    const list = allOptions.filter(o => o.free)
-    if (!list.length) return
-    setProbingAll(true)
-    lastProbeAtRef.current = Date.now()
-    const results = new Map<string, boolean>()
-    let idx = 0
-    const worker = async () => {
-      while (idx < list.length) {
-        const o = list[idx++]
-        const r = await testFreeAiOption(toFreeAiOption(o), 12000)
-        results.set(o.key, r.ok)
-      }
-    }
-    await Promise.all([worker(), worker(), worker()])
-    setProbingAll(false)
-    const okCount = list.filter(o => results.get(o.key)).length
-    const cur = allOptions.find(o => o.key === model)
-    if (cur?.free && results.has(cur.key) && !results.get(cur.key)) {
-      // 已选模型被证实不可用：只提醒（警告级，停留更久），不改选（改选只发生在用户点选或发送时自动切换）
-      notify(t('当前所选的免费模型 {name} 刚检测未通过，可换一个模型；直接发送时若开了自动切换会顺延到下一条免费路线', { name: freeModelIdOf(cur) }), 'err')
-    } else if (fromButton) {
-      notify(t('检测完成：{ok}/{total} 个免费模型可用', { ok: okCount, total: list.length }))
-    }
-  }
-
   const selectFreeModel = (o: (typeof visibleOptions)[number]) => {
     setModel(o.key); saveModel(o.key); setModelOpen(false)
     const id = freeModelIdOf(o)
@@ -1502,6 +1751,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: id,
     }
     void testFreeAiOption(opt).then(r => {
+      // v0.1.504：选中即测活的结果同时记入全局探测中心（被动数据源之一）
+      if (r.ok) recordProbeOutcome(o.key, { ok: true, ms: r.ms, source: 'passive' })
+      else { const c = classifyProbeError(new Error(r.error || '测活失败')); recordProbeOutcome(o.key, { ok: false, source: 'passive', failKind: c.kind, failReason: c.reason, retryAfterSec: c.retryAfterSec }) }
       if (r.ok) notify(t('免费模型已跑通：{name}（{ms} 毫秒）', { name: id, ms: String(r.ms) }))
       else notify(t('免费模型测不通：{name} —— {err}', { name: id, err: r.error ?? '' }))
     })
@@ -1510,13 +1762,37 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 第二段「平台」：按钮与列表只展示平台名（分组逻辑见 modelCascade）。
   // 自有账户平台点选即选中该账户；多模型平台（WorkBuddy / Zen / Kilo / APIsFreeLLM /
   // Ollama）点选只切换平台上下文，具体模型到第三段里选。
+  // v0.1.504：第二段平台排序接入探测结果——平台内有可用模型且最快者优先（无数据保持原序）
+  const sortedPlatformGroups = useMemo(() => {
+    const score = (g: (typeof platformGroups)[number]): number => {
+      let best = Number.POSITIVE_INFINITY
+      for (const o of g.options) {
+        if (o.account) {
+          for (const t of probeTargets) {
+            if (t.accountId !== o.account.id) continue
+            const r = probeStore.results[t.id]
+            if (r?.ok) best = Math.min(best, medianSamples(r.latencySamples) ?? Number.POSITIVE_INFINITY)
+          }
+        } else {
+          const r = probeStore.results[o.key]
+          if (r?.ok) best = Math.min(best, medianSamples(r.latencySamples) ?? Number.POSITIVE_INFINITY)
+        }
+      }
+      return best
+    }
+    return platformGroups
+      .map((g, i) => ({ g, i, s: score(g) }))
+      .sort((a, b) => (a.s === b.s ? a.i - b.i : a.s - b.s))
+      .map(x => x.g)
+  }, [platformGroups, probeTargets, probeStore])
+
   const platformDropdown = <div className="ai-model-wrap">
     <button className="ai-model-btn" onClick={() => { setPlatformOpen(v => !v); setCategoryOpen(false); setModelOpen(false) }} title={t('模型平台')}>
       {currentPlatform?.platformName ?? ''} <ChevronDown size={13} />
     </button>
     {platformOpen && <div className="ai-model-menu me-panel-in" key={`plat-${category}`}>
       {platformGroups.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
-      {platformGroups.map(g => (
+      {sortedPlatformGroups.map(g => (
         <button key={g.platformKey} className={`ai-model-option ${g.platformKey === platformKey ? 'active' : ''}`}
           onClick={() => {
             setPlatformKey(g.platformKey); setPlatformOpen(false)
@@ -1533,40 +1809,91 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   // 自有账户平台下是该账户的引擎列表，菜单底部「全部模型与测速 →」进引擎面板
   // （原底部行「引擎」按钮的去处，469 面板功能原样保留）；其余平台下是平台内的模型选项。
   const platformIsAccount = !!currentPlatform?.options[0]?.account
+  // v0.1.504：第三段列表接入探测结果——可用优先按口径排序（免费/对话比速度、通用比有效价格），
+  // 不可用不进主列表（收进菜单底部「暂时不可用」折叠组，仍可点选）；已选项即使不可用也保留在主列表原位可见
+  const orderedPlatformOptions = useMemo(() => {
+    if (!currentPlatform || platformIsAccount) return []
+    const targets = currentPlatform.options
+      .map(o => probeTargets.find(x => x.id === o.key))
+      .filter((x): x is ProbeTarget => !!x)
+    if (!targets.length) return currentPlatform.options
+    const orderIds: string[] = []
+    for (const g of ['free', 'chat', 'general'] as ProbeGroup[]) {
+      const sub = targets.filter(x => x.group === g)
+      if (!sub.length) continue
+      const ranked = rankProbeGroup(sub, probeStore.results, g).map(r => r.target.id)
+      const bad = sub.filter(x => probeStore.results[x.id] && !probeStore.results[x.id].ok).map(x => x.id)
+      orderIds.push(...ranked, ...bad)
+    }
+    const byKey = new Map(currentPlatform.options.map(o => [o.key, o]))
+    const seen = new Set<string>()
+    const out: (typeof currentPlatform.options)[number][] = []
+    for (const id of orderIds) { const o = byKey.get(id); if (o && !seen.has(id)) { out.push(o); seen.add(id) } }
+    for (const o of currentPlatform.options) if (!seen.has(o.key)) out.push(o)
+    return out
+  }, [currentPlatform, platformIsAccount, probeTargets, probeStore])
+  const optionProbeBad = (key: string) => {
+    const r = probeStore.results[key]
+    return !!r && !r.ok
+  }
+  const engineProbeBad = (engineId: string) => {
+    if (!currentAccount) return false
+    const r = probeStore.results[`own:${currentAccount.id}:${engineId}`]
+    return !!r && !r.ok
+  }
+  const probeDot = (id: string) => {
+    const r = probeStore.results[id]
+    if (!r) return null
+    const med = medianSamples(r.latencySamples)
+    return <span className="probe-row-meta">{r.ok
+      ? <><span className="probe-dot ok" />{med !== null && <small>{med >= 1000 ? `${(med / 1000).toFixed(1)}s` : `${med}ms`}</small>}</>
+      : <span className="probe-dot bad" />}</span>
+  }
   const seg3Label = !currentPlatform
     ? ''
     : platformIsAccount
       ? (selectedEngine?.name ?? '')
       : (selectedOption && platformKeyOf(selectedOption) === currentPlatform.platformKey ? modelNameOf(selectedOption) : '')
   const modelDropdown = <div className="ai-model-wrap">
-    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); setPlatformOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(false) }} title={t('切换模型')}>
+    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { setModelOpen(v => !v); setCategoryOpen(false); setPlatformOpen(false) }} title={t('切换模型')}>
       {seg3Label} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}-${platformKey}`}>
       {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
       {/* v0.1.454：APIsFreeLLM 兜底通道控制块（开关/测活/剩余量/详情）也已摘除——通道控制全 App 只留工坊 RouteSelect 一处；通道开启且测通时 free-ai 仍作为普通模型条目出现在这里（apisFreeOptions） */}
-      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('逐个检测是否可用，不改你已选的模型')}</small></button>}
+      {/* v0.1.504：菜单顶部「一键检测」卡已删除——检测移入功能图标栏的探测中心（全局一份结果），菜单回归纯选择列表 */}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {!currentPlatform && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {currentPlatform && platformIsAccount && <>
         {loadingEngines && <div className="ai-model-empty">{t('正在获取实时引擎…')}</div>}
         {!loadingEngines && engines.length === 0 && <div className="ai-model-empty">{t('该平台暂无内置引擎目录')}</div>}
-        {engines.map(e => (
+        {engines.filter(e => !engineProbeBad(e.id) || e.id === engineId).map(e => (
           <button key={e.id} className={`ai-model-option ${e.id === engineId ? 'active' : ''}`}
             onClick={() => { setEngineId(e.id); setModelOpen(false); notify(t('已选引擎：{name}', { name: e.name })) }}>
-            <span>{e.name}</span>
+            <span>{e.name}</span>{probeDot(`own:${currentAccount?.id}:${e.id}`)}
           </button>
         ))}
         <button className="ai-model-option ai-model-more" onClick={() => { setModelOpen(false); setEnginePanelOpen(true) }}>
           <span>{t('全部模型与测速')} →</span>
         </button>
       </>}
-      {currentPlatform && !platformIsAccount && currentPlatform.options.map(o => (
+      {currentPlatform && !platformIsAccount && orderedPlatformOptions.filter(o => !optionProbeBad(o.key) || o.key === model).map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
           onClick={() => { if (o.free) selectFreeModel(o); else { setModel(o.key); saveModel(o.key); setModelOpen(false) } }}>
-          <span>{modelNameOf(o)}</span>
+          <span>{modelNameOf(o)}</span>{probeDot(o.key)}
         </button>
       ))}
+      {/* v0.1.504：不可用模型收进菜单底部折叠组（计数与面板/角标同源），展开仍可点击选中，探测不拦选择 */}
+      {probeUnavail.length > 0 && <>
+        <button className="ai-model-option probe-fold-toggle" onClick={() => setMenuUnavailOpen(v => !v)}>
+          <span>{t('暂时不可用（{n}）', { n: probeUnavail.length })}</span><ChevronDown size={13} style={{ transform: menuUnavailOpen ? 'rotate(180deg)' : undefined }} />
+        </button>
+        {menuUnavailOpen && probeUnavail.map(({ target, result }) => (
+          <button key={target.id} className="ai-model-option probe-unavail-row" onClick={() => { selectProbeTarget(target); setMenuUnavailOpen(false) }}>
+            <span>{target.name}</span><small>{target.platformName} · {result.failReason ?? t('调用失败')}</small>
+          </button>
+        ))}
+      </>}
     </div>}
   </div>
 
@@ -1632,6 +1959,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     on?: boolean; svcOn?: boolean; svcRunning?: boolean; disabled?: boolean; keepOpen?: boolean
     /** v0.1.499：服务项的常驻状态点（不悬停也可辨）：切换中/失败/运行中/开但未运行/已关闭 */
     svcState?: 'busy' | 'failed' | 'running' | 'onidle' | 'off'
+    /** v0.1.504：探测项的红色角标（不可用数）与三态状态点 */
+    badge?: number
+    probeState?: 'probing' | 'done' | 'idle'
     action: () => void
   }
   const ollamaOn = serviceController?.enabled('ollama') ?? false
@@ -1693,6 +2023,19 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       tip: `免费路线切换：${chainMode === 'auto' ? '自动切换' : '手动锁定'}`,
       icon: <Shuffle size={20} />, on: chainOpen, keepOpen: true,
       action: () => setChainOpen(v => !v),
+    },
+    {
+      // v0.1.504：全局模型探测中心入口——三态（探测中转圈+琥珀脉冲点 / 完成绿点+红角标=不可用数）
+      id: 'probe', group: 1, order: toolOrder('webSearch') + 0.6, label: '模型探测',
+      tip: probeRunning ? '模型探测：探测中…'
+        : (probeSummaryNow.ok + probeSummaryNow.bad > 0
+          ? `模型探测：已完成 · ${probeSummaryNow.ok} 个可用 / ${probeSummaryNow.bad} 个不可用`
+          : '模型探测：尚未探测'),
+      icon: probeRunning ? <Loader2 size={20} className="spin" /> : <Gauge size={20} />,
+      probeState: probeRunning ? 'probing' : (probeSummaryNow.ok + probeSummaryNow.bad > 0 ? 'done' : 'idle'),
+      badge: probeSummaryNow.bad || undefined,
+      on: probePanelOpen, keepOpen: true,
+      action: () => setProbePanelOpen(v => !v),
     },
     ...(tbShow('compare') ? [{
       id: 'compare', group: 1, order: toolOrder('compare'), label: t('多模型对比'),
@@ -1764,6 +2107,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                             onClick={() => { it.action(); if (!it.keepOpen) setToolsOpen(false) }}>
                             {it.icon}
                             {it.svcState && <span className={`svc-dot ${it.svcState}`} aria-hidden="true" />}
+                            {it.probeState && <span className={`probe-state-dot ${it.probeState}`} aria-hidden="true" />}
+                            {!!it.badge && <span className="probe-badge" aria-hidden="true">{it.badge}</span>}
                           </button>
                         ))}
                       </div>
@@ -2008,6 +2353,90 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         </div>
       </div>
       {/* 右侧引擎选择面板 */}
+      {/* v0.1.504：全局模型探测结果面板（照定版预览）：总览 + 分组排名 + 共用说明 + 不可用折叠组 */}
+      {probePanelOpen && (
+        <>
+          <div className="engine-backdrop" onClick={() => setProbePanelOpen(false)} />
+          <aside className="probe-panel">
+            <div className="engine-panel-head">
+              <div>
+                <div className="engine-panel-title">{t('模型探测结果')}</div>
+                <div className="engine-panel-sub">
+                  {probeRunning ? t('探测中…') : (probeSummaryNow.ok + probeSummaryNow.bad > 0 ? t('已完成') : t('尚未探测'))}
+                </div>
+              </div>
+              <button className="icon-btn" onClick={() => setProbePanelOpen(false)}><X size={17} /></button>
+            </div>
+            <div className="probe-overview">
+              <span>{t('共 {total} 个模型，{ok} 可用 / {bad} 不可用', { total: probeSummaryNow.total, ok: probeSummaryNow.ok, bad: probeSummaryNow.bad })}{probeSummaryNow.untested > 0 ? t(' · {n} 未测', { n: probeSummaryNow.untested }) : ''}</span>
+              <button className="btn sm" disabled={probeRunning} onClick={() => void runProbeRound(true)}>{probeRunning ? t('探测中…') : t('重新探测')}</button>
+            </div>
+            <div className="probe-shared-note">
+              <div className="probe-shared-title">{t('全 App 共用这一份探测结果')}</div>
+              <div className="probe-shared-sub">{t('AI 助手选模型 · 翻译助手选服务商 · 工坊工具 · 图库索引（视觉能力单独标记）')}</div>
+            </div>
+            {(['free', 'chat', 'general'] as ProbeGroup[]).map(g => {
+              const rows = rankProbeGroup(probeTargets, probeStore.results, g)
+              if (!rows.length) return null
+              const groupName = g === 'free' ? t('免费型') : g === 'chat' ? t('对话型') : t('通用型')
+              const rankWord = g === 'general' ? t('最便宜 · 推荐') : t('最快 · 推荐')
+              return (
+                <div key={g} className="probe-group">
+                  <div className="probe-group-title">{groupName}<small>{g === 'general' ? t('按有效价格（标价 ÷ 成功率）') : t('按首字延迟（最近几次中位数）')}</small></div>
+                  {rows.map((row, i) => (
+                    <div key={row.target.id} className="probe-row">
+                      <span className="probe-rank">{i + 1}</span>
+                      <span className={`probe-dot ${row.result ? (row.result.ok ? 'ok' : 'bad') : 'none'}`} />
+                      <span className="probe-row-name">{row.target.name}</span>
+                      <span className="probe-row-plat">{row.target.platformName}</span>
+                      <span className="probe-row-metric">{row.metricLabel}</span>
+                      {row.recommended && <span className="probe-rec-badge">{rankWord}</span>}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+            {(() => {
+              const visionTargets = probeTargets.filter(x => x.vision)
+              if (!visionTargets.length) return null
+              return (
+                <div className="probe-group">
+                  <div className="probe-group-title">{t('视觉型')}<small>{t('视觉能力单独测、单独标记，图库索引只读这里')}</small></div>
+                  {visionTargets.map(x => {
+                    const r = probeStore.results[x.id]
+                    return (
+                      <div key={x.id} className="probe-row">
+                        <span className={`probe-dot ${r?.visionOk === true ? 'ok' : r?.visionOk === false ? 'bad' : 'none'}`} />
+                        <span className="probe-row-name">{x.name}</span>
+                        <span className="probe-row-plat">{x.platformName}</span>
+                        <span className="probe-row-metric">{r?.visionOk === true ? t('视觉可用') : r?.visionOk === false ? t('视觉不可用') : t('视觉未测')}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()}
+            <div className="probe-guard-note">{t('护栏：MoMA 合作模型等按量计费的模型不自动测，避免扣费；它们保留手动单测。探测只是参考，不拦发送、不改你已选的模型。')}</div>
+            {probeUnavail.length > 0 && (
+              <div className="probe-group">
+                <button className="probe-fold-head" onClick={() => setProbeFoldOpen(v => !v)}>
+                  <span>{t('暂时不可用（{n}）', { n: probeUnavail.length })}</span>
+                  <ChevronDown size={14} style={{ transform: probeFoldOpen ? 'rotate(180deg)' : undefined }} />
+                </button>
+                {probeFoldOpen && probeUnavail.map(({ target, result }) => (
+                  <div key={target.id} className="probe-row probe-unavail-item">
+                    <span className="probe-dot bad" />
+                    <span className="probe-row-name">{target.name}</span>
+                    <span className="probe-row-plat">{target.platformName}</span>
+                    <span className="probe-row-metric">{result.failReason ?? t('调用失败')} · {new Date(result.checkedAt).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })}</span>
+                    <button className="btn sm" disabled={probeSingleId === target.id} onClick={() => void probeSingle(target)}>{probeSingleId === target.id ? t('测速中…') : t('单测')}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </aside>
+        </>
+      )}
       {enginePanelOpen && currentAccount && (
         <>
           <div className="engine-backdrop" onClick={() => setEnginePanelOpen(false)} />

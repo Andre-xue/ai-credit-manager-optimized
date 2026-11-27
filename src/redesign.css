@@ -991,6 +991,41 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-tools-icon .svc-dot.failed { background: var(--red); }
 .ai-tools-icon .svc-dot.busy { background: var(--amber); animation: svc-dot-pulse 1s ease-in-out infinite; }
 @keyframes svc-dot-pulse { 50% { opacity: .3; } }
+/* v0.1.504：探测图标三态点 + 不可用数红角标 */
+.ai-tools-icon .probe-state-dot { position: absolute; top: 5px; right: 5px; width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px var(--panel); pointer-events: none; }
+.ai-tools-icon .probe-state-dot.done { background: var(--green); }
+.ai-tools-icon .probe-state-dot.idle { background: #9ca3af; }
+.ai-tools-icon .probe-state-dot.probing { background: var(--amber); animation: svc-dot-pulse 1s ease-in-out infinite; }
+.ai-tools-icon .probe-badge { position: absolute; bottom: 2px; right: 2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--panel); pointer-events: none; }
+/* 菜单行尾探测状态点 + 耗时 */
+.probe-row-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.probe-row-meta small { color: var(--text-3); font-size: 11px; }
+.probe-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.probe-dot.ok { background: var(--green); }
+.probe-dot.bad { background: var(--red); }
+.probe-dot.none { background: #9ca3af; opacity: .5; }
+/* 菜单底部不可用折叠组 */
+.probe-fold-toggle { color: var(--text-3); justify-content: space-between; }
+.probe-unavail-row { color: var(--text-3); }
+.probe-unavail-row small { margin-left: auto; color: var(--text-3); font-size: 11px; flex-shrink: 0; }
+/* 探测结果面板 */
+.probe-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 56; width: min(94vw, 430px); background: var(--panel); border-left: 1px solid var(--border); box-shadow: -8px 0 32px rgba(16,24,40,.12); display: flex; flex-direction: column; overflow-y: auto; }
+.probe-overview { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 20px 4px; font-size: 13px; }
+.probe-shared-note { margin: 12px 20px 4px; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+.probe-shared-title { font-size: 12.5px; font-weight: 650; }
+.probe-shared-sub { font-size: 11.5px; color: var(--text-3); margin-top: 3px; line-height: 1.5; }
+.probe-group { padding: 10px 20px 2px; }
+.probe-group-title { font-size: 12px; font-weight: 650; color: var(--text-2); display: flex; align-items: baseline; gap: 8px; margin: 6px 0 4px; }
+.probe-group-title small { font-weight: 400; color: var(--text-3); font-size: 11px; }
+.probe-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-size: 12.5px; }
+.probe-rank { width: 16px; color: var(--text-3); font-size: 11.5px; text-align: right; flex-shrink: 0; }
+.probe-row-name { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.probe-row-plat { color: var(--text-3); font-size: 11.5px; white-space: nowrap; }
+.probe-row-metric { margin-left: auto; color: var(--text-3); font-size: 11.5px; white-space: nowrap; }
+.probe-rec-badge { flex-shrink: 0; font-size: 10.5px; font-weight: 650; color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); padding: 2px 7px; border-radius: 999px; }
+.probe-guard-note { margin: 12px 20px 4px; font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
+.probe-fold-head { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; padding: 6px 0; font-size: 12.5px; font-weight: 650; color: var(--text-2); cursor: pointer; }
+.probe-unavail-item .btn { flex-shrink: 0; }
 /* 图标悬停气泡（data-tip，与顶栏 .ai-icon-btn 同款式，朝下展开） */
 .ai-tools-icon[data-tip]::after { content: attr(data-tip); position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%) translateY(-3px); background: var(--text); color: var(--bg); font-size: 12px; line-height: 1; padding: 6px 9px; border-radius: 7px; white-space: nowrap; pointer-events: none; z-index: 96; opacity: 0; visibility: hidden; transition: opacity .15s ease .25s, transform .15s ease .25s, visibility 0s .25s; }
 .ai-tools-icon[data-tip]:hover::after, .ai-tools-icon[data-tip]:focus-visible::after { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
