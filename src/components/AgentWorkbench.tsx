@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot, Play, Square, Copy, Trash2, ShieldAlert, FolderLock, Settings2, LayoutList,
-  CheckCircle2, XCircle, Clock3, Hourglass, Hand, ExternalLink,
+  CheckCircle2, XCircle, Clock3, Hourglass, Hand, ExternalLink, Repeat, ClipboardCheck,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
@@ -9,13 +9,21 @@ import {
   parseDelegation, pickStartable, isHeavyTask, quotaGate, capCheck, parseCliUsage,
   loadAgentSettings, saveAgentSettings, loadAgentTasks, saveAgentTasks,
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
-  type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
+  type AgentDef, type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
 } from '../core/agents'
+import {
+  classifyRelayFailure, pickRelayCandidate, buildRelayContextPack, relayTitle,
+  buildMasterPrompt, parseMasterPlan, resolvePlanAgent, buildReviewPrompt, parseReviewVerdict,
+} from '../core/agentRelay'
 import {
   agentDetect, agentLaunchApp, agentRunStart, agentRunPoll, agentRunStop,
   agentVaultBaseline, agentVaultPoll, agentVaultList, agentVaultRestore, agentVaultDeleteEntries, agentVaultPrune,
+  agentVaultStats, agentVaultDeleteBaseline, type VaultStatsResult,
 } from '../core/agentBridge'
-import { formatBytes, formatDuration, type VaultEntry } from '../core/agentVault'
+import {
+  formatBytes, formatDuration, mergeVaultUsage, loadPruneLog, savePruneLog,
+  type VaultEntry, type VaultPruneLog,
+} from '../core/agentVault'
 import { isDesktopApp } from '../core/openExternal'
 import { decryptSecret } from '../core/crypto'
 import { enginesFor } from '../data/engines'
@@ -28,11 +36,22 @@ const STATUS_META: Record<AgentTask['status'], { label: string; cls: string }> =
   queued: { label: '排队', cls: 'q' },
   'queued-heavy': { label: '排队等重活锁', cls: 'q' },
   'waiting-approval': { label: '等你放行', cls: 'wait' },
+  'waiting-relay': { label: '等你确认接力', cls: 'wait' },
   running: { label: '运行中', cls: 'run' },
   manual: { label: '已打开 · 待粘贴', cls: 'man' },
   done: { label: '完成', cls: 'done' },
   failed: { label: '失败', cls: 'fail' },
   stopped: { label: '已停止', cls: 'stop' },
+  unresolved: { label: '待处理', cls: 'unres' },
+}
+
+interface ReviewRun {
+  runId: string
+  cursor: number
+  output: string[]
+  reviewerId: string
+  reviewerName: string
+  startedAt: number
 }
 
 let uidSeq = 0
@@ -50,6 +69,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const [tasks, setTasks] = useState<AgentTask[]>(() => loadAgentTasks())
   const [ledger, setLedger] = useState<AgentLedgerEntry[]>(() => loadAgentLedger())
   const [vaultEntries, setVaultEntries] = useState<VaultEntry[]>([])
+  const [vaultStats, setVaultStats] = useState<VaultStatsResult>({ totalBytes: 0, baselines: [] })
+  const [pruneLog, setPruneLog] = useState<VaultPruneLog | null>(() => loadPruneLog())
+  const [cleanConfirmId, setCleanConfirmId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [targetAgent, setTargetAgent] = useState<string>('auto')
   const [workdir, setWorkdir] = useState(() => loadAgentSettings().vault.workdir)
@@ -65,6 +87,13 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   accountsRef.current = accounts
   const sessionPwdRef = useRef(sessionPwd)
   sessionPwdRef.current = sessionPwd
+  const detectMapRef = useRef(detectMap)
+  detectMapRef.current = detectMap
+  const ledgerRef = useRef(ledger)
+  ledgerRef.current = ledger
+  const vaultEntriesRef = useRef(vaultEntries)
+  vaultEntriesRef.current = vaultEntries
+  const reviewRunsRef = useRef(new Map<string, ReviewRun>())
   const cursorsRef = useRef(new Map<string, number>())
   const outputsRef = useRef(new Map<string, string[]>())
   const startingRef = useRef(new Set<string>())
@@ -86,9 +115,23 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   }, [])
 
   const refreshVault = useCallback(async () => {
-    const list = await agentVaultList()
+    const [list, stats] = await Promise.all([agentVaultList(), agentVaultStats()])
     setVaultEntries(list)
+    setVaultStats(stats)
   }, [])
+
+  /** 执行清理并把结果记一行（视图里展示最近一次清理记录） */
+  const runPrune = useCallback(async (trigger: string) => {
+    const s = settingsRef.current
+    const removed = await agentVaultPrune(s.vault.retentionDays, s.vault.capGB * 1024 * 1024 * 1024)
+    if (removed > 0) {
+      const rec = { at: Date.now(), removed, trigger }
+      savePruneLog(rec)
+      setPruneLog(rec)
+    }
+    void refreshVault()
+    return removed
+  }, [refreshVault])
 
   const runDetect = useCallback(async () => {
     if (!desktop) return
@@ -104,9 +147,8 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     if (!desktop) return
     void runDetect()
     void refreshVault()
-    const s = loadAgentSettings()
-    void agentVaultPrune(s.vault.retentionDays, s.vault.capGB * 1024 * 1024 * 1024).then(() => refreshVault())
-  }, [desktop, runDetect, refreshVault])
+    void runPrune('启动自动清理')
+  }, [desktop, runDetect, refreshVault, runPrune])
 
   // 运行中任务的耗时刷新
   useEffect(() => {
@@ -115,6 +157,219 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     }, 1000)
     return () => window.clearInterval(t)
   }, [])
+
+  /** 供 Key 环境构建（派活与审查共用）：绑定账户时解密注入，Key 只进子进程环境变量 */
+  const buildRunEnv = useCallback(async (def: AgentDef, st: AgentSettings): Promise<{ envPairs: Array<[string, string]> } | { error: string }> => {
+    const binding = st.bindings[def.id]
+    if (binding?.kind === 'account') {
+      const acct = accountsRef.current.find(a => a.id === binding.accountId)
+      if (!acct?.encryptedKey) return { error: '绑定的账户不存在或没有 Key，已取消派活' }
+      const pwd = sessionPwdRef.current
+      if (!pwd) return { error: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' }
+      let plain = ''
+      try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch { return { error: '解密绑定账户的 Key 失败，已取消派活' } }
+      const modelId = enginesFor(acct.providerId)[0]?.id
+      return { envPairs: Object.entries(buildShellEnv(binding, acct, plain, modelId)) }
+    }
+    return { envPairs: Object.entries(buildShellEnv(binding, undefined, undefined)) }
+  }, [])
+
+  /** 派生任务（接力 / 主控子任务）过闸：付费账户先停住等放行；超上限落待处理，不静默丢弃 */
+  const prepareDerivedTask = useCallback((base: AgentTask): AgentTask => {
+    const st = settingsRef.current
+    const def = agentDef(base.agentId)
+    if (!def) return { ...base, status: 'unresolved', note: '目标 Agent 定义丢失' }
+    const gate = quotaGate(st, def, st.bindings[base.agentId], accountsRef.current)
+    if (gate.decision === 'approval') return { ...base, status: 'waiting-approval', approvalReason: gate.reason }
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+    const cap = capCheck(st, ledgerSpentSince(ledgerRef.current, startOfDay.getTime()), ledgerSpentSince(ledgerRef.current, sessionStartRef.current))
+    if (cap === 'over-stop') {
+      return { ...base, status: 'unresolved', note: '已达到额度护栏上限（单会话/每日），已停住；到设置 · 额度护栏调整上限后，点任务卡上的「换人续跑」或重新派发' }
+    }
+    return base
+  }, [])
+
+  /** 沿接力链回溯收集整条链的任务（从当前任务到源头） */
+  const relayChainOf = useCallback((orig: AgentTask): AgentTask[] => {
+    const chain: AgentTask[] = []
+    const seen = new Set<string>()
+    let cur: AgentTask | undefined = orig
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      chain.push(cur)
+      cur = cur.relayFromId ? tasksRef.current.find(t => t.id === cur!.relayFromId) : undefined
+    }
+    return chain
+  }, [])
+
+  /** 真正执行接力：打包上下文 → 生成接棒任务（过闸入队）→ 原任务标「已接力 → XX」 */
+  const doRelay = useCallback(async (orig: AgentTask, candidateId: string, reasonLabel: string) => {
+    const candDef = agentDef(candidateId)
+    if (!candDef) return
+    const chain = relayChainOf(orig)
+    const root = chain[chain.length - 1] ?? orig
+    const chainIds = new Set(chain.map(t => t.id))
+    const freshEntries = await agentVaultList().catch(() => vaultEntriesRef.current)
+    const changedFiles = [...new Set(freshEntries.filter(e => chainIds.has(e.taskId)).map(e => e.originalPath))]
+    const outputText = (outputsRef.current.get(orig.id) ?? orig.output).join('\n')
+    const packInput = {
+      originalText: root.text,
+      originalTitle: root.title ?? root.text,
+      fromAgentName: orig.agentName,
+      reason: reasonLabel,
+      workdir: orig.workdir,
+      output: outputText,
+      changedFiles,
+      lastStatus: orig.status === 'manual' || orig.relayFromStatus === 'manual'
+        ? '桌面应用已打开待粘贴，用户标记额度耗尽'
+        : `失败（退出码 ${orig.exitCode ?? '—'}）`,
+    }
+    const successor = prepareDerivedTask({
+      id: uid(), text: buildRelayContextPack(packInput), title: relayTitle(packInput),
+      agentId: candDef.id, agentName: candDef.name, kind: candDef.kind,
+      workdir: orig.workdir, heavy: orig.heavy, outsideOk: orig.outsideOk,
+      status: 'queued', output: [], createdAt: Date.now(),
+      relayFromId: orig.id, relayReason: reasonLabel,
+    })
+    const wasManual = orig.status === 'manual' || orig.relayFromStatus === 'manual'
+    if (wasManual) {
+      const now = Date.now()
+      addLedger({
+        id: `led-${orig.id}`, taskId: orig.id, agentId: orig.agentId, agentName: orig.agentName, kind: orig.kind,
+        startedAt: orig.startedAt ?? now, endedAt: now, durationMs: now - (orig.startedAt ?? now),
+        status: 'manual', costYuan: null,
+      })
+    }
+    const origStatus: AgentTask['status'] = orig.status === 'waiting-relay'
+      ? (orig.relayFromStatus === 'manual' ? 'stopped' : (orig.relayFromStatus ?? 'failed'))
+      : wasManual ? 'stopped' : orig.status
+    setTasks(prev => [successor, ...prev.map(t => (t.id === orig.id
+      ? {
+          ...t, relayToId: successor.id, relayProposal: undefined,
+          status: origStatus, endedAt: t.endedAt ?? Date.now(),
+          note: `已接力 → ${candDef.name}（${reasonLabel}）`,
+        }
+      : t))])
+    notify(`已接力：${orig.agentName} → ${candDef.name} 续跑`)
+  }, [addLedger, prepareDerivedTask, relayChainOf])
+
+  /** 接力决策：按设置模式自动接力或停住询问；无人可接落「待处理」并写明每个跳过原因 */
+  const considerRelay = useCallback((orig: AgentTask, reasonLabel: string) => {
+    const st = settingsRef.current
+    const used = relayChainOf(orig).map(t => t.agentId)
+    const avail = (id: string) => {
+      const d = agentDef(id)
+      return d ? agentAvailability(d, detectMapRef.current[id], st, accountsRef.current) : null
+    }
+    const pick = pickRelayCandidate(st.relay.chain, used, AGENT_REGISTRY, avail)
+    if (!pick.candidateId) {
+      const reasons = pick.skipped.length
+        ? pick.skipped.map(s => `${s.agentName}：${s.reason}`).join('；')
+        : '接力链是空的（到设置 · 接力与调度里添加接棒者）'
+      updateTask(orig.id, { status: 'unresolved', relayProposal: undefined, note: `无人可接力：${reasons}` })
+      return
+    }
+    if (st.relay.mode === 'auto') {
+      void doRelay(orig, pick.candidateId, reasonLabel)
+      return
+    }
+    const changed = vaultEntriesRef.current.filter(e => e.taskId === orig.id).length
+    updateTask(orig.id, {
+      status: 'waiting-relay',
+      relayFromStatus: orig.status,
+      relayProposal: {
+        candidateId: pick.candidateId, candidateName: pick.candidateName ?? pick.candidateId,
+        reason: reasonLabel,
+        skipped: pick.skipped.map(s => ({ agentName: s.agentName, reason: s.reason })),
+        changedFiles: changed,
+      },
+    })
+  }, [doRelay, relayChainOf, updateTask])
+
+  const confirmRelay = useCallback((task: AgentTask) => {
+    if (task.relayProposal) void doRelay(task, task.relayProposal.candidateId, task.relayProposal.reason)
+  }, [doRelay])
+
+  const cancelRelay = useCallback((task: AgentTask) => {
+    updateTask(task.id, {
+      status: task.relayFromStatus ?? 'failed', relayProposal: undefined,
+      note: '已取消接力（可在任务卡上再次「换人续跑」）',
+    })
+  }, [updateTask])
+
+  /** 主控拆活回填：解析主控输出 → 生成子任务；解析失败回落整单派给主控 */
+  const handleMasterPlan = useCallback((task: AgentTask, outputText: string) => {
+    const goal = task.planFor ?? task.text
+    const items = parseMasterPlan(outputText)
+    if (!items) {
+      const fallback = prepareDerivedTask({
+        id: uid(), text: goal, title: task.title, agentId: task.agentId, agentName: task.agentName, kind: task.kind,
+        workdir: task.workdir, heavy: isHeavyTask(goal), outsideOk: task.outsideOk,
+        status: 'queued', output: [], createdAt: Date.now(),
+      })
+      setTasks(prev => [fallback, ...prev.map(t => (t.id === task.id
+        ? { ...t, planGroupId: task.id, note: '拆活输出没能解析成子任务清单，已回落：整单派给主控直接执行' }
+        : t))])
+      return
+    }
+    const st = settingsRef.current
+    const readyList = AGENT_REGISTRY.filter(a => {
+      const d = agentDef(a.id)
+      return d && agentAvailability(d, detectMapRef.current[a.id], st, accountsRef.current).state === 'ready'
+    })
+    const subs: AgentTask[] = []
+    for (const item of items) {
+      let execDef = resolvePlanAgent(item, readyList)
+      if (!execDef) execDef = readyList.find(a => a.id === task.agentId) ?? readyList[0] ?? null
+      const base: AgentTask = {
+        id: uid(), text: item.task, title: item.title,
+        agentId: execDef?.id ?? task.agentId, agentName: execDef?.name ?? task.agentName,
+        kind: execDef?.kind ?? task.kind,
+        workdir: item.workdir || task.workdir, heavy: item.heavy ?? isHeavyTask(item.task),
+        outsideOk: task.outsideOk, status: 'queued', output: [], createdAt: Date.now(),
+        planGroupId: task.id,
+      }
+      subs.push(execDef ? prepareDerivedTask(base) : { ...base, status: 'unresolved', note: '没有可用的执行者（主控建议的与已启用的 Agent 都不可用）' })
+    }
+    setTasks(prev => [...subs, ...prev.map(t => (t.id === task.id
+      ? { ...t, planGroupId: task.id, note: `已拆为 ${items.length} 个子任务，见任务板` }
+      : t))])
+    notify(`主控已拆活：${items.length} 个子任务入队`)
+  }, [prepareDerivedTask])
+
+  /** 交叉审查发起：把目标 + 输出摘要 + 改动清单递给审查者 CLI；失败如实标在任务卡上 */
+  const maybeStartReview = useCallback(async (task: AgentTask, outputText: string) => {
+    const st = settingsRef.current
+    if (!st.master.crossReview) return
+    const fail = (reason: string, reviewerName?: string) =>
+      updateTask(task.id, { review: { state: 'failed', reviewerName, reason } })
+    const reviewerId = st.master.reviewerAgentId
+    if (!reviewerId) { fail('未选择审查者（到设置 · 主控与审查里选一个）'); return }
+    const rDef = agentDef(reviewerId)
+    if (!rDef || rDef.dispatch !== 'cli') { fail('审查者不是可真派活的 CLI 型 Agent'); return }
+    if (reviewerId === task.agentId) { fail('审查者与执行者是同一个，已跳过', rDef.name); return }
+    const avail = agentAvailability(rDef, detectMapRef.current[reviewerId], st, accountsRef.current)
+    if (avail.state !== 'ready') { fail(`审查者不可用：${avail.reason}`, rDef.name); return }
+    updateTask(task.id, { review: { state: 'running', reviewerName: rDef.name } })
+    const envRes = await buildRunEnv(rDef, st)
+    if ('error' in envRes) { fail(envRes.error, rDef.name); return }
+    const changedFiles = [...new Set(vaultEntriesRef.current.filter(e => e.taskId === task.id).map(e => e.originalPath))]
+    const prompt = buildReviewPrompt({
+      taskText: task.planFor ?? task.text, taskTitle: task.title,
+      agentName: task.agentName, output: outputText, changedFiles,
+    })
+    const inv = buildCliInvocation(rDef.id, prompt)
+    if (!inv) { fail('审查者没有 CLI 派活方式', rDef.name); return }
+    const runId = `review-${task.id}`
+    try {
+      await agentRunStart(runId, inv.command, inv.args, task.workdir, envRes.envPairs)
+      reviewRunsRef.current.set(task.id, {
+        runId, cursor: 0, output: [], reviewerId: rDef.id, reviewerName: rDef.name, startedAt: Date.now(),
+      })
+    } catch (e) {
+      fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`, rDef.name)
+    }
+  }, [buildRunEnv, updateTask])
 
   const finalizeCliTask = useCallback(async (task: AgentTask, exitCode: number) => {
     const now = Date.now()
@@ -142,7 +397,16 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       status, endedAt: now, exitCode,
       note: wasStopped ? '已被你停止' : exitCode === 0 ? undefined : `进程退出码 ${exitCode}`,
     })
-  }, [addLedger, refreshVault, updateTask])
+    // 二期联动（主控拆活回填 / 额度类失败接力 / 完成后的交叉审查）
+    if (status === 'done' && task.planFor) {
+      handleMasterPlan(task, outputText)
+    } else if (status === 'failed') {
+      const rel = classifyRelayFailure(outputText, exitCode)
+      if (rel) considerRelay({ ...task, status, exitCode }, rel.label)
+    } else if (status === 'done') {
+      void maybeStartReview(task, outputText)
+    }
+  }, [addLedger, refreshVault, updateTask, handleMasterPlan, considerRelay, maybeStartReview])
 
   const startTask = useCallback(async (task: AgentTask) => {
     if (startingRef.current.has(task.id)) return
@@ -172,29 +436,12 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         }
       }
       // 供 Key：绑定账户时解密注入（Key 只进子进程环境变量）
-      const binding = st.bindings[def.id]
-      let envPairs: Array<[string, string]> = []
-      if (binding?.kind === 'account') {
-        const acct = accountsRef.current.find(a => a.id === binding.accountId)
-        if (!acct?.encryptedKey) {
-          updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '绑定的账户不存在或没有 Key，已取消派活' })
-          return
-        }
-        const pwd = sessionPwdRef.current
-        if (!pwd) {
-          updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' })
-          return
-        }
-        let plain = ''
-        try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch {
-          updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '解密绑定账户的 Key 失败，已取消派活' })
-          return
-        }
-        const modelId = enginesFor(acct.providerId)[0]?.id
-        envPairs = Object.entries(buildShellEnv(binding, acct, plain, modelId))
-      } else {
-        envPairs = Object.entries(buildShellEnv(binding, undefined, undefined))
+      const envRes = await buildRunEnv(def, st)
+      if ('error' in envRes) {
+        updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: envRes.error })
+        return
       }
+      const envPairs = envRes.envPairs
       const inv = buildCliInvocation(def.id, task.text)
       if (!inv) { updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '该 Agent 没有 CLI 派活方式' }); return }
       try {
@@ -207,7 +454,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } finally {
       startingRef.current.delete(task.id)
     }
-  }, [updateTask])
+  }, [updateTask, buildRunEnv])
 
   // 调度：排队任务按并行上限 + 重活锁启动
   useEffect(() => {
@@ -247,9 +494,40 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           if (fresh && fresh.status === 'running') void finalizeCliTask(fresh, poll.exitCode)
         }
       }
+      // 交叉审查的运行轮询：结论回填任务卡，费用记审查者名下；审查失败不动原任务完成态
+      for (const [taskId, rr] of [...reviewRunsRef.current.entries()]) {
+        const poll = await agentRunPoll(rr.runId, rr.cursor)
+        rr.cursor = poll.next
+        if (poll.lines.length) rr.output.push(...poll.lines)
+        if (!poll.running && poll.exitCode !== null) {
+          reviewRunsRef.current.delete(taskId)
+          const outText = rr.output.join('\n')
+          const usage = parseCliUsage(outText)
+          const binding = settingsRef.current.bindings[rr.reviewerId]
+          const acct = binding?.kind === 'account' ? accountsRef.current.find(a => a.id === binding.accountId) : undefined
+          addLedger({
+            id: `led-${taskId}-review`, taskId, agentId: rr.reviewerId, agentName: rr.reviewerName, kind: 'shell',
+            accountId: acct?.id, accountLabel: acct ? (acct.label || PROVIDER_MAP[acct.providerId]?.name || acct.providerId) : undefined,
+            startedAt: rr.startedAt, endedAt: Date.now(), durationMs: Date.now() - rr.startedAt,
+            status: poll.exitCode === 0 ? 'done' : 'failed', costYuan: null,
+            costUsd: usage ? usage.costUsd : null,
+            inputTokens: usage?.inputTokens, outputTokens: usage?.outputTokens,
+          })
+          if (poll.exitCode !== 0) {
+            updateTask(taskId, { review: { state: 'failed', reviewerName: rr.reviewerName, reason: `审查进程退出码 ${poll.exitCode}` } })
+          } else {
+            const verdict = parseReviewVerdict(outText)
+            if (verdict) {
+              updateTask(taskId, { review: { state: verdict.verdict, reviewerName: rr.reviewerName, points: verdict.points } })
+            } else {
+              updateTask(taskId, { review: { state: 'failed', reviewerName: rr.reviewerName, reason: '审查者没有给出可解析的结论' } })
+            }
+          }
+        }
+      }
     }, 900)
     return () => window.clearInterval(timer)
-  }, [desktop, finalizeCliTask, refreshVault])
+  }, [desktop, finalizeCliTask, refreshVault, addLedger, updateTask])
 
   const availOf = useCallback((id: string) => {
     const def = agentDef(id)
@@ -290,10 +568,23 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       return
     }
     const heavy = isHeavyTask(taskText, heavyMode === 'auto' ? undefined : heavyMode === 'heavy')
-    const base: AgentTask = {
+    let base: AgentTask = {
       id: uid(), text: taskText, agentId, agentName: def.name, kind: def.kind,
       workdir: workdir.trim(), heavy, outsideOk: noVaultCoverage ? outsideOk : false,
       status: 'queued', output: [], createdAt: Date.now(),
+    }
+    // 主控拆活（二期）：没写 #、没指定委派对象、落到 CLI 型主控时，先递给主控拆成子任务清单；
+    // 桌面型主控只能人工拆活，整单打开它（设置里已明示），行为与一期一致。
+    const viaMaster = !parsed.agentId && targetAgent === 'auto'
+      && !!settings.master.masterAgentId && agentId === settings.master.masterAgentId
+    if (viaMaster && def.dispatch === 'cli') {
+      base = {
+        ...base,
+        text: buildMasterPrompt(taskText, readyAgents.map(a => a.name)),
+        title: taskText.split('\n')[0].slice(0, 60),
+        planFor: taskText,
+        heavy: false,
+      }
     }
     // 额度护栏：付费账户先停住等放行
     const gate = quotaGate(settings, def, settings.bindings[agentId], accounts)
@@ -363,7 +654,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         <AgentSettingsPanel
           settings={settings} onChange={setSettings} accounts={accounts} detectMap={detectMap}
           onRedetect={() => void runDetect()} vaultEntries={vaultEntries}
-          onPruneNow={() => { void agentVaultPrune(settings.vault.retentionDays, settings.vault.capGB * 1024 * 1024 * 1024).then(() => refreshVault()) }}
+          onPruneNow={() => { void runPrune('手动清理') }}
           notify={notify}
         />
       )}
@@ -374,6 +665,60 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
             <span>备份条目（仅本机 ~/.ai-credit-manager/agent-vault/，保留 {settings.vault.retentionDays} 天 / 上限 {settings.vault.capGB}GB，超限自动清最旧）</span>
             <button className="btn sm" onClick={() => void refreshVault()}>刷新</button>
           </div>
+          {(() => {
+            const capBytes = settings.vault.capGB * 1024 * 1024 * 1024
+            const totalBytes = vaultStats.totalBytes || vaultEntries.reduce((s, e) => s + e.size, 0)
+            const pct = capBytes > 0 ? Math.min(100, Math.round((totalBytes / capBytes) * 100)) : 0
+            const usageRows = mergeVaultUsage(vaultEntries, vaultStats.baselines)
+            const cleanable = (taskId: string) => {
+              const t = tasks.find(x => x.id === taskId)
+              if (!t) return true
+              return !['queued', 'queued-heavy', 'running', 'waiting-approval', 'waiting-relay'].includes(t.status)
+            }
+            return (
+              <div className="aw-vault-usage">
+                <div className="aw-vault-usage-head">
+                  <span>保险箱总占用 <b>{formatBytes(totalBytes)}</b> / 上限 {settings.vault.capGB}GB（含基线镜像与版本记录）</span>
+                  <span className="aw-note">{pct}%</span>
+                </div>
+                <div className="aw-progress"><div style={{ width: `${pct}%` }} /></div>
+                {pruneLog && (
+                  <div className="aw-note">最近一次清理：{new Date(pruneLog.at).toLocaleString()} · 清掉 {pruneLog.removed} 条过期/超限记录（{pruneLog.trigger}）</div>
+                )}
+                {usageRows.length > 0 && (
+                  <>
+                    <div className="aw-note">按任务占用（清理基线只删该任务的基线镜像，版本记录保留、仍可一键还原）：</div>
+                    {usageRows.map(u => (
+                      <div key={u.taskId} className="aw-vault-row">
+                        <div className="aw-vault-main">
+                          <div className="aw-vault-path">{u.taskTitle || '任务'}</div>
+                          <div className="aw-note">
+                            {u.agentName} · 基线镜像 {formatBytes(u.baselineBytes)} · 版本记录 {u.entryCount} 条 / {formatBytes(u.entriesBytes)} · 合计 {formatBytes(u.totalBytes)}
+                          </div>
+                        </div>
+                        {u.baselineBytes > 0 && cleanable(u.taskId) && (
+                          cleanConfirmId === u.taskId ? (
+                            <>
+                              <button className="btn sm primary" onClick={async () => {
+                                const freed = await agentVaultDeleteBaseline(u.taskId)
+                                setCleanConfirmId(null)
+                                notify(`已清理基线：释放 ${formatBytes(freed)}（版本记录未动）`)
+                                void refreshVault()
+                              }}>确认清理基线</button>
+                              <button className="btn sm ghost" onClick={() => setCleanConfirmId(null)}>取消</button>
+                            </>
+                          ) : (
+                            <button className="btn sm" onClick={() => setCleanConfirmId(u.taskId)}>清理基线</button>
+                          )
+                        )}
+                        {u.baselineBytes > 0 && !cleanable(u.taskId) && <span className="aw-note">任务未结束，基线保留中</span>}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )
+          })()}
           {vaultEntries.length === 0 && <div className="aw-note">还没有备份。给 CLI 型 Agent 派活并让它改动工作目录里的文件后，被改/被删文件的上一版会出现在这里。</div>}
           {vaultEntries.map(e => (
             <div key={e.id} className="aw-vault-row">
@@ -506,12 +851,30 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     {task.heavy && <span className="aw-tag heavy">重活</span>}
                     <span className="aw-note">{new Date(task.createdAt).toLocaleTimeString()}{task.startedAt ? ` · ${formatDuration(elapsed)}` : ''}</span>
                     <span className="aw-task-actions">
-                      {(task.status === 'done' || task.status === 'failed' || task.status === 'stopped') && (
+                      {(task.status === 'done' || task.status === 'failed' || task.status === 'stopped' || task.status === 'unresolved') && (
                         <button className="btn sm ghost" onClick={() => setTasks(prev => prev.filter(t => t.id !== task.id))} aria-label="删除记录"><Trash2 size={13} /></button>
                       )}
                     </span>
                   </div>
-                  <div className="aw-task-text">{task.text}</div>
+                  {task.title ? (
+                    <>
+                      <div className="aw-task-text">{task.title}</div>
+                      <details className="aw-details">
+                        <summary>{task.relayFromId ? '上下文包（递给接棒者的完整说明）' : task.planFor ? '拆活提示（递给主控的）' : '任务说明'}</summary>
+                        <div className="aw-note aw-details-body">{task.text}</div>
+                      </details>
+                    </>
+                  ) : (
+                    <div className="aw-task-text">{task.text}</div>
+                  )}
+                  {task.relayFromId && (() => {
+                    const src = tasks.find(t => t.id === task.relayFromId)
+                    return <div className="aw-note">接力自 {src?.agentName ?? '上一棒'}{task.relayReason ? ` · 原因：${task.relayReason}` : ''}（上下文已打包递交）</div>
+                  })()}
+                  {task.relayToId && (() => {
+                    const dst = tasks.find(t => t.id === task.relayToId)
+                    return <div className="aw-note">已接力 → {dst?.agentName ?? '接棒者'}（在任务板上续跑）</div>
+                  })()}
                   {task.workdir && <div className="aw-note">工作目录：{task.workdir}</div>}
                   {task.approvalReason && task.status === 'waiting-approval' && (
                     <div className="aw-approval">
@@ -522,7 +885,33 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                       </div>
                     </div>
                   )}
+                  {task.status === 'waiting-relay' && task.relayProposal && (
+                    <div className="aw-approval">
+                      <div><Repeat size={14} /> {task.agentName} 停在这里了（{task.relayProposal.reason}）。按接力链，下一个接棒的是 <b>{task.relayProposal.candidateName}</b>。</div>
+                      <div className="aw-note">将带过去：原任务全文、工作目录、输出摘要、已改文件清单（{task.relayProposal.changedFiles} 个，上一版都在保险箱里）。</div>
+                      {task.relayProposal.skipped.length > 0 && (
+                        <div className="aw-note">链上排在前面但被跳过的：{task.relayProposal.skipped.map(s => `${s.agentName}（${s.reason}）`).join('；')}</div>
+                      )}
+                      <div className="aw-approval-btns">
+                        <button className="btn sm primary" onClick={() => confirmRelay(task)}>确认接力给 {task.relayProposal.candidateName}</button>
+                        <button className="btn sm" onClick={() => cancelRelay(task)}>不接力</button>
+                      </div>
+                    </div>
+                  )}
                   {task.note && <div className="aw-note warn">{task.note}</div>}
+                  {task.review && (
+                    <div className={`aw-review ${task.review.state}`}>
+                      <ClipboardCheck size={14} />
+                      {task.review.state === 'running' && <span>交叉审查中（审查者：{task.review.reviewerName}）…</span>}
+                      {task.review.state === 'pass' && <span>审查通过（{task.review.reviewerName}）{task.review.points ? `：${task.review.points}` : ''}</span>}
+                      {task.review.state === 'issues' && <span>审查发现问题（{task.review.reviewerName}）：{task.review.points || '未给出要点'}</span>}
+                      {task.review.state === 'failed' && <span>审查未完成：{task.review.reason}</span>}
+                    </div>
+                  )}
+                  {!task.review && settings.master.crossReview && agentDef(task.agentId)?.dispatch === 'open'
+                    && (task.status === 'manual' || task.status === 'done') && (
+                    <div className="aw-note">桌面型任务不支持自动审查（没有可审的输出）</div>
+                  )}
                   {task.output.length > 0 && (
                     <pre className="aw-output">{task.output.slice(-60).join('\n')}</pre>
                   )}
@@ -530,10 +919,16 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     {task.status === 'running' && agentDef(task.agentId)?.dispatch === 'cli' && (
                       <button className="btn sm" onClick={() => void stopTask(task)}><Square size={13} /> 停止</button>
                     )}
+                    {(task.status === 'failed' || task.status === 'stopped' || task.status === 'unresolved') && !task.relayToId && (
+                      <button className="btn sm" onClick={() => considerRelay(task, '手动换人')}><Repeat size={13} /> 换人续跑</button>
+                    )}
                     {task.status === 'manual' && (
                       <>
                         <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(task.text).then(() => notify('任务文本已复制，去应用里粘贴')) }}><Copy size={13} /> 复制任务</button>
                         <button className="btn sm primary" onClick={() => completeManualTask(task)}><CheckCircle2 size={13} /> 标记完成</button>
+                        {!task.relayToId && (
+                          <button className="btn sm" onClick={() => considerRelay(task, '额度耗尽（手动标记）')}><Repeat size={13} /> 额度耗尽，换人</button>
+                        )}
                         <button className="btn sm ghost" onClick={() => updateTask(task.id, { status: 'stopped', endedAt: Date.now(), note: '已放弃（手动关闭）' })}><XCircle size={13} /> 放弃</button>
                       </>
                     )}

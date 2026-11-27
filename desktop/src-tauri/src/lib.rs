@@ -898,6 +898,47 @@ fn vault_now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
+/// APFS 克隆复制的回落判定（纯函数，与前端 core/agentVault.ts 的 apfsCopyOutcome 同一口径）：
+/// 只有 macOS 才尝试克隆；克隆成功记 "cloned"，其余一律回落普通复制记 "copied"。
+fn vault_copy_outcome(is_macos: bool, clone_ok: bool) -> &'static str {
+    if is_macos && clone_ok { "cloned" } else { "copied" }
+}
+
+/// 复制文件：macOS 上优先 APFS 克隆复制（cp -c，写时复制、近零成本），失败回落普通复制。
+/// 基线镜像/镜像刷新/还原都走这里。返回值是实际用的方式（"cloned" | "copied"）。
+fn vault_copy_file(src: &std::path::Path, dst: &std::path::Path) -> Result<&'static str, String> {
+    let mut clone_ok = false;
+    if cfg!(target_os = "macos") {
+        // clonefile 要求目标不存在，先清掉旧目标再克隆
+        if dst.exists() { let _ = std::fs::remove_file(dst); }
+        clone_ok = std::process::Command::new("/bin/cp")
+            .arg("-c").arg(src).arg(dst)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false)
+            && dst.is_file();
+    }
+    if vault_copy_outcome(cfg!(target_os = "macos"), clone_ok) == "cloned" {
+        return Ok("cloned");
+    }
+    std::fs::copy(src, dst).map_err(|e| format!("复制文件失败：{}", e))?;
+    Ok("copied")
+}
+
+/// 递归求目录总字节（保险箱占用统计用；读不到的条目跳过）
+fn vault_dir_bytes(dir: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let rd = match std::fs::read_dir(&d) { Ok(r) => r, Err(_) => continue };
+        for ent in rd.flatten() {
+            let ft = match ent.file_type() { Ok(f) => f, Err(_) => continue };
+            if ft.is_dir() { stack.push(ent.path()); }
+            else if ft.is_file() { total += ent.metadata().map(|m| m.len()).unwrap_or(0); }
+        }
+    }
+    total
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct VaultEntry {
@@ -994,7 +1035,7 @@ fn agent_vault_baseline(task_id: String, agent_id: String, agent_name: String, t
         let src = dir.join(rel);
         let dst = mirror.join(rel);
         if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
-        if std::fs::copy(&src, &dst).is_ok() {
+        if vault_copy_file(&src, &dst).is_ok() {
             bytes += size;
             manifest.insert(rel.clone(), serde_json::json!([size, mtime]));
         }
@@ -1087,7 +1128,7 @@ fn agent_vault_poll(task_id: String) -> Result<VaultPollOut, String> {
             let src = workdir.join(rel);
             let dst = mirror.join(rel);
             if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
-            let _ = std::fs::copy(&src, &dst);
+            let _ = vault_copy_file(&src, &dst);
         }
     }
     // 镜像里已不存在于工作目录的残留清掉
@@ -1128,7 +1169,7 @@ fn agent_vault_restore(entry_id: String) -> Result<String, String> {
         let stored_rel = format!("entries/{}/{}", new_id, base);
         let dst = agent_vault_root().join(&stored_rel);
         if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
-        if std::fs::copy(&target, &dst).is_ok() {
+        if vault_copy_file(&target, &dst).is_ok() {
             let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
             index.push(VaultEntry {
                 id: new_id.clone(), task_id: entry.task_id.clone(), agent_id: entry.agent_id.clone(),
@@ -1140,7 +1181,7 @@ fn agent_vault_restore(entry_id: String) -> Result<String, String> {
         }
     }
     if let Some(parent) = target.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-    std::fs::copy(&stored_abs, &target).map_err(|e| format!("还原失败：{}", e))?;
+    vault_copy_file(&stored_abs, &target).map_err(|e| format!("还原失败：{}", e))?;
     vault_save_index(&index)?;
     Ok(pre_restore_id)
 }
@@ -1195,6 +1236,63 @@ fn agent_vault_prune(retention_days: i64, cap_bytes: u64) -> Result<u32, String>
     let removed = victims.len() as u32;
     vault_save_index(&kept)?;
     Ok(removed)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultBaselineInfo {
+    task_id: String,
+    task_title: String,
+    agent_name: String,
+    created_at: i64,
+    baseline_bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultStatsOut {
+    total_bytes: u64,
+    baselines: Vec<VaultBaselineInfo>,
+}
+
+/// 保险箱占用统计（二期）：整库总字节 + 每任务基线镜像占用。
+/// 版本条目的占用前端已有（agent_vault_list），这里只补基线与总量。
+#[tauri::command]
+fn agent_vault_stats() -> VaultStatsOut {
+    let root = agent_vault_root();
+    let total_bytes = if root.is_dir() { vault_dir_bytes(&root) } else { 0 };
+    let mut baselines: Vec<VaultBaselineInfo> = Vec::new();
+    let tasks_dir = root.join("tasks");
+    if let Ok(rd) = std::fs::read_dir(&tasks_dir) {
+        for ent in rd.flatten() {
+            let tdir = ent.path();
+            if !tdir.is_dir() { continue; }
+            let meta: serde_json::Value = std::fs::read_to_string(tdir.join("meta.json"))
+                .ok().and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}));
+            let mirror = tdir.join("mirror");
+            baselines.push(VaultBaselineInfo {
+                task_id: meta["task_id"].as_str().unwrap_or("").to_string(),
+                task_title: meta["task_title"].as_str().unwrap_or("").to_string(),
+                agent_name: meta["agent_name"].as_str().unwrap_or("").to_string(),
+                created_at: meta["created_at"].as_i64().unwrap_or(0),
+                baseline_bytes: if mirror.is_dir() { vault_dir_bytes(&mirror) } else { 0 },
+            });
+        }
+    }
+    baselines.sort_by(|a, b| b.baseline_bytes.cmp(&a.baseline_bytes));
+    VaultStatsOut { total_bytes, baselines }
+}
+
+/// 清理某个任务的基线镜像（版本条目不在此列、保持不动）；返回释放的字节数。
+#[tauri::command]
+fn agent_vault_delete_baseline(task_id: String) -> Result<u64, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let tdir = vault_task_dir(&task_id);
+    if !tdir.is_dir() { return Ok(0); }
+    let freed = vault_dir_bytes(&tdir);
+    std::fs::remove_dir_all(&tdir).map_err(|e| format!("清理基线失败：{}", e))?;
+    Ok(freed)
 }
 
 // ---------------- MCP 服务器 stdio 桥（v0.1.264） ----------------
@@ -5589,7 +5687,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
@@ -5837,5 +5935,48 @@ mod update_relaunch_tests {
         );
         assert_eq!(judge_pending_install("not json", "0.1.500"), None);
         assert_eq!(judge_pending_install("{\"armed_at\":1}", "0.1.500"), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_vault_tests {
+    use super::*;
+
+    #[test]
+    fn copy_outcome_truth_table() {
+        // 与前端 core/agentVault.ts 的 apfsCopyOutcome 同一真值表
+        assert_eq!(vault_copy_outcome(true, true), "cloned");
+        assert_eq!(vault_copy_outcome(true, false), "copied");
+        assert_eq!(vault_copy_outcome(false, true), "copied");
+        assert_eq!(vault_copy_outcome(false, false), "copied");
+    }
+
+    #[test]
+    fn copy_file_roundtrip_and_fallback() {
+        // 沙箱/CI 非 APFS 环境下走普通复制回落，内容必须一致（真机 APFS 走克隆路径）
+        let dir = std::env::temp_dir().join(format!("acm-vault-test-{}", vault_now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.txt");
+        let dst = dir.join("sub").join("a.txt");
+        std::fs::write(&src, b"hello vault").unwrap();
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        let how = vault_copy_file(&src, &dst).unwrap();
+        assert!(how == "cloned" || how == "copied");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"hello vault");
+        // 目标已存在时也能覆盖成功（克隆路径会先删目标）
+        std::fs::write(&src, b"v2").unwrap();
+        assert!(vault_copy_file(&src, &dst).is_ok());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"v2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_bytes_sums_recursively() {
+        let dir = std::env::temp_dir().join(format!("acm-vault-bytes-{}", vault_now_ms()));
+        std::fs::create_dir_all(dir.join("x/y")).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("x/y/b.bin"), vec![0u8; 23]).unwrap();
+        assert_eq!(vault_dir_bytes(&dir), 123);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

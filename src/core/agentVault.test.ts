@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { selectPruneVictims, vaultTotals, formatBytes, type VaultEntry } from './agentVault'
+import {
+  selectPruneVictims, vaultTotals, formatBytes, mergeVaultUsage,
+  shouldAttemptClone, apfsCopyOutcome, type VaultEntry, type VaultBaselineInfo,
+} from './agentVault'
 
 const E = (id: string, createdAt: number, size: number): VaultEntry => ({
   id, taskId: 't', agentId: 'pi', agentName: 'Pi', taskTitle: '任务',
@@ -34,5 +37,40 @@ describe('保险箱清理选择（与 Rust prune 同口径）', () => {
     expect(formatBytes(500)).toBe('500 B')
     expect(formatBytes(2048)).toBe('2.0 KB')
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
+  })
+})
+
+describe('每任务占用汇总（二期）', () => {
+  const B = (taskId: string, baselineBytes: number): VaultBaselineInfo => ({
+    taskId, taskTitle: `任务-${taskId}`, agentName: 'Pi', createdAt: 0, baselineBytes,
+  })
+  it('基线 + 版本条目按任务合并，按总占用降序', () => {
+    const usage = mergeVaultUsage(
+      [{ ...E('e1', 0, 100), taskId: 't1' }, { ...E('e2', 0, 50), taskId: 't1' }, { ...E('e3', 0, 30), taskId: 't2' }],
+      [B('t1', 1000), B('t2', 200)],
+    )
+    expect(usage[0]).toMatchObject({ taskId: 't1', baselineBytes: 1000, entriesBytes: 150, entryCount: 2, totalBytes: 1150 })
+    expect(usage[1]).toMatchObject({ taskId: 't2', baselineBytes: 200, entriesBytes: 30, entryCount: 1, totalBytes: 230 })
+  })
+  it('只有条目没有基线（基线已清理）也成行', () => {
+    const usage = mergeVaultUsage([{ ...E('e1', 0, 10), taskId: 'tx' }], [])
+    expect(usage).toHaveLength(1)
+    expect(usage[0].baselineBytes).toBe(0)
+  })
+  it('空输入 → 空汇总', () => {
+    expect(mergeVaultUsage([], [])).toEqual([])
+  })
+})
+
+describe('APFS 克隆复制回落判定（与 Rust vault_copy_file 同口径）', () => {
+  it('只有 macOS 尝试克隆', () => {
+    expect(shouldAttemptClone(true)).toBe(true)
+    expect(shouldAttemptClone(false)).toBe(false)
+  })
+  it('真值表：mac + 克隆成功 → cloned；其余一律 copied（回落普通复制）', () => {
+    expect(apfsCopyOutcome(true, true)).toBe('cloned')
+    expect(apfsCopyOutcome(true, false)).toBe('copied')
+    expect(apfsCopyOutcome(false, true)).toBe('copied')
+    expect(apfsCopyOutcome(false, false)).toBe('copied')
   })
 })

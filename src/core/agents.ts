@@ -119,10 +119,10 @@ export interface AgentSettings {
   }
   parallel: { maxParallel: number }
   vault: { enabled: boolean; retentionDays: number; capGB: number; workdir: string }
-  /** 二期执行：一期可存（链顺序/模式），界面如实标「二期生效」 */
+  /** 接力：链顺序 + 模式（v0.1.508 起执行） */
   relay: { chain: string[]; mode: 'auto' | 'ask' }
-  /** 二期执行：一期可存主控选择，交叉审查置灰 */
-  master: { masterAgentId: string; crossReview: boolean }
+  /** 主控与审查（v0.1.508 起执行）：主控拆活 + 交叉审查 */
+  master: { masterAgentId: string; crossReview: boolean; reviewerAgentId: string }
 }
 
 export const AGENT_SETTINGS_KEY = 'acm.agents.settings.v1'
@@ -135,7 +135,7 @@ export function defaultAgentSettings(): AgentSettings {
     parallel: { maxParallel: 3 },
     vault: { enabled: true, retentionDays: 30, capGB: 5, workdir: '' },
     relay: { chain: [], mode: 'ask' },
-    master: { masterAgentId: '', crossReview: false },
+    master: { masterAgentId: '', crossReview: false, reviewerAgentId: '' },
   }
 }
 
@@ -152,7 +152,7 @@ export function loadAgentSettings(): AgentSettings {
       parallel: { maxParallel: Math.min(5, Math.max(1, p.parallel?.maxParallel ?? 3)) },
       vault: { ...base.vault, ...(p.vault ?? {}) },
       relay: { chain: Array.isArray(p.relay?.chain) ? p.relay!.chain : [], mode: p.relay?.mode === 'auto' ? 'auto' : 'ask' },
-      master: { masterAgentId: p.master?.masterAgentId ?? '', crossReview: !!p.master?.crossReview },
+      master: { masterAgentId: p.master?.masterAgentId ?? '', crossReview: !!p.master?.crossReview, reviewerAgentId: p.master?.reviewerAgentId ?? '' },
     }
   } catch { return base }
 }
@@ -351,10 +351,31 @@ export function parseCliUsage(output: string): { inputTokens: number; outputToke
 
 export type AgentTaskStatus =
   | 'queued' | 'queued-heavy' | 'waiting-approval' | 'running' | 'manual' | 'done' | 'failed' | 'stopped'
+  /** v0.1.508：接力询问模式下停住等用户确认换人 */
+  | 'waiting-relay'
+  /** v0.1.508：接力链走完无人可接（或派生任务无可用执行者/已达上限），等人处理 */
+  | 'unresolved'
+
+/** 交叉审查在任务卡上的状态（v0.1.508） */
+export type AgentReviewState =
+  | { state: 'running'; reviewerName: string }
+  | { state: 'pass' | 'issues'; reviewerName: string; points: string }
+  | { state: 'failed'; reviewerName?: string; reason: string }
+
+/** 接力询问模式的确认卡数据（v0.1.508） */
+export interface RelayProposal {
+  candidateId: string
+  candidateName: string
+  reason: string
+  skipped: Array<{ agentName: string; reason: string }>
+  changedFiles: number
+}
 
 export interface AgentTask {
   id: string
   text: string
+  /** 展示标题（接力任务为「原标题（续）」、主控子任务为子任务标题）；缺省时卡片直接显示 text */
+  title?: string
   agentId: string
   agentName: string
   kind: AgentKind
@@ -370,6 +391,19 @@ export interface AgentTask {
   exitCode?: number | null
   approvalReason?: string
   note?: string
+  /** v0.1.508 接力：本任务接自哪个任务 / 已接力给哪个任务 / 接力原因 */
+  relayFromId?: string
+  relayToId?: string
+  relayReason?: string
+  /** 接力询问模式：待确认的接力方案（status = waiting-relay 时有值） */
+  relayProposal?: RelayProposal
+  /** 进入 waiting-relay 之前的原状态（用户点「不接力」时恢复） */
+  relayFromStatus?: AgentTaskStatus
+  /** v0.1.508 主控拆活：本任务是拆活请求时，值为用户原始目标文本；子任务带同一 planGroupId */
+  planFor?: string
+  planGroupId?: string
+  /** v0.1.508 交叉审查 */
+  review?: AgentReviewState
 }
 
 export const AGENT_TASKS_KEY = 'acm.agents.tasks.v1'

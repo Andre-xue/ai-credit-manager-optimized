@@ -137,11 +137,11 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
 
       {cat === 'relay' && (
         <div className="aw-card">
-          <div className="aw-phase2-banner">接力执行将在二期生效：本期可先排好接力链与模式并保存，任务不会真的自动接力。</div>
           <div className="aw-field">
             <span>接力模式</span>
             <label className="aw-radio"><input type="radio" checked={settings.relay.mode === 'ask'} onChange={() => set({ relay: { ...settings.relay, mode: 'ask' } })} /> 先停住询问（额度耗尽时问过我再换人）</label>
-            <label className="aw-radio"><input type="radio" checked={settings.relay.mode === 'auto'} onChange={() => set({ relay: { ...settings.relay, mode: 'auto' } })} /> 自动接力（按接力链顺序换人续跑）<span className="aw-tag phase2">二期生效</span></label>
+            <label className="aw-radio"><input type="radio" checked={settings.relay.mode === 'auto'} onChange={() => set({ relay: { ...settings.relay, mode: 'auto' } })} /> 自动接力（按接力链顺序换人续跑）</label>
+            <div className="aw-note">触发接力的情形：CLI 任务因额度耗尽 / 限流失败（自动识别）；任务卡上手动「换人续跑」；桌面型任务手动标「额度耗尽，换人」。接棒者同样过额度护栏（付费路线先停住等你放行）。</div>
           </div>
           <div className="aw-field">
             <span>接力链（上 = 先接棒）</span>
@@ -206,7 +206,6 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
             <span>超限动作</span>
             <label className="aw-radio"><input type="radio" checked={settings.quota.overLimit === 'stop'} onChange={() => set({ quota: { ...settings.quota, overLimit: 'stop' } })} /> 停住等确认</label>
             <label className="aw-radio"><input type="radio" checked={settings.quota.overLimit === 'notify'} onChange={() => set({ quota: { ...settings.quota, overLimit: 'notify' } })} /> 只提醒，继续派活</label>
-            <label className="aw-radio aw-disabled"><input type="radio" disabled /> 自动接力到免费路线 <span className="aw-tag phase2">二期</span></label>
           </div>
         </div>
       )}
@@ -241,29 +240,48 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
           <div className="aw-field">
             <span>当前占用：{vaultStats.count} 条 · {formatBytes(vaultStats.bytes)}（按当前规则将清理 {prunePreview} 条）</span>
             <button className="btn sm" onClick={() => { onPruneNow(); notify('保险箱清理已执行') }}>立即按规则清理</button>
+            <div className="aw-note">每任务占用（含基线镜像）与基线清理入口在「文件保险箱」视图里。基线镜像在 macOS 上优先用 APFS 克隆复制（写时复制、近零成本），失败自动回落普通复制。</div>
           </div>
+          <div className="aw-note">关于系统快照：Time Machine 本地快照（tmutil）需要管理员权限，App 内无法调用，故不接入；现行方案就是上面的目录级保险箱（基线 + 上一版），不依赖系统快照。</div>
           <div className="aw-note">权限口径：Agent 在工作目录内默认最大权限、自动执行不逐项确认，安全靠保险箱可还原；目录外写入与外发数据、改系统设置等非文件操作不在最大权限内，派活时单独明示确认。</div>
         </div>
       )}
 
       {cat === 'master' && (
         <div className="aw-card">
-          <div className="aw-phase2-banner">主控编排与交叉审查将在二期生效：本期可先选好主控并保存，任务仍由你手动委派。</div>
           <div className="aw-field">
-            <label className="aw-bind"><span>主控 Agent（未写 # 委派时默认交给谁）</span>
+            <label className="aw-bind"><span>主控 Agent（未写 #、未指定委派对象时，先交给它拆活）</span>
               <select value={settings.master.masterAgentId} onChange={e => set({ master: { ...settings.master, masterAgentId: e.target.value } })}>
-                <option value="">未设置（用第一个可用的）</option>
+                <option value="">未设置（用第一个可用的，不拆活）</option>
                 {AGENT_REGISTRY.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </label>
+            {(() => {
+              const m = AGENT_REGISTRY.find(a => a.id === settings.master.masterAgentId)
+              if (!m) return <div className="aw-note">未设主控时，不带 # 的任务直接派给第一个可用的 Agent，不做拆活。</div>
+              if (m.dispatch === 'open') return <div className="aw-note warn">{m.name} 是桌面应用型主控：没法自动拆活，任务会整单打开它、由你在应用内人工拆活粘贴。</div>
+              return <div className="aw-note">{m.name} 是 CLI 型主控：不带 # 的任务会先递给它拆成子任务清单，再逐个派发（拆活本身记 {m.name} 的账）。</div>
+            })()}
           </div>
           <div className="aw-agent-row">
             <div className="aw-agent-main">
               <b>交叉审查</b>
-              <div className="aw-note">一个 Agent 交活后，由另一个 Agent 复核再结算。<span className="aw-tag phase2">二期生效</span></div>
+              <div className="aw-note">CLI 型任务完成后，自动把目标 + 输出摘要 + 改动文件清单递给审查者复核，结论回填任务卡；审查费用记审查者名下。桌面型任务没有可审的输出，不自动审查。</div>
             </div>
-            <JellyToggle checked={settings.master.crossReview} disabled onChange={() => notify('交叉审查将在二期开放')} />
+            <JellyToggle checked={settings.master.crossReview} onChange={v => set({ master: { ...settings.master, crossReview: v } })} />
           </div>
+          {settings.master.crossReview && (
+            <div className="aw-field">
+              <label className="aw-bind"><span>审查者（另一个可真派活的 CLI 型 Agent）</span>
+                <select value={settings.master.reviewerAgentId} onChange={e => set({ master: { ...settings.master, reviewerAgentId: e.target.value } })}>
+                  <option value="">未选择（审查不会启动，任务卡会如实标注）</option>
+                  {AGENT_REGISTRY.filter(a => a.dispatch === 'cli').map(a => (
+                    <option key={a.id} value={a.id} disabled={a.id === settings.master.masterAgentId}>{a.name}{a.id === settings.master.masterAgentId ? '（与主控相同，请选另一个）' : ''}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
         </div>
       )}
     </div>

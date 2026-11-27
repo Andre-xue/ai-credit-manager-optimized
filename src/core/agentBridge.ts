@@ -2,7 +2,7 @@
 // 界面层会先用 isDesktopApp() 挡住并显示「需要桌面端」占位，这里只是兜底。
 import { isDesktopApp } from './openExternal'
 import type { AgentDetectResult } from './agents'
-import type { VaultEntry } from './agentVault'
+import type { VaultEntry, VaultBaselineInfo } from './agentVault'
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -115,4 +115,24 @@ export async function agentVaultPrune(retentionDays: number, capBytes: number): 
   const inv = invokeFn()
   if (!inv) return 0
   try { return await inv<number>('agent_vault_prune', { retentionDays, capBytes }) } catch { return 0 }
+}
+
+export interface VaultStatsResult { totalBytes: number; baselines: VaultBaselineInfo[] }
+
+/** 保险箱占用统计：整库总字节 + 每任务基线镜像占用（版本条目占用走 agentVaultList） */
+export async function agentVaultStats(): Promise<VaultStatsResult> {
+  const inv = invokeFn()
+  if (!inv) return { totalBytes: 0, baselines: [] }
+  try {
+    const r = await inv<VaultStatsResult | null>('agent_vault_stats', {})
+    if (!r) return { totalBytes: 0, baselines: [] }
+    return { totalBytes: r.totalBytes ?? 0, baselines: Array.isArray(r.baselines) ? r.baselines : [] }
+  } catch { return { totalBytes: 0, baselines: [] } }
+}
+
+/** 清理某任务的基线镜像（版本条目不动）；返回释放字节数 */
+export async function agentVaultDeleteBaseline(taskId: string): Promise<number> {
+  const inv = invokeFn()
+  if (!inv) return 0
+  try { return (await inv<number | null>('agent_vault_delete_baseline', { taskId })) ?? 0 } catch { return 0 }
 }

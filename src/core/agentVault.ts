@@ -49,6 +49,82 @@ export function vaultTotals(entries: VaultEntry[]): { count: number; bytes: numb
   return { count: entries.length, bytes: entries.reduce((s, e) => s + e.size, 0) }
 }
 
+// ---------------- 二期（v0.1.508）：占用汇总 / APFS 克隆回落 / 清理记录 ----------------
+
+/** Rust agent_vault_stats 回报的每任务基线信息（镜像目录占用） */
+export interface VaultBaselineInfo {
+  taskId: string
+  taskTitle: string
+  agentName: string
+  createdAt: number
+  baselineBytes: number
+}
+
+export interface VaultTaskUsage {
+  taskId: string
+  taskTitle: string
+  agentName: string
+  baselineBytes: number
+  entriesBytes: number
+  entryCount: number
+  totalBytes: number
+}
+
+/** 把版本条目与基线镜像按任务合并成占用汇总（按总占用降序） */
+export function mergeVaultUsage(entries: VaultEntry[], baselines: VaultBaselineInfo[]): VaultTaskUsage[] {
+  const map = new Map<string, VaultTaskUsage>()
+  const ensure = (taskId: string, taskTitle: string, agentName: string) => {
+    const cur = map.get(taskId) ?? {
+      taskId, taskTitle, agentName, baselineBytes: 0, entriesBytes: 0, entryCount: 0, totalBytes: 0,
+    }
+    if (!cur.taskTitle && taskTitle) cur.taskTitle = taskTitle
+    if (!cur.agentName && agentName) cur.agentName = agentName
+    map.set(taskId, cur)
+    return cur
+  }
+  for (const b of baselines) {
+    const u = ensure(b.taskId, b.taskTitle, b.agentName)
+    u.baselineBytes += b.baselineBytes
+  }
+  for (const e of entries) {
+    const u = ensure(e.taskId, e.taskTitle, e.agentName)
+    u.entriesBytes += e.size
+    u.entryCount += 1
+  }
+  for (const u of map.values()) u.totalBytes = u.baselineBytes + u.entriesBytes
+  return [...map.values()].sort((a, b) => b.totalBytes - a.totalBytes)
+}
+
+/**
+ * APFS 克隆复制的回落判定（与 Rust vault_copy_file 同一口径，命令结果可注入便于单测）：
+ * 只有 macOS 才尝试克隆（cp -c）；克隆成功记 cloned，其余一律回落普通复制记 copied。
+ */
+export function shouldAttemptClone(isMacos: boolean): boolean {
+  return isMacos
+}
+
+export function apfsCopyOutcome(isMacos: boolean, cloneSucceeded: boolean): 'cloned' | 'copied' {
+  return isMacos && cloneSucceeded ? 'cloned' : 'copied'
+}
+
+// 最近一次自动/手动清理的记录（prune 只由前端两处触发，记录留本机，视图里展示一行）
+export interface VaultPruneLog { at: number; removed: number; trigger: string }
+
+export const VAULT_PRUNE_LOG_KEY = 'acm.agents.vaultPruneLog.v1'
+
+export function loadPruneLog(): VaultPruneLog | null {
+  try {
+    const raw = localStorage.getItem(VAULT_PRUNE_LOG_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as VaultPruneLog
+    return typeof p?.at === 'number' && typeof p?.removed === 'number' ? p : null
+  } catch { return null }
+}
+
+export function savePruneLog(rec: VaultPruneLog): void {
+  try { localStorage.setItem(VAULT_PRUNE_LOG_KEY, JSON.stringify(rec)) } catch { /* ignore */ }
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '0 B'
   if (n < 1024) return `${n} B`
