@@ -1217,17 +1217,17 @@ fn sess_dsh_extract(lines: &[String]) -> (String, String, String, String) {
                 v.get("sessionId"), v.get("session_id"),
                 data.get("sessionId"), data.get("session_id"),
                 if ty.contains("header") || ty == "session" { v.get("id") } else { None },
-            ].into_iter().flatten() {
+            ] {
                 if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { id = s.to_string(); break } }
             }
         }
         if cwd.is_empty() {
-            for cand in [v.get("cwd"), data.get("cwd")].into_iter().flatten() {
+            for cand in [v.get("cwd"), data.get("cwd")] {
                 if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { cwd = s.to_string(); break } }
             }
         }
         if title.is_empty() && ty.contains("title") {
-            for cand in [data.get("title"), v.get("title")].into_iter().flatten() {
+            for cand in [data.get("title"), v.get("title")] {
                 if let Some(s) = cand.and_then(|x| x.as_str()) {
                     if !s.trim().is_empty() { title = sess_truncate(s, 90); title_source = "archive".to_string(); break }
                 }
@@ -1262,7 +1262,7 @@ fn sess_parse_dsh_dir(dir: &std::path::Path, entry: &AgentSessionHomeIn) -> Opti
     let mut cwd = String::new();
     let mut created_at = 0i64;
     if let Some(m) = &meta {
-        for cand in [m.get("id"), m.get("sessionId"), m.get("session_id")].into_iter().flatten() {
+        for cand in [m.get("id"), m.get("sessionId"), m.get("session_id")] {
             if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { id = s.to_string(); break } }
         }
         if let Some(t) = m.get("title").and_then(|x| x.as_str()) {
