@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupOptionsByPlatform, platformKeyOf, platformNameOf, modelNameOf, type CascadeOptionLike } from './modelCascade'
+import { groupOptionsByPlatform, platformKeyOf, platformNameOf, modelNameOf, isFreeModelName, freeModelsFirst, filterModelsByQuery, type CascadeOptionLike } from './modelCascade'
 
 type Opt = CascadeOptionLike & { key: string }
 const own = (id: string, providerId: string, label: string): Opt => ({
@@ -63,5 +63,30 @@ describe('三段选择器级联分组（v0.1.496）', () => {
 
   it('空列表返回空分组', () => {
     expect(groupOptionsByPlatform([])).toEqual([])
+  })
+})
+
+describe('模型菜单搜索与免费置顶（v0.1.513）', () => {
+  it('isFreeModelName：-free / :free 结尾才算，不分大小写', () => {
+    expect(isFreeModelName('deepseek/deepseek-v4.1-flash-1017-free')).toBe(true)
+    expect(isFreeModelName('nvidia/nemotron-3-nano:free')).toBe(true)
+    expect(isFreeModelName('GPT-4o-FREE')).toBe(true)
+    expect(isFreeModelName('deepseek-v4.1-flash-1017')).toBe(false)
+    expect(isFreeModelName('free-model-x')).toBe(false)
+    expect(isFreeModelName('freemodel')).toBe(false)
+  })
+
+  it('freeModelsFirst：免费排前且组内顺序稳定（不打乱探测排名）', () => {
+    const items = [{ n: 'a-slow' }, { n: 'b-free' }, { n: 'c-fast' }, { n: 'd:free' }]
+    const out = freeModelsFirst(items, x => isFreeModelName(x.n))
+    expect(out.map(x => x.n)).toEqual(['b-free', 'd:free', 'a-slow', 'c-fast'])
+    expect(freeModelsFirst([] as { n: string }[], x => isFreeModelName(x.n))).toEqual([])
+  })
+
+  it('filterModelsByQuery：子串不分大小写，空查询返回全量', () => {
+    const items = [{ n: 'DeepSeek-V4' }, { n: 'gpt-4o' }, { n: 'deepseek-chat-free' }]
+    expect(filterModelsByQuery(items, 'deepseek', x => x.n).map(x => x.n)).toEqual(['DeepSeek-V4', 'deepseek-chat-free'])
+    expect(filterModelsByQuery(items, '  ', x => x.n)).toHaveLength(3)
+    expect(filterModelsByQuery(items, 'zzz', x => x.n)).toEqual([])
   })
 })

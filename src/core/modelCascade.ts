@@ -57,6 +57,27 @@ export function modelNameOf(o: CascadeOptionLike): string {
   return o.label
 }
 
+/** 模型名是否为「免费版」命名：以 -free 或 :free 结尾（不分大小写），如 deepseek-v4.1-flash-1017-free、nemotron-…:free（v0.1.513） */
+export function isFreeModelName(name: string): boolean {
+  const n = name.trim().toLowerCase()
+  return n.endsWith('-free') || n.endsWith(':free')
+}
+
+/** 稳定分区：免费命名的排前面，组内保持原有相对顺序——只做组内重排，不打乱上游已排好的顺序（如探测排名）（v0.1.513） */
+export function freeModelsFirst<T>(items: readonly T[], isFree: (item: T) => boolean): T[] {
+  const free: T[] = []
+  const rest: T[] = []
+  for (const it of items) (isFree(it) ? free : rest).push(it)
+  return [...free, ...rest]
+}
+
+/** 搜索过滤：按名字子串、不分大小写；查询为空时返回原列表副本（v0.1.513） */
+export function filterModelsByQuery<T>(items: readonly T[], query: string, nameOf: (item: T) => string): T[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return [...items]
+  return items.filter(it => nameOf(it).toLowerCase().includes(q))
+}
+
 /** 把当前分类的选项按平台分组（保持选项与平台的首次出现顺序） */
 export function groupOptionsByPlatform<T extends CascadeOptionLike>(options: readonly T[]): PlatformGroup<T>[] {
   const groups: PlatformGroup<T>[] = []

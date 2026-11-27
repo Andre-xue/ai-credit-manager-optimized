@@ -594,6 +594,17 @@ tbody tr:hover { background: var(--panel-2); }
 /* 第三段菜单底部「全部模型与测速 →」入口行：与模型行以分隔线区分 */
 .ai-model-option.ai-model-more { border-top: 1px solid var(--border); border-radius: 0 0 6px 6px; margin-top: 4px; padding-top: 10px; color: var(--primary); font-weight: 600; }
 .ai-model-empty { padding: 10px; font-size: 12px; color: var(--text-3); }
+/* 第三段模型菜单搜索框与小徽标（v0.1.513）：搜索框是纯过滤输入，钉在菜单顶部 */
+.ai-model-search {
+  display: flex; align-items: center; gap: 6px; margin: 2px 2px 5px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text-3);
+}
+.ai-model-search input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; color: var(--text); font-size: 12.5px; }
+.ai-model-name { display: inline-flex; align-items: center; min-width: 0; }
+.ai-model-tag {
+  margin-left: 6px; padding: 0 5px; border-radius: 4px; line-height: 16px;
+  background: var(--primary-soft); color: var(--primary); font-size: 10px; font-weight: 600; white-space: nowrap;
+}
 .ai-icon-btn {
   width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--panel); color: var(--text-2);

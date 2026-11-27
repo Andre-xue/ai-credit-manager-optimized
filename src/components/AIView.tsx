@@ -62,7 +62,7 @@ import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
-import { groupOptionsByPlatform, platformKeyOf, platformNameOf, modelNameOf } from '../core/modelCascade'
+import { groupOptionsByPlatform, platformKeyOf, platformNameOf, modelNameOf, isFreeModelName, freeModelsFirst, filterModelsByQuery } from '../core/modelCascade'
 import {
   loadProbeStore, syncProbeTargets, recordProbeOutcome, seedProbeOutcome, classifyProbeError,
   probeSummary, unavailableTargets, rankProbeGroup, selectProbeBatch, medianSamples,
@@ -173,11 +173,14 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [needLogin, setNeedLogin] = useState(false)
   const [model, setModel] = useState<string>('')
   const [modelOpen, setModelOpen] = useState(false)
+  // v0.1.513：第三段模型菜单搜索词（纯过滤，不落盘、不是模式开关）；换分类/平台时清空，避免把上一个列表的过滤带过来
+  const [modelQuery, setModelQuery] = useState('')
   const [category, setCategory] = useState<ModelCategory>('免费模型')
   const [categoryOpen, setCategoryOpen] = useState(false)
   // 三段选择器（v0.1.496）：第二段「平台」的展开态与当前平台上下文（分组键，见 modelCascade）
   const [platformOpen, setPlatformOpen] = useState(false)
   const [platformKey, setPlatformKey] = useState('')
+  useEffect(() => { setModelQuery('') }, [category, platformKey])
   const [streamingText, setStreamingText] = useState('')
   // 联网搜索进行中（驱动流式气泡里的旋转地球动画，v0.1.323 Ethan 要求）
   const [searching, setSearching] = useState(false)
@@ -1856,41 +1859,86 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     : platformIsAccount
       ? (selectedEngine?.name ?? '')
       : (selectedOption && platformKeyOf(selectedOption) === currentPlatform.platformKey ? modelNameOf(selectedOption) : '')
+  // v0.1.513：第三段列表的搜索过滤 + 免费置顶，排序合成规则——
+  // ① 探测口径先定大序（504：可用优先、可用内按速度/有效价格排名；不可用沉底或进底部折叠组）；
+  // ② 免费置顶只在「可用」组内做稳定分区（-free/:free 结尾的排前、组内保留探测名次），不跨可用性分组；
+  // ③ 已选但不可用的条目维持现行口径留在主列表原位（账户引擎/平台选项一致），不被免费置顶挤走；
+  // ④ 搜索只过滤显示；已选项若被搜索词滤掉且不在折叠组里，单独在列表顶部钉一行并标「已选」，永远找得回来。
+  const engineRows = useMemo(() => {
+    if (!platformIsAccount) return []
+    const visible = engines.filter(e => !engineProbeBad(e.id) || e.id === engineId)
+    const avail = visible.filter(e => !engineProbeBad(e.id))
+    const badSelected = visible.filter(e => engineProbeBad(e.id))
+    const ordered = [...freeModelsFirst(avail, e => isFreeModelName(e.id) || isFreeModelName(e.name)), ...badSelected]
+    return filterModelsByQuery(ordered, modelQuery, e => `${e.name} ${e.id}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platformIsAccount, engines, engineId, probeStore, modelQuery])
+  const pinnedEngine = platformIsAccount && engineId && !engineRows.some(e => e.id === engineId)
+    ? engines.find(e => e.id === engineId) : undefined
+  // 平台选项的免费判定：显示名或 key 尾段的模型 id 任一以 -free/:free 结尾（云端清单的 id 如 hy4-free 藏在 key 里）
+  const optionIsFree = (o: (typeof orderedPlatformOptions)[number]) =>
+    isFreeModelName(modelNameOf(o)) || isFreeModelName(o.key.split(':').pop() ?? '')
+  const optionRows = useMemo(() => {
+    if (platformIsAccount) return []
+    const main = orderedPlatformOptions.filter(o => !optionProbeBad(o.key) || o.key === model)
+    const avail = main.filter(o => !optionProbeBad(o.key))
+    const badSelected = main.filter(o => optionProbeBad(o.key))
+    const ordered = [...freeModelsFirst(avail, o => optionIsFree(o)), ...badSelected]
+    return filterModelsByQuery(ordered, modelQuery, o => modelNameOf(o))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platformIsAccount, orderedPlatformOptions, model, probeStore, modelQuery])
+  const unavailRows = modelQuery.trim()
+    ? probeUnavail.filter(({ target }) => target.name.toLowerCase().includes(modelQuery.trim().toLowerCase()))
+    : probeUnavail
+  const pinnedOption = !platformIsAccount && model && currentPlatform
+    && !optionRows.some(o => o.key === model) && !unavailRows.some(x => x.target.id === model)
+    ? currentPlatform.options.find(o => o.key === model) : undefined
+  const engineRowBtn = (e: (typeof engines)[number], pinned: boolean) => (
+    <button key={`eng-${e.id}`} className={`ai-model-option ${e.id === engineId ? 'active' : ''}`}
+      onClick={() => { setEngineId(e.id); setModelOpen(false); notify(t('已选引擎：{name}', { name: e.name })) }}>
+      <span className="ai-model-name">{e.name}{(isFreeModelName(e.id) || isFreeModelName(e.name)) && <span className="ai-model-tag">{t('免费')}</span>}{pinned && <span className="ai-model-tag">{t('已选')}</span>}</span>{probeDot(`own:${currentAccount?.id}:${e.id}`)}
+    </button>
+  )
+  const optionRowBtn = (o: (typeof orderedPlatformOptions)[number], pinned: boolean) => (
+    <button key={`opt-${o.key}`} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
+      onClick={() => { if (o.free) selectFreeModel(o); else { setModel(o.key); saveModel(o.key); setModelOpen(false) } }}>
+      <span className="ai-model-name">{modelNameOf(o)}{optionIsFree(o) && <span className="ai-model-tag">{t('免费')}</span>}{pinned && <span className="ai-model-tag">{t('已选')}</span>}</span>{probeDot(o.key)}
+    </button>
+  )
   const modelDropdown = <div className="ai-model-wrap">
-    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { setModelOpen(v => !v); setCategoryOpen(false); setPlatformOpen(false) }} title={t('切换模型')}>
+    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { if (!modelOpen) setModelQuery(''); setModelOpen(v => !v); setCategoryOpen(false); setPlatformOpen(false) }} title={t('切换模型')}>
       {seg3Label} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}-${platformKey}`}>
       {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
       {/* v0.1.454：APIsFreeLLM 兜底通道控制块（开关/测活/剩余量/详情）也已摘除——通道控制全 App 只留工坊 RouteSelect 一处；通道开启且测通时 free-ai 仍作为普通模型条目出现在这里（apisFreeOptions） */}
       {/* v0.1.504：菜单顶部「一键检测」卡已删除——检测移入功能图标栏的探测中心（全局一份结果），菜单回归纯选择列表 */}
+      {/* v0.1.513：菜单顶部搜索框——纯过滤输入（输入即过滤、清空恢复全量），不是模式开关，不带其他控件 */}
+      {currentPlatform && <div className="ai-model-search"><Search size={13} /><input value={modelQuery} onChange={e => setModelQuery(e.target.value)} placeholder={t('搜索模型…')} autoFocus /></div>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {!currentPlatform && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {currentPlatform && platformIsAccount && <>
         {loadingEngines && <div className="ai-model-empty">{t('正在获取实时引擎…')}</div>}
         {!loadingEngines && engines.length === 0 && <div className="ai-model-empty">{t('该平台暂无内置引擎目录')}</div>}
-        {engines.filter(e => !engineProbeBad(e.id) || e.id === engineId).map(e => (
-          <button key={e.id} className={`ai-model-option ${e.id === engineId ? 'active' : ''}`}
-            onClick={() => { setEngineId(e.id); setModelOpen(false); notify(t('已选引擎：{name}', { name: e.name })) }}>
-            <span>{e.name}</span>{probeDot(`own:${currentAccount?.id}:${e.id}`)}
-          </button>
-        ))}
+        {pinnedEngine && engineRowBtn(pinnedEngine, true)}
+        {engineRows.map(e => engineRowBtn(e, false))}
+        {!loadingEngines && engines.length > 0 && modelQuery.trim() && engineRows.length === 0 && !pinnedEngine && <div className="ai-model-empty">{t('没有匹配的模型')}</div>}
         <button className="ai-model-option ai-model-more" onClick={() => { setModelOpen(false); setEnginePanelOpen(true) }}>
           <span>{t('全部模型与测速')} →</span>
         </button>
       </>}
-      {currentPlatform && !platformIsAccount && orderedPlatformOptions.filter(o => !optionProbeBad(o.key) || o.key === model).map(o => (
-        <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
-          onClick={() => { if (o.free) selectFreeModel(o); else { setModel(o.key); saveModel(o.key); setModelOpen(false) } }}>
-          <span>{modelNameOf(o)}</span>{probeDot(o.key)}
-        </button>
-      ))}
+      {currentPlatform && !platformIsAccount && <>
+        {pinnedOption && optionRowBtn(pinnedOption, true)}
+        {optionRows.map(o => optionRowBtn(o, false))}
+        {modelQuery.trim() && optionRows.length === 0 && !pinnedOption && unavailRows.length === 0 && <div className="ai-model-empty">{t('没有匹配的模型')}</div>}
+      </>}
       {/* v0.1.504：不可用模型收进菜单底部折叠组（计数与面板/角标同源），展开仍可点击选中，探测不拦选择 */}
-      {probeUnavail.length > 0 && <>
+      {/* v0.1.513：搜索时折叠组同步按名过滤、计数显示过滤后的条数；无搜索时口径不变 */}
+      {unavailRows.length > 0 && <>
         <button className="ai-model-option probe-fold-toggle" onClick={() => setMenuUnavailOpen(v => !v)}>
-          <span>{t('暂时不可用（{n}）', { n: probeUnavail.length })}</span><ChevronDown size={13} style={{ transform: menuUnavailOpen ? 'rotate(180deg)' : undefined }} />
+          <span>{t('暂时不可用（{n}）', { n: unavailRows.length })}</span><ChevronDown size={13} style={{ transform: menuUnavailOpen ? 'rotate(180deg)' : undefined }} />
         </button>
-        {menuUnavailOpen && probeUnavail.map(({ target, result }) => (
+        {menuUnavailOpen && unavailRows.map(({ target, result }) => (
           <button key={target.id} className="ai-model-option probe-unavail-row" onClick={() => { selectProbeTarget(target); setMenuUnavailOpen(false) }}>
             <span>{target.name}</span><small>{target.platformName} · {result.failReason ?? t('调用失败')}</small>
           </button>
