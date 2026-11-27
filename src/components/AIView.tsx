@@ -1,11 +1,11 @@
 // AI 助手聊天页：类 WorkBuddy 的干净对话界面。
 // 布局自适应：桌面居中宽栏、移动端占满屏；流式输出、可中止、快捷提问。
 
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback, Fragment, type ReactNode } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, ChevronRight, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock, Power,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -68,7 +68,6 @@ import {
 } from '../core/attachments'
 import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { AttachmentPicker } from './AttachmentPicker'
-import { ServiceSwitch } from './ServiceSwitch'
 import {
   enginesFor, enginesFromRemote, isChatProbeCandidate, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
   type ReasoningLevel, type Engine,
@@ -490,12 +489,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }, [])
   const changeChainMode = (m: ChainMode) => { saveChainMode(m); setChainModeState(m) }
   // v0.1.439：右上角功能菜单里的「免费路线切换」组点选——全局同一设置（与工坊共用），切换给 toast 确认
+  // v0.1.497：入口改为图标栏下小浮层，点选后只收浮层、图标栏保持打开（当前模式的勾随之可见地移动）
   const pickChainMode = (m: ChainMode) => {
     if (m !== chainMode) {
       changeChainMode(m)
       notify(m === 'auto' ? '免费路线已切到「自动切换」：首选失败自动切下一条免费路线并说明原因' : '免费路线已切到「手动锁定」：只用所选路线，失败只报真实原因')
     }
-    setToolsOpen(false)
+    setChainOpen(false)
   }
   // 免费模型 + 用户自己的账户模型，按分类联动过滤
   const freeOptions = useMemo(() => models.map(m => ({ key: m.id, label: m.name, account: null as Account | null, category: '免费模型' as ModelCategory, free: true, localModel: undefined as string | undefined, upstream: undefined as UpstreamSource | undefined, apisFree: undefined as boolean | undefined })), [models])
@@ -1357,7 +1357,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const toolbarOrder = useMemo(() => mergeToolbarOrder(settings?.aiToolbarOrder), [settings?.aiToolbarOrder])
   const toolOrder = (k: keyof AiToolbarPrefs) => toolbarOrder.indexOf(k)
   // 顶栏功能菜单（v0.1.240）：只保留一个入口图标，点开列出全部功能；选中后关闭，开关型功能变色
+  // v0.1.497：竖排文字列表改横向图标栏（见下方 toolBarGroups）；免费路线切换在图标栏下另开小浮层
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [chainOpen, setChainOpen] = useState(false)
+  useEffect(() => { if (!toolsOpen) setChainOpen(false) }, [toolsOpen])
   const toolsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!toolsOpen) return
@@ -1629,6 +1632,101 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       </div>
     )
   }
+  // ---- v0.1.497：功能菜单横向图标栏的分组构建 ----
+  // 分组：0 对话（通话/朗读/搜索/导出）｜1 增强（我的数据/联网/免费路线/对比）｜2 管理（会话/提示词/清空）｜3 Ollama（最右独立组）。
+  // 组内按设置页的工具顺序（toolOrder）排；被设置隐藏的（tbShow=false）不渲染，整组空了连分隔线一起不渲染。
+  // keepOpen=true 的项点后不关图标栏：免费路线（要开下方浮层）、Ollama（要当场看到开关变色）。
+  type ToolBarItem = {
+    id: string; group: number; order: number; tip: string; label: string; icon: ReactNode
+    on?: boolean; svcOn?: boolean; svcRunning?: boolean; disabled?: boolean; keepOpen?: boolean
+    action: () => void
+  }
+  const ollamaOn = serviceController?.enabled('ollama') ?? false
+  const ollamaRunning = !!serviceController?.status.ollama
+  const ollamaBusy = serviceController?.busyKey === 'ollama'
+  const ollamaTip = ollamaBusy
+    ? 'Ollama 本地服务：切换中…'
+    : ollamaOn
+      ? (ollamaRunning ? 'Ollama 本地服务：运行中（点击关闭）' : 'Ollama 本地服务：已开启（点击关闭）')
+      : 'Ollama 本地服务：已关闭（点击开启）'
+  const toolBarItems: ToolBarItem[] = [
+    ...(tbShow('voiceCall') ? [{
+      id: 'voiceCall', group: 0, order: toolOrder('voiceCall'), label: t('语音通话'),
+      tip: callEnabled ? t('语音通话') : `${t('语音通话')}${t('（当前模型不支持）')}`,
+      icon: <Phone size={20} />, disabled: !callEnabled,
+      action: () => setCallOpen(true),
+    }] : []),
+    ...(tbShow('autoSpeak') ? [{
+      id: 'autoSpeak', group: 0, order: toolOrder('autoSpeak'), label: t('自动朗读'),
+      tip: `${t('自动朗读')}：${autoSpeak ? t('已开启') : t('已关闭')}`,
+      icon: autoSpeak ? <Volume2 size={20} /> : <VolumeX size={20} />, on: autoSpeak,
+      action: () => toggleAutoSpeak(),
+    }] : []),
+    ...(tbShow('chatSearch') ? [{
+      id: 'chatSearch', group: 0, order: toolOrder('chatSearch'), label: t('搜索对话'),
+      tip: `${t('搜索对话')}：${searchOpen ? t('已开启') : t('已关闭')}`,
+      icon: <Search size={20} />, on: searchOpen,
+      action: () => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery('') },
+    }] : []),
+    ...(tbShow('chatExport') ? [{
+      id: 'chatExport', group: 0, order: toolOrder('chatExport'), label: t('导出对话'),
+      tip: t('导出对话'),
+      icon: <Download size={20} />, disabled: messages.length === 0,
+      action: () => setExportOpen(true),
+    }] : []),
+    ...(tbShow('myData') ? [{
+      id: 'myData', group: 1, order: toolOrder('myData'), label: t('引用我的数据'),
+      tip: `${t('引用我的数据')}：${useMyData ? t('已开启') : t('已关闭')}`,
+      icon: <Database size={20} />, on: useMyData,
+      action: () => toggleUseMyData(),
+    }] : []),
+    ...(tbShow('webSearch') ? [{
+      id: 'webSearch', group: 1, order: toolOrder('webSearch'), label: t('联网搜索'),
+      tip: `${t('联网搜索')}：${webSearchOn ? t('已开启') : t('已关闭')}`,
+      icon: <Globe size={20} />, on: webSearchOn,
+      action: () => toggleWebSearch(),
+    }] : []),
+    {
+      id: 'chain', group: 1, order: toolOrder('webSearch') + 0.5, label: '免费路线切换',
+      tip: `免费路线切换：${chainMode === 'auto' ? '自动切换' : '手动锁定'}`,
+      icon: <Shuffle size={20} />, on: chainOpen, keepOpen: true,
+      action: () => setChainOpen(v => !v),
+    },
+    ...(tbShow('compare') ? [{
+      id: 'compare', group: 1, order: toolOrder('compare'), label: t('多模型对比'),
+      tip: `${t('多模型对比')}：${compareMode ? t('已开启') : t('已关闭')}`,
+      icon: <Columns2 size={20} />, on: compareMode,
+      action: () => setCompareMode(v => !v),
+    }] : []),
+    ...(tbShow('sessions') ? [{
+      id: 'sessions', group: 2, order: toolOrder('sessions'), label: t('会话列表'),
+      tip: t('会话列表'),
+      icon: <MessagesSquare size={20} />,
+      action: () => requestToggleHistory(),
+    }] : []),
+    ...(tbShow('prompts') ? [{
+      id: 'prompts', group: 2, order: toolOrder('prompts'), label: t('提示词'),
+      tip: t('提示词'),
+      icon: <BookMarked size={20} />,
+      action: () => openPromptsPage(),
+    }] : []),
+    ...(tbShow('clearChat') ? [{
+      id: 'clearChat', group: 2, order: toolOrder('clearChat'), label: t('清空对话'),
+      tip: t('清空对话'),
+      icon: <RotateCcw size={20} />,
+      action: () => clear(),
+    }] : []),
+    ...(serviceController ? [{
+      id: 'ollama', group: 3, order: 0, label: 'Ollama 本地服务',
+      tip: ollamaTip,
+      icon: ollamaBusy ? <Loader2 size={20} className="spin" /> : <Power size={20} />,
+      svcOn: ollamaOn, svcRunning: ollamaRunning, disabled: ollamaBusy, keepOpen: true,
+      action: () => { void serviceController.toggle('ollama') },
+    }] : []),
+  ]
+  const toolBarGroups: ToolBarItem[][] = [0, 1, 2, 3]
+    .map(g => toolBarItems.filter(i => i.group === g).sort((a, b) => a.order - b.order))
+    .filter(items => items.length > 0)
   return (
     <div className={`ai-page ai-layout-${layoutMode}`}>
       {/* 手机端底部弹层遮罩：任一下拉打开时出现，点空白处关闭（桌面端 CSS 隐藏） */}
@@ -1650,67 +1748,37 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               <LayoutGrid size={17} />
             </button>
             {toolsOpen && (
-              <div className="ai-tools-menu" role="menu">
-                {tbShow('autoSpeak') && (
-                  <button className={`ai-tools-item ${autoSpeak ? 'active' : ''}`} style={{ order: toolOrder('autoSpeak') }} onClick={() => { toggleAutoSpeak(); setToolsOpen(false) }}>
-                    <Volume2 size={16} /><span>{t('自动朗读')}</span>{autoSpeak && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                )}
-                {tbShow('voiceCall') && (
-                  <button className="ai-tools-item" style={{ order: toolOrder('voiceCall') }} disabled={!callEnabled} onClick={() => { setCallOpen(true); setToolsOpen(false) }}>
-                    <Phone size={16} /><span>{t('语音通话')}{callEnabled ? '' : t('（当前模型不支持）')}</span>
-                  </button>
-                )}
-                {tbShow('chatSearch') && (
-                  <button className={`ai-tools-item ${searchOpen ? 'active' : ''}`} style={{ order: toolOrder('chatSearch') }} onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(''); setToolsOpen(false) }}>
-                    <Search size={16} /><span>{t('搜索对话')}</span>{searchOpen && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                )}
-                {tbShow('chatExport') && (
-                  <button className="ai-tools-item" style={{ order: toolOrder('chatExport') }} disabled={messages.length === 0} onClick={() => { setExportOpen(true); setToolsOpen(false) }}>
-                    <Download size={16} /><span>{t('导出对话')}</span>
-                  </button>
-                )}
-                {tbShow('myData') && (
-                  <button className={`ai-tools-item ${useMyData ? 'active' : ''}`} style={{ order: toolOrder('myData') }} onClick={() => { toggleUseMyData(); setToolsOpen(false) }}>
-                    <Database size={16} /><span>{t('引用我的数据')}</span>{useMyData && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                )}
-                {tbShow('webSearch') && (
-                  <button className={`ai-tools-item ${webSearchOn ? 'active' : ''}`} style={{ order: toolOrder('webSearch') }} onClick={() => { toggleWebSearch(); setToolsOpen(false) }}>
-                    <Globe size={16} /><span>{t('联网搜索')}</span>{webSearchOn && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                )}
-                {/* v0.1.439：免费路线切换组（全局设置，与工坊共用同一份；切换入口统一收在这里） */}
-                <div className="ai-tools-group" style={{ order: 5 }}>
-                  <div className="ai-tools-group-label">免费路线切换</div>
-                  <button className={`ai-tools-item ${chainMode === 'auto' ? 'active' : ''}`} onClick={() => pickChainMode('auto')}>
-                    <Shuffle size={16} /><span>自动切换</span>{chainMode === 'auto' && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                  <button className={`ai-tools-item ${chainMode === 'locked' ? 'active' : ''}`} onClick={() => pickChainMode('locked')}>
-                    <Lock size={16} /><span>手动锁定</span>{chainMode === 'locked' && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                  <div className="ai-tools-note">{chainMode === 'auto' ? '自动切换：首选路线撞限流/超时等失败时，自动切到下一条免费路线继续，并弹出提示说明原因。' : '手动锁定：只用当前选中的路线，失败时直接显示真实原因，不自动换路线。'}</div>
+              <div className="ai-tools-bar" role="menu">
+                <div className="ai-tools-bar-row">
+                  {toolBarGroups.map((items, gi) => (
+                    <Fragment key={gi}>
+                      {gi > 0 && <span className="ai-tools-sep" aria-hidden="true" />}
+                      <div className="ai-tools-seg">
+                        {items.map(it => (
+                          <button key={it.id} type="button"
+                            className={`ai-tools-icon ${it.on ? 'on' : ''} ${it.svcOn ? 'svc-on' : ''} ${it.svcRunning ? 'svc-running' : ''}`}
+                            data-tip={it.tip} aria-label={it.label} disabled={it.disabled}
+                            onClick={() => { it.action(); if (!it.keepOpen) setToolsOpen(false) }}>
+                            {it.icon}
+                          </button>
+                        ))}
+                      </div>
+                    </Fragment>
+                  ))}
                 </div>
-                {tbShow('compare') && (
-                  <button className={`ai-tools-item ${compareMode ? 'active' : ''}`} style={{ order: toolOrder('compare') }} onClick={() => { setCompareMode(v => !v); setToolsOpen(false) }}>
-                    <Columns2 size={16} /><span>{t('多模型对比')}</span>{compareMode && <Check size={15} className="ai-tools-check" />}
-                  </button>
-                )}
-                {tbShow('sessions') && (
-                  <button className="ai-tools-item" style={{ order: toolOrder('sessions') }} onClick={() => { requestToggleHistory(); setToolsOpen(false) }}>
-                    <MessagesSquare size={16} /><span>{t('会话列表')}</span>
-                  </button>
-                )}
-                {tbShow('prompts') && (
-                  <button className="ai-tools-item" style={{ order: toolOrder('prompts') }} onClick={() => { openPromptsPage(); setToolsOpen(false) }}>
-                    <BookMarked size={16} /><span>{t('提示词')}</span>
-                  </button>
-                )}
-                {tbShow('clearChat') && (
-                  <button className="ai-tools-item" style={{ order: toolOrder('clearChat') }} onClick={() => { clear(); setToolsOpen(false) }}>
-                    <RotateCcw size={16} /><span>{t('清空对话')}</span>
-                  </button>
+                {/* v0.1.439 免费路线切换（全局设置，与工坊共用同一份）→ v0.1.497 改为图标栏下方小浮层：
+                    模式控制仍只此一处；工坊 RouteSelect 只管 APIsFreeLLM 开关测活，不在此重复 */}
+                {chainOpen && (
+                  <div className="ai-chain-pop">
+                    <div className="ai-chain-pop-title">免费路线切换</div>
+                    <button className={`ai-chain-opt ${chainMode === 'auto' ? 'active' : ''}`} onClick={() => pickChainMode('auto')}>
+                      <Shuffle size={16} /><span>自动切换</span>{chainMode === 'auto' && <Check size={15} className="ai-tools-check" />}
+                    </button>
+                    <button className={`ai-chain-opt ${chainMode === 'locked' ? 'active' : ''}`} onClick={() => pickChainMode('locked')}>
+                      <Lock size={16} /><span>手动锁定</span>{chainMode === 'locked' && <Check size={15} className="ai-tools-check" />}
+                    </button>
+                    <div className="ai-tools-note">{chainMode === 'auto' ? '自动切换：首选路线撞限流/超时等失败时，自动切到下一条免费路线继续，并弹出提示说明原因。' : '手动锁定：只用当前选中的路线，失败时直接显示真实原因，不自动换路线。'}</div>
+                  </div>
                 )}
               </div>
             )}
@@ -1910,7 +1978,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           {/* 输入框上方一行：分类 / 平台 / 模型三段级联（v0.1.496 定版位置：消息区与输入框之间；
               原「引擎」按钮已删除，引擎面板从第三段菜单底部进入；菜单向上弹，上方空间充足不裁剪） */}
           <div className="ai-toolbar" onClick={() => setComposeActive(true)}>
-            {serviceController && <span className="ai-toolbar-service" onClick={e => e.stopPropagation()}><ServiceSwitch controller={serviceController} serviceKey="ollama" compact /></span>}
+            {/* v0.1.497：Ollama 服务开关已移入右上功能菜单的横向图标栏最右组（电源图标），此处不再渲染 */}
             {categoryDropdown}
             {platformDropdown}
             {modelDropdown}

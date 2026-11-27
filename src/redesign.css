@@ -964,18 +964,37 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .dash-search-clear { border: none; background: none; color: var(--text-3); cursor: pointer; display: inline-flex; padding: 2px; }
 .dash-filter-select { height: 34px; border-radius: 10px; font-size: 13px; width: auto; }
 
-/* AI 页顶栏功能菜单（v0.1.240）：单图标入口，点开列出全部功能，选中关闭、开关项变色；仅 AI 页 */
+/* AI 页顶栏功能菜单（v0.1.240 单图标入口 → v0.1.497 横向图标栏）：只有图标，悬停气泡出功能名
+   （开关型带当前状态）；分组竖线分隔、44px 图标、间距宽松；窄窗自动换行不挤；仅 AI 页 */
 .ai-top-actions { position: relative; }
-.ai-tools-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 216px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; z-index: 90; display: grid; gap: 2px; animation: rise .16s ease; }
-.ai-tools-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 10px; background: none; color: var(--text-2); font-size: 13.5px; cursor: pointer; text-align: left; }
-.ai-tools-item:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
-.ai-tools-item.active { color: var(--primary); background: rgba(109, 40, 217, .10); font-weight: 600; }
-.ai-tools-item:disabled { opacity: .45; cursor: not-allowed; }
-.ai-tools-item span { flex: 1; }
+/* width: max-content 必须显式给：容器 .ai-top-actions 很窄，abspos 收缩宽度会把图标栏压成竖列（无头截图实证） */
+.ai-tools-bar { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; max-width: min(780px, calc(100vw - 24px)); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow-lg); padding: 10px 12px; z-index: 90; animation: rise .16s ease; }
+.ai-tools-bar-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 8px; }
+.ai-tools-seg { display: flex; align-items: center; gap: 6px; }
+.ai-tools-sep { width: 1px; height: 26px; background: var(--border); margin: 0 5px; flex: none; }
+.ai-tools-icon { position: relative; width: 44px; height: 44px; flex: none; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 12px; background: none; color: var(--text-2); cursor: pointer; }
+.ai-tools-icon:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.ai-tools-icon:disabled { opacity: .45; cursor: not-allowed; }
+.ai-tools-icon.on { color: var(--primary); background: rgba(109, 40, 217, .10); }
+.ai-tools-icon.on::before { content: ''; position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); width: 5px; height: 5px; border-radius: 50%; background: var(--primary); }
+.ai-tools-icon.svc-on { color: var(--green); }
+.ai-tools-icon.svc-running { background: var(--green-soft); }
+/* 图标悬停气泡（data-tip，与顶栏 .ai-icon-btn 同款式，朝下展开） */
+.ai-tools-icon[data-tip]::after { content: attr(data-tip); position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%) translateY(-3px); background: var(--text); color: var(--bg); font-size: 12px; line-height: 1; padding: 6px 9px; border-radius: 7px; white-space: nowrap; pointer-events: none; z-index: 96; opacity: 0; visibility: hidden; transition: opacity .15s ease .25s, transform .15s ease .25s, visibility 0s .25s; }
+.ai-tools-icon[data-tip]:hover::after, .ai-tools-icon[data-tip]:focus-visible::after { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+/* 最右组（Ollama）气泡右对齐、首组首个气泡左对齐，避免长气泡溢出窗口边缘 */
+.ai-tools-seg:last-child .ai-tools-icon[data-tip]::after { left: auto; right: -6px; transform: translateY(-3px); }
+.ai-tools-seg:last-child .ai-tools-icon[data-tip]:hover::after, .ai-tools-seg:last-child .ai-tools-icon[data-tip]:focus-visible::after { transform: translateY(0); }
+.ai-tools-seg:first-child .ai-tools-icon:first-child[data-tip]::after { left: -6px; transform: translateY(-3px); }
+.ai-tools-seg:first-child .ai-tools-icon:first-child[data-tip]:hover::after, .ai-tools-seg:first-child .ai-tools-icon:first-child[data-tip]:focus-visible::after { transform: translateY(0); }
 .ai-tools-check { color: var(--primary); flex: none; }
-/* 免费路线切换组（v0.1.439）：菜单中部的分组块，分隔线 + 组名 + 两模式项 + 当前模式行为小字 */
-.ai-tools-group { display: grid; gap: 2px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 4px 0; padding: 4px 0; }
-.ai-tools-group-label { padding: 3px 10px 1px; font-size: 11px; font-weight: 600; color: var(--text-3); }
+/* 免费路线切换浮层（v0.1.439 入口收口 → v0.1.497 图标栏下方小浮层）：两模式项 + 当前模式行为小字（原文） */
+.ai-chain-pop { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; display: grid; gap: 2px; min-width: min(320px, calc(100vw - 48px)); }
+.ai-chain-pop-title { padding: 2px 10px 3px; font-size: 11px; font-weight: 600; color: var(--text-3); }
+.ai-chain-opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 10px; background: none; color: var(--text-2); font-size: 13.5px; cursor: pointer; text-align: left; }
+.ai-chain-opt:hover { background: var(--panel-2); color: var(--text); }
+.ai-chain-opt.active { color: var(--primary); background: rgba(109, 40, 217, .10); font-weight: 600; }
+.ai-chain-opt span { flex: 1; }
 .ai-tools-note { padding: 2px 10px 4px; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
 
 /* 多模型对比 */
