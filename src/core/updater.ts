@@ -413,7 +413,7 @@ async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): 
   const { invoke, Channel } = await import('@tauri-apps/api/core')
   const channel = new Channel<InstallProgress>()
   channel.onmessage = (p) => onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
-  await invoke('update_fast_install', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
+  await invoke('update_fast_install', { path: pkg.path, fileName: pkg.fileName, version: pkg.version, onProgress: channel })
   return true
 }
 
@@ -590,7 +590,7 @@ export async function installPendingUpdate(p: PendingUpdate): Promise<boolean> {
   try {
     if (p.via === 'mirror' && p.filePath && p.fileName) {
       const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('update_install_downloaded', { filePath: p.filePath, fileName: p.fileName })
+      await invoke('update_install_downloaded', { filePath: p.filePath, fileName: p.fileName, version: p.version })
       clearPendingUpdate()
       return true
     }

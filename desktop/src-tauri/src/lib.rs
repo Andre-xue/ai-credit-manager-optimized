@@ -1330,10 +1330,11 @@ fn update_fast_install(
     app: tauri::AppHandle,
     path: String,
     file_name: String,
+    version: Option<String>,
     on_progress: tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<String, String> {
     let (dest, used_url) = download_update_package(&path, &file_name, &on_progress)?;
-    install_downloaded_update(&app, &dest, &file_name)?;
+    install_downloaded_update(&app, &dest, &file_name, version.as_deref())?;
     Ok(used_url)
 }
 
@@ -1355,12 +1356,13 @@ fn update_install_downloaded(
     app: tauri::AppHandle,
     file_path: String,
     file_name: String,
+    version: Option<String>,
 ) -> Result<(), String> {
     let dest = std::path::PathBuf::from(&file_path);
     if !dest.exists() {
         return Err("已下载的更新包不存在（可能已被系统清理），请重新下载".into());
     }
-    install_downloaded_update(&app, &dest, &file_name)
+    install_downloaded_update(&app, &dest, &file_name, version.as_deref())
 }
 
 /// 下载线程 → 监督线程的消息（v0.1.498 线程监督看门狗）
@@ -1448,14 +1450,167 @@ fn download_stream(
     Ok(())
 }
 
+// ---------------- 更新后重启布防（v0.1.500 重做） ----------------
+// 495 的做法：Command 裸 spawn 一个 /bin/sh -c 一行脚本守 PID 再 open。
+// 真机实证（498→499，diag.log 全文）：下载、安装落盘全成，唯独新版没被
+// 拉起来，且脚本死活、open 成败在日志里完全无痕。审计结论：
+// ① 派发是裸 spawn——没 setsid、没新进程组、stdio 全继承、Child 句柄
+//    立即丢弃；脚本与 App 同进程组/会话，存活寄托于「孤儿被 launchd
+//    收养」的未受控假设，以进程组为单位的终止/回收会连带带走它；
+// ② while kill -0 无超时：PID 僵尸（kill -0 对僵尸仍成功）或被复用
+//    时死循环，open 永不执行；
+// ③ open 目标是正式安装路径、替换在派脚本前已同步完成——这两项无误；
+// ④ open 零记录：退出码无人接收，脚本无任何日志。
+// 本版改法：脚本落盘为独立文件（模板 relaunch.sh.tmpl，可事后检查），
+// 交 launchd 瞬时任务托管（归 PID 1 管，与本进程会话/进程组脱钩），
+// launchctl 不可用时兜底 detached 子进程（新进程组 + stdio 全关）；
+// 脚本内等 PID（带僵尸判定与 120 秒上限）→ 等版本标识变为新版 →
+// open 重试 5 次，每步追加写 diag.log；Rust 侧另在退出前记
+// relaunch-armed 并落「待确认安装」标记，新进程启动时据标记补
+// install-done 并清标记（见 confirm_pending_install）。
+
+/// 单引号包裹并转义（脚本生成用纯函数，可单测）
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 生成更新后重启脚本（纯函数，可单测）：模板 relaunch.sh.tmpl 随源码
+/// 编译进来，这里只做占位符替换，外部值一律经单引号转义后注入。
+fn build_relaunch_script(old_pid: u32, bundle: &str, diag_log: &str, expect_version: &str, label: &str) -> String {
+    const TMPL: &str = include_str!("relaunch.sh.tmpl");
+    TMPL.replace("__ACM_OLD_PID__", &old_pid.to_string())
+        .replace("__ACM_BUNDLE__", &shell_single_quote(bundle))
+        .replace("__ACM_DIAG__", &shell_single_quote(diag_log))
+        .replace("__ACM_EXPECT__", &shell_single_quote(expect_version))
+        .replace("__ACM_LABEL__", &shell_single_quote(label))
+}
+
+/// 从 Info.plist 的 XML 文本里取 CFBundleShortVersionString（纯函数，
+/// 可单测；plist 为二进制时取不到、返回 None，调用方不因此阻断）
+fn parse_short_version(plist_text: &str) -> Option<String> {
+    let key = plist_text.find("CFBundleShortVersionString")?;
+    let rest = &plist_text[key..];
+    let open = rest.find("<string>")? + "<string>".len();
+    let close = rest[open..].find("</string>")? + open;
+    let v = rest[open..close].trim();
+    if v.is_empty() { None } else { Some(v.to_string()) }
+}
+
+/// 读某个 .app 当前落盘的版本标识（替换完成后取新包的真实版本）
+fn bundle_short_version(bundle: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(bundle.join("Contents").join("Info.plist")).ok()?;
+    parse_short_version(&text)
+}
+
+fn update_dir_path() -> Option<std::path::PathBuf> {
+    update_diag_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+fn pending_install_path() -> Option<std::path::PathBuf> {
+    update_dir_path().map(|d| d.join("pending-install.json"))
+}
+
+/// 安装退出前落「待确认安装」标记：目标版本号 + 布防时刻（unix 秒）
+fn write_pending_install_marker(version: &str) {
+    let Some(path) = pending_install_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ver = version.replace('\\', "\\\\").replace('"', "\\\"");
+    let _ = std::fs::write(&path, format!("{{\"version\":\"{ver}\",\"armed_at\":{secs}}}"));
+}
+
+#[derive(Debug, PartialEq)]
+enum PendingInstallVerdict {
+    Confirmed,
+    Stale,
+}
+
+/// 纯函数：解析待确认标记并判断与当前运行版本的关系（可单测）
+fn judge_pending_install(marker_json: &str, current_version: &str) -> Option<(String, PendingInstallVerdict)> {
+    let v: serde_json::Value = serde_json::from_str(marker_json).ok()?;
+    let ver = v.get("version")?.as_str()?.to_string();
+    let verdict = if ver == current_version {
+        PendingInstallVerdict::Confirmed
+    } else {
+        PendingInstallVerdict::Stale
+    };
+    Some((ver, verdict))
+}
+
+/// 新进程启动时核对待确认标记：版本对上 → diag 补 install-done 并清
+/// 标记；对不上（标记过期/被手动装了别的版本）→ 记 install-unconfirmed
+/// 并清标记，不让陈旧标记反复触发。前端「已更新到 vX」轻提示仍走既有
+/// localStorage markJustUpdated/consumeJustUpdated，本标记只补可观测性。
+fn confirm_pending_install(current_version: &str) {
+    let Some(path) = pending_install_path() else { return };
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let _ = std::fs::remove_file(&path);
+    match judge_pending_install(&text, current_version) {
+        Some((ver, PendingInstallVerdict::Confirmed)) => {
+            update_diag("install-done", &format!("version={ver} confirmed-by=new-process"))
+        }
+        Some((ver, PendingInstallVerdict::Stale)) => {
+            update_diag("install-unconfirmed", &format!("version={ver} running={current_version}"))
+        }
+        None => update_diag("install-unconfirmed", "reason=marker-unparsable"),
+    }
+}
+
+/// 布防重启：把脚本落盘并交给 launchd 托管（兜底 detached 子进程）。
+/// 返回实际用上的机制名供 diag 记录；两路都失败才返回 Err。
+#[cfg(target_os = "macos")]
+fn arm_relaunch_after_install(bundle: &std::path::Path, expect_version: &str) -> Result<String, String> {
+    let dir = update_dir_path().ok_or("拿不到更新目录")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let label = format!("com.aicube.update.relaunch.{pid}");
+    let diag = dir.join("diag.log");
+    let script = build_relaunch_script(
+        pid,
+        &bundle.to_string_lossy(),
+        &diag.to_string_lossy(),
+        expect_version,
+        &label,
+    );
+    let script_path = dir.join("relaunch.sh");
+    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    // 主通道：launchd 瞬时任务——脚本归 PID 1 管，本进程退出方式与
+    // 进程组回收都带不走它；脚本结束时自摘任务（见模板末行）。
+    let submitted = std::process::Command::new("/bin/launchctl")
+        .args(["submit", "-l", &label, "--", "/bin/sh"])
+        .arg(&script_path)
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false);
+    if submitted {
+        return Ok("launchd".to_string());
+    }
+    // 兜底：detached 子进程——新进程组 + stdio 全关，尽量脱离本进程。
+    use std::os::unix::process::CommandExt;
+    std::process::Command::new("/bin/sh")
+        .arg(&script_path)
+        .process_group(0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("重启脚本派发失败：{e}"))?;
+    Ok("detached".to_string())
+}
+
 /// 安装已下载并校验过的更新包（平台分支）。外层包一层 diag（v0.1.498）：
 /// install-start / install-done / install-fail 落盘，macOS 成功路径在内层
 /// exit(0) 退出进程，install-done 记在退出前由内层分支不可达，故成功以
 /// 「install-start 后进程重启、回来 consumeJustUpdated」为据，diag 里有
 /// start 无 done 且无 fail 即表示已交棒安装器。
-fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str) -> Result<(), String> {
+fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str, expect_version: Option<&str>) -> Result<(), String> {
     update_diag("install-start", &format!("file={file_name}"));
-    let r = install_downloaded_update_inner(app, dest, file_name);
+    let r = install_downloaded_update_inner(app, dest, file_name, expect_version);
     match &r {
         Ok(()) => update_diag("install-done", &format!("file={file_name}")),
         Err(e) => update_diag("install-fail", &format!("file={file_name} err={}", e.chars().take(80).collect::<String>())),
@@ -1463,7 +1618,7 @@ fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, fil
     r
 }
 
-fn install_downloaded_update_inner(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str) -> Result<(), String> {
+fn install_downloaded_update_inner(app: &tauri::AppHandle, dest: &std::path::Path, file_name: &str, expect_version: Option<&str>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = app;
@@ -1501,16 +1656,27 @@ fn install_downloaded_update_inner(app: &tauri::AppHandle, dest: &std::path::Pat
         // LaunchServices 只激活现有实例、不拉新进程，本进程随即退出就变成
         // 「装完 App 直接消失、没有自动重启回来」（2026-11-26 录屏症状；
         // 手动快速通道 update_fast_install 与后台安装共用此函数，同受影响）。
-        // 改派一个 detached 小脚本守着本进程 PID，确认退出后才 open 新包。
-        let pid = std::process::id();
-        let bundle_q = bundle.to_string_lossy().replace('\'', "'\\''");
-        let script = format!(
-            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; /usr/bin/open '{bundle_q}'"
-        );
-        std::process::Command::new("/bin/sh")
-            .args(["-c", &script])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        // 495 改派 detached 小脚本守 PID 再 open，但 498→499 真机实证仍没
+        // 回来且脚本零日志无从定位——审计与新机制见上方「更新后重启布防」
+        // 一节（v0.1.500）：脚本落盘交 launchd 托管、逐步回写 diag。
+        let expect = expect_version
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| bundle_short_version(&bundle))
+            .unwrap_or_else(|| "unknown".to_string());
+        // 先落待确认标记与布防记录再退出：这两行是旧进程在 diag 里最后
+        // 的痕迹，新进程据标记补 install-done（confirm_pending_install）。
+        write_pending_install_marker(&expect);
+        match arm_relaunch_after_install(&bundle, &expect) {
+            Ok(via) => update_diag(
+                "relaunch-armed",
+                &format!("via={via} pid={} version={expect}", std::process::id()),
+            ),
+            Err(e) => update_diag(
+                "relaunch-arm-fail",
+                &format!("version={expect} err={}", e.chars().take(80).collect::<String>()),
+            ),
+        }
         std::process::exit(0);
         #[allow(unreachable_code)]
         return Ok(());
@@ -1526,7 +1692,7 @@ fn install_downloaded_update_inner(app: &tauri::AppHandle, dest: &std::path::Pat
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (app, dest, file_name);
+        let _ = (app, dest, file_name, expect_version);
         Err("该平台暂走官方更新通道".into())
     }
 }
@@ -4622,6 +4788,11 @@ fn launched_from_autostart() -> bool {
 fn setup_desktop_shell(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
 
+    // 上一进程若为装更新而退出（退出前落了待确认标记且布防了重启脚本），
+    // 本进程即是被拉起的新版：据标记在 diag 里补 install-done 并清标记，
+    // 让「装完没回来」这类问题在日志里闭环可查（v0.1.500）。
+    confirm_pending_install(&app.package_info().version.to_string());
+
     // 主窗口默认隐藏创建（tauri.conf visible:false）：普通启动立刻显示；
     // 开机自启 + 静默启动开启时不显示，只常驻托盘/菜单栏（v0.1.298）
     if let Some(main) = app.get_webview_window("main") {
@@ -4963,5 +5134,72 @@ mod local_service_tests {
         for body in [json!({"status": "ok"}), json!({"hello": "world"}), json!({"version": "1.0"})] {
             assert!(!fp_ollama(&body) && !fp_comfyui(&body) && !fp_lmstudio(&body) && !fp_qwentts(&body));
         }
+    }
+}
+
+#[cfg(test)]
+mod update_relaunch_tests {
+    use super::*;
+
+    #[test]
+    fn shell_single_quote_wraps_and_escapes() {
+        assert_eq!(shell_single_quote("/Applications/AI Cube.app"), "'/Applications/AI Cube.app'");
+        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+        assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn relaunch_script_carries_all_slots_and_no_placeholder_left() {
+        let s = build_relaunch_script(
+            4242,
+            "/Applications/AI Cube.app",
+            "/Users/x/.ai-credit-manager/update/diag.log",
+            "0.1.500",
+            "com.aicube.update.relaunch.4242",
+        );
+        assert!(s.contains("OLD_PID=4242"));
+        assert!(s.contains("BUNDLE='/Applications/AI Cube.app'"));
+        assert!(s.contains("DIAG='/Users/x/.ai-credit-manager/update/diag.log'"));
+        assert!(s.contains("EXPECT='0.1.500'"));
+        assert!(s.contains("LABEL='com.aicube.update.relaunch.4242'"));
+        assert!(!s.contains("__ACM_"), "占位符必须全部替换干净");
+        // 关键行为必须在脚本里：等 PID 带上限与僵尸判定、版本核对、
+        // open 重试 5 次逐次记退出码、成败事件、launchd 自摘
+        assert!(s.contains("relaunch-script-start"));
+        assert!(s.contains("relaunch-wait-done"));
+        assert!(s.contains("relaunch-version-check"));
+        assert!(s.contains("relaunch-attempt n=$n exit=$code"));
+        assert!(s.contains("relaunch-ok"));
+        assert!(s.contains("relaunch-fail"));
+        assert!(s.contains("-le 5"));
+        assert!(s.contains("\"$st\" = \"Z\""));
+        assert!(s.contains("remove \"$LABEL\""));
+        // 日志行格式与 Rust update_diag 对齐：UTC 时间戳 + 事件 + 详情
+        assert!(s.contains("date -u '+%Y-%m-%d %H:%M:%SZ'"));
+    }
+
+    #[test]
+    fn parse_short_version_reads_plist_xml() {
+        let plist = "<?xml version=\"1.0\"?><plist><dict>\
+            <key>CFBundleShortVersionString</key><string>0.1.500</string>\
+            <key>CFBundleVersion</key><string>0.1.500</string></dict></plist>";
+        assert_eq!(parse_short_version(plist).as_deref(), Some("0.1.500"));
+        assert_eq!(parse_short_version("<dict></dict>"), None);
+        assert_eq!(parse_short_version(""), None);
+    }
+
+    #[test]
+    fn judge_pending_install_confirmed_stale_and_garbage() {
+        let marker = "{\"version\":\"0.1.500\",\"armed_at\":1795761300}";
+        assert_eq!(
+            judge_pending_install(marker, "0.1.500"),
+            Some(("0.1.500".to_string(), PendingInstallVerdict::Confirmed))
+        );
+        assert_eq!(
+            judge_pending_install(marker, "0.1.499"),
+            Some(("0.1.500".to_string(), PendingInstallVerdict::Stale))
+        );
+        assert_eq!(judge_pending_install("not json", "0.1.500"), None);
+        assert_eq!(judge_pending_install("{\"armed_at\":1}", "0.1.500"), None);
     }
 }

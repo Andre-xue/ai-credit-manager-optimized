@@ -1,0 +1,67 @@
+#!/bin/sh
+# AI 魔方更新后重启脚本（v0.1.500）：旧进程退出前由 build_relaunch_script
+# 生成到 ~/.ai-credit-manager/update/relaunch.sh，交给 launchd 瞬时任务
+# 托管（launchctl submit），兜底为 detached 子进程。职责：等旧进程退出
+# → 等目标 .app 版本标识变为新版 → open 拉起新版。每一步都追加写进更新
+# 诊断日志 diag.log（行格式与 Rust update_diag 一致），成败都留痕——
+# 495 的一行式脚本零日志、与 App 同进程组裸 spawn，真机装完没回来且
+# 无从定位（2026-11-27 实证），本脚本即针对该缺陷重做。
+OLD_PID=__ACM_OLD_PID__
+BUNDLE=__ACM_BUNDLE__
+DIAG=__ACM_DIAG__
+EXPECT=__ACM_EXPECT__
+LABEL=__ACM_LABEL__
+OPEN_CMD="${ACM_RELAUNCH_OPEN_CMD:-/usr/bin/open}"
+LAUNCHCTL_CMD="${ACM_RELAUNCH_LAUNCHCTL:-/bin/launchctl}"
+log() {
+  printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%SZ')" "$1" >> "$DIAG" 2>/dev/null
+}
+log "relaunch-script-start pid=$OLD_PID target=$BUNDLE version=$EXPECT"
+# 1) 等旧进程退出（上限 120 秒；僵尸态视为已退出——kill -0 对僵尸仍
+# 返回成功，与 499 修的 pid_alive 口径一致；无上限死等是旧脚本的隐患）
+i=0
+while [ "$i" -lt 600 ]; do
+  if ! kill -0 "$OLD_PID" 2>/dev/null; then break; fi
+  st=$(ps -o stat= -p "$OLD_PID" 2>/dev/null | cut -c1)
+  if [ "$st" = "Z" ]; then break; fi
+  i=$((i + 1))
+  sleep 0.2
+done
+log "relaunch-wait-done pid=$OLD_PID waited_ms=$((i * 200))"
+# 2) 等目标 .app 的版本标识变为新版（上限 60 秒）。替换在布防前已同步
+# 完成、正常应立即命中；读不到（plist 为二进制等）不阻断重启、只记录。
+found=""
+j=0
+while [ "$j" -lt 120 ]; do
+  cur=""
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    cur=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist" 2>/dev/null)
+  fi
+  if [ -z "$cur" ]; then
+    cur=$(grep -A1 '<key>CFBundleShortVersionString</key>' "$BUNDLE/Contents/Info.plist" 2>/dev/null | grep -o '<string>[^<]*</string>' | head -1 | sed 's/<[^>]*>//g')
+  fi
+  found="$cur"
+  if [ "$found" = "$EXPECT" ]; then break; fi
+  j=$((j + 1))
+  sleep 0.5
+done
+log "relaunch-version-check found=${found:-unknown} expected=$EXPECT"
+# 3) open 拉起新版：失败间隔 3 秒重试、共 5 次，逐次把退出码写进日志
+n=1
+ok=0
+while [ "$n" -le 5 ]; do
+  "$OPEN_CMD" "$BUNDLE"
+  code=$?
+  log "relaunch-attempt n=$n exit=$code target=$BUNDLE"
+  if [ "$code" -eq 0 ]; then ok=1; break; fi
+  n=$((n + 1))
+  if [ "$n" -le 5 ]; then sleep 3; fi
+done
+if [ "$ok" -eq 1 ]; then
+  log "relaunch-ok version=$EXPECT"
+else
+  log "relaunch-fail version=$EXPECT attempts=5"
+fi
+# launchd 托管时自摘任务（detached 兜底路径下此命令无对应任务、无害）
+"$LAUNCHCTL_CMD" remove "$LABEL" 2>/dev/null
+exit 0
