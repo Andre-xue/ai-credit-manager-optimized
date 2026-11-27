@@ -1843,7 +1843,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   }
   const probeDot = (id: string) => {
     const r = probeStore.results[id]
-    if (!r) return null
+    // v0.1.506：未测显性化——无结果时不再整行空白（与「测了没数据」无法区分、看着像坏了），
+    // 改渲染浅灰点 + 「未测」小字（与面板 probe-dot none + 指标列「未测」口径一致）
+    if (!r) return <span className="probe-row-meta"><span className="probe-dot none" /><small>{t('未测')}</small></span>
     const med = medianSamples(r.latencySamples)
     return <span className="probe-row-meta">{r.ok
       ? <><span className="probe-dot ok" />{med !== null && <small>{med >= 1000 ? `${(med / 1000).toFixed(1)}s` : `${med}ms`}</small>}</>

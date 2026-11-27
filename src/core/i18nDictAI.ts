@@ -297,6 +297,7 @@ export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
   '视觉可用': { 'zh-TW': '視覺可用', en: 'Vision available', ja: '視覚利用可能', ko: '시각 사용 가능' },
   '视觉不可用': { 'zh-TW': '視覺不可用', en: 'Vision unavailable', ja: '視覚利用不可', ko: '시각 사용 불가' },
   '视觉未测': { 'zh-TW': '視覺未測', en: 'Vision untested', ja: '視覚未テスト', ko: '시각 미검사' },
+  '未测': { 'zh-TW': '未測', en: 'Untested', ja: '未テスト', ko: '미검사' },
   '护栏：MoMA 合作模型等按量计费的模型不自动测，避免扣费；它们保留手动单测。探测只是参考，不拦发送、不改你已选的模型。': { 'zh-TW': '護欄：MoMA 合作模型等按量計費的模型不自動測，避免扣費；它們保留手動單測。探測只是參考，不攔傳送、不改你已選的模型。', en: 'Guardrail: pay-as-you-go models such as MoMA partner models are not probed automatically to avoid charges; manual single-test remains available. Probing is advisory only — it never blocks sending or changes your selected model.', ja: 'ガードレール：MoMA パートナーモデルなど従量課金モデルは課金を避けるため自動テストしません。手動の単体テストは可能です。プローブは参考情報であり、送信を妨げたり選択中のモデルを変更したりしません。', ko: '가드레일: MoMA 파트너 모델 등 종량제 모델은 요금 방지를 위해 자동 검사하지 않으며, 수동 단위 테스트는 가능합니다. 검사는 참고용일 뿐 전송을 막거나 선택한 모델을 바꾸지 않습니다.' },
   '测速中…': { 'zh-TW': '測速中…', en: 'Testing…', ja: 'テスト中…', ko: '테스트 중…' },
   '单测': { 'zh-TW': '單測', en: 'Test', ja: '単体テスト', ko: '단위 테스트' },
