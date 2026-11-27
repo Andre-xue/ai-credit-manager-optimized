@@ -24,7 +24,7 @@ export const CHECKIN_PLATFORMS: CheckinPlatformMeta[] = [
   {
     id: 'workbuddy', name: 'WorkBuddy', regionLabel: '国内', category: 'AI 编程工具', unit: '积分',
     guide: [
-      '账号在工坊的「WorkBuddy 账号池」里添加：点添加账号会打开腾讯官方授权页，登录后自动入池，不用手动复制任何东西。',
+      '账号在本页上方的「WorkBuddy 账号池」页签里添加：点添加账号会打开腾讯官方授权页，登录后自动入池，不用手动复制任何东西。',
       '每个账号每天签到 100 积分；账号多了可以在账号池里逐个添加，签到时全部一起签。',
       '令牌只加密存本机（多设备会互相顶掉登录态，所以不要在别的工具里同时用同一账号签到）。',
     ],

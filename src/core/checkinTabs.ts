@@ -46,6 +46,25 @@ export function saveCheckinTab(id: CheckinPlatformId): void {
   try { localStorage.setItem(CHECKIN_TAB_KEY, id) } catch { /* 忽略 */ }
 }
 
+// ---------------- 签到页大页签（v0.1.488）：每日签到 / WorkBuddy 账号池 ----------------
+// 账号池管理从工坊迁入签到页后，签到页顶部两个大页签：daily = 原 9 平台签到内容，
+// pool = 账号池管理。选择仅本机记忆（acm.checkin.section.v1），不进同步/备份。
+
+export type CheckinSection = 'daily' | 'pool'
+
+export const CHECKIN_SECTION_KEY = 'acm.checkin.section.v1'
+
+/** 读本机记住的大页签，无效值回落到 daily */
+export function readSavedCheckinSection(): CheckinSection {
+  try {
+    return localStorage.getItem(CHECKIN_SECTION_KEY) === 'pool' ? 'pool' : 'daily'
+  } catch { return 'daily' }
+}
+
+export function saveCheckinSection(s: CheckinSection): void {
+  try { localStorage.setItem(CHECKIN_SECTION_KEY, s) } catch { /* 忽略 */ }
+}
+
 /** 当前选中的页签被筛选筛掉时，落到第一个可见页签；筛后一个不剩时返回 null */
 export function resolveCheckinTab(active: CheckinPlatformId, visible: CheckinPlatformMeta[]): CheckinPlatformId | null {
   if (visible.some(p => p.id === active)) return active

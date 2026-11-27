@@ -251,7 +251,7 @@ export function MiniView() {
           )
         })()}
         {!lastRun && hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>点下面「一键签到」，WorkBuddy 池和 MiniMax 一起签，不用打开主窗口。</div>}
-        {!hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>还没连接签到账号（在主窗口工坊「每日签到 / 账号池」里添加）。</div>}
+        {!hasCheckinSources() && <div style={{ marginTop: 6, fontSize: 12, color: c.sub }}>还没连接签到账号（在主窗口工坊「每日签到」里添加，WorkBuddy 在它的账号池页签里）。</div>}
         {checkMsg && <div style={{ marginTop: 6, fontSize: 12, color: c.text }}>{checkMsg}</div>}
         {needPwd && (
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   CHECKIN_TAB_KEY, CHECKIN_TAB_LABELS, checkinTabCategories, visibleCheckinTabs,
   readSavedCheckinTab, saveCheckinTab, resolveCheckinTab,
+  CHECKIN_SECTION_KEY, readSavedCheckinSection, saveCheckinSection,
 } from './checkinTabs'
 
 // node 环境无 localStorage：内存版 polyfill（同 store.test.ts 的做法）
@@ -78,5 +79,24 @@ describe('checkinTabs（v0.1.403 签到页横向页签）', () => {
 
   it('筛后一个不剩时返回 null', () => {
     expect(resolveCheckinTab('doubao', [])).toBeNull()
+  })
+})
+
+describe('checkinTabs 大页签（v0.1.488 账号池迁入签到页）', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('没记过时回落每日签到', () => {
+    expect(readSavedCheckinSection()).toBe('daily')
+  })
+
+  it('保存并读回账号池页签', () => {
+    saveCheckinSection('pool')
+    expect(localStorage.getItem(CHECKIN_SECTION_KEY)).toBe('pool')
+    expect(readSavedCheckinSection()).toBe('pool')
+  })
+
+  it('记住的值无效时回落每日签到', () => {
+    localStorage.setItem(CHECKIN_SECTION_KEY, 'wbpool-tool')
+    expect(readSavedCheckinSection()).toBe('daily')
   })
 })

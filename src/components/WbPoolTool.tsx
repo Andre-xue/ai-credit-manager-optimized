@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CalendarCheck, Loader2, Pin, PinOff, Play, Power, RefreshCw, Send, Trash2, UserPlus, XCircle } from 'lucide-react'
-import { ToolShell } from './WorkshopView'
 import { LegacyMigrationBanner } from './LegacyMigrationBanner'
 import { openExternal } from '../core/openExternal'
 import { workbuddyBegin, workbuddyPoll, type WorkbuddyFlow } from '../core/checkin'
@@ -8,19 +7,19 @@ import { recordCheckinOutcome } from '../core/checkinRun'
 import {
   listPoolMeta, addPoolAccount, removePoolAccount, poolCredBox, migrateLegacyWorkbuddyCred,
   getPoolState, patchPoolState, poolModels, poolChat, poolAccountStatuses, poolClaimOne,
-  getPoolModelPref, setPoolModelPref,
+  getPoolModelPref, setPoolModelPref, orderPoolCandidates,
   type PoolAccountMeta, type PoolAccountState, type PoolAccountStatus, type WbModel,
 } from '../core/wbPool'
 
 /**
- * WorkBuddy 账号池管理页（v0.1.359）：OAuth 授权入池、多账号状态总览、
- * 对话轮换/失败切换的测试台。池同时供工坊工具的「WorkBuddy 账号池」路线与每日签到使用。
+ * WorkBuddy 账号池管理（v0.1.359 上线；v0.1.488 从工坊独立页迁入「每日签到」页的
+ * 账号池页签）：OAuth 授权入池、多账号状态总览、对话轮换/失败切换的测试台。
+ * 池同时供工坊工具的「WorkBuddy 账号池」路线与每日签到使用；存储与凭据不动。
  */
-export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
+export function WbPoolPanel({ sessionPwd, onUnlock, notify }: {
   sessionPwd: string
   onUnlock: (pwd: string) => void
   notify: (msg: string) => void
-  onBack: () => void
 }) {
   const [metas, setMetas] = useState<PoolAccountMeta[]>([])
   const [poolState, setPoolState] = useState<Record<string, PoolAccountState>>({})
@@ -152,10 +151,20 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
   }
 
   const statusOf = (id: string) => statuses.find(s => s.meta.id === id)
+  // 三态展示（v0.1.488）：轮换顺序第一位 = 使用中，其余可用 = 待命，冷却中带剩余时间；
+  // 停用/异常是既有真实状态，保留不藏。顺序口径与 orderPoolCandidates 一致，只做展示、不改轮换行为。
+  const currentId = orderPoolCandidates(metas, poolState, Date.now()).ready[0]?.id
 
   return (
-    <ToolShell title="WorkBuddy 账号池" desc="多个 WorkBuddy 账号授权入池，对外当一个模型来源：对话自动轮换、限流自动冷却切换。工坊工具里选「WorkBuddy 账号池」路线即可用，每日签到也会带上池里的账号。" onBack={onBack}>
+    <>
       <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
+
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, margin: '0 0 10px' }}>
+        多个 WorkBuddy 账号授权入池，对外当一个模型来源：对话自动轮换、限流自动冷却切换。工坊工具里选「WorkBuddy 账号池」路线即可用，每日签到也会带上池里的账号。
+      </p>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.7, margin: '0 0 12px' }}>
+        轮换规则：置顶优先 + 最久未用 · 限流冷却 10 分钟 · 积分不足冷却 30 分钟 · 401 自动续期重试。
+      </p>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn primary" disabled={authing || busy === 'auth'} onClick={() => void startAuth()}>
@@ -177,12 +186,13 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
           const info = statusOf(m.id)
           const exp = expires[m.id]
           const cooling = (st.cooldownUntil ?? 0) > Date.now()
+          const coolLeftMin = cooling ? Math.max(1, Math.ceil((st.cooldownUntil! - Date.now()) / 60000)) : 0
           const iconBtn: React.CSSProperties = { padding: '4px 7px' }
           return (
             <div key={m.id} style={{ padding: '9px 0', borderTop: '1px solid var(--border)', opacity: st.disabled ? 0.55 : 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: st.disabled ? 'var(--text-3)' : cooling ? '#d97706' : info?.error ? 'var(--danger, #d33)' : '#16a34a' }}>
-                  {st.disabled ? '已停用' : cooling ? '冷却中' : info?.error ? '异常' : '可用'}
+                <span style={{ flexShrink: 0, fontSize: 11, padding: '1px 8px', borderRadius: 999, background: 'var(--panel-2)', color: st.disabled ? 'var(--text-3)' : cooling ? '#d97706' : info?.error ? 'var(--danger, #d33)' : m.id === currentId ? '#16a34a' : 'var(--text-3)' }}>
+                  {st.disabled ? '已停用' : cooling ? `冷却中 · 剩 ${coolLeftMin} 分钟` : info?.error ? '异常' : m.id === currentId ? '使用中' : '待命'}
                 </span>
                 <b style={{ fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%' }}>{m.label}</b>
                 {m.uid && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>…{m.uid.slice(-6)}</span>}
@@ -253,6 +263,6 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
         对话走 WorkBuddy 客户端同款接口（非公开接口，可能随平台更新失效）；自动切换只在限流/积分不足/登录过期时发生，失败原因会如实记在对应账号卡上。
         做法参考开源项目 dsh-xdpool（MIT）的公开协议行为，代码为独立实现。
       </p>
-    </ToolShell>
+    </>
   )
 }

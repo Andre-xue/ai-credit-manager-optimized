@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarCheck, ChevronDown, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
+import { WbPoolPanel } from './WbPoolTool'
 import { LegacyMigrationBanner } from './LegacyMigrationBanner'
 import { PlatformIcon } from './PlatformIcon'
 import { openExternal } from '../core/openExternal'
@@ -19,16 +20,16 @@ import {
 } from '../core/mmPool'
 import { getAutoCheckinEnabled, setAutoCheckinEnabled, readLastCheckinRun, summarizeCheckinRun, recordCheckinOutcome, clearLastCheckinRun, AUTO_KEY, type CheckinRun } from '../core/checkinRun'
 import { getPlatformEnabled, setPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS, type CheckinPlatformId } from '../core/checkinPlatforms'
-import { CHECKIN_TAB_LABELS, checkinTabCategories, visibleCheckinTabs, readSavedCheckinTab, saveCheckinTab, resolveCheckinTab, type CheckinRegionFilter } from '../core/checkinTabs'
+import { CHECKIN_TAB_LABELS, checkinTabCategories, visibleCheckinTabs, readSavedCheckinTab, saveCheckinTab, resolveCheckinTab, readSavedCheckinSection, saveCheckinSection, type CheckinRegionFilter, type CheckinSection } from '../core/checkinTabs'
 import { listTokenMeta, addTokenAccount, removeTokenAccount, loadTokenSecret, exportTokenCredentials, importTokenCredentials, type TokenAccountMeta } from '../core/tokenPool'
 import { saveExportFile } from '../core/saveFile'
 import { getTokenStatus, claimToken } from '../core/tokenCheckin'
 import type { CheckinStatus } from '../core/checkin'
 
 /**
- * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号）：
- * 两个平台都是多账号——逐个查状态、可逐个签或全部签。
- * 凭据都用保险箱主密码加密、只存本机。
+ * 每日签到工具页（v0.1.356 上线；359 WorkBuddy 走账号池；363 MiniMax 改多账号；
+ * 488 账号池管理从工坊迁入本页做大页签）：两个平台都是多账号——逐个查状态、
+ * 可逐个签或全部签。凭据加密只存本机（470 起运营凭据走设备本地密钥）。
  */
 function JellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
@@ -278,6 +279,10 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       ? '签到记录已清空（自动签到开着，今天会再跑一次，各平台会显示已领）'
       : '签到记录已清空')
   }
+  // 大页签（v0.1.488）：每日签到 / WorkBuddy 账号池，选择仅本机记忆
+  const [section, setSection] = useState<CheckinSection>(() => readSavedCheckinSection())
+  const switchSection = (s: CheckinSection) => { setSection(s); saveCheckinSection(s) }
+  const poolCount = listPoolMeta().length
   const [wbEnabled, setWbEnabled] = useState(() => getPlatformEnabled('workbuddy'))
   const [mmEnabled, setMmEnabled] = useState(() => getPlatformEnabled('minimax'))
   const [busy, setBusy] = useState('')
@@ -442,6 +447,17 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     <ToolShell title="每日签到" desc="各 AI 平台的每日签到领积分，按国内/国外与功能分组；每个平台可单独关掉自动签到。凭据加密只存本机。" onBack={onBack}>
       <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
+      {/* 大页签（v0.1.488）：账号池管理从工坊迁入本页，与每日签到并列；chip 样式同 438/477/478 口径 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }} role="tablist" aria-label="签到页分区">
+        <button role="tab" aria-selected={section === 'daily'} className={`chip-btn ${section === 'daily' ? 'on' : ''}`} onClick={() => switchSection('daily')}>每日签到</button>
+        <button role="tab" aria-selected={section === 'pool'} className={`chip-btn ${section === 'pool' ? 'on' : ''}`} onClick={() => switchSection('pool')}>WorkBuddy 账号池{poolCount > 0 ? ` · ${poolCount} 个账号` : ''}</button>
+      </div>
+
+      {section === 'pool' && (
+        <WbPoolPanel sessionPwd={sessionPwd} onUnlock={onUnlock} notify={notify} />
+      )}
+
+      {section === 'daily' && (<>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 13.5 }}>自动签到</b>
@@ -577,7 +593,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           <PlatformIcon id="workbuddy" />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>WorkBuddy（账号池）</div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(poolStatuses.length, wbDone, wbClaimable) || '池里每个账号每天 100 积分，在工坊「WorkBuddy 账号池」里添加/管理账号'}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{aggText(poolStatuses.length, wbDone, wbClaimable) || '池里每个账号每天 100 积分，在本页「WorkBuddy 账号池」页签里添加/管理账号'}</div>
           </div>
           {poolStatuses.length > 1 && (
             <button className="btn sm ghost" onClick={() => setWbOpen(!wbShowList)}>{wbShowList ? '收起' : '展开'}</button>
@@ -596,7 +612,8 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         <GuideFold id="workbuddy" />
         {poolStatuses.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
-            {'账号池还是空的：去工坊主页打开「WorkBuddy 账号池」，添加账号后回到这里就能逐个签到。'}
+            {'账号池还是空的：切到本页「WorkBuddy 账号池」页签添加账号，回来就能逐个签到。'}
+            <button className="btn sm" style={{ marginLeft: 10 }} onClick={() => switchSection('pool')}>去添加账号</button>
           </div>
         )}
         {wbShowList && (
@@ -717,6 +734,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
       {!effectiveTab && (
         <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 12 }}>没有符合筛选的平台，换个筛选试试。</div>
       )}
+      </>)}
     </ToolShell>
   )
 }
