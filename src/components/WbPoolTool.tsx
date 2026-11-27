@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CalendarCheck, Fingerprint, Loader2, Pin, PinOff, Play, Power, RefreshCw, Send, Trash2, UserPlus, XCircle } from 'lucide-react'
+import { CalendarCheck, Loader2, Pin, PinOff, Play, Power, RefreshCw, Send, Trash2, UserPlus, XCircle } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
-import { openExternal, biometricAvailable } from '../core/openExternal'
-import { resolveBiometricVaultPassword } from '../core/biometric'
+import { LegacyMigrationBanner } from './LegacyMigrationBanner'
+import { openExternal } from '../core/openExternal'
 import { workbuddyBegin, workbuddyPoll, type WorkbuddyFlow } from '../core/checkin'
 import { recordCheckinOutcome } from '../core/checkinRun'
 import {
@@ -22,8 +22,6 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
   notify: (msg: string) => void
   onBack: () => void
 }) {
-  const [pwdInput, setPwdInput] = useState('')
-  const [bioOk, setBioOk] = useState(false)
   const [metas, setMetas] = useState<PoolAccountMeta[]>([])
   const [poolState, setPoolState] = useState<Record<string, PoolAccountState>>({})
   const [expires, setExpires] = useState<Record<string, number>>({})
@@ -36,13 +34,6 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [testReply, setTestReply] = useState('')
   const [testMeta, setTestMeta] = useState('')
   const pollRef = useRef<number | null>(null)
-
-  useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
-  const bioUnlock = async () => {
-    const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
-    if (pwd) onUnlock(pwd)
-    else notify('未通过指纹验证，或还没开启指纹解锁（先输一次主密码，并在设置里开启指纹/生物解锁后再用）')
-  }
 
   const reloadLocal = useCallback(() => {
     setMetas(listPoolMeta())
@@ -59,7 +50,6 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
   }, [])
 
   const refreshStatuses = useCallback(async () => {
-    if (!sessionPwd) return
     setBusy('status')
     try {
       setStatuses(await poolAccountStatuses(sessionPwd))
@@ -72,10 +62,9 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   useEffect(() => {
     reloadLocal()
-    if (!sessionPwd) return
     let dead = false
     void (async () => {
-      await migrateLegacyWorkbuddyCred(sessionPwd).catch(() => false)
+      await migrateLegacyWorkbuddyCred(sessionPwd || undefined).catch(() => false)
       if (dead) return
       reloadLocal()
       const list = listPoolMeta()
@@ -92,7 +81,6 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   // 与迷你窗/签到页同步：窗口重新聚焦或签到留痕变化时重查状态
   useEffect(() => {
-    if (!sessionPwd) return
     const onWake = () => {
       reloadLocal()
       void loadExpires(sessionPwd, listPoolMeta())
@@ -167,24 +155,13 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   return (
     <ToolShell title="WorkBuddy 账号池" desc="多个 WorkBuddy 账号授权入池，对外当一个模型来源：对话自动轮换、限流自动冷却切换。工坊工具里选「WorkBuddy 账号池」路线即可用，每日签到也会带上池里的账号。" onBack={onBack}>
-      {!sessionPwd && (
-        <div className="ws-result">
-          保险箱还没解锁：池里的账号凭据要用主密码加密保存，在这里直接解锁即可。
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <input type="password" className="input" style={{ maxWidth: 240 }} placeholder="保险箱主密码"
-              value={pwdInput} onChange={e => setPwdInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && pwdInput) { onUnlock(pwdInput); setPwdInput('') } }} />
-            <button className="btn sm primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁</button>
-            {bioOk && <button className="btn sm" onClick={() => void bioUnlock()}><Fingerprint size={14} /> 指纹解锁</button>}
-          </div>
-        </div>
-      )}
+      <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button className="btn primary" disabled={!sessionPwd || authing || busy === 'auth'} onClick={() => void startAuth()}>
+        <button className="btn primary" disabled={authing || busy === 'auth'} onClick={() => void startAuth()}>
           {authing || busy === 'auth' ? <Loader2 size={15} className="spin" /> : <UserPlus size={15} />} {authing ? '等待浏览器授权…' : '添加 WorkBuddy 账号'}
         </button>
-        <button className="btn" disabled={!sessionPwd || busy === 'status'} onClick={() => void refreshStatuses()}>
+        <button className="btn" disabled={busy === 'status'} onClick={() => void refreshStatuses()}>
           {busy === 'status' ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} 刷新全部状态
         </button>
         <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
@@ -257,12 +234,12 @@ export function WbPoolTool({ sessionPwd, onUnlock, notify, onBack }: {
                 {models.map(mo => <option key={mo.id} value={mo.id}>{mo.name}{mo.credits ? ` · ${mo.credits} 倍率` : ''}</option>)}
               </select>
             </label>
-            {models.length === 0 && sessionPwd && <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>模型目录还没拉到，刷新状态后会自动重试</span>}
+            {models.length === 0 && <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>模型目录还没拉到，刷新状态后会自动重试</span>}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <input className="input" style={{ flex: 1 }} value={testInput} onChange={e => setTestInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') void runTest() }} placeholder="给池子发一句话试试" />
-            <button className="btn primary" disabled={!sessionPwd || busy === 'test'} onClick={() => void runTest()}>
+            <button className="btn primary" disabled={busy === 'test'} onClick={() => void runTest()}>
               {busy === 'test' ? <Loader2 size={15} className="spin" /> : <Send size={15} />} 发送测试
             </button>
           </div>

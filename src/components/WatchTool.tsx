@@ -26,6 +26,7 @@ import {
 import Hls from 'hls.js'
 import FlvJs from 'flv.js'
 import { useRouteData, RouteSelect } from './WorkshopView'
+import { LegacyMigrationBanner } from './LegacyMigrationBanner'
 import { runWorkshopChat } from '../core/workshopChat'
 import { Pager } from './Pager'
 import { openExternal } from '../core/openExternal'
@@ -463,7 +464,6 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     searchInputRef.current?.focus()
     return () => window.removeEventListener('keydown', onKey)
   }, [aiSearchOpen])
-  const [pwdInput, setPwdInput] = useState('')
   const [player, setPlayer] = useState<PlayerState>(null)
   const [playerKey, setPlayerKey] = useState(0)
   // v0.1.410：播放器改可拖动悬浮——fixed 定位挂在视口里，切页签/滚动都不动，
@@ -655,8 +655,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const enrichAiRecs = async (items: AiRec[]) => {
     if (!tmdbKeySet || !items.length) return
     const runId = ++aiEnrichRunRef.current
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) return
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     const key = await loadTmdbKey(pwd).catch(() => null)
     if (!key || runId !== aiEnrichRunRef.current) return
     for (const item of items) {
@@ -687,8 +686,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   const [providersBusy, setProvidersBusy] = useState(false)
 
   const saveTmdb = async () => {
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notify('请先解锁保险箱，Key 要加密保存'); return }
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setTmdbSaving(true)
     try {
       await saveTmdbKey(tmdbInput, pwd)
@@ -701,8 +699,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
   // 墙只显示自己的点播源，与修前行为一致；成功也不额外提示）
   const loadTrending = async (range: TrendRange = trendRange, opts?: { quiet?: boolean }) => {
     const quiet = !!opts?.quiet
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { if (!quiet) notify('请先解锁保险箱，才能读取已保存的 TMDB Key'); return }
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setTmdbBusy(true)
     try {
       const key = await loadTmdbKey(pwd)
@@ -723,9 +720,9 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     if (detailId === t.id) { setDetailId(null); return }
     setDetailId(t.id); setProviders([]); setProvidersBusy(true)
     try {
-      const pwd = sessionPwd || getBiometricPassword() || ''
-      const key = pwd ? await loadTmdbKey(pwd) : null
-      if (!key) { notify('请先解锁保险箱，才能读取 TMDB Key'); return }
+      const pwd = sessionPwd || getBiometricPassword() || undefined
+      const key = await loadTmdbKey(pwd)
+      if (!key) { notify('还没保存 TMDB Key（或旧版 Key 还没迁移：解锁一次保险箱即可自动迁移）'); return }
       setProviders(await fetchTmdbProviders(key, t.mediaType, t.id))
     } catch (e) { notify(e instanceof Error ? e.message : '加载播出平台失败', 'err') } finally { setProvidersBusy(false) }
   }
@@ -818,8 +815,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
     vodEnrichRunRef.current = true
     const run = async () => {
       try {
-        const pwd = sessionPwd || getBiometricPassword() || ''
-        if (!pwd) return
+        const pwd = sessionPwd || getBiometricPassword() || undefined
         const key = await loadTmdbKey(pwd)
         if (!key || dead) return
         if (!vodGenreMap) {
@@ -1439,14 +1435,7 @@ export function WatchTool({ accounts, sessionPwd, onUnlock, notify, onBack }: {
       <h3 className="ws-tool-title">看剧</h3>
       <p className="ws-tool-desc">AI 找剧、热门推荐、直播、点播、追剧日历与片单；直播与点播都在 App 内播放器里播，不跳浏览器。片单与排期只存本机。</p>
 
-      {!sessionPwd && (
-        <div className="fg-unlock">
-          <Lock size={14} /> 保险箱未解锁：AI 找剧用已保存的免费模型没问题；保存 TMDB Key 需要主密码。
-          <input className="input" type="password" placeholder="保险箱主密码" value={pwdInput}
-            onChange={e => setPwdInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onUnlock(pwdInput) }} />
-          <button className="btn sm primary" onClick={() => onUnlock(pwdInput)}>解锁</button>
-        </div>
-      )}
+      <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
       {/* v0.1.410：悬浮播放器——fixed 定位 + 拖动手柄；切页签时它在页签栏之外，
           本来就不卸载；最小化只藏 body，video 元素留在 DOM 里继续播 */}

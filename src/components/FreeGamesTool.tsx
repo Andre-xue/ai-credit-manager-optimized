@@ -5,7 +5,7 @@
 // 领取记录：失败组置顶；验证码/登录失效明说原因并给重新绑定入口，绝不静默跳过。
 import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft, ChevronDown, ExternalLink, Gamepad2, Loader2, Lock,
+  ArrowLeft, ChevronDown, ExternalLink, Gamepad2, Loader2,
   RefreshCw, Store, Trash2, CircleCheck, CircleAlert, Clock3, Link2,
 } from 'lucide-react'
 import {
@@ -16,6 +16,7 @@ import {
   syncOwnedEpicGames, markEpicGameClaimed,
   bindEpicWithAuthCode, hasEpicAuth, unbindEpic, loadEpicAuth,
   loadLastCheckAt, loadLastError, nextCheckAt,
+  shouldEntryRefreshCache, touchLastCheckAt,
   EPIC_LOGIN_URL,
   sanitizeLoadFailedMessage, checkoutUrlOf,
   type FreeGame, type FreeGamesPrefs, type FreeGamesCache, type ClaimRecord,
@@ -29,6 +30,7 @@ import {
 } from '../core/epicBrowser'
 import { getBiometricPassword } from '../core/crypto'
 import { Pager } from './Pager'
+import { LegacyMigrationBanner } from './LegacyMigrationBanner'
 
 function JellyToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   const [anim, setAnim] = useState<'on' | 'off' | null>(null)
@@ -136,9 +138,9 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [epicFallback, setEpicFallback] = useState(false)
   const [epicFallbackDetail, setEpicFallbackDetail] = useState<string | null>(null)
   useEffect(() => {
-    if (!sessionPwd || !hasEpicAuth()) return
+    if (!hasEpicAuth()) return
     let alive = true
-    void loadEpicAuth(sessionPwd).then(a => {
+    void loadEpicAuth(sessionPwd || undefined).then(a => {
       if (alive && a?.authMode === 'refresh') {
         setEpicFallback(true)
         setEpicFallbackDetail(a.deviceAuthError ?? null)
@@ -158,7 +160,6 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const [bindOpen, setBindOpen] = useState(false)
   const [authCode, setAuthCode] = useState('')
   const [bindBusy, setBindBusy] = useState(false)
-  const [pwdInput, setPwdInput] = useState('')
   // v0.1.397：内嵌浏览器自动领的状态行（桌面端才有；失败原因要显示出来）
   const [epicBrowserStatus, setEpicBrowserStatus] = useState<string | null>(() => loadEpicBrowserStatus())
   useEffect(() => {
@@ -171,6 +172,31 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       if (recordEpicBrowserOutcome(p.outcome, p.title ?? '', p.checkoutUrl)) refreshRecords()
     }).then(u => { unlisten = u }).catch(() => { /* 监听失败不影响领取 */ })
     return () => { unlisten?.() }
+  }, [])
+
+  // v0.1.470：进页自动刷新一次——只拉免费游戏列表，绝不触发领取（领取仍走
+  // 定时自动领取）；距上次列表刷新不足 5 分钟则跳过，避免反复进出页狂刷。
+  // 成功后同步更新缓存与「上次检查」时间戳，页面上的上次/下次随之更新；
+  // 失败静默（页面已有缓存可看，手动刷新会报真实原因）。
+  const entryRefreshDoneRef = useRef(false)
+  useEffect(() => {
+    if (entryRefreshDoneRef.current) return
+    entryRefreshDoneRef.current = true
+    if (!shouldEntryRefreshCache(loadCache()?.at ?? null)) return
+    let dead = false
+    void (async () => {
+      try {
+        const epic = await fetchEpicFreeGames()
+        if (dead) return
+        const at = Date.now()
+        const next: FreeGamesCache = { at, epicCurrent: epic.current, epicUpcoming: epic.upcoming }
+        try { localStorage.setItem('acm.freegames.cache.v1', JSON.stringify(next)) } catch { /* 忽略 */ }
+        touchLastCheckAt(at)
+        setCache(next)
+        setLastCheck(at)
+      } catch { /* 静默：不打扰，缓存照旧 */ }
+    })()
+    return () => { dead = true }
   }, [])
 
   // 兜底（v0.1.386）：任何残留的英文 "Load failed" 在进 toast 前一律换成中文，
@@ -218,7 +244,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   }
 
   const runCheck = async () => {
-    const pwd = sessionPwd || getBiometricPassword() || ''
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setChecking(true)
     try {
       const res = await runFreeGamesCheck(pwd)
@@ -277,8 +303,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   // 的补一条已入库记录（卡片与已入库组立刻显示已入库）。库房接口查不到时
   // 用下面的 markClaimed 手动标记，失败原因会明确报出来，不静默。
   const syncBrowserClaimed = async () => {
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notifySafe('请先解锁保险箱（同步库房要用 Epic 登录态）'); return }
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setSyncing(true)
     try {
       const res = await syncOwnedEpicGames(pwd)
@@ -304,8 +329,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   const claimOne = async (game: FreeGame) => {
     if (game.platform !== 'epic') { void openExternal(game.url); return }
     if (!game.autoClaimable) { void openExternal(game.url); return }
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notifySafe('请先解锁保险箱（领取要用 Epic 设备授权）'); return }
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setClaimingId(game.id)
     try {
       await claimEpicGameManual(pwd, game)
@@ -332,8 +356,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
   }
 
   const doBind = async () => {
-    const pwd = sessionPwd || getBiometricPassword() || ''
-    if (!pwd) { notifySafe('请先解锁保险箱，设备授权要加密保存'); return }
+    const pwd = sessionPwd || getBiometricPassword() || undefined
     setBindBusy(true)
     try {
       const auth = await bindEpicWithAuthCode(authCode, pwd)
@@ -394,71 +417,42 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       <h3 className="ws-tool-title">免费游戏</h3>
       <p className="ws-tool-desc">Epic 每周喜加一：绑定一次，定时自动领入库。只领完全免费的，绝不花一分钱。</p>
 
-      {!sessionPwd && (
-        <div className="fg-unlock">
-          <Lock size={14} /> 保险箱未解锁：绑定 Epic 与自动领取需要主密码解密设备授权。
-          <input className="input" type="password" placeholder="输入主密码解锁" value={pwdInput}
-            onChange={e => setPwdInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && pwdInput) onUnlock(pwdInput) }} />
-          <button className="btn sm" disabled={!pwdInput} onClick={() => onUnlock(pwdInput)}>解锁</button>
-        </div>
-      )}
+      <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
-      {/* 顶部：总开关 + 下次检查 */}
-      <div className="fg-topbar">
-        <div className="fg-topbar-left">
-          <JellyToggle checked={prefs.autoClaim} onChange={v => updatePrefs({ autoClaim: v })} />
-          <span>自动领取 {prefs.autoClaim ? '已开启' : '已暂停'}</span>
-          <span className="fg-muted">
-            <Clock3 size={12} /> {lastCheck
-              ? `上次检查 ${fmtTime(lastCheck)} · 下次 ${fmtTime(nextCheckAt(prefs, lastCheck))}`
-              : '还没检查过'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn sm" disabled={refreshing} onClick={() => void refreshListsOnly()}>
-            {refreshing ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} 只刷新列表
-          </button>
-          <button className="btn sm primary" disabled={checking} onClick={() => void runCheck()}>
-            {checking ? <Loader2 size={13} className="spin" /> : null} 立即检查并领取
-          </button>
-        </div>
-      </div>
-      {lastError && <div className="fg-warn"><CircleAlert size={14} /> 上次检查有问题：{lastError}</div>}
-
-      {/* 平台账号卡 */}
-      <div className="fg-platforms">
-        <div className="fg-plat">
-          <div className="fg-plat-head">
+      {/* v0.1.470 布局方案二：控制条——账户/绑定/自动领取/检查频率/通知全压进
+          一张全宽卡的两行，下方游戏分组全宽三列网格（原 fg-topbar/fg-platforms/fg-settings 合并） */}
+      <div className="fg-bar">
+        <div className="fg-bar-row">
+          <div className="fg-bar-acct">
             <span className="fg-plat-name"><Store size={16} /> Epic Games</span>
             <JellyToggle checked={prefs.epicEnabled} onChange={v => updatePrefs({ epicEnabled: v })} />
+            <div className="fg-bar-acct-text">
+              {epicBound ? (
+                <>
+                  <div>已绑定 · 自动领取{epicClaimedCount ? ` · 累计领了 ${epicClaimedCount} 款` : ' · 还没领过'}</div>
+                  {epicFallback && <div className="fg-muted">当前用 refresh_token 登录，自动领取可用</div>}
+                  {epicFallback && (
+                    <details className="fg-detail">
+                      <summary>为什么是 refresh_token 登录？</summary>
+                      <div>
+                        {epicFallbackDetail
+                          ? <>设备授权创建失败：{epicFallbackDetail}{/missing_permissions/.test(epicFallbackDetail) ? '。Epic 限制了这种登录方式的设备授权权限，不影响自动领取。' : ''}</>
+                          : '设备授权未建成（原因未记录），已改用 refresh_token 登录，自动领取可用。'}
+                      </div>
+                    </details>
+                  )}
+                  {loginFailed && <div className="fg-err">登录失效，请重新绑定账号。</div>}
+                  {captchaFailed && <div className="fg-err">最近一次领取遇到验证码：请在浏览器打开商店手动领取一次，验证通过后可恢复自动领取。</div>}
+                </>
+              ) : (
+                <div>未绑定 Epic 账号。绑定后每周自动领喜加一。</div>
+              )}
+              {!isDesktopApp() && !isNativeApp() && (
+                <div className="fg-muted">网页版直连 Epic 会被浏览器 CORS 拦截，绑定与领取请用桌面端或安卓 App。</div>
+              )}
+            </div>
           </div>
-          <div className="fg-plat-body">
-            {epicBound ? (
-              <>
-                <div>已绑定 · 自动领取{epicClaimedCount ? ` · 累计领了 ${epicClaimedCount} 款` : ' · 还没领过'}</div>
-                {epicFallback && <div className="fg-muted">当前用 refresh_token 登录，自动领取可用</div>}
-                {epicFallback && (
-                  <details className="fg-detail">
-                    <summary>为什么是 refresh_token 登录？</summary>
-                    <div>
-                      {epicFallbackDetail
-                        ? <>设备授权创建失败：{epicFallbackDetail}{/missing_permissions/.test(epicFallbackDetail) ? '。Epic 限制了这种登录方式的设备授权权限，不影响自动领取。' : ''}</>
-                        : '设备授权未建成（原因未记录），已改用 refresh_token 登录，自动领取可用。'}
-                    </div>
-                  </details>
-                )}
-                {loginFailed && <div className="fg-err">登录失效，请重新绑定账号。</div>}
-                {captchaFailed && <div className="fg-err">最近一次领取遇到验证码：请在浏览器打开商店手动领取一次，验证通过后可恢复自动领取。</div>}
-              </>
-            ) : (
-              <div>未绑定 Epic 账号。绑定后每周自动领喜加一。</div>
-            )}
-            {!isDesktopApp() && !isNativeApp() && (
-              <div className="fg-muted">网页版直连 Epic 会被浏览器 CORS 拦截，绑定与领取请用桌面端或安卓 App。</div>
-            )}
-          </div>
-          <div className="fg-plat-foot">
+          <div className="fg-bar-actions">
             {epicBound ? (
               <>
                 {/* v0.1.405：在浏览器领过的游戏，点这里对照库房同步成已入库 */}
@@ -471,11 +465,31 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
             ) : (
               <button className="btn sm primary" onClick={() => setBindOpen(true)}><Link2 size={13} /> 绑定 Epic 账号</button>
             )}
-            <span className="fg-muted">自动领取 · {prefs.epicEnabled ? '开' : '关'}</span>
           </div>
+          <div className="fg-bar-auto">
+            <span className="fg-bar-auto-toggle">
+              <JellyToggle checked={prefs.autoClaim} onChange={v => updatePrefs({ autoClaim: v })} />
+              自动领取 {prefs.autoClaim ? '已开启' : '已暂停'}
+            </span>
+            <span className="fg-muted">
+              <Clock3 size={12} /> {lastCheck
+                ? `上次检查 ${fmtTime(lastCheck)} · 下次 ${fmtTime(nextCheckAt(prefs, lastCheck))}`
+                : '还没检查过'}
+            </span>
+            <span className="fg-muted">平台自动领取 · {prefs.epicEnabled ? '开' : '关'}</span>
+          </div>
+          <div className="fg-bar-btns">
+            <button className="btn sm" disabled={refreshing} onClick={() => void refreshListsOnly()}>
+              {refreshing ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} 只刷新列表
+            </button>
+            <button className="btn sm primary" disabled={checking} onClick={() => void runCheck()}>
+              {checking ? <Loader2 size={13} className="spin" /> : null} 立即检查并领取
+            </button>
+          </div>
+        </div>
           {bindOpen && (
             <div className="fg-bind">
-              <div className="fg-bind-title">绑定 Epic 账号（设备授权，只存本机、主密码加密）</div>
+              <div className="fg-bind-title">绑定 Epic 账号（设备授权，只存本机、本机加密）</div>
               <ol className="fg-bind-steps">
                 <li>点下面按钮，在浏览器打开 Epic 登录页并登录你的 Epic 账号。</li>
                 <li>登录成功后，页面会显示一段 JSON，复制其中 authorizationCode 的值粘贴到下面（只粘码，不要粘整个页面内容）。</li>
@@ -493,25 +507,22 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
               </button>
             </div>
           )}
+        <div className="fg-bar-row fg-bar-row2">
+          <label>检查频率
+            <select className="select" value={prefs.intervalHours}
+              onChange={e => updatePrefs({ intervalHours: Number(e.target.value) })}>
+              <option value={3}>每 3 小时</option>
+              <option value={6}>每 6 小时</option>
+              <option value={12}>每 12 小时</option>
+              <option value={24}>每 24 小时</option>
+            </select>
+          </label>
+          <label className="fg-check"><JellyToggle checked={prefs.notify} onChange={v => updatePrefs({ notify: v })} /> 领取通知</label>
+          <label className="fg-check"><JellyToggle checked={prefs.captchaRemind} onChange={v => updatePrefs({ captchaRemind: v })} /> 验证码提醒</label>
+          <span className="fg-muted">只领完全免费：固定开启，价格不为 0 的绝不下单。</span>
         </div>
-
       </div>
-
-      {/* 定时设置 */}
-      <div className="fg-settings">
-        <label>检查频率
-          <select className="select" value={prefs.intervalHours}
-            onChange={e => updatePrefs({ intervalHours: Number(e.target.value) })}>
-            <option value={3}>每 3 小时</option>
-            <option value={6}>每 6 小时</option>
-            <option value={12}>每 12 小时</option>
-            <option value={24}>每 24 小时</option>
-          </select>
-        </label>
-        <label className="fg-check"><JellyToggle checked={prefs.notify} onChange={v => updatePrefs({ notify: v })} /> 领取通知</label>
-        <label className="fg-check"><JellyToggle checked={prefs.captchaRemind} onChange={v => updatePrefs({ captchaRemind: v })} /> 验证码提醒</label>
-        <span className="fg-muted">只领完全免费：固定开启，价格不为 0 的绝不下单。</span>
-      </div>
+      {lastError && <div className="fg-warn"><CircleAlert size={14} /> 上次检查有问题：{lastError}</div>}
 
       {/* 游戏分组：各自折叠 + 每组分页 */}
       {groups.map(g => {

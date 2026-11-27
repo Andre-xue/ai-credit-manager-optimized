@@ -756,7 +756,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     const aiChainAvailability = (cand: AiCand): ChainAvailability | null => {
       if (cand.acct && (!cand.acct.encryptedKey || !resolvePwd())) return { available: false, probe: false, reason: '保险箱未解锁，无法使用该账户路线' }
-      if (cand.pool && !resolvePwd()) return { available: false, probe: false, reason: '保险箱未解锁，无法使用账号池' }
+      // v0.1.470：账号池凭据已改设备本地加密，锁定状态照常可用，不再拦
       return null
     }
     const runAiChain = async (selectedKey?: string, excludeId?: string) => {

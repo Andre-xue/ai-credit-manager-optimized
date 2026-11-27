@@ -6,7 +6,7 @@
 // 全部偏好、领取记录、Epic 设备授权均为仅本机 localStorage，不进云同步/备份；
 // 设备授权用保险箱主密码加密（仿照 tokenPool），绝不明文落盘。
 
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { isNativeApp } from './openExternal'
 
 export type FreeGamePlatform = 'epic'
@@ -412,9 +412,10 @@ export interface EpicDeviceAuth {
   deviceAuthError?: string
 }
 
-/** 加密保存 Epic 授权（设备授权与 refresh token 同一个密文，只存本机） */
-async function saveEpicAuth(auth: EpicDeviceAuth, pwd: string): Promise<void> {
-  const cipher = await encryptSecret(JSON.stringify(auth), pwd)
+/** 加密保存 Epic 授权（设备授权与 refresh token 同一个密文，只存本机）。
+ *  v0.1.470 起用设备本地密钥加密，不再需要主密码。 */
+async function saveEpicAuth(auth: EpicDeviceAuth, _pwd?: string): Promise<void> {
+  const cipher = await encryptLocalSecret(JSON.stringify(auth))
   try { localStorage.setItem(EPIC_AUTH_KEY, JSON.stringify({ cipher })) } catch { /* 忽略 */ }
 }
 
@@ -424,10 +425,9 @@ async function saveEpicAuth(auth: EpicDeviceAuth, pwd: string): Promise<void> {
  * ③ 建不出设备授权时改走 refresh_token 登录（启动器客户端官方支持此流程），
  * 当场验一次换得到 access 才算绑定成功，否则不留一个看着已绑定、实际领不了的状态。
  */
-export async function bindEpicWithAuthCode(code: string, pwd: string): Promise<EpicDeviceAuth> {
+export async function bindEpicWithAuthCode(code: string, pwd?: string): Promise<EpicDeviceAuth> {
   const clean = code.trim()
   if (!clean) throw new Error('请先粘贴授权码')
-  if (!pwd) throw new Error('请先解锁保险箱')
   const tok = await postForm(TOKEN_URL, { grant_type: 'authorization_code', code: clean, token_type: 'eg1' }, undefined, 'Epic 绑定失败')
   const access = pickStr(tok, 'access_token')
   const accountId = pickStr(tok, 'account_id')
@@ -484,12 +484,34 @@ export function hasEpicAuth(): boolean {
   try { return !!JSON.parse(localStorage.getItem(EPIC_AUTH_KEY) ?? 'null')?.cipher } catch { return false }
 }
 
-export async function loadEpicAuth(pwd: string): Promise<EpicDeviceAuth | null> {
+export async function loadEpicAuth(pwd?: string): Promise<EpicDeviceAuth | null> {
   try {
     const raw = JSON.parse(localStorage.getItem(EPIC_AUTH_KEY) ?? 'null') as { cipher?: string } | null
-    if (!raw?.cipher || !pwd) return null
-    return JSON.parse(await decryptSecret(raw.cipher, pwd)) as EpicDeviceAuth
+    if (!raw?.cipher) return null
+    const auth = JSON.parse(await decryptStoredSecret(raw.cipher, pwd)) as EpicDeviceAuth
+    if (auth && isLegacyCipher(raw.cipher)) await saveEpicAuth(auth).catch(() => { /* 回写失败不影响使用 */ })
+    return auth
   } catch { return null }
+}
+
+/** Epic 授权是否还是旧格式密文（v0.1.470 迁移审计用） */
+export function hasLegacyEpicAuth(): boolean {
+  try {
+    const raw = JSON.parse(localStorage.getItem(EPIC_AUTH_KEY) ?? 'null') as { cipher?: string } | null
+    return isLegacyCipher(raw?.cipher)
+  } catch { return false }
+}
+
+/** 把 Epic 授权旧密文迁成本地密文；返回是否迁了（幂等） */
+export async function migrateEpicAuth(pwd: string): Promise<number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(EPIC_AUTH_KEY) ?? 'null') as { cipher?: string } | null
+    if (!isLegacyCipher(raw?.cipher)) return 0
+    const next = await migrateCipherValue(raw!.cipher!, pwd)
+    if (!next) return 0
+    localStorage.setItem(EPIC_AUTH_KEY, JSON.stringify({ cipher: next }))
+    return 1
+  } catch { return 0 }
 }
 
 export function unbindEpic(): void {
@@ -541,7 +563,7 @@ export async function epicAccessToken(auth: EpicDeviceAuth, pwd?: string): Promi
     const access = pickStr(tok, 'access_token')
     if (!access) throw new Error('Epic 登录失效')
     const newRefresh = pickStr(tok, 'refresh_token')
-    if (pwd && (newRefresh || fellBackToRefresh)) {
+    if (newRefresh || fellBackToRefresh) {
       await saveEpicAuth(
         {
           ...auth,
@@ -549,7 +571,7 @@ export async function epicAccessToken(auth: EpicDeviceAuth, pwd?: string): Promi
           authMode: fellBackToRefresh ? 'refresh' : auth.authMode,
         },
         pwd,
-      )
+      ).catch(() => { /* 回写失败不影响本次 token 使用 */ })
     }
     return { access, accountId: auth.accountId }
   } catch (e) {
@@ -808,7 +830,7 @@ export interface FreeGamesCheckResult {
  * 拉取最新免费游戏并（已绑定 Epic 且开启自动领取时）自动领取当前免费且未入库的。
  * 每次领取尝试都写一条领取记录；验证码/登录失效写明原因，不静默跳过。
  */
-export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResult> {
+export async function runFreeGamesCheck(pwd?: string): Promise<FreeGamesCheckResult> {
   const prefs = loadPrefs()
   const at = Date.now()
   let epicCurrent: FreeGame[] = []
@@ -833,9 +855,8 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
   }
   // 未绑定 / 总开关关 / Epic 开关关 → 只拉取不领取
   if (!prefs.autoClaim || !prefs.epicEnabled || !hasEpicAuth()) return result
-  if (!pwd) { result.errors.push('保险箱未解锁，本次只拉取列表、没有自动领取'); return result }
   const auth = await loadEpicAuth(pwd)
-  if (!auth) { result.errors.push('Epic 设备授权解不开（主密码不对或已损坏），请重新绑定'); return result }
+  if (!auth) { result.errors.push(hasLegacyEpicAuth() && !pwd ? 'Epic 授权还是旧版加密：解锁一次完成迁移后即可自动领取' : 'Epic 设备授权解不开（可能已损坏），请重新绑定'); return result }
   let tokens: { access: string; accountId: string }
   try {
     tokens = await epicAccessToken(auth, pwd)
@@ -864,7 +885,7 @@ export async function runFreeGamesCheck(pwd: string): Promise<FreeGamesCheckResu
 }
 
 /** 手动领一款（巡查外）：结果同样写领取记录 */
-export async function claimEpicGameManual(pwd: string, game: FreeGame): Promise<string> {
+export async function claimEpicGameManual(pwd: string | undefined, game: FreeGame): Promise<string> {
   const at = Date.now()
   try {
     const auth = await loadEpicAuth(pwd)
@@ -989,8 +1010,7 @@ export interface SyncOwnedResult {
  * 同步浏览器领取：查库房已购，对照本周免费列表，命中且未记过的补一条
  * 'already' 记录（显示已入库，巡查不再重复领）。缓存没列表时先拉一份新的。
  */
-export async function syncOwnedEpicGames(pwd: string): Promise<SyncOwnedResult> {
-  if (!pwd) throw new Error('请先解锁保险箱（同步库房要用 Epic 登录态）')
+export async function syncOwnedEpicGames(pwd?: string): Promise<SyncOwnedResult> {
   const auth = await loadEpicAuth(pwd)
   if (!auth) throw new Error('请先绑定 Epic 账号')
   const tokens = await epicAccessToken(auth, pwd)
@@ -1042,4 +1062,17 @@ export function summarizeCheckResult(r: FreeGamesCheckResult): string {
   if (r.already.length) parts.push(`${r.already.length} 款已在库`)
   if (r.errors.length) parts.push(`${r.errors.length} 个问题`)
   return parts.join('，') || `已拉取本周免费 ${r.fetched.epicCurrent} 款，无需领取`
+}
+
+/** 进页刷新后只更新「上次检查」时间戳（页面上次/下次显示随之更新），不动错误留痕 */
+export function touchLastCheckAt(at: number): void {
+  try { localStorage.setItem(LAST_CHECK_KEY, String(at)) } catch { /* 忽略 */ }
+}
+
+/** 进页自动刷新（v0.1.470）：距上次拉取不足这个时长就跳过，避免反复进出页面狂刷 */
+export const EPIC_ENTRY_REFRESH_SKIP_MS = 5 * 60_000
+
+/** 纯决策：给定缓存时间戳，进页时该不该自动刷新一次（无缓存 = 该刷） */
+export function shouldEntryRefreshCache(at: number | null | undefined, now: number = Date.now()): boolean {
+  return !at || now - at >= EPIC_ENTRY_REFRESH_SKIP_MS
 }

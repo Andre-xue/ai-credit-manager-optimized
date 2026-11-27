@@ -6,7 +6,8 @@ import { ExternalLink, Gamepad2, Loader2, RefreshCw, TriangleAlert } from 'lucid
 import { ToolShell } from './WorkshopView'
 import { Pager } from './Pager'
 import {
-  loadSteamCache, isSteamCacheFresh, loadSteamDeals, loadMoreSteamDeals,
+  loadSteamCache, loadSteamDeals, loadMoreSteamDeals,
+  shouldEntryRefreshSteam,
   sortSteamDeals, enrichSteamPackages, dealKey,
   type SteamDeal, type SteamDealsCache, type SteamSort,
 } from '../core/steamDeals'
@@ -107,11 +108,21 @@ export function SteamDealsTool({ notify, onBack }: {
     }
   }
 
-  // 首屏：缓存新鲜（1 小时内）直接用，否则拉第一页
+  // 首屏（v0.1.470）：进页自动刷新一次——无缓存走完整刷新；有缓存但距上次
+  // 拉取已超过 5 分钟则静默刷新（先 100 款，成功即更新缓存时间戳，合集包补齐
+  // 由下方 effect 接着跑）；5 分钟内直接用缓存。1 小时缓存仍作数据兜底保留。
   useEffect(() => {
     const cached = loadSteamCache()
-    if (cached && isSteamCacheFresh(cached)) return
-    void refresh(false)
+    if (!cached) { void refresh(false); return }
+    if (!shouldEntryRefreshSteam(cached.at)) return
+    let dead = false
+    void (async () => {
+      try {
+        const c = await loadSteamDeals(true)
+        if (!dead) { setCache(c); setPage(1) }
+      } catch { /* 静默：已有缓存可看，手动刷新会报真实原因 */ }
+    })()
+    return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

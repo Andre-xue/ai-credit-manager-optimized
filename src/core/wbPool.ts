@@ -1,4 +1,4 @@
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import {
   httpCall, parseJson, workbuddyRefresh, getWorkbuddyStatus, claimWorkbuddy,
   hasCheckinCred, loadCheckinCred, clearCheckinCred,
@@ -50,11 +50,11 @@ export function hasPoolAccounts(): boolean {
   return readPoolFile().accounts.length > 0
 }
 
-export async function addPoolAccount(cred: CheckinCred, pwd: string): Promise<PoolAccountMeta> {
+export async function addPoolAccount(cred: CheckinCred, _pwd?: string): Promise<PoolAccountMeta> {
   const f = readPoolFile()
   const id = cred.uid || `wb-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
   const meta: PoolAccountMeta = { id, label: cred.label || 'WorkBuddy 账号', uid: cred.uid }
-  const cipher = await encryptSecret(JSON.stringify(cred), pwd)
+  const cipher = await encryptLocalSecret(JSON.stringify(cred))
   const existing = f.accounts.findIndex(a => a.id === id)
   if (existing >= 0) f.accounts[existing] = { ...meta, cipher }
   else f.accounts.push({ ...meta, cipher })
@@ -71,21 +71,28 @@ export function removePoolAccount(id: string): void {
   writePoolState(st)
 }
 
-export function poolCredBox(id: string, pwd: string): CredBox {
+export function poolCredBox(id: string, pwd?: string): CredBox {
   return {
     load: async () => {
       const entry = readPoolFile().accounts.find(a => a.id === id)
       if (!entry) return null
       try {
-        const cred = JSON.parse(await decryptSecret(entry.cipher, pwd)) as CheckinCred
-        return cred && cred.accessToken ? cred : null
+        const cred = JSON.parse(await decryptStoredSecret(entry.cipher, pwd)) as CheckinCred
+        if (!cred || !cred.accessToken) return null
+        // 旧格式靠主密码解开后顺手回写本地密文（惰性迁移）：直接走 save 回写
+        if (isLegacyCipher(entry.cipher)) {
+          const f = readPoolFile()
+          const e2 = f.accounts.find(a => a.id === id)
+          if (e2) { e2.cipher = await encryptLocalSecret(JSON.stringify(cred)); writePoolFile(f) }
+        }
+        return cred
       } catch { return null }
     },
     save: async cred => {
       const f = readPoolFile()
       const entry = f.accounts.find(a => a.id === id)
       if (!entry) return
-      entry.cipher = await encryptSecret(JSON.stringify(cred), pwd)
+      entry.cipher = await encryptLocalSecret(JSON.stringify(cred))
       if (cred.label) entry.label = cred.label
       if (cred.uid) entry.uid = cred.uid
       writePoolFile(f)
@@ -93,8 +100,28 @@ export function poolCredBox(id: string, pwd: string): CredBox {
   }
 }
 
+/** 池里还有几份旧格式密文没迁（v0.1.470 迁移审计用） */
+export function countLegacyPoolCreds(): number {
+  return readPoolFile().accounts.filter(a => isLegacyCipher(a.cipher)).length
+}
+
+/** 把池里旧格式密文批量迁成本地密文；返回成功迁移数（幂等） */
+export async function migratePoolCreds(pwd: string): Promise<number> {
+  const f = readPoolFile()
+  let n = 0
+  for (const a of f.accounts) {
+    if (!isLegacyCipher(a.cipher)) continue
+    try {
+      const next = await migrateCipherValue(a.cipher, pwd)
+      if (next) { a.cipher = next; n++ }
+    } catch { /* 跳过 */ }
+  }
+  if (n) writePoolFile(f)
+  return n
+}
+
 /** 把签到页时代的单个 WorkBuddy 凭据迁进池子（只迁一次，迁完删旧存储防分叉） */
-export async function migrateLegacyWorkbuddyCred(pwd: string): Promise<boolean> {
+export async function migrateLegacyWorkbuddyCred(pwd?: string): Promise<boolean> {
   if (hasPoolAccounts() || !hasCheckinCred('workbuddy')) return false
   const cred = await loadCheckinCred('workbuddy', pwd)
   if (!cred) return false
@@ -241,7 +268,7 @@ export interface WbModel { id: string; name: string; credits: string }
 let modelCache: { at: number; models: WbModel[] } | null = null
 
 /** 池可用模型目录（取第一个可用账号的目录，缓存 5 分钟） */
-export async function poolModels(pwd: string): Promise<WbModel[]> {
+export async function poolModels(pwd?: string): Promise<WbModel[]> {
   if (modelCache && Date.now() - modelCache.at < 5 * 60 * 1000) return modelCache.models
   const metas = listPoolMeta()
   const { ready, cooling } = orderPoolCandidates(metas, readPoolState(), Date.now())
@@ -277,7 +304,7 @@ export async function poolModels(pwd: string): Promise<WbModel[]> {
 
 /** 池对话：轮换 + 失败切换 + 冷却。全部失败时抛错并汇总每个账号的失败原因 */
 export async function poolChat(
-  pwd: string,
+  pwd: string | undefined,
   messages: PoolChatMessage[],
   opts?: { model?: string },
 ): Promise<PoolChatResult> {
@@ -302,7 +329,7 @@ export async function poolChat(
   for (const meta of candidates) {
     const box = poolCredBox(meta.id, pwd)
     let cred = await box.load()
-    if (!cred) { errors.push(`${meta.label}：凭据解密失败（保险箱密码不对？）`); continue }
+    if (!cred) { errors.push(`${meta.label}：凭据解不开（旧版凭据还没迁移或凭据损坏）`); continue }
     if (cred.refreshToken && cred.expiresAt > 0 && cred.expiresAt - Date.now() < 120_000) {
       try { cred = await workbuddyRefresh(cred); await box.save(cred) } catch { /* 用旧 token 试 */ }
     }
@@ -341,7 +368,7 @@ export async function poolChat(
 
 export interface PoolAccountStatus { meta: PoolAccountMeta; status?: CheckinStatus; error?: string }
 
-export async function poolAccountStatuses(pwd: string): Promise<PoolAccountStatus[]> {
+export async function poolAccountStatuses(pwd?: string): Promise<PoolAccountStatus[]> {
   const out: PoolAccountStatus[] = []
   for (const meta of listPoolMeta()) {
     try {
@@ -354,6 +381,6 @@ export async function poolAccountStatuses(pwd: string): Promise<PoolAccountStatu
   return out
 }
 
-export async function poolClaimOne(pwd: string, id: string): Promise<{ message: string; points: number }> {
+export async function poolClaimOne(pwd: string | undefined, id: string): Promise<{ message: string; points: number }> {
   return claimWorkbuddy(poolCredBox(id, pwd))
 }

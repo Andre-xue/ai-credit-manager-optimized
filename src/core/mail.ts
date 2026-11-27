@@ -4,7 +4,7 @@
 // 凭据用保险箱主密码加密、只存本机 localStorage（与 WorkBuddy 账号池同等待遇），不进云同步。
 // 同步方式如实标注：服务器支持 IDLE → 实时推送；不支持 → 轮询；连接失败显示服务器原文。
 
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { isDesktopApp, openExternal } from './openExternal'
 import { pluginHttpDesktop } from './plugins'
 
@@ -227,12 +227,12 @@ export function setMailAccountTransport(id: string, transport: MailTransport): P
 export async function addMailAccount(
   meta: Omit<MailAccountMeta, 'id'>,
   secret: MailSecret,
-  pwd: string,
+  _pwd?: string,
 ): Promise<MailAccountMeta> {
   const added = await mutateAccounts(async accounts => {
     const existing = accounts.findIndex(a => a.platformId === meta.platformId && a.email.toLowerCase() === meta.email.toLowerCase())
     const id = existing >= 0 ? accounts[existing].id : `mail-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
-    const cipher = await encryptSecret(JSON.stringify(secret), pwd)
+    const cipher = await encryptLocalSecret(JSON.stringify(secret))
     const stored: StoredAccount = { ...meta, id, cipher }
     if (existing >= 0) accounts[existing] = stored
     else accounts.push(stored)
@@ -258,21 +258,58 @@ export async function removeMailAccount(id: string): Promise<void> {
   dropCachedBodies(Object.keys(readJson<Record<string, CachedBody>>(BODIES_KEY, {})).filter(k => k.startsWith(`${id}|`)))
 }
 
-export async function loadMailSecret(id: string, pwd: string): Promise<MailSecret | null> {
+export async function loadMailSecret(id: string, pwd?: string): Promise<MailSecret | null> {
   const entry = readAccountsFile().find(a => a.id === id)
   if (!entry) return null
   try {
-    return JSON.parse(await decryptSecret(entry.cipher, pwd)) as MailSecret
+    const secret = JSON.parse(await decryptStoredSecret(entry.cipher, pwd)) as MailSecret
+    if (secret && isLegacyCipher(entry.cipher)) {
+      // 惰性迁移：回写本地密文（失败不影响本次使用）
+      await saveMailSecret(id, secret).catch(() => false)
+    }
+    return secret
   } catch { return null }
+}
+
+/** 邮箱侧还有几份旧格式密文没迁（账户凭据 + OAuth 客户端凭据，v0.1.470 审计用） */
+export function countLegacyMailCreds(): number {
+  let n = readAccountsFile().filter(a => isLegacyCipher(a.cipher)).length
+  const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
+  n += Object.values(all).filter(c => isLegacyCipher(c)).length
+  return n
+}
+
+/** 批量迁移邮箱侧旧密文（账户走串行变更链逐个回写）；返回成功迁移数（幂等） */
+export async function migrateMailCreds(pwd: string): Promise<number> {
+  let n = 0
+  for (const a of readAccountsFile()) {
+    if (!isLegacyCipher(a.cipher)) continue
+    try {
+      const plain = await decryptStoredSecret(a.cipher, pwd)
+      const secret = JSON.parse(plain) as MailSecret
+      if (await saveMailSecret(a.id, secret)) n++
+    } catch { /* 跳过 */ }
+  }
+  const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
+  let dirty = false
+  for (const k of Object.keys(all)) {
+    if (!isLegacyCipher(all[k])) continue
+    try {
+      const next = await migrateCipherValue(all[k], pwd)
+      if (next) { all[k] = next; n++; dirty = true }
+    } catch { /* 跳过 */ }
+  }
+  if (dirty) writeJsonStrict(OAUTH_CLIENTS_KEY, all, 'OAuth 客户端凭据迁移失败')
+  return n
 }
 
 /** 保存（替换）账户凭据。返回 false = 账户记录不存在（没存上，调用方必须当失败处理）；
  *  写入本身失败（存储满等）直接抛错。v0.1.461 前是静默 return，存没存上没人知道。 */
-export async function saveMailSecret(id: string, secret: MailSecret, pwd: string): Promise<boolean> {
+export async function saveMailSecret(id: string, secret: MailSecret, _pwd?: string): Promise<boolean> {
   return mutateAccounts(async accounts => {
     const entry = accounts.find(a => a.id === id)
     if (!entry) return { result: false, dirty: false }
-    entry.cipher = await encryptSecret(JSON.stringify(secret), pwd)
+    entry.cipher = await encryptLocalSecret(JSON.stringify(secret))
     return { result: true, dirty: true }
   })
 }
@@ -2423,20 +2460,20 @@ export interface OAuthClientCreds {
   clientSecret: string
 }
 
-export async function loadOAuthClientCreds(provider: 'google' | 'microsoft', pwd: string): Promise<OAuthClientCreds | null> {
+export async function loadOAuthClientCreds(provider: 'google' | 'microsoft', pwd?: string): Promise<OAuthClientCreds | null> {
   const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
   const cipher = all[provider]
   if (!cipher) return null
   try {
-    const parsed = JSON.parse(await decryptSecret(cipher, pwd)) as Partial<OAuthClientCreds>
+    const parsed = JSON.parse(await decryptStoredSecret(cipher, pwd)) as Partial<OAuthClientCreds>
     if (!parsed.clientId) return null
     return { clientId: String(parsed.clientId), clientSecret: String(parsed.clientSecret ?? '') }
   } catch { return null }
 }
 
-export async function saveOAuthClientCreds(provider: 'google' | 'microsoft', creds: OAuthClientCreds, pwd: string): Promise<void> {
+export async function saveOAuthClientCreds(provider: 'google' | 'microsoft', creds: OAuthClientCreds, _pwd?: string): Promise<void> {
   const all = readJson<Record<string, string>>(OAUTH_CLIENTS_KEY, {})
-  all[provider] = await encryptSecret(JSON.stringify({ clientId: creds.clientId, clientSecret: creds.clientSecret }), pwd)
+  all[provider] = await encryptLocalSecret(JSON.stringify({ clientId: creds.clientId, clientSecret: creds.clientSecret }))
   // v0.1.461：与账户凭据同等待遇——写不下必须抛错，不许静默丢（旧 writeJson 吞异常）
   writeJsonStrict(OAUTH_CLIENTS_KEY, all, 'OAuth 客户端凭据保存失败')
 }

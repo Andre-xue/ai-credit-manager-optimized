@@ -3,6 +3,7 @@ import {
   parseSteamSearchHtml, sortSteamDeals, buildSteamSearchUrl, storeUrlOf, storeSubUrlOf,
   loadSteamCache, saveSteamCache, isSteamCacheFresh,
   STEAM_DEALS_CACHE_KEY, STEAM_DEALS_CACHE_TTL_MS,
+  shouldEntryRefreshSteam, STEAM_ENTRY_REFRESH_SKIP_MS,
   toSteamFetchError, parsePackageDetails, formatSteamCents, dealKey,
   type SteamDeal,
 } from './steamDeals'
@@ -278,5 +279,16 @@ describe('toSteamFetchError', () => {
   })
   it('其他错误原样透传', () => {
     expect(toSteamFetchError(new Error('HTTP 429')).message).toBe('HTTP 429')
+  })
+})
+
+describe('进页自动刷新决策 (v0.1.470)', () => {
+  it('5 分钟内跳过、超过 5 分钟刷新；1 小时缓存 TTL 保持不变', () => {
+    const now = 1_700_000_000_000
+    expect(shouldEntryRefreshSteam(now - 60_000, now)).toBe(false)
+    expect(shouldEntryRefreshSteam(now - STEAM_ENTRY_REFRESH_SKIP_MS + 1, now)).toBe(false)
+    expect(shouldEntryRefreshSteam(now - STEAM_ENTRY_REFRESH_SKIP_MS, now)).toBe(true)
+    expect(shouldEntryRefreshSteam(now - 30 * 60_000, now)).toBe(true)
+    expect(STEAM_DEALS_CACHE_TTL_MS).toBe(60 * 60_000)
   })
 })

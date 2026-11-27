@@ -1,4 +1,4 @@
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import {
   hasCheckinCred, loadCheckinCred, clearCheckinCred,
   getMinimaxStatus, claimMinimax,
@@ -32,11 +32,11 @@ export function listMmMeta(): MmAccountMeta[] {
   return readFile().accounts.map(({ id, label, uid }) => ({ id, label, uid }))
 }
 
-export async function addMmAccount(cred: CheckinCred, pwd: string): Promise<MmAccountMeta> {
+export async function addMmAccount(cred: CheckinCred, _pwd?: string): Promise<MmAccountMeta> {
   const f = readFile()
   const id = cred.uid || `mm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
   const meta: MmAccountMeta = { id, label: cred.label || 'MiniMax 账号', uid: cred.uid }
-  const cipher = await encryptSecret(JSON.stringify(cred), pwd)
+  const cipher = await encryptLocalSecret(JSON.stringify(cred))
   const existing = f.accounts.findIndex(a => a.id === id)
   if (existing >= 0) f.accounts[existing] = { ...meta, cipher }
   else f.accounts.push({ ...meta, cipher })
@@ -50,21 +50,27 @@ export function removeMmAccount(id: string): void {
   writeFile(f)
 }
 
-export function mmCredBox(id: string, pwd: string): CredBox {
+export function mmCredBox(id: string, pwd?: string): CredBox {
   return {
     load: async () => {
       const entry = readFile().accounts.find(a => a.id === id)
       if (!entry) return null
       try {
-        const cred = JSON.parse(await decryptSecret(entry.cipher, pwd)) as CheckinCred
-        return cred && cred.accessToken ? cred : null
+        const cred = JSON.parse(await decryptStoredSecret(entry.cipher, pwd)) as CheckinCred
+        if (!cred || !cred.accessToken) return null
+        if (isLegacyCipher(entry.cipher)) {
+          const f = readFile()
+          const e2 = f.accounts.find(a => a.id === id)
+          if (e2) { e2.cipher = await encryptLocalSecret(JSON.stringify(cred)); writeFile(f) }
+        }
+        return cred
       } catch { return null }
     },
     save: async cred => {
       const f = readFile()
       const entry = f.accounts.find(a => a.id === id)
       if (!entry) return
-      entry.cipher = await encryptSecret(JSON.stringify(cred), pwd)
+      entry.cipher = await encryptLocalSecret(JSON.stringify(cred))
       if (cred.label) entry.label = cred.label
       if (cred.uid) entry.uid = cred.uid
       writeFile(f)
@@ -73,7 +79,7 @@ export function mmCredBox(id: string, pwd: string): CredBox {
 }
 
 /** 把签到页时代的单个 MiniMax 凭据迁进多账号存储（只迁一次） */
-export async function migrateLegacyMinimaxCred(pwd: string): Promise<boolean> {
+export async function migrateLegacyMinimaxCred(pwd?: string): Promise<boolean> {
   if (listMmMeta().length || !hasCheckinCred('minimax')) return false
   const cred = await loadCheckinCred('minimax', pwd)
   if (!cred) return false
@@ -84,7 +90,7 @@ export async function migrateLegacyMinimaxCred(pwd: string): Promise<boolean> {
 
 export interface MmAccountStatus { meta: MmAccountMeta; status?: CheckinStatus; error?: string }
 
-export async function mmAccountStatuses(pwd: string): Promise<MmAccountStatus[]> {
+export async function mmAccountStatuses(pwd?: string): Promise<MmAccountStatus[]> {
   const out: MmAccountStatus[] = []
   for (const meta of listMmMeta()) {
     try {
@@ -96,6 +102,26 @@ export async function mmAccountStatuses(pwd: string): Promise<MmAccountStatus[]>
   return out
 }
 
-export async function mmClaimOne(pwd: string, id: string): Promise<{ message: string; points: number }> {
+export async function mmClaimOne(pwd: string | undefined, id: string): Promise<{ message: string; points: number }> {
   return claimMinimax(mmCredBox(id, pwd))
+}
+
+/** 池里还有几份旧格式密文没迁（v0.1.470 迁移审计用） */
+export function countLegacyMmCreds(): number {
+  return readFile().accounts.filter(a => isLegacyCipher(a.cipher)).length
+}
+
+/** 把池里旧格式密文批量迁成本地密文；返回成功迁移数（幂等） */
+export async function migrateMmCreds(pwd: string): Promise<number> {
+  const f = readFile()
+  let n = 0
+  for (const a of f.accounts) {
+    if (!isLegacyCipher(a.cipher)) continue
+    try {
+      const next = await migrateCipherValue(a.cipher, pwd)
+      if (next) { a.cipher = next; n++ }
+    } catch { /* 跳过 */ }
+  }
+  if (n) writeFile(f)
+  return n
 }

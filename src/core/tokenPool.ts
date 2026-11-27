@@ -1,4 +1,5 @@
 import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { TOKEN_PLATFORM_IDS } from './checkinPlatforms'
 
 /**
@@ -37,12 +38,12 @@ export function hasAnyTokenAccounts(): boolean {
   return Object.values(readFile()).some(list => (list ?? []).length > 0)
 }
 
-export async function addTokenAccount(platform: string, label: string, secret: string, pwd: string): Promise<TokenAccountMeta> {
+export async function addTokenAccount(platform: string, label: string, secret: string, _pwd?: string): Promise<TokenAccountMeta> {
   const f = readFile()
   const list = f[platform] ?? []
   const id = `tk-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
   const meta: TokenAccountMeta = { id, label: label.trim() || '未命名账号' }
-  list.push({ ...meta, cipher: await encryptSecret(secret.trim(), pwd) })
+  list.push({ ...meta, cipher: await encryptLocalSecret(secret.trim()) })
   f[platform] = list
   writeFile(f)
   return meta
@@ -54,18 +55,49 @@ export function removeTokenAccount(platform: string, id: string): void {
   writeFile(f)
 }
 
-export async function loadTokenSecret(platform: string, id: string, pwd: string): Promise<string | null> {
+export async function loadTokenSecret(platform: string, id: string, pwd?: string): Promise<string | null> {
   const entry = (readFile()[platform] ?? []).find(a => a.id === id)
-  if (!entry || !pwd) return null
+  if (!entry) return null
   try {
-    const secret = await decryptSecret(entry.cipher, pwd)
-    return secret ? secret : null
+    const secret = await decryptStoredSecret(entry.cipher, pwd)
+    if (!secret) return null
+    if (isLegacyCipher(entry.cipher)) {
+      const f = readFile()
+      const e2 = (f[platform] ?? []).find(a => a.id === id)
+      if (e2) { e2.cipher = await encryptLocalSecret(secret); writeFile(f) }
+    }
+    return secret
   } catch { return null }
+}
+
+/** 还有几份旧格式密文没迁（v0.1.470 迁移审计用） */
+export function countLegacyTokenCreds(): number {
+  return Object.values(readFile()).reduce((n, list) => n + (list ?? []).filter(a => isLegacyCipher(a.cipher)).length, 0)
+}
+
+/** 把全部平台的旧格式密文批量迁成本地密文；返回成功迁移数（幂等） */
+export async function migrateTokenCreds(pwd: string): Promise<number> {
+  const f = readFile()
+  let n = 0
+  for (const list of Object.values(f)) {
+    for (const a of list ?? []) {
+      if (!isLegacyCipher(a.cipher)) continue
+      try {
+        const next = await migrateCipherValue(a.cipher, pwd)
+        if (next) { a.cipher = next; n++ }
+      } catch { /* 跳过 */ }
+    }
+  }
+  if (n) writeFile(f)
+  return n
 }
 
 // ---- 凭据迁移（桌面导出 → 手机导入）：整包用主密码加密，不明文落盘 ----
 
 export async function exportTokenCredentials(pwd: string): Promise<string> {
+  // 导出文件本身用主密码加密（便携文件离开本机后的唯一保护）：没有主密码不许
+  // 退化成空密码加密。v0.1.470 起凭据读取不再需要密码，这道检查只管导出文件。
+  if (!pwd) throw new Error('导出凭据文件需要主密码（导出文件用主密码加密保护），请先解锁保险箱再导出')
   const items: { platform: string; label: string; secret: string }[] = []
   for (const pid of TOKEN_PLATFORM_IDS) {
     for (const m of listTokenMeta(pid)) {

@@ -1,4 +1,4 @@
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { isNativeApp } from './openExternal'
 
 /**
@@ -6,7 +6,8 @@ import { isNativeApp } from './openExternal'
  * 协议为各平台客户端同款的公开行为（OAuth 授权 + Bearer 调用签到接口），本模块为独立实现：
  * - 授权：WorkBuddy 走 copilot.tencent.com 的 plugin auth（state + 浏览器确认 + 轮询 token）；
  *   MiniMax 走 account.minimax.cn 的设备码 OAuth（PKCE S256）。
- * - 凭据（access/refresh token）用保险箱主密码加密后只存本机 localStorage，不云同步。
+ * - 凭据（access/refresh token）v0.1.470 起用设备本地密钥加密，只存本机 localStorage，不云同步；
+ *   470 前的主密码旧密文在下次解锁时一次性迁移（见 credMigration）。
  * - refresh token 会轮换：刷新成功必须回写本地存储（本模块内部统一处理）。
  * 接口均为平台非公开接口，平台变更时可能失效，错误会如实抛给界面显示。
  */
@@ -51,19 +52,43 @@ export function hasCheckinCred(platform: CheckinPlatform): boolean {
   return !!readStore()[platform]
 }
 
-export async function loadCheckinCred(platform: CheckinPlatform, pwd: string): Promise<CheckinCred | null> {
+export async function loadCheckinCred(platform: CheckinPlatform, pwd?: string): Promise<CheckinCred | null> {
   const cipher = readStore()[platform]
-  if (!cipher || !pwd) return null
+  if (!cipher) return null
   try {
-    const cred = JSON.parse(await decryptSecret(cipher, pwd)) as CheckinCred
-    return cred && cred.accessToken ? cred : null
+    const cred = JSON.parse(await decryptStoredSecret(cipher, pwd)) as CheckinCred
+    if (!cred || !cred.accessToken) return null
+    // 旧格式密文这次靠主密码解开了：顺手回写成本地密文（惰性迁移，幂等）
+    if (isLegacyCipher(cipher)) await saveCheckinCred(platform, cred).catch(() => { /* 回写失败不影响本次使用 */ })
+    return cred
   } catch { return null }
 }
 
-export async function saveCheckinCred(platform: CheckinPlatform, cred: CheckinCred, pwd: string): Promise<void> {
+export async function saveCheckinCred(platform: CheckinPlatform, cred: CheckinCred, _pwd?: string): Promise<void> {
   const store = readStore()
-  store[platform] = await encryptSecret(JSON.stringify(cred), pwd)
+  store[platform] = await encryptLocalSecret(JSON.stringify(cred))
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)) } catch { /* 忽略 */ }
+}
+
+/** 还有几份旧格式（主密码）密文没迁（v0.1.470 迁移审计用） */
+export function countLegacyCheckinCreds(): number {
+  return Object.values(readStore()).filter(c => isLegacyCipher(c)).length
+}
+
+/** 把本存储的旧格式密文批量迁成本地密文；返回成功迁移数（幂等，解不开的跳过） */
+export async function migrateCheckinCreds(pwd: string): Promise<number> {
+  const store = readStore()
+  let n = 0
+  for (const k of Object.keys(store) as CheckinPlatform[]) {
+    const c = store[k]
+    if (!isLegacyCipher(c)) continue
+    try {
+      const next = await migrateCipherValue(c!, pwd)
+      if (next) { store[k] = next; n++ }
+    } catch { /* 密码不对/损坏：跳过，留待下次 */ }
+  }
+  if (n) { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)) } catch { /* 忽略 */ } }
+  return n
 }
 
 export function clearCheckinCred(platform: CheckinPlatform): void {
@@ -403,7 +428,7 @@ export interface CredBox {
   save(cred: CheckinCred): Promise<void>
 }
 
-export function singleCredBox(platform: CheckinPlatform, pwd: string): CredBox {
+export function singleCredBox(platform: CheckinPlatform, pwd?: string): CredBox {
   return {
     load: () => loadCheckinCred(platform, pwd),
     save: cred => saveCheckinCred(platform, cred, pwd),
@@ -487,12 +512,12 @@ export async function claimMinimax(box: CredBox): Promise<{ message: string; poi
   })
 }
 
-export async function getCheckinStatus(platform: CheckinPlatform, pwd: string): Promise<CheckinStatus> {
+export async function getCheckinStatus(platform: CheckinPlatform, pwd?: string): Promise<CheckinStatus> {
   if (platform === 'workbuddy') return getWorkbuddyStatus(singleCredBox(platform, pwd))
   return getMinimaxStatus(singleCredBox(platform, pwd))
 }
 
-export async function claimCheckin(platform: CheckinPlatform, pwd: string): Promise<{ message: string; points: number }> {
+export async function claimCheckin(platform: CheckinPlatform, pwd?: string): Promise<{ message: string; points: number }> {
   if (platform === 'workbuddy') return claimWorkbuddy(singleCredBox(platform, pwd))
   return claimMinimax(singleCredBox(platform, pwd))
 }

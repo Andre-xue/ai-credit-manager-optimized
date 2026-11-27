@@ -188,6 +188,17 @@ export function isSteamCacheFresh(cache: SteamDealsCache | null): boolean {
   return !!cache && Date.now() - cache.at < STEAM_DEALS_CACHE_TTL_MS
 }
 
+/**
+ * 进页自动刷新（v0.1.470）：1 小时缓存仍是兜底（拉不到时继续用旧缓存），
+ * 但进页时若距上次拉取已超过这个时长就后台刷一次；不足则跳过防狂刷。
+ */
+export const STEAM_ENTRY_REFRESH_SKIP_MS = 5 * 60_000
+
+/** 纯决策：给定缓存时间戳，进页时该不该自动刷新一次（无缓存 = 该刷） */
+export function shouldEntryRefreshSteam(at: number | null | undefined, now: number = Date.now()): boolean {
+  return !at || now - at >= STEAM_ENTRY_REFRESH_SKIP_MS
+}
+
 /** 网络失败换成中文并点名步骤（与 freeGames 的 toChineseFetchError 同款，Steam 版）。 */
 export function toSteamFetchError(e: unknown): Error {
   const msg = e instanceof Error ? e.message : String(e)

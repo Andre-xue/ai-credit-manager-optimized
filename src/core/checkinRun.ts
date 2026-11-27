@@ -8,12 +8,14 @@ import { getPlatformEnabled, platformMeta, TOKEN_PLATFORM_IDS } from './checkinP
 import { listTokenMeta, loadTokenSecret, hasAnyTokenAccounts } from './tokenPool'
 import { getTokenStatus, claimToken } from './tokenCheckin'
 import { getBiometricPassword } from './crypto'
+import { hasLegacyOperationalCreds } from './credMigration'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
  * 账号池每个号）逐个查状态、可领就领，结果汇总并留痕到本机存储——
  * 菜单栏迷你窗直接读留痕展示，也可自己发起（全程不打开主窗口）。
- * 自动签到偏好只存本机；执行需要保险箱已解锁（主密码在内存或指纹密码副本可用）。
+ * 自动签到偏好只存本机；v0.1.470 起凭据是设备本地密钥加密，执行不再需要
+ * 解锁保险箱；只有还没迁移的旧版凭据（主密码加密）才需要密码（会话或指纹副本）。
  */
 
 export interface CheckinRunItem {
@@ -84,8 +86,9 @@ export async function autoCheckinTick(sessionPwd: string, notify?: (msg: string)
   if (!hasCheckinSources()) return 'skipped-nosource'
   if (checkinRunIsToday(readLastCheckinRun())) return 'skipped-today'
   const pwd = resolveAutoCheckinPassword(sessionPwd)
-  if (!pwd) return 'skipped-nopwd'
-  const run = await runAllCheckins(pwd)
+  // 470：凭据已迁本地加密时没密码照样跑；只有旧版凭据未迁且没密码才跳过
+  if (!pwd && hasLegacyOperationalCreds()) return 'skipped-nopwd'
+  const run = await runAllCheckins(pwd ?? undefined)
   if (sessionPwd && notify) notify(`自动签到完成：${summarizeCheckinRun(run)}`)
   return 'ran'
 }
@@ -99,8 +102,7 @@ export function hasCheckinSources(): boolean {
 /**
  * 逐个来源签到。密码不对（凭据全部解不开）时整体抛错，不产生误导性的逐项失败。
  */
-export async function runAllCheckins(pwd: string): Promise<CheckinRun> {
-  if (!pwd) throw new Error('保险箱未解锁')
+export async function runAllCheckins(pwd?: string): Promise<CheckinRun> {
   // 旧单账号凭据先迁进多账号存储（签到页/池页没打开过时自动签到也能覆盖到）
   await migrateLegacyWorkbuddyCred(pwd).catch(() => false)
   await migrateLegacyMinimaxCred(pwd).catch(() => false)

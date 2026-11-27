@@ -90,7 +90,8 @@ import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, che
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, webdavHttpBlocked, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { autoCheckinTick, resolveAutoCheckinPassword } from './core/checkinRun'
-import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult } from './core/freeGames'
+import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult, hasLegacyEpicAuth } from './core/freeGames'
+import { migrateAllOperationalCreds } from './core/credMigration'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -1138,6 +1139,14 @@ function App() {
     return () => window.clearInterval(t)
   }, [notify, sessionPwd])
 
+  // ---- v0.1.470：一次性迁移——每次成功解锁后，把仍为主密码加密的运营凭据
+  // （Epic/签到/邮箱/账号池/TMDB）静默换成设备本地密钥加密；迁完这些功能不再
+  // 需要解锁。API Key 本身不在迁移范围，仍由主密码加密、照常云同步。 ----
+  useEffect(() => {
+    if (!sessionPwd) return
+    void migrateAllOperationalCreds(sessionPwd).catch(() => { /* 失败不打扰：功能用到旧凭据时会以「一次性迁移」名义再请解锁 */ })
+  }, [sessionPwd])
+
   // ---- 免费游戏自动领取（v0.1.384；v0.1.421 起解锁也触发）：Epic 绑定后按偏好间隔巡查，拉取本周免费并自动领入库 ----
   // 启动/解锁时先看一眼（effect 依赖 sessionPwd，解锁会立即重跑一次 tick），之后每 30 分钟看一眼（覆盖跨周四 23:00 换新）；失败原因写进
   // 工坊领取记录，不静默跳过。密码来源与自动签到同款：会话密码或指纹副本（resolveAutoCheckinPassword，`||` 而非 `??`）。
@@ -1146,8 +1155,9 @@ function App() {
     const tick = async () => {
       if (autoFgRunningRef.current) return
       if (!freeGamesCheckDue()) return
-      const pwd = resolveAutoCheckinPassword(sessionPwdRef.current)
-      if (!pwd) return
+      // v0.1.470：Epic 授权已迁本地加密，锁定也能自动领；只有旧授权还没迁移时才等解锁
+      const pwd = resolveAutoCheckinPassword(sessionPwdRef.current) ?? undefined
+      if (!pwd && hasLegacyEpicAuth()) return
       autoFgRunningRef.current = true
       try {
         const res = await runFreeGamesCheck(pwd)

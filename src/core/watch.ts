@@ -13,7 +13,7 @@
 // （裸 IP 直连，如 74.91.26.218）。这些流不拦截、不过滤，只打「未授权转播」
 // 标记：频道卡片角标 + 播放器内提示 + 直播分区顶部说明。
 
-import { encryptSecret, decryptSecret } from './crypto'
+import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { isNativeApp } from './openExternal'
 
 export interface LiveChannel {
@@ -1273,11 +1273,10 @@ export function upsertContinue(item: ContinueItem): ContinueItem[] {
 
 // ---------------- TMDB（热门推荐）：Key 免费注册，加密存本机 ----------------
 
-export async function saveTmdbKey(key: string, pwd: string): Promise<void> {
+export async function saveTmdbKey(key: string, _pwd?: string): Promise<void> {
   const clean = key.trim()
   if (!clean) throw new Error('请先粘贴 TMDB API Key')
-  if (!pwd) throw new Error('请先解锁保险箱，Key 要加密保存')
-  const cipher = await encryptSecret(clean, pwd)
+  const cipher = await encryptLocalSecret(clean)
   try { localStorage.setItem(TMDB_KEY, JSON.stringify({ cipher })) } catch { /* 忽略 */ }
 }
 
@@ -1285,12 +1284,36 @@ export function hasTmdbKey(): boolean {
   try { return !!JSON.parse(localStorage.getItem(TMDB_KEY) ?? 'null')?.cipher } catch { return false }
 }
 
-export async function loadTmdbKey(pwd: string): Promise<string | null> {
+export async function loadTmdbKey(pwd?: string): Promise<string | null> {
   try {
     const raw = JSON.parse(localStorage.getItem(TMDB_KEY) ?? 'null') as { cipher?: string } | null
-    if (!raw?.cipher || !pwd) return null
-    return await decryptSecret(raw.cipher, pwd)
+    if (!raw?.cipher) return null
+    const key = await decryptStoredSecret(raw.cipher, pwd)
+    if (key && isLegacyCipher(raw.cipher)) {
+      try { localStorage.setItem(TMDB_KEY, JSON.stringify({ cipher: await encryptLocalSecret(key) })) } catch { /* 忽略 */ }
+    }
+    return key
   } catch { return null }
+}
+
+/** TMDB Key 是否还是旧格式密文（v0.1.470 迁移审计用） */
+export function hasLegacyTmdbKey(): boolean {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TMDB_KEY) ?? 'null') as { cipher?: string } | null
+    return isLegacyCipher(raw?.cipher)
+  } catch { return false }
+}
+
+/** 把 TMDB Key 旧密文迁成本地密文；返回是否迁了（幂等） */
+export async function migrateTmdbKey(pwd: string): Promise<number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TMDB_KEY) ?? 'null') as { cipher?: string } | null
+    if (!isLegacyCipher(raw?.cipher)) return 0
+    const next = await migrateCipherValue(raw!.cipher!, pwd)
+    if (!next) return 0
+    localStorage.setItem(TMDB_KEY, JSON.stringify({ cipher: next }))
+    return 1
+  } catch { return 0 }
 }
 
 export function clearTmdbKey(): void {

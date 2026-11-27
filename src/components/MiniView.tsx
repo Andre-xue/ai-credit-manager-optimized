@@ -3,6 +3,7 @@ import { latestQuota, loadState } from '../core/store'
 import { predictExhaustion } from '../core/forecast'
 import { PROVIDER_MAP } from '../data/providers'
 import { getBiometricPassword } from '../core/crypto'
+import { hasLegacyOperationalCreds } from '../core/credMigration'
 import {
   readLastCheckinRun, runAllCheckins, summarizeCheckinRun, checkinRunIsToday,
   getAutoCheckinEnabled, setAutoCheckinEnabled, hasCheckinSources, clearLastCheckinRun, type CheckinRun,
@@ -85,15 +86,16 @@ export function MiniView() {
     setUpdatedAt(new Date())
   }, [])
 
-  // 一键签到：全程在本窗完成。密码优先用指纹解锁留下的副本，没有就用本窗输入的主密码。
+  // 一键签到：全程在本窗完成。v0.1.470 起凭据是本地密钥加密，没密码照样签；
+  // 只有旧版凭据还没迁移时才需要主密码（指纹副本或本窗输入）解锁一次完成迁移。
   const doCheckin = async () => {
     if (checking) return
     const pwd = getBiometricPassword() || pwdInput
-    if (!pwd) { setNeedPwd(true); setCheckMsg('保险箱没解锁：输入主密码，或在主窗口开启指纹解锁后这里可免密签到'); return }
+    if (!pwd && hasLegacyOperationalCreds()) { setNeedPwd(true); setCheckMsg('有旧版加密的签到凭据：输入主密码解锁一次完成迁移，之后签到不再需要密码'); return }
     setChecking(true); setCheckMsg('')
     if (collapseRef.current) window.clearTimeout(collapseRef.current)
     try {
-      const run = await runAllCheckins(pwd)
+      const run = await runAllCheckins(pwd || undefined)
       setLastRun(run)
       setNeedPwd(false); setPwdInput('')
       setCheckMsg(summarizeCheckinRun(run))

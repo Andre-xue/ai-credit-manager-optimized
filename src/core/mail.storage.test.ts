@@ -24,6 +24,27 @@ vi.mock('./crypto', () => ({
     return cipher.slice(4)
   },
 }))
+// v0.1.470：邮箱凭据改走 deviceKey 本地加密——可控加密的挂起/放行改挂到
+// encryptLocalSecret 上，交错时序的钉法不变（本文件测的是串行写入链，不是加密本身）
+vi.mock('./deviceKey', () => ({
+  LOCAL_CIPHER_PREFIX: 'L1.',
+  LEGACY_CRED_LOCKED: 'LEGACY_CRED_LOCKED',
+  encryptLocalSecret: (plain: string) => (h.manual
+    ? new Promise<string>(resolve => { h.pending.push({ plain, resolve }) })
+    : Promise.resolve('enc:' + plain)),
+  decryptLocalSecret: async (cipher: string) => {
+    if (!cipher.startsWith('enc:')) throw new Error('bad cipher')
+    return cipher.slice(4)
+  },
+  decryptStoredSecret: async (cipher: string) => {
+    if (!cipher.startsWith('enc:')) throw new Error('bad cipher')
+    return cipher.slice(4)
+  },
+  isLocalCipher: (v: unknown) => typeof v === 'string' && v.startsWith('L1.'),
+  isLegacyCipher: (v: unknown) => typeof v === 'string' && v.length > 0 && !v.startsWith('L1.') && v.includes(':'),
+  isLegacyLockedError: () => false,
+  migrateCipherValue: async () => null,
+}))
 
 import {
   addMailAccount, listMailAccounts, loadMailSecret, saveMailSecret,

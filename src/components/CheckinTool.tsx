@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarCheck, ChevronDown, Fingerprint, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
+import { CalendarCheck, ChevronDown, Loader2, LogOut, RefreshCw, Sparkles, UserPlus } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
+import { LegacyMigrationBanner } from './LegacyMigrationBanner'
 import { PlatformIcon } from './PlatformIcon'
-import { openExternal, biometricAvailable } from '../core/openExternal'
+import { openExternal } from '../core/openExternal'
 import { setAppBusy } from '../core/appBusy'
-import { resolveBiometricVaultPassword } from '../core/biometric'
 import {
   minimaxBeginDevice, minimaxPollDevice,
   type MinimaxDeviceFlow,
@@ -88,7 +88,6 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
 
   const refresh = useCallback(async () => {
     const metas = listTokenMeta(id)
-    if (!sessionPwd) { setRows(metas.map(m => ({ meta: m, status: null }))); return }
     setBusy('status')
     const out: TokenRow[] = []
     for (const m of metas) {
@@ -103,7 +102,6 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
 
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => {
-    if (!sessionPwd) return
     const onWake = () => { void refresh() }
     const onStorage = (e: StorageEvent) => { if (e.key === 'acm.checkin.lastRun.v1') onWake() }
     window.addEventListener('focus', onWake)
@@ -122,7 +120,6 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
   const agg = !rows.length ? '' : claimable > 0 ? `${rows.length} 个账号 · ${claimable} 个待签到` : done === rows.length ? `${rows.length} 个账号 · 今日全部已签 ✓` : `${rows.length} 个账号 · 已签 ${done}`
 
   const claimOne = async (row: TokenRow) => {
-    if (!sessionPwd) return
     setBusy(`claim:${row.meta.id}`)
     try {
       const secret = await loadTokenSecret(id, row.meta.id, sessionPwd)
@@ -154,7 +151,7 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
   }
 
   const submitAdd = async () => {
-    if (!sessionPwd || !secretInput.trim()) return
+    if (!secretInput.trim()) return
     setBusy('add')
     try {
       const m = await addTokenAccount(id, labelInput.trim() || `${meta.name}账号`, secretInput, sessionPwd)
@@ -179,9 +176,9 @@ function TokenPlatformSection({ id, sessionPwd, notify, onMetaChange }: { id: Ch
             <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{agg || '还没有账号：点「添加账号」，按使用说明粘贴凭据'}</div>
           </div>
           {rows.length > 1 && <button className="btn sm ghost" onClick={() => setOpen(!showList)}>{showList ? '收起' : '展开'}</button>}
-          <button className="btn sm" disabled={!sessionPwd || adding} onClick={() => setAdding(true)}><UserPlus size={14} /> 添加账号</button>
+          <button className="btn sm" disabled={adding} onClick={() => setAdding(true)}><UserPlus size={14} /> 添加账号</button>
           {rows.length > 0 && (
-            <button className="btn sm" disabled={!sessionPwd || busy === 'status'} onClick={() => void refresh()}>
+            <button className="btn sm" disabled={busy === 'status'} onClick={() => void refresh()}>
               {busy === 'status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
             </button>
           )}
@@ -256,8 +253,6 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   notify: (msg: string) => void
   onBack: () => void
 }) {
-  const [pwdInput, setPwdInput] = useState('')
-  const [bioOk, setBioOk] = useState(false)
   const [autoOn, setAutoOn] = useState(() => getAutoCheckinEnabled())
   const [poolStatuses, setPoolStatuses] = useState<PoolAccountStatus[]>([])
   const [mmStatuses, setMmStatuses] = useState<MmAccountStatus[]>([])
@@ -307,13 +302,6 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   const countFor = (id: CheckinPlatformId) => id === 'workbuddy' ? poolStatuses.length : id === 'minimax' ? mmStatuses.length : tokenCounts[id] ?? 0
   const switchTab = (id: CheckinPlatformId) => { setActiveTab(id); saveCheckinTab(id) }
 
-  useEffect(() => { void biometricAvailable().then(setBioOk).catch(() => setBioOk(false)) }, [])
-  const bioUnlock = async () => {
-    const pwd = await resolveBiometricVaultPassword('验证身份以解锁保险箱')
-    if (pwd) onUnlock(pwd)
-    else notify('未通过指纹验证，或还没开启指纹解锁（先输一次主密码，并在设置里开启指纹/生物解锁后再用）')
-  }
-
   const refreshPool = useCallback(async () => {
     setBusy('wb-status')
     try { setPoolStatuses(await poolAccountStatuses(sessionPwd)) } finally { setBusy('') }
@@ -325,11 +313,10 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
   }, [sessionPwd])
 
   useEffect(() => {
-    if (!sessionPwd) return
     let dead = false
     void (async () => {
-      await migrateLegacyWorkbuddyCred(sessionPwd).catch(() => false)
-      await migrateLegacyMinimaxCred(sessionPwd).catch(() => false)
+      await migrateLegacyWorkbuddyCred(sessionPwd || undefined).catch(() => false)
+      await migrateLegacyMinimaxCred(sessionPwd || undefined).catch(() => false)
       if (dead) return
       if (listPoolMeta().length) void refreshPool()
       if (listMmMeta().length) void refreshMm()
@@ -341,7 +328,6 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   // 与迷你窗/自动签到同步：窗口重新聚焦、或签到留痕被更新时，自动重查各账号状态
   useEffect(() => {
-    if (!sessionPwd) return
     const onWake = () => {
       setLastRun(readLastCheckinRun())
       setTokenTick(t => t + 1)
@@ -454,18 +440,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
 
   return (
     <ToolShell title="每日签到" desc="各 AI 平台的每日签到领积分，按国内/国外与功能分组；每个平台可单独关掉自动签到。凭据加密只存本机。" onBack={onBack}>
-      {!sessionPwd && (
-        <div className="ws-result">
-          保险箱还没解锁：签到凭据要用主密码加密保存，在这里直接解锁即可，不用去别的页面。
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <input type="password" className="input" style={{ maxWidth: 240 }} placeholder="保险箱主密码"
-              value={pwdInput} onChange={e => setPwdInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && pwdInput) { onUnlock(pwdInput); setPwdInput('') } }} />
-            <button className="btn sm primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁</button>
-            {bioOk && <button className="btn sm" onClick={() => void bioUnlock()}><Fingerprint size={14} /> 指纹解锁</button>}
-          </div>
-        </div>
-      )}
+      <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid var(--border)', borderRadius: 14, padding: '10px 16px', background: 'var(--panel)', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
@@ -552,15 +527,16 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '0 4px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>凭据只存本机、不上云：点「导出凭据」生成加密文件，传到手机后在手机签到页点「导入凭据」选它即可（需同一主密码）。</span>
-        <button className="btn sm" disabled={!sessionPwd} onClick={async () => {
+        <button className="btn sm" onClick={async () => {
           try { const text = await exportTokenCredentials(sessionPwd); await saveExportFile('ai-cube-checkin-credentials.json', text); notify('凭据文件已导出（主密码加密）：传到手机后在签到页导入') }
           catch (e) { notify(e instanceof Error ? e.message : '导出失败') }
         }}>导出凭据</button>
-        <label className="btn sm" style={{ cursor: sessionPwd ? 'pointer' : 'not-allowed', opacity: sessionPwd ? 1 : 0.5 }}>
+        <label className="btn sm" style={{ cursor: 'pointer' }}>
           导入凭据
-          <input type="file" accept=".json,application/json" style={{ display: 'none' }} disabled={!sessionPwd} onChange={async e => {
+          <input type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={async e => {
             const f = e.target.files?.[0]; e.target.value = ''
-            if (!f || !sessionPwd) return
+            if (!f) return
+            if (!sessionPwd) { notify('导入凭据文件需要先解锁保险箱（用导出文件的主密码解密）'); return }
             try {
               const r = await importTokenCredentials(await f.text(), sessionPwd)
               window.dispatchEvent(new Event('acm-checkin-done'))
@@ -607,7 +583,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
             <button className="btn sm ghost" onClick={() => setWbOpen(!wbShowList)}>{wbShowList ? '收起' : '展开'}</button>
           )}
           {poolStatuses.length > 0 && (
-            <button className="btn sm" disabled={!sessionPwd || busy === 'wb-status'} onClick={() => void refreshPool()}>
+            <button className="btn sm" disabled={busy === 'wb-status'} onClick={() => void refreshPool()}>
               {busy === 'wb-status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
             </button>
           )}
@@ -620,7 +596,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         <GuideFold id="workbuddy" />
         {poolStatuses.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
-            {sessionPwd ? '账号池还是空的：去工坊主页打开「WorkBuddy 账号池」，添加账号后回到这里就能逐个签到。' : '解锁后显示池里账号的签到状态。'}
+            {'账号池还是空的：去工坊主页打开「WorkBuddy 账号池」，添加账号后回到这里就能逐个签到。'}
           </div>
         )}
         {wbShowList && (
@@ -661,11 +637,11 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
           {mmStatuses.length > 1 && (
             <button className="btn sm ghost" onClick={() => setMmOpen(!mmShowList)}>{mmShowList ? '收起' : '展开'}</button>
           )}
-          <button className="btn sm" disabled={!sessionPwd || busy === 'mm-auth' || !!mmAuth} onClick={() => void startMmAuth()}>
+          <button className="btn sm" disabled={busy === 'mm-auth' || !!mmAuth} onClick={() => void startMmAuth()}>
             {busy === 'mm-auth' ? <Loader2 size={14} className="spin" /> : <UserPlus size={14} />} 添加账号
           </button>
           {mmStatuses.length > 0 && (
-            <button className="btn sm" disabled={!sessionPwd || busy === 'mm-status'} onClick={() => void refreshMm()}>
+            <button className="btn sm" disabled={busy === 'mm-status'} onClick={() => void refreshMm()}>
               {busy === 'mm-status' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} 刷新
             </button>
           )}
@@ -690,7 +666,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
         <GuideFold id="minimax" />
         {mmStatuses.length === 0 && !mmAuth && (
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 10 }}>
-            {sessionPwd ? '还没有 MiniMax 账号：点右上「添加账号」，在浏览器登录确认即可；多个号就重复添加（每次换号登录）。' : '解锁后显示各账号的签到状态。'}
+            {'还没有 MiniMax 账号：点右上「添加账号」，在浏览器登录确认即可；多个号就重复添加（每次换号登录）。'}
           </div>
         )}
 

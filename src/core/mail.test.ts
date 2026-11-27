@@ -569,7 +569,8 @@ describe('OAuth 客户端凭据存储（446）', () => {
     expect(raw).not.toContain('cid-xyz')
     expect(raw).not.toContain('sec-xyz')
     await expect(loadOAuthClientCreds('google', 'test1234')).resolves.toEqual({ clientId: 'cid-xyz', clientSecret: 'sec-xyz' })
-    await expect(loadOAuthClientCreds('google', 'wrong-pass')).resolves.toBeNull()
+    // v0.1.470：OAuth 客户端凭据改设备本地密钥加密，不再绑主密码——不传密码也能读回
+    await expect(loadOAuthClientCreds('google')).resolves.toEqual({ clientId: 'cid-xyz', clientSecret: 'sec-xyz' })
     await expect(loadOAuthClientCreds('microsoft', 'test1234')).resolves.toBeNull()
     clearOAuthClientCreds('google')
     await expect(loadOAuthClientCreds('google', 'test1234')).resolves.toBeNull()

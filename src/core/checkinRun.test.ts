@@ -4,7 +4,7 @@ import {
   resolveAutoCheckinPassword, autoCheckinTick, setAutoCheckinEnabled,
   getAutoCheckinEnabled, readLastCheckinRun, checkinRunIsToday, clearLastCheckinRun,
 } from './checkinRun'
-import { initVault, saveBiometricPassword, clearBiometricPassword } from './crypto'
+import { initVault, saveBiometricPassword, clearBiometricPassword, encryptSecret } from './crypto'
 import { addPoolAccount } from './wbPool'
 
 // Node 环境 polyfill：WebCrypto + localStorage + window（httpCall 在 web 环境走 fetch）
@@ -53,6 +53,16 @@ async function seedPoolAccount(): Promise<void> {
     { accessToken: 'AT', refreshToken: 'RT', expiresAt: Date.now() + 3600_000, uid: 'u1', label: '测试号' },
     PWD,
   )
+}
+
+/** v0.1.470 前的旧格式种子：池凭据直接用主密码加密（无 L1. 前缀） */
+async function seedLegacyPoolAccount(): Promise<void> {
+  await initVault(PWD)
+  const cipher = await encryptSecret(
+    JSON.stringify({ accessToken: 'AT', refreshToken: 'RT', expiresAt: Date.now() + 3600_000, uid: 'u1', label: '测试号' }),
+    PWD,
+  )
+  localStorage.setItem('acm.wbpool.v1', JSON.stringify({ accounts: [{ id: 'legacy1', label: '测试号', cipher }] }))
 }
 
 describe('checkinRun.resolveAutoCheckinPassword (v0.1.421)', () => {
@@ -106,7 +116,15 @@ describe('checkinRun.autoCheckinTick (v0.1.421)', () => {
     expect(notes).toHaveLength(0)
   })
 
-  it('锁定时没有指纹副本：tick 跳过，不跑签到、不留今日记录', async () => {
+  it('v0.1.470：锁定时没有指纹副本，凭据已是本机加密，tick 照常跑', async () => {
+    const r = await autoCheckinTick('')
+    expect(r).toBe('ran')
+    expect(checkinRunIsToday(readLastCheckinRun())).toBe(true)
+    expect(readLastCheckinRun()?.items[0].outcome).toBe('claimed')
+  })
+
+  it('v0.1.470：旧版主密码凭据未迁移且无密码可用：tick 跳过（等解锁迁移一次）', async () => {
+    await seedLegacyPoolAccount()
     const r = await autoCheckinTick('')
     expect(r).toBe('skipped-nopwd')
     expect(checkinRunIsToday(readLastCheckinRun())).toBe(false)
@@ -147,7 +165,8 @@ describe('checkinRun.autoCheckinTick (v0.1.421)', () => {
     expect(await autoCheckinTick(PWD)).toBe('skipped-nosource')
   })
 
-  it('凭据解不开（副本密码不对）：tick 抛错，由调用方静默吞掉，不留今日记录', async () => {
+  it('旧版凭据解不开（副本密码不对）：tick 抛错，由调用方静默吞掉，不留今日记录', async () => {
+    await seedLegacyPoolAccount()
     saveBiometricPassword('wrong-pwd')
     await expect(autoCheckinTick('')).rejects.toThrow(/主密码不正确/)
     expect(checkinRunIsToday(readLastCheckinRun())).toBe(false)

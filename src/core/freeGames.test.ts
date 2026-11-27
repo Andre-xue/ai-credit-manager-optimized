@@ -12,6 +12,7 @@ import {
   EpicManualCheckoutError, checkoutUrlOf,
   parseOwnedKeys, fetchOwnedEpicKeys, syncOwnedEpicGames, markEpicGameClaimed,
   readRecords, claimedGameIds, CACHE_KEY,
+  shouldEntryRefreshCache, EPIC_ENTRY_REFRESH_SKIP_MS, touchLastCheckAt, loadLastCheckAt, LAST_ERROR_KEY,
   type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
 
@@ -1016,12 +1017,41 @@ describe('freeGames syncOwnedEpicGames（v0.1.405）', () => {
       expect(res.synced).toEqual(['Mark of the Deep'])
     } finally { unStubWindow() }
   })
-  it('未解锁保险箱时抛错，不碰 Epic 接口', async () => {
+  it('v0.1.470：不再有未解锁门槛——没绑定时只报未绑定，不提保险箱', async () => {
     ensureLocalStorage()
-    await expect(syncOwnedEpicGames('')).rejects.toThrow(/解锁保险箱/)
+    await expect(syncOwnedEpicGames()).rejects.toThrow(/绑定 Epic/)
+    await expect(syncOwnedEpicGames('')).rejects.toThrow(/绑定 Epic/)
+  })
+  it('v0.1.470：锁定状态（不传密码）也能同步浏览器领取——凭据已本机加密', async () => {
+    await seedBoundAuth()
+    try {
+      const games = parseEpicPromotions(EPIC_FIXTURE).current
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), epicCurrent: games, epicUpcoming: [] }))
+      const res = await syncOwnedEpicGames()
+      expect(res.synced).toEqual(['Mark of the Deep'])
+      expect(res.ownedCount).toBe(1)
+    } finally { unStubWindow() }
   })
   it('未绑定 Epic 时抛错，提示先绑定', async () => {
     ensureLocalStorage()
     await expect(syncOwnedEpicGames('testpwd8')).rejects.toThrow(/绑定 Epic/)
+  })
+})
+
+describe('进页自动刷新决策 (v0.1.470)', () => {
+  it('无缓存 → 刷新；5 分钟内 → 跳过；超过 5 分钟 → 刷新', () => {
+    const now = 1_700_000_000_000
+    expect(shouldEntryRefreshCache(null, now)).toBe(true)
+    expect(shouldEntryRefreshCache(undefined, now)).toBe(true)
+    expect(shouldEntryRefreshCache(now - 60_000, now)).toBe(false)
+    expect(shouldEntryRefreshCache(now - EPIC_ENTRY_REFRESH_SKIP_MS + 1, now)).toBe(false)
+    expect(shouldEntryRefreshCache(now - EPIC_ENTRY_REFRESH_SKIP_MS, now)).toBe(true)
+    expect(shouldEntryRefreshCache(now - 30 * 60_000, now)).toBe(true)
+  })
+  it('touchLastCheckAt 只写上次检查时间戳', () => {
+    ensureLocalStorage()
+    touchLastCheckAt(1_700_000_000_000)
+    expect(loadLastCheckAt()).toBe(1_700_000_000_000)
+    expect(localStorage.getItem(LAST_ERROR_KEY)).toBeNull()
   })
 })

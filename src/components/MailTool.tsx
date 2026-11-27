@@ -20,7 +20,7 @@ import {
   mailVerifyAccount, MAIL_CONNECT_STEP_LABELS, loadCachedBody, mailFetchAttachment,
   OAUTH_REGISTER_GUIDES, loadOAuthClientCreds, saveOAuthClientCreds, clearOAuthClientCreds,
   loadMailReauthFlags, clearMailReauthFlag, mailOAuthAuthorize, OAUTH_CANCELLED,
-  saveMailSecret, loadMailSecret, mailForgetSession,
+  saveMailSecret, loadMailSecret, mailForgetSession, countLegacyMailCreds,
   displayMailError, shouldSuggestCredentialCheck,
   loadMailAutoRefresh, saveMailAutoRefresh, MAIL_AUTO_REFRESH_INTERVALS,
   loadMailListPrefs, saveMailListPrefs, MAIL_PAGE_SIZES, mailPageWindow,
@@ -131,7 +131,6 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   // 在设置行/错误条给「重新授权」补凭据入口，不逼用户删账户重加
   const [missingSecrets, setMissingSecrets] = useState<ReadonlySet<string>>(new Set())
   const probeMissingSecrets = useCallback(async () => {
-    if (!pwd) { setMissingSecrets(new Set()); return }
     const missing = new Set<string>()
     for (const a of listMailAccounts()) {
       if (!(await loadMailSecret(a.id, pwd))) missing.add(a.id)
@@ -222,7 +221,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   }, [allMessages, accountFilter])
 
   const syncOne = useCallback(async (account: MailAccountMeta, silent = false) => {
-    if (!pwd || syncingRef.current.has(account.id)) return
+    if (syncingRef.current.has(account.id)) return
     syncingRef.current.add(account.id)
     setSyncMap(prev => ({ ...prev, [account.id]: { state: 'syncing' } }))
     const outcome = await mailSyncAccount(account, pwd)
@@ -262,7 +261,6 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
 
   // IDLE 事件：新邮件/变化 → 增量同步；状态如实回告
   useEffect(() => {
-    if (!pwd) return
     let unlisten: (() => void) | undefined
     let dead = false
     void (async () => {
@@ -298,7 +296,7 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
   // 通道保持不动。刷新只换数据与未读计数：不重置页码、不动列表滚动位置、
   // 不关正在读的邮件（用户在第 1 页时新邮件自然置顶）。
   useEffect(() => {
-    if (!pwd || !autoRefresh.enabled) return
+    if (!autoRefresh.enabled) return
     const t = window.setInterval(() => {
       if (syncingRef.current.size > 0) return
       syncAllStamped(true)
@@ -399,17 +397,19 @@ export function MailTool({ accounts, sessionPwd, onUnlock, notify }: {
     return next
   })
 
-  if (!pwd) {
+  // v0.1.470：邮箱凭据改设备本地密钥加密，锁定状态照常进收件箱；只有旧版
+  // 主密码加密的邮箱凭据还没迁移时，才以「一次性迁移」名义请用户解锁一次。
+  if (!pwd && countLegacyMailCreds() > 0) {
     return (
       <div className="mail-locked">
         <Lock size={28} />
-        <h4>邮箱凭据锁在保险箱里</h4>
-        <p>邮箱账户的授权码与令牌用保险箱主密码加密、只存本机。输入主密码解锁后即可同步邮件。</p>
+        <h4>邮箱凭据需要迁移一次</h4>
+        <p>你有旧版用主密码加密的邮箱凭据。解锁这一次，App 会把它们换成本机加密保存；迁完之后邮箱不再需要密码，锁定状态也能直接用。</p>
         <div className="mail-locked-row">
           <input type="password" className="input" placeholder="保险箱主密码" value={pwdInput}
             onChange={e => setPwdInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && pwdInput) { onUnlock(pwdInput); setPwdInput('') } }} />
-          <button className="btn primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁</button>
+          <button className="btn primary" disabled={!pwdInput} onClick={() => { onUnlock(pwdInput); setPwdInput('') }}>解锁并迁移</button>
         </div>
       </div>
     )
@@ -1075,7 +1075,7 @@ function useOAuthClientCreds(provider: 'google' | 'microsoft' | undefined, pwd: 
   useEffect(() => {
     let dead = false
     setClientId(''); setClientSecret(''); setHasSaved(false); setEditing(true)
-    if (!provider || !pwd) return
+    if (!provider) return
     void loadOAuthClientCreds(provider, pwd).then(c => {
       if (dead) return
       if (c) { setClientId(c.clientId); setClientSecret(c.clientSecret); setHasSaved(true); setEditing(false) }

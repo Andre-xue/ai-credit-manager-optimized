@@ -2289,11 +2289,25 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .gal-modelsel-opt-d { font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
 
 /* ---- 工坊 · 免费游戏（v0.1.384） ---- */
-.fg-tool { max-width: 860px; }
+.fg-tool { max-width: 1180px; }
 .fg-unlock { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); font-size: 13px; margin: 12px 0; }
 .fg-unlock .input { flex: 1; min-width: 180px; }
-.fg-topbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); margin: 12px 0; }
-.fg-topbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; font-weight: 600; }
+/* v0.1.470：一次性迁移横条（旧版主密码凭据 → 本机加密），只在有旧凭据未迁且未解锁时出现 */
+.legacy-mig-banner { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); font-size: 13px; margin: 12px 0; }
+.legacy-mig-banner .input { flex: 0 1 220px; min-width: 160px; }
+/* v0.1.470 布局方案二：Epic 控制条——两行全宽卡（账户/操作 | 频率/通知） */
+.fg-bar { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); padding: 12px 14px; margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+.fg-bar-row { display: flex; align-items: flex-start; gap: 18px; flex-wrap: wrap; }
+.fg-bar-row2 { align-items: center; gap: 16px; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 13px; }
+.fg-bar-row2 label { display: inline-flex; align-items: center; gap: 8px; }
+.fg-bar-acct { display: flex; align-items: flex-start; gap: 10px; flex: 1 1 300px; min-width: 260px; font-size: 13.5px; }
+.fg-bar-acct .fg-plat-name { font-weight: 700; font-size: 14px; white-space: nowrap; padding-top: 1px; }
+.fg-bar-acct-text { font-size: 13px; line-height: 1.6; color: var(--text-2); }
+.fg-bar-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.fg-bar-auto { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; font-weight: 600; }
+.fg-bar-auto-toggle { display: inline-flex; align-items: center; gap: 8px; }
+.fg-bar-btns { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.fg-bar .fg-bind { border-top: 1px dashed var(--border); }
 .fg-muted { color: var(--text-3); font-size: 12.5px; font-weight: 400; display: inline-flex; align-items: center; gap: 4px; }
 .fg-warn { display: flex; gap: 6px; align-items: flex-start; padding: 9px 12px; border-radius: 10px; background: rgba(220, 38, 38, .08); color: #b91c1c; font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
 .fg-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin-bottom: 12px; }
@@ -2318,7 +2332,9 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .fg-group-head { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; padding: 6px 0; }
 .fg-group-head small { color: var(--text-3); font-weight: 400; font-size: 12.5px; }
 .fg-group-count { margin-left: auto; color: var(--text-3); font-size: 12.5px; font-weight: 400; }
-.fg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.fg-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .fg-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 680px) { .fg-grid { grid-template-columns: 1fr; } .fg-bar-btns { margin-left: 0; } }
 .fg-card { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); cursor: pointer; text-align: left; padding: 0; transition: border-color .15s, box-shadow .15s; }
 .fg-card:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(30, 25, 70, .10); }
 .fg-cover { position: relative; aspect-ratio: 16 / 9; background: var(--bg-2); display: flex; align-items: center; justify-content: center; color: var(--text-3); }
