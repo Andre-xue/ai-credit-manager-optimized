@@ -1,6 +1,7 @@
 // 文件保险箱（v0.1.507 一期）：纯逻辑层。
 // 文件操作在 Rust 侧（agent_vault_* 命令）：基线镜像 + diff 时把被改/被删文件的上一版沉入保险箱。
 // 这里放与 Rust 同一口径的清理选择（selectPruneVictims）、统计与格式化，供界面预览与单测锁定口径。
+import { readLocalStore, writeLocalStore } from './localStore'
 
 export interface VaultEntry {
   id: string
@@ -114,7 +115,7 @@ export const VAULT_PRUNE_LOG_KEY = 'acm.agents.vaultPruneLog.v1'
 
 export function loadPruneLog(): VaultPruneLog | null {
   try {
-    const raw = localStorage.getItem(VAULT_PRUNE_LOG_KEY)
+    const raw = readLocalStore('agents-vault-prune-log')
     if (!raw) return null
     const p = JSON.parse(raw) as VaultPruneLog
     return typeof p?.at === 'number' && typeof p?.removed === 'number' ? p : null
@@ -122,7 +123,7 @@ export function loadPruneLog(): VaultPruneLog | null {
 }
 
 export function savePruneLog(rec: VaultPruneLog): void {
-  try { localStorage.setItem(VAULT_PRUNE_LOG_KEY, JSON.stringify(rec)) } catch { /* ignore */ }
+  writeLocalStore('agents-vault-prune-log', JSON.stringify(rec))
 }
 
 export function formatBytes(n: number): string {

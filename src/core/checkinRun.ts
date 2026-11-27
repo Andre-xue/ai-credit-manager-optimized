@@ -9,6 +9,7 @@ import { listTokenMeta, loadTokenSecret, hasAnyTokenAccounts } from './tokenPool
 import { getTokenStatus, claimToken } from './tokenCheckin'
 import { getBiometricPassword } from './crypto'
 import { hasLegacyOperationalCreds } from './credMigration'
+import { writePref } from './localStore'
 
 /**
  * 一键签到 / 自动签到（v0.1.362）：把所有已连接来源（MiniMax 单账号 + WorkBuddy
@@ -62,7 +63,7 @@ export function getAutoCheckinEnabled(): boolean {
 }
 
 export function setAutoCheckinEnabled(v: boolean): void {
-  try { localStorage.setItem(AUTO_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(AUTO_KEY, v ? '1' : '0')
 }
 
 /**

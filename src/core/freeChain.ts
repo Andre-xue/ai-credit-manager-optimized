@@ -11,6 +11,7 @@
 // 该路线（等用户修好 Key/重新测活后用 clearChainRoute 手动恢复）。
 // 流式已输出部分内容后失败（ctx.markEmitted）不自动重发，避免两条路线的回答混杂。
 import { InferbaseApiError } from './inferbase'
+import { writePref } from './localStore'
 
 export type ChainErrorKind = 'rate' | 'quota' | 'auth' | 'server' | 'timeout' | 'empty' | 'network' | 'abort' | 'other'
 
@@ -160,7 +161,7 @@ export function loadChainMode(): ChainMode {
 }
 
 export function saveChainMode(mode: ChainMode): void {
-  try { localStorage.setItem(MODE_KEY, mode) } catch { /* 忽略 */ }
+  writePref(MODE_KEY, mode)
   try { window.dispatchEvent(new Event(CHAIN_MODE_EVENT)) } catch { /* 非浏览器环境 */ }
 }
 

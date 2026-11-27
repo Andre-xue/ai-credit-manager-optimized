@@ -37,6 +37,7 @@
 // 不给它做签到入口。
 import type { Account } from './types'
 import { utcDayKey } from './oneai'
+import { writePref } from './localStore'
 
 export const MOMA_PROVIDER_ID = 'moma'
 export const MOMA_BASE = 'https://zhenze-huhehaote.cmecloud.cn/v1'
@@ -404,7 +405,7 @@ export function loadMomaFreeOnly(): boolean {
 }
 
 export function saveMomaFreeOnly(v: boolean): void {
-  try { localStorage.setItem(FREE_ONLY_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(FREE_ONLY_KEY, v ? '1' : '0')
 }
 
 // ---------------- 分组与排序（纯函数，界面与单测共用） ----------------

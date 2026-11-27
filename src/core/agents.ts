@@ -3,6 +3,7 @@
 // 用量打 Agent 归因；额度护栏默认只走免费路线，借付费账户必须人工放行，绝不静默扣费。
 import type { Account } from './types'
 import { PROVIDER_MAP } from '../data/providers'
+import { readLocalStore, writeLocalStore } from './localStore'
 
 export type AgentKind = 'account' | 'shell'
 export type AgentDispatch = 'cli' | 'open'
@@ -325,7 +326,7 @@ export function defaultAgentSettings(): AgentSettings {
 export function loadAgentSettings(): AgentSettings {
   const base = defaultAgentSettings()
   try {
-    const raw = localStorage.getItem(AGENT_SETTINGS_KEY)
+    const raw = readLocalStore('agents-settings')
     if (!raw) return base
     const p = JSON.parse(raw) as Partial<AgentSettings>
     return {
@@ -343,7 +344,7 @@ export function loadAgentSettings(): AgentSettings {
 }
 
 export function saveAgentSettings(s: AgentSettings): void {
-  try { localStorage.setItem(AGENT_SETTINGS_KEY, JSON.stringify(s)) } catch { /* 本机存储不可用时静默 */ }
+  writeLocalStore('agents-settings', JSON.stringify(s))
 }
 
 // ---------------- 检测结果 ----------------
@@ -676,7 +677,7 @@ export const AGENT_TASKS_KEY = 'acm.agents.tasks.v1'
 
 export function loadAgentTasks(): AgentTask[] {
   try {
-    const raw = localStorage.getItem(AGENT_TASKS_KEY)
+    const raw = readLocalStore('agents-tasks')
     if (!raw) return []
     const arr = JSON.parse(raw) as AgentTask[]
     if (!Array.isArray(arr)) return []
@@ -701,7 +702,7 @@ export function loadAgentTasks(): AgentTask[] {
 }
 
 export function saveAgentTasks(tasks: AgentTask[]): void {
-  try { localStorage.setItem(AGENT_TASKS_KEY, JSON.stringify(tasks.slice(0, 100))) } catch { /* ignore */ }
+  writeLocalStore('agents-tasks', JSON.stringify(tasks.slice(0, 100)))
 }
 
 export interface AgentLedgerEntry {
@@ -732,14 +733,14 @@ export const AGENT_LEDGER_KEY = 'acm.agents.ledger.v1'
 
 export function loadAgentLedger(): AgentLedgerEntry[] {
   try {
-    const raw = localStorage.getItem(AGENT_LEDGER_KEY)
+    const raw = readLocalStore('agents-ledger')
     const arr = raw ? JSON.parse(raw) as AgentLedgerEntry[] : []
     return Array.isArray(arr) ? arr : []
   } catch { return [] }
 }
 
 export function saveAgentLedger(entries: AgentLedgerEntry[]): void {
-  try { localStorage.setItem(AGENT_LEDGER_KEY, JSON.stringify(entries.slice(0, 500))) } catch { /* ignore */ }
+  writeLocalStore('agents-ledger', JSON.stringify(entries.slice(0, 500)))
 }
 
 export interface LedgerSummary {

@@ -7,6 +7,7 @@
 // ============================================================
 import { useEffect, useState } from 'react'
 import { DICT } from './i18nDict'
+import { writePref } from './localStore'
 
 export type Lang = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
 
@@ -50,7 +51,7 @@ export function locale(): string {
 export function setLang(lang: Lang): void {
   if (lang === current) return
   current = lang
-  try { localStorage.setItem(STORAGE_KEY, lang) } catch { /* ignore */ }
+  writePref(STORAGE_KEY, lang)
   try { window.dispatchEvent(new Event(LANG_EVENT)) } catch { /* ignore */ }
 }
 

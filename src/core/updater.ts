@@ -6,6 +6,7 @@
 
 import { isDesktopApp, isNativeApp } from './openExternal'
 import { withStallWatchdog, UpdateStallError } from './updateStall'
+import { readPref, writePref } from './localStore'
 
 import pkg from '../../package.json'
 
@@ -441,7 +442,8 @@ async function downloadViaPlugin(onProgress?: (p: InstallProgress) => void): Pro
 // ---- 待安装更新（v0.1.474 后台自动更新） ----
 // 流程：启动静默检查 → 后台把包下载好 → 弹窗问「现在更新 / 稍后」；选稍后
 // 则持久化待安装状态并布防 Rust 关窗闸门，用户下次关窗/退出时等任务结束
-// 再安装。全部状态仅本机保存（localStorage），不进云同步。
+// 再安装。全部状态仅本机保存、不进云同步；v0.1.510 起经 localStore 的 prefs
+// 文件兜底（localStorage 退为镜像），防更新换包重置存储后待安装状态与开关丢失。
 
 const PENDING_KEY = 'acm.update.pending.v1'
 const AUTO_KEY = 'acm.update.autoEnabled.v1'
@@ -461,14 +463,14 @@ export interface PendingUpdate {
 
 export function loadPendingUpdate(): PendingUpdate | null {
   try {
-    const raw = localStorage.getItem(PENDING_KEY)
+    const raw = readPref(PENDING_KEY)
     if (!raw) return null
     const p = JSON.parse(raw) as PendingUpdate
     if (!p || typeof p.version !== 'string' || !versionGreater(p.version, APP_VERSION)) {
       // 损坏或版本不大于当前的待安装一律作废并清掉，防反复弹/装回旧版。
       // v0.1.503：作废要留痕——2026-11-27 真机「已下载好点现在更新没反应」
       // 的一条嫌疑链就是待安装记录读不回来而全链无声，这里不能再静默。
-      try { localStorage.removeItem(PENDING_KEY) } catch { /* 忽略 */ }
+      writePref(PENDING_KEY, null)
       updateDiag('pending-discarded', `stored=${typeof p?.version === 'string' ? p.version : 'invalid'} current=${APP_VERSION}`)
       return null
     }
@@ -481,7 +483,7 @@ export function loadPendingUpdate(): PendingUpdate | null {
     界面显示「已下载好」但安装入口重读记录为空、点了没反应且日志空白） */
 export function savePendingUpdate(p: PendingUpdate): boolean {
   try {
-    localStorage.setItem(PENDING_KEY, JSON.stringify(p))
+    writePref(PENDING_KEY, JSON.stringify(p))
     return true
   } catch (e) {
     updateDiag('pending-persist-fail', `version=${p.version} err=${String((e as Error)?.name ?? e).slice(0, 40)}`)
@@ -490,19 +492,24 @@ export function savePendingUpdate(p: PendingUpdate): boolean {
 }
 
 export function clearPendingUpdate(): void {
-  try { localStorage.removeItem(PENDING_KEY) } catch { /* 忽略 */ }
+  writePref(PENDING_KEY, null)
 }
 
-/** 「自动更新」开关：默认开，仅本机保存 */
+/** 「静默更新」开关：默认开，仅本机保存（v0.1.510 起 prefs 文件兜底） */
 export function loadAutoUpdateEnabled(): boolean {
-  try { return localStorage.getItem(AUTO_KEY) !== '0' } catch { return true }
+  try { return readPref(AUTO_KEY) !== '0' } catch { return true }
 }
 
 export function saveAutoUpdateEnabled(on: boolean): void {
-  try { localStorage.setItem(AUTO_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(AUTO_KEY, on ? '1' : '0')
   // 「静默更新」开关有两处（更新弹窗底部 + 设置页签），同一偏好：保存即广播，
   // 两处监听后同步显示（v0.1.495）。
   try { window.dispatchEvent(new CustomEvent<boolean>('acm-silent-update-pref', { detail: on })) } catch { /* 忽略 */ }
+}
+
+/** hydrate 后把文件层恢复出的静默更新偏好广播给两处开关纠正显示（v0.1.510） */
+export function syncSilentUpdatePrefUi(): void {
+  try { window.dispatchEvent(new CustomEvent<boolean>('acm-silent-update-pref', { detail: loadAutoUpdateEnabled() })) } catch { /* 忽略 */ }
 }
 
 /** 订阅「静默更新」偏好变更（两处开关同步显示用） */
@@ -514,19 +521,19 @@ export function onSilentUpdatePrefChange(fn: (on: boolean) => void): () => void 
 
 /** 安装前落标记：安装会退出/重启进程，重启回来据此轻提示一次「已更新到 vX」 */
 export function markJustUpdated(version: string): void {
-  try { localStorage.setItem(JUST_KEY, version.replace(/^v/i, '')) } catch { /* 忽略 */ }
+  writePref(JUST_KEY, version.replace(/^v/i, ''))
 }
 
 export function clearJustUpdated(): void {
-  try { localStorage.removeItem(JUST_KEY) } catch { /* 忽略 */ }
+  writePref(JUST_KEY, null)
 }
 
 /** 读并清除「刚更新完」标记：版本与当前一致才返回（只提示一次） */
 export function consumeJustUpdated(): string | null {
   try {
-    const v = localStorage.getItem(JUST_KEY)
+    const v = readPref(JUST_KEY)
     if (!v) return null
-    localStorage.removeItem(JUST_KEY)
+    writePref(JUST_KEY, null)
     return v.replace(/^v/i, '') === APP_VERSION ? v.replace(/^v/i, '') : null
   } catch { return null }
 }

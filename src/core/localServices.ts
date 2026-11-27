@@ -3,6 +3,7 @@
 
 import { isDesktopApp } from './openExternal'
 import type { LocalServiceKey } from './types'
+import { writePref } from './localStore'
 
 export interface LocalService {
   service: string
@@ -41,7 +42,7 @@ export function comfyScanDesktopEnabled(): boolean {
 }
 
 export function setComfyScanDesktop(on: boolean): void {
-  try { localStorage.setItem(SCAN_DESKTOP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(SCAN_DESKTOP_KEY, on ? '1' : '0')
 }
 
 const LAUNCH_DESKTOP_KEY = 'acm.comfyui.launchDesktop'
@@ -52,7 +53,7 @@ export function comfyLaunchDesktopEnabled(): boolean {
 }
 
 export function setComfyLaunchDesktop(on: boolean): void {
-  try { localStorage.setItem(LAUNCH_DESKTOP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(LAUNCH_DESKTOP_KEY, on ? '1' : '0')
 }
 
 /** 拉取本地服务已加载/已安装的模型列表（供选择式输入） */

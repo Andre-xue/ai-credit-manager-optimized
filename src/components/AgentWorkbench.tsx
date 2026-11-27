@@ -28,6 +28,7 @@ import { runDelivery, deliveryPresentation, deliveryChipLabel, createBridgeDeliv
 import { WORKSHOP_SKILLS, buildSkillTaskText, type WorkshopSkill } from '../core/workshopSkills'
 import { buildUsageView, buildModelChoices } from '../core/agentUsageView'
 import { loadProbeStore } from '../core/probeCenter'
+import { onLocalStoreHydrated } from '../core/localStore'
 import {
   formatBytes, formatDuration, mergeVaultUsage, loadPruneLog, savePruneLog,
   type VaultEntry, type VaultPruneLog,
@@ -129,6 +130,16 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   useEffect(() => { saveAgentSettings(settings) }, [settings])
   useEffect(() => { saveAgentTasks(tasks) }, [tasks])
   useEffect(() => { saveAgentLedger(ledger) }, [ledger])
+
+  // v0.1.510：文件层对账完成后重读三份数据 + 清理记录——首屏先用 localStorage
+  // 镜像渲染，文件（事实源）到达后纠正，更新重置存储时靠这一步恢复开关/任务/账本
+  useEffect(() => onLocalStoreHydrated(() => {
+    setSettings(loadAgentSettings())
+    setTasks(loadAgentTasks())
+    setLedger(loadAgentLedger())
+    setPruneLog(loadPruneLog())
+    setWorkdir(loadAgentSettings().vault.workdir)
+  }), [])
 
   const updateTask = useCallback((id: string, patch: Partial<AgentTask>) => {
     setTasks(prev => prev.map(t => (t.id === id ? { ...t, ...patch } : t)))

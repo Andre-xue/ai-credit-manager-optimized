@@ -85,9 +85,10 @@ import { cloud, type CloudUser } from './core/cloud'
 import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror, restoreCloudSessionMirrorForce } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
 import { UpdateReadyPrompt } from './components/UpdateReadyPrompt'
-import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled, onSilentUpdatePrefChange, readUpdateDiag, openUpdateDiagDir } from './core/updater'
+import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled, onSilentUpdatePrefChange, syncSilentUpdatePrefUi, readUpdateDiag, openUpdateDiagDir } from './core/updater'
 import { SilentUpdateSwitch } from './components/SilentUpdateSwitch'
 import { initAutoUpdate, getAutoUpdateUiState, subscribeAutoUpdate, reopenUpdatePrompt } from './core/autoUpdate'
+import { hydrateLocalStore } from './core/localStore'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, webdavHttpBlocked, type ChannelIO } from './core/altSync'
@@ -523,6 +524,11 @@ function App() {
     })
     window.setTimeout(() => setToasts(prev => prev.filter(x => x.id !== id)), kind === 'err' ? 4500 : 2600)
   }, [])
+
+  // 本机关键数据文件层对账（v0.1.510）：Agent 设置/任务/账本与关键偏好以
+  // ~/.ai-credit-manager/local-store/ 实体文件为事实源，启动先对账再跑更新链，
+  // 更新换包重置 WebView 存储后数据靠文件恢复（2026-11-27 实报的开关全关问题）。
+  useEffect(() => { void hydrateLocalStore().then(() => syncSilentUpdatePrefUi()) }, [])
 
   // 后台自动更新（v0.1.474，仅桌面端，init 内部自检平台）：启动静默检查与
   // 后台下载、待安装恢复、关窗/退出时自动安装的闸门监听都在 core/autoUpdate

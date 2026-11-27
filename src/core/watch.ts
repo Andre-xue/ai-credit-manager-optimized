@@ -15,6 +15,7 @@
 
 import { encryptLocalSecret, decryptStoredSecret, isLegacyCipher, migrateCipherValue } from './deviceKey'
 import { isNativeApp } from './openExternal'
+import { writePref } from './localStore'
 
 export interface LiveChannel {
   /** 归一化台名（去分辨率后缀、小写） */
@@ -1953,7 +1954,7 @@ export function loadShowAdult(): boolean {
 }
 
 export function saveShowAdult(v: boolean): void {
-  try { localStorage.setItem(SHOW_ADULT_KEY, v ? '1' : '0') } catch { /* 忽略 */ }
+  writePref(SHOW_ADULT_KEY, v ? '1' : '0')
 }
 
 // ---------------- 悬浮播放器位置（v0.1.410）：拖动位置与最小化只存本机 ----------------

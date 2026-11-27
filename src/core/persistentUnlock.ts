@@ -18,6 +18,7 @@
 
 import { isDesktopApp, isNativeApp } from './openExternal'
 import { isVaultInitialized, verifyVault } from './crypto'
+import { readPref, writePref } from './localStore'
 
 export type UnlockKind = 'none' | 'manual' | 'auto'
 
@@ -25,13 +26,13 @@ const PREF_KEY = 'acm.vault.keepUnlocked.v1'
 const NATIVE_SERVER = 'acm.vault.keepalive'
 const NATIVE_BOUND_KEY = 'acm.vault.keepAliveBound'
 
-/** 「在这台设备上保持解锁」开关（仅本机 localStorage，默认开；不进云同步/备份） */
+/** 「在这台设备上保持解锁」开关（仅本机，默认开；不进云同步/备份；v0.1.510 起 prefs 文件兜底） */
 export function keepUnlockedEnabled(): boolean {
-  try { return localStorage.getItem(PREF_KEY) !== '0' } catch { return true }
+  try { return readPref(PREF_KEY) !== '0' } catch { return true }
 }
 
 export function setKeepUnlockedPref(on: boolean): void {
-  try { localStorage.setItem(PREF_KEY, on ? '1' : '0') } catch { /* 存不下不阻断 */ }
+  writePref(PREF_KEY, on ? '1' : '0')
 }
 
 /** 当前平台有没有系统钥匙串通道（桌面 Tauri / 原生 App）；网页版没有 */
