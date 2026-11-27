@@ -344,7 +344,7 @@ export async function installDesktopUpdate(onProgress?: (p: InstallProgress) => 
   // 先走镜像快速通道（v0.1.346）：测速选源、慢了自动换、SHA256 校验、本地安装；
   // 任一步失败都回退下面的官方 updater，保证更新不会被镜像问题卡死。
   // v0.1.498：两条通道都套卡死看门狗（连续 20 秒无字节进展即放弃本通道），
-  // 镜像通道内部另有 Rust read_timeout 兜底，两边谁先触发谁生效。
+  // 镜像通道内部另有 Rust 线程监督看门狗兜底，两边谁先触发谁生效。
   lastInstallError = ''
   let mirrorStalled = false
   try {
@@ -526,7 +526,7 @@ let pluginPendingUpdate: import('@tauri-apps/plugin-updater').Update | null = nu
  * 后台下载更新包（不安装）：优先镜像通道（落盘、可跨进程）；镜像卡死/失败
  * 时回退官方 updater 的 download()（只下载、对象留内存）——两条通道互为
  * 备份，各套 20 秒无进展卡死看门狗（v0.1.498；镜像通道内另有 Rust
- * read_timeout）。成功后待安装状态已持久化；失败返回人话原因供界面呈现，
+ * 线程监督看门狗）。成功后待安装状态已持久化；失败返回人话原因供界面呈现，
  * 不再像旧版那样静默吞掉只留一个红点。
  */
 export async function downloadUpdateInBackground(

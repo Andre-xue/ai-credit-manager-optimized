@@ -1253,14 +1253,11 @@ fn download_update_package(
         .rsplit_once('/')
         .map(|(d, _)| format!("{d}/SHA256SUMS.txt"))
         .unwrap_or_default();
-    // read_timeout 是 v0.1.498 的关键修复：此前 client 只有 connect_timeout，
-    // 正文读取没有任何超时——镜像经本机代理中途掐流（连接不断、字节不再来）
-    // 时单次 read 可无限阻塞，下面的窗口看门狗只在 read 返回后才检查，永远
-    // 轮不到触发，前端便无限菊花（2026-11-27 真机实证）。read_timeout 让
-    // 「连续 20 秒无字节」以超时错误返回，看门狗/换源逻辑才真正生效。
+    // v0.1.498：client 本身只设 connect_timeout——正文读取的卡死防护在
+    // download_with_watchdog 里用线程监督实现（reqwest blocking 的 read
+    // 没有单步超时，代理掐流时可无限阻塞，见该函数注释）。
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(8))
-        .read_timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
     update_diag("download-start", &format!("file={file_name} channel=mirror"));
@@ -1366,12 +1363,54 @@ fn update_install_downloaded(
     install_downloaded_update(&app, &dest, &file_name)
 }
 
-/// 流式下载 + stall 看门狗：每 8 秒窗口下载量 <240KB 判定太慢，中断换源
+/// 下载线程 → 监督线程的消息（v0.1.498 线程监督看门狗）
+enum DlMsg {
+    Progress(u64),
+    Done(Result<(), String>),
+}
+
+/// 流式下载 + 双层看门狗（v0.1.498 重做监督方式）：
+/// - 速度层（下载线程内）：每 8 秒窗口下载量 <240KB 判定太慢，中断换源；
+/// - 卡死层（监督线程）：实际 read 关进下载线程，主线程每收到一口字节就
+///   重置 20 秒期限，连续 20 秒无字节 = 连接被掐流卡死，判 stall-timeout
+///   换源。此前 read 直接在命令线程里跑且没有任何单步超时——镜像经本机
+///   代理中途掐流（连接不断、字节不再来）时 read 无限阻塞，速度看门狗只
+///   在 read 返回后才检查、永远轮不到触发，前端无限菊花（2026-11-27 真
+///   机实证）。判卡死后下载线程随连接断开自行消亡（每源至多漏一个线程；
+///   下一源尝试前会先删目标文件，其迟到写入不影响校验环节）。
 fn download_with_watchdog(
     client: &reqwest::blocking::Client,
     url: &str,
     dest: &std::path::Path,
     on_progress: &tauri::ipc::Channel<UpdateDlProgress>,
+) -> Result<(), String> {
+    use std::sync::mpsc;
+    let client = client.clone();
+    let url = url.to_string();
+    let dest = dest.to_path_buf();
+    let ch = on_progress.clone();
+    let (tx, rx) = mpsc::channel::<DlMsg>();
+    std::thread::spawn(move || {
+        let r = download_stream(&client, &url, &dest, &ch, &tx);
+        let _ = tx.send(DlMsg::Done(r));
+    });
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(DlMsg::Progress(_)) => continue,
+            Ok(DlMsg::Done(r)) => return r,
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err("stall-timeout".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("下载线程意外结束".into()),
+        }
+    }
+}
+
+/// 实际流式下载（在下载线程里跑）：逐块落盘 + 进度上报 + 速度看门狗
+fn download_stream(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    dest: &std::path::Path,
+    on_progress: &tauri::ipc::Channel<UpdateDlProgress>,
+    tx: &std::sync::mpsc::Sender<DlMsg>,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
     let mut resp = client.get(url).send().map_err(|e| e.to_string())?;
@@ -1386,17 +1425,7 @@ fn download_with_watchdog(
     let mut window_start = std::time::Instant::now();
     let mut window_bytes: u64 = 0;
     loop {
-        // read_timeout（20 秒无字节）在此以超时错误返回：统一标成 stall-timeout，
-        // diag 里可与「速度过慢」「HTTP 错误」区分（v0.1.498）。
-        let n = resp.read(&mut buf).map_err(|e| {
-            let m = e.to_string();
-            let lower = m.to_lowercase();
-            if lower.contains("timed out") || lower.contains("timeout") {
-                "stall-timeout".to_string()
-            } else {
-                m
-            }
-        })?;
+        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
@@ -1404,6 +1433,7 @@ fn download_with_watchdog(
         total_bytes += n as u64;
         window_bytes += n as u64;
         let _ = on_progress.send(UpdateDlProgress { downloaded: total_bytes, total });
+        let _ = tx.send(DlMsg::Progress(total_bytes));
         if window_start.elapsed() >= std::time::Duration::from_secs(8) {
             if start.elapsed() > std::time::Duration::from_secs(10) && window_bytes < 240 * 1024 {
                 return Err("该镜像速度过慢，自动切换".into());
