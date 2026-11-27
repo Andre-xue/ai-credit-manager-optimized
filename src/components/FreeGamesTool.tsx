@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, ChevronDown, ExternalLink, Gamepad2, Loader2,
-  RefreshCw, Store, Trash2, CircleCheck, CircleAlert, Clock3, Link2,
+  RefreshCw, Store, Trash2, CircleCheck, CircleAlert, Clock3, Link2, X,
 } from 'lucide-react'
 import {
   loadPrefs, savePrefs, loadCache, readRecords, clearRecords, sortRecords,
@@ -26,7 +26,7 @@ import { epicLauncherUrlOfCheckoutUrl, openViaClient } from '../core/clientLinks
 import {
   openEpicBrowser, listenEpicBrowserClaim, isEpicBrowserSupported, claimFailureFallback,
   epicBrowserOutcomeText, recordEpicBrowserOutcome,
-  loadEpicBrowserStatus, saveEpicBrowserStatus,
+  loadEpicBrowserStatus, saveEpicBrowserStatus, clearEpicBrowserStatus,
 } from '../core/epicBrowser'
 import { getBiometricPassword } from '../core/crypto'
 import { Pager } from './Pager'
@@ -168,7 +168,7 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     void listenEpicBrowserClaim(p => {
       const text = epicBrowserOutcomeText(p.outcome)
       setEpicBrowserStatus(text)
-      saveEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text, p.title)
       if (recordEpicBrowserOutcome(p.outcome, p.title ?? '', p.checkoutUrl)) refreshRecords()
     }).then(u => { unlisten = u }).catch(() => { /* 监听失败不影响领取 */ })
     return () => { unlisten?.() }
@@ -217,7 +217,12 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
     return next
   })
 
-  const refreshRecords = () => setRecords(readRecords())
+  const refreshRecords = () => {
+    setRecords(readRecords())
+    // v0.1.502：记录变化时顺带重判内嵌浏览器状态行——对应游戏已被确认领取
+    // （同步到库房 / 手动标已领过）就自动撤下，不再永久挂着。
+    setEpicBrowserStatus(loadEpicBrowserStatus())
+  }
   const refreshMeta = () => {
     setLastCheck(loadLastCheckAt())
     setLastError(loadLastError())
@@ -267,11 +272,11 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
       await openEpicBrowser(checkoutUrl, title)
       const text = '内嵌浏览器已打开结账页，正在尝试自动领取…（若遇人机验证，请在窗口内完成验证后手动点领取）'
       setEpicBrowserStatus(text)
-      saveEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text, title)
     } catch (e) {
       const text = '内嵌浏览器打不开，已改走系统浏览器'
       setEpicBrowserStatus(text)
-      saveEpicBrowserStatus(text)
+      saveEpicBrowserStatus(text, title)
       notifySafe(e instanceof Error ? e.message : '打开内嵌浏览器失败', 'err')
       void openExternal(checkoutUrl)
     }
@@ -568,8 +573,17 @@ export function FreeGamesTool({ sessionPwd, onUnlock, notify, onBack }: {
         )
       })}
 
-      {/* v0.1.397：内嵌浏览器自动领的状态行（桌面端才有） */}
-      {epicBrowserStatus && <div className="fg-muted" style={{ margin: '0 0 8px' }}>{epicBrowserStatus}</div>}
+      {/* v0.1.397：内嵌浏览器自动领的状态行（桌面端才有）；v0.1.502：可手动关，
+          且过期 / 对应游戏已确认领取时自动撤下（判定在 loadEpicBrowserStatus） */}
+      {epicBrowserStatus && (
+        <div className="fg-muted" style={{ margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ flex: 1 }}>{epicBrowserStatus}</span>
+          <button className="btn sm ghost" aria-label="关闭这条提示"
+            onClick={() => { setEpicBrowserStatus(null); clearEpicBrowserStatus() }}>
+            <X size={13} />
+          </button>
+        </div>
+      )}
       {/* 领取记录：失败组置顶 */}
       <div className="fg-group">
         <div className="fg-group-head">

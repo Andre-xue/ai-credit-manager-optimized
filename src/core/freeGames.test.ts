@@ -12,6 +12,7 @@ import {
   EpicManualCheckoutError, checkoutUrlOf,
   parseOwnedKeys, fetchOwnedEpicKeys, syncOwnedEpicGames, markEpicGameClaimed,
   readRecords, claimedGameIds, CACHE_KEY,
+  dedupeRecords, addRecord, clearRecords, runFreeGamesAutoRefresh, loadCache, RECORDS_KEY,
   shouldEntryRefreshCache, EPIC_ENTRY_REFRESH_SKIP_MS, touchLastCheckAt, loadLastCheckAt, LAST_ERROR_KEY,
   type FreeGame, type ClaimRecord, type EpicDeviceAuth,
 } from './freeGames'
@@ -1053,5 +1054,117 @@ describe('进页自动刷新决策 (v0.1.470)', () => {
     touchLastCheckAt(1_700_000_000_000)
     expect(loadLastCheckAt()).toBe(1_700_000_000_000)
     expect(localStorage.getItem(LAST_ERROR_KEY)).toBeNull()
+  })
+})
+
+// v0.1.502：领取记录去重 + 定时巡查只刷新。报障：502 前定时自动领取每 3 小时
+// 撞一次已堵死的接口路线、同款游戏每轮写一条失败记录（Ethan 实机 4 条重复）。
+function ensureStorage502() {
+  const g = globalThis as unknown as Record<string, unknown>
+  if (!g.localStorage) {
+    const m = new Map<string, string>()
+    g.localStorage = {
+      getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+      setItem: (k: string, v: string) => { m.set(k, v) },
+      removeItem: (k: string) => { m.delete(k) },
+      clear: () => m.clear(),
+    }
+  }
+  return g.localStorage as { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
+}
+
+describe('freeGames 领取记录去重（v0.1.502）', () => {
+  const T_OLD = new Date('2026-11-27T13:49:00+08:00').getTime()
+  const T_NEW = new Date('2026-11-27T17:09:00+08:00').getTime()
+  const err502 = (title: string, at: number, message = 'Epic 没给到 purchaseToken'): ClaimRecord =>
+    ({ at, platform: 'epic', title, outcome: 'error', message })
+
+  it('dedupeRecords：同游戏同结果只留最新一条（4 条存量 → 2 条，留 17:09）', () => {
+    const merged = dedupeRecords([
+      err502('Bread and Fred', T_NEW), err502('火之石', T_NEW),
+      err502('Bread and Fred', T_OLD), err502('火之石', T_OLD),
+    ])
+    expect(merged).toHaveLength(2)
+    expect(merged.every(r => r.at === T_NEW)).toBe(true)
+    expect(merged.map(r => r.title).sort()).toEqual(['Bread and Fred', '火之石'])
+  })
+
+  it('dedupeRecords：成功与失败不同类互不顶掉；claimed 与 already 各留一条', () => {
+    const merged = dedupeRecords([
+      err502('Bread and Fred', T_OLD),
+      { at: T_NEW, platform: 'epic', title: 'Bread and Fred', outcome: 'claimed', message: '领到了' } as ClaimRecord,
+      { at: T_OLD, platform: 'epic', title: '火之石', outcome: 'already', message: '已在库' } as ClaimRecord,
+      { at: T_NEW, platform: 'epic', title: '火之石', outcome: 'already', message: '已在库（新）' } as ClaimRecord,
+    ])
+    expect(merged).toHaveLength(3)
+    const stone = merged.find(r => r.title === '火之石')!
+    expect(stone.at).toBe(T_NEW)
+  })
+
+  it('readRecords：存量重复在加载时自动合并并写回存储', () => {
+    const st = ensureStorage502()
+    st.setItem(RECORDS_KEY, JSON.stringify([
+      err502('Bread and Fred', T_NEW), err502('火之石', T_NEW),
+      err502('Bread and Fred', T_OLD), err502('火之石', T_OLD),
+    ]))
+    const list = readRecords()
+    expect(list).toHaveLength(2)
+    expect(list.every(r => r.at === T_NEW)).toBe(true)
+    expect(JSON.parse(st.getItem(RECORDS_KEY)!)).toHaveLength(2)
+  })
+
+  it('addRecord：新记录顶掉同游戏同类旧记录；成功记录不顶掉失败记录', () => {
+    const st = ensureStorage502()
+    st.setItem(RECORDS_KEY, JSON.stringify([err502('Bread and Fred', T_OLD, '旧失败')]))
+    addRecord(err502('Bread and Fred', T_NEW, '新失败'))
+    let list = readRecords()
+    expect(list).toHaveLength(1)
+    expect(list[0].message).toBe('新失败')
+    addRecord({ at: T_NEW + 1, platform: 'epic', title: 'Bread and Fred', outcome: 'claimed', message: '领到了' })
+    list = readRecords()
+    expect(list).toHaveLength(2)
+    expect(list.map(r => r.outcome).sort()).toEqual(['claimed', 'error'])
+  })
+
+  it('clearRecords 清空不受去重影响', () => {
+    const st = ensureStorage502()
+    st.setItem(RECORDS_KEY, JSON.stringify([err502('Bread and Fred', T_NEW)]))
+    clearRecords()
+    expect(readRecords()).toEqual([])
+  })
+})
+
+describe('freeGames runFreeGamesAutoRefresh（v0.1.502 定时巡查只刷新）', () => {
+  it('拉取失败：只回错误摘要，不写任何领取记录', async () => {
+    const st = ensureStorage502()
+    st.removeItem(RECORDS_KEY)
+    st.removeItem(EPIC_AUTH_KEY)
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => { throw new TypeError('Load failed') }) as typeof fetch
+    try {
+      const res = await runFreeGamesAutoRefresh()
+      expect(res.errors).toHaveLength(1)
+      expect(res.claimed).toEqual([])
+      expect(readRecords()).toEqual([])
+    } finally { globalThis.fetch = origFetch }
+  })
+
+  it('拉取成功且未绑定：列表落缓存、不领取、不写记录', async () => {
+    const st = ensureStorage502()
+    st.removeItem(RECORDS_KEY)
+    st.removeItem(EPIC_AUTH_KEY)
+    st.removeItem(CACHE_KEY)
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify(EPIC_FIXTURE),
+      json: async () => EPIC_FIXTURE,
+    })) as unknown as typeof fetch
+    try {
+      const res = await runFreeGamesAutoRefresh()
+      expect(res.fetched.epicCurrent).toBeGreaterThan(0)
+      expect(loadCache()?.epicCurrent.length).toBe(res.fetched.epicCurrent)
+      expect(readRecords()).toEqual([])
+    } finally { globalThis.fetch = origFetch }
   })
 })

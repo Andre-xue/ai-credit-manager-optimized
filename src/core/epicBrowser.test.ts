@@ -12,8 +12,11 @@ import {
   EPIC_BROWSER_STATUS_KEY,
   loadEpicBrowserStatus,
   saveEpicBrowserStatus,
+  clearEpicBrowserStatus,
+  epicBrowserStatusVisible,
+  EPIC_BROWSER_STATUS_TTL_MS,
 } from './epicBrowser'
-import { readRecords, clearRecords, RECORDS_KEY } from './freeGames'
+import { readRecords, clearRecords, addRecord, RECORDS_KEY } from './freeGames'
 
 function ensureLocalStorage(): Map<string, string> {
   const g = globalThis as unknown as Record<string, unknown>
@@ -80,18 +83,33 @@ describe('recordEpicBrowserOutcome', () => {
 
   it('失败结果写 error 记录并保留 checkoutUrl（396 手动兜底不断）', () => {
     const url = 'https://www.epicgames.com/store/purchase?highlightColor=0078f2&offers=1-ns-x&orderId&purchaseToken&showNavigation=true'
+    // 每种失败结果单独写时：都是 error 记录、带 checkoutUrl、文案点名各自原因
+    const cases: Array<[string, string]> = [
+      ['needs-manual', '没找到领取按钮'],
+      ['challenge', '人机验证'],
+      ['login', '没登录'],
+      ['timeout', '没等到领取结果'],
+    ]
+    for (const [o, frag] of cases) {
+      clearRecords()
+      expect(recordEpicBrowserOutcome(o, 'Mark of the Deep', url)).toBe(true)
+      const rs = readRecords()
+      expect(rs).toHaveLength(1)
+      expect(rs[0].outcome).toBe('error')
+      expect(rs[0].checkoutUrl).toBe(url)
+      expect(rs[0].message).toContain('去浏览器领')
+      expect(rs[0].message).toContain(frag)
+    }
+    // v0.1.502 去重：同一游戏连续多次失败只保留最新一条（不再堆 4 条同类报错）
+    clearRecords()
     for (const o of ['needs-manual', 'challenge', 'login', 'timeout']) {
       expect(recordEpicBrowserOutcome(o, 'Mark of the Deep', url)).toBe(true)
     }
     const rs = readRecords()
-    expect(rs).toHaveLength(4)
-    for (const r of rs) {
-      expect(r.outcome).toBe('error')
-      expect(r.checkoutUrl).toBe(url)
-      expect(r.message).toContain('去浏览器领')
-    }
-    expect(rs.find(r => r.message.includes('人机验证'))).toBeTruthy()
-    expect(rs.find(r => r.message.includes('没登录'))).toBeTruthy()
+    expect(rs).toHaveLength(1)
+    expect(rs[0].outcome).toBe('error')
+    expect(rs[0].checkoutUrl).toBe(url)
+    expect(rs[0].message).toContain('没等到领取结果')
   })
 
   it('失败记录没带 checkoutUrl 时不写 checkoutUrl 字段', () => {
@@ -128,5 +146,55 @@ describe('claimFailureFallback（v0.1.404）', () => {
       if (prev === undefined) delete g.window
       else g.window = prev
     }
+  })
+})
+
+describe('epicBrowserStatus 生命周期（v0.1.502）', () => {
+  function storage() {
+    return (globalThis as unknown as { localStorage: { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void } }).localStorage
+  }
+
+  it('旧版纯文本残留（无时间戳）：读回为空且存储被清掉', () => {
+    ensureLocalStorage()
+    storage().setItem(EPIC_BROWSER_STATUS_KEY, '内嵌浏览器里没等到领取结果，请在窗口内看一眼是否已领取')
+    expect(loadEpicBrowserStatus()).toBeNull()
+    expect(storage().getItem(EPIC_BROWSER_STATUS_KEY)).toBeNull()
+  })
+
+  it('超过 24 小时的状态：自动撤下', () => {
+    ensureLocalStorage()
+    storage().setItem(EPIC_BROWSER_STATUS_KEY, JSON.stringify({
+      text: '内嵌浏览器遇到人机验证，请在窗口内完成验证后再手动点领取',
+      at: Date.now() - EPIC_BROWSER_STATUS_TTL_MS - 1,
+    }))
+    expect(loadEpicBrowserStatus()).toBeNull()
+    expect(storage().getItem(EPIC_BROWSER_STATUS_KEY)).toBeNull()
+  })
+
+  it('对应游戏已被确认领取：自动撤下', () => {
+    ensureLocalStorage()
+    clearRecords()
+    addRecord({ at: Date.now(), platform: 'epic', title: 'Bread and Fred', outcome: 'claimed', message: '领到了' })
+    saveEpicBrowserStatus('内嵌浏览器里没等到领取结果，请在窗口内看一眼是否已领取', 'Bread and Fred')
+    expect(loadEpicBrowserStatus()).toBeNull()
+  })
+
+  it('未过期且游戏未领取：正常读回；clearEpicBrowserStatus 可手动清', () => {
+    ensureLocalStorage()
+    clearRecords()
+    saveEpicBrowserStatus('内嵌浏览器遇到人机验证，请在窗口内完成验证后再手动点领取', 'Bread and Fred')
+    expect(loadEpicBrowserStatus()).toContain('人机验证')
+    clearEpicBrowserStatus()
+    expect(loadEpicBrowserStatus()).toBeNull()
+  })
+
+  it('epicBrowserStatusVisible 纯判定：空文案/过期/已领取都不显示', () => {
+    const now = Date.now()
+    const none = new Set<string>()
+    expect(epicBrowserStatusVisible({ text: '', at: now }, now, none)).toBe(false)
+    expect(epicBrowserStatusVisible({ text: 'x', at: now - EPIC_BROWSER_STATUS_TTL_MS }, now, none)).toBe(false)
+    expect(epicBrowserStatusVisible({ text: 'x', at: now, title: 'G' }, now, new Set(['epic:G']))).toBe(false)
+    expect(epicBrowserStatusVisible({ text: 'x', at: now, title: 'G' }, now, none)).toBe(true)
+    expect(epicBrowserStatusVisible({ text: 'x', at: now }, now, none)).toBe(true)
   })
 })

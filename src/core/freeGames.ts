@@ -137,16 +137,44 @@ export function nextCheckAt(prefs: FreeGamesPrefs, lastCheck: number | null): nu
 
 // ---------------- 领取记录 ----------------
 
+/** 去重键：同一游戏 + 同一结果（claimed / already / error 各算一类） */
+export function recordDedupeKey(r: ClaimRecord): string {
+  return `${r.platform}:${r.title}:${r.outcome}`
+}
+
+/**
+ * 纯函数（v0.1.502）：按「游戏 + 结果」去重，每组只保留 at 最新的一条，
+ * 返回按时间倒序（与存储口径一致）。背景：502 前定时自动领取每 3 小时撞一次
+ * 已堵死的接口路线、每轮给同一款游戏写一条失败记录，记录越堆越多；去重后
+ * 同款游戏同类结果永远只有最新一条，成功与失败不同类、互不顶掉。
+ */
+export function dedupeRecords(records: ClaimRecord[]): ClaimRecord[] {
+  const best = new Map<string, ClaimRecord>()
+  for (const r of records) {
+    const k = recordDedupeKey(r)
+    const cur = best.get(k)
+    if (!cur || r.at > cur.at) best.set(k, r)
+  }
+  return [...best.values()].sort((a, b) => b.at - a.at)
+}
+
 export function readRecords(): ClaimRecord[] {
   try {
     const v = JSON.parse(localStorage.getItem(RECORDS_KEY) ?? '[]') as ClaimRecord[]
-    return Array.isArray(v) ? v : []
+    if (!Array.isArray(v)) return []
+    // 读取侧收口：存量重复在加载时自动合并并写回（502 前堆积的同款同类记录一次清掉）
+    const merged = dedupeRecords(v)
+    if (merged.length !== v.length) {
+      try { localStorage.setItem(RECORDS_KEY, JSON.stringify(merged)) } catch { /* 忽略 */ }
+    }
+    return merged
   } catch { return [] }
 }
 
 export function addRecord(r: ClaimRecord): void {
   try {
-    const list = [r, ...readRecords()].slice(0, 200)
+    // 写入侧收口：新记录顶掉同款游戏的同类旧记录，只保留最新一条
+    const list = dedupeRecords([r, ...readRecords()]).slice(0, 200)
     localStorage.setItem(RECORDS_KEY, JSON.stringify(list))
   } catch { /* 忽略 */ }
 }
@@ -827,8 +855,9 @@ export interface FreeGamesCheckResult {
 }
 
 /**
- * 拉取最新免费游戏并（已绑定 Epic 且开启自动领取时）自动领取当前免费且未入库的。
+ * 手动检查（页面「立即检查」按钮）：拉取最新免费游戏并自动领取当前免费且未入库的。
  * 每次领取尝试都写一条领取记录；验证码/登录失效写明原因，不静默跳过。
+ * 注意：定时巡查不走这里——见 runFreeGamesAutoRefresh（v0.1.502）。
  */
 export async function runFreeGamesCheck(pwd?: string): Promise<FreeGamesCheckResult> {
   const prefs = loadPrefs()
@@ -880,6 +909,47 @@ export async function runFreeGamesCheck(pwd?: string): Promise<FreeGamesCheckRes
       result.errors.push(`「${game.title}」领取失败：${msg}`)
       addRecord({ at, platform: 'epic', title: game.title, outcome: 'error', message: msg, ...(url ? { checkoutUrl: url } : {}) })
     }
+  }
+  return result
+}
+
+/**
+ * 定时自动巡查（v0.1.502，App 定时器专用）：只刷新、不领取。
+ * 背景：Epic 接口自动领取三条路全堵是定案（deviceAuth 403、Bearer 取结账页
+ * 302 登录页、Cookie 403），旧定时器每 3 小时还要逐款撞一次死路线、每款写一条
+ * 失败记录，进 Epic 页满屏重复报错。本函数只做两件事：① 拉最新免费游戏列表
+ * 落缓存；② 已绑定时同步一次库房已购状态（浏览器/客户端领过的自动补 'already'
+ * 记录、显示已入库）。对未领取的游戏不发起接口领取、不写任何失败记录；
+ * 接口领取只保留在手动入口（立即检查 / 立即领取）。
+ */
+export async function runFreeGamesAutoRefresh(pwd?: string): Promise<FreeGamesCheckResult> {
+  const at = Date.now()
+  let epicCurrent: FreeGame[] = []
+  let epicUpcoming: FreeGame[] = []
+  let fetchError: string | null = null
+  try {
+    const epic = await fetchEpicFreeGames()
+    epicCurrent = epic.current
+    epicUpcoming = epic.upcoming
+  } catch (e) {
+    fetchError = e instanceof Error ? e.message : 'Epic 免费游戏拉取失败'
+  }
+  saveCache({ at, epicCurrent, epicUpcoming })
+  saveLastCheck(at, fetchError)
+  const result: FreeGamesCheckResult = {
+    at,
+    fetched: { epicCurrent: epicCurrent.length, epicUpcoming: epicUpcoming.length },
+    claimed: [],
+    already: [],
+    errors: fetchError ? [fetchError] : [],
+  }
+  // 同步已入库状态：授权解不开或库房接口不通都静默跳过，下次巡查再试——
+  // 自动巡查不写失败记录、不打扰用户。
+  if (hasEpicAuth()) {
+    try {
+      const sync = await syncOwnedEpicGames(pwd)
+      result.already = sync.synced
+    } catch { /* 静默 */ }
   }
   return result
 }

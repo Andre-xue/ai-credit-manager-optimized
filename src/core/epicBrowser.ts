@@ -16,7 +16,7 @@
 // 安卓保持 396 的手动兜底。
 
 import { isDesktopApp } from './openExternal'
-import { addRecord } from './freeGames'
+import { addRecord, claimedGameIds } from './freeGames'
 
 export const EPIC_BROWSER_LABEL = 'epic-browser'
 export const EPIC_BROWSER_EVENT = 'epic-browser-claim'
@@ -112,10 +112,51 @@ export function recordEpicBrowserOutcome(outcome: string, title: string, checkou
   return false
 }
 
-export function loadEpicBrowserStatus(): string | null {
-  try { return localStorage.getItem(EPIC_BROWSER_STATUS_KEY) } catch { return null }
+export interface EpicBrowserStatus {
+  text: string
+  at: number
+  /** 这条状态对应的游戏（有值时：该游戏被确认已领取就自动撤下） */
+  title?: string
 }
 
-export function saveEpicBrowserStatus(text: string): void {
-  try { localStorage.setItem(EPIC_BROWSER_STATUS_KEY, text) } catch { /* 忽略 */ }
+/** 状态行最长保留时长：超过视为过期残留，自动撤下（v0.1.502） */
+export const EPIC_BROWSER_STATUS_TTL_MS = 24 * 3600_000
+
+/** 纯判定：一条状态现在是否还该显示——过期、或对应游戏已被确认领取，都不再显示 */
+export function epicBrowserStatusVisible(s: EpicBrowserStatus, now: number, claimedKeys: Set<string>): boolean {
+  if (!s.text) return false
+  if (now - s.at >= EPIC_BROWSER_STATUS_TTL_MS) return false
+  if (s.title && claimedKeys.has(`epic:${s.title}`)) return false
+  return true
+}
+
+export function saveEpicBrowserStatus(text: string, title?: string): void {
+  try {
+    const v: EpicBrowserStatus = { text, at: Date.now(), ...(title ? { title } : {}) }
+    localStorage.setItem(EPIC_BROWSER_STATUS_KEY, JSON.stringify(v))
+  } catch { /* 忽略 */ }
+}
+
+export function clearEpicBrowserStatus(): void {
+  try { localStorage.removeItem(EPIC_BROWSER_STATUS_KEY) } catch { /* 忽略 */ }
+}
+
+export function loadEpicBrowserStatus(): string | null {
+  try {
+    const raw = localStorage.getItem(EPIC_BROWSER_STATUS_KEY)
+    if (!raw) return null
+    let s: EpicBrowserStatus | null = null
+    try {
+      const v = JSON.parse(raw) as Partial<EpicBrowserStatus>
+      if (v && typeof v.text === 'string' && typeof v.at === 'number') s = v as EpicBrowserStatus
+    } catch { /* 不是 JSON：旧版纯文本格式 */ }
+    // v0.1.502 前存的是纯文本、没有时间戳与游戏名，无法判断新旧——一次性残留
+    // 曾因此永久挂在页面顶部（如「没等到领取结果」）。旧格式直接撤下；
+    // 新格式按 TTL 与已领取状态判定，不该显示的顺手清掉存储。
+    if (!s || !epicBrowserStatusVisible(s, Date.now(), claimedGameIds())) {
+      try { localStorage.removeItem(EPIC_BROWSER_STATUS_KEY) } catch { /* 忽略 */ }
+      return null
+    }
+    return s.text
+  } catch { return null }
 }

@@ -93,7 +93,7 @@ import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, che
 import { loadWebdavConfig, saveWebdavConfig, loadIcloudSyncConfig, saveIcloudSyncConfig, webdavIO, icloudIO, syncChannel, loadAltStatus, webdavTest, webdavHttpBlocked, type ChannelIO } from './core/altSync'
 import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackupLastAt, createCloudSnapshot, listCloudSnapshots, deleteCloudSnapshot, getCloudSnapshot, saveBackupToIcloudDrive, type CloudBackupPrefs, type SnapshotMeta } from './core/cloudSnapshots'
 import { autoCheckinTick, resolveAutoCheckinPassword } from './core/checkinRun'
-import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult, hasLegacyEpicAuth } from './core/freeGames'
+import { freeGamesCheckDue, runFreeGamesAutoRefresh, summarizeCheckResult } from './core/freeGames'
 import { migrateAllOperationalCreds } from './core/credMigration'
 import {
   applyKeepUnlockedChange, canUseKeyMaterial, keepUnlockedEnabled, keychainAvailable,
@@ -1231,24 +1231,26 @@ function App() {
     void migrateAllOperationalCreds(sessionPwd).catch(() => { /* 失败不打扰：功能用到旧凭据时会以「一次性迁移」名义再请解锁 */ })
   }, [sessionPwd])
 
-  // ---- 免费游戏自动领取（v0.1.384；v0.1.421 起解锁也触发）：Epic 绑定后按偏好间隔巡查，拉取本周免费并自动领入库 ----
-  // 启动/解锁时先看一眼（effect 依赖 sessionPwd，解锁会立即重跑一次 tick），之后每 30 分钟看一眼（覆盖跨周四 23:00 换新）；失败原因写进
-  // 工坊领取记录，不静默跳过。密码来源与自动签到同款：会话密码或指纹副本（resolveAutoCheckinPassword，`||` 而非 `??`）。
+  // ---- 免费游戏定时巡查（v0.1.384；v0.1.421 起解锁也触发；v0.1.502 改为只刷新不领取）----
+  // Epic 接口自动领取三条路全堵是定案，定时器不再逐款撞死路线写失败记录：只拉最新
+  // 免费列表 + 同步库房已购状态（浏览器/客户端领过的自动显示已入库）。接口领取只在
+  // 手动入口（Epic 页立即检查 / 立即领取）。启动/解锁时先看一眼（effect 依赖
+  // sessionPwd，解锁会立即重跑一次 tick），之后每 30 分钟看一眼（覆盖跨周四 23:00
+  // 换新）。刷新不需要密码：授权已迁本地加密（v0.1.470），旧授权未迁移时库房同步
+  // 会静默跳过、列表照常刷新。
   const autoFgRunningRef = useRef(false)
   useEffect(() => {
     const tick = async () => {
       if (autoFgRunningRef.current) return
       if (!freeGamesCheckDue()) return
-      // v0.1.470：Epic 授权已迁本地加密，锁定也能自动领；只有旧授权还没迁移时才等解锁
       const pwd = resolveAutoCheckinPassword(sessionPwdRef.current) ?? undefined
-      if (!pwd && hasLegacyEpicAuth()) return
       autoFgRunningRef.current = true
       try {
-        const res = await runFreeGamesCheck(pwd)
-        if (sessionPwdRef.current && (res.claimed.length || res.errors.length)) {
-          notify(`免费游戏自动领取：${summarizeCheckResult(res)}`)
+        const res = await runFreeGamesAutoRefresh(pwd)
+        if (sessionPwdRef.current && (res.already.length || res.errors.length)) {
+          notify(`免费游戏巡查：${summarizeCheckResult(res)}`)
         }
-      } catch { /* 静默：失败原因写进领取记录，打开工坊可见 */ }
+      } catch { /* 静默：巡查失败不打扰，下次 tick 再试 */ }
       finally { autoFgRunningRef.current = false }
     }
     void tick()
