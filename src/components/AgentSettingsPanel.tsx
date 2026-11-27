@@ -1,10 +1,16 @@
-import { useMemo, useState } from 'react'
-import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
-  AGENT_REGISTRY, agentAvailability, type AgentSettings, type AgentDetectResult, type KeyBinding,
+  AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
+  detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
+  type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry,
 } from '../core/agents'
-import { selectPruneVictims, vaultTotals, formatBytes, type VaultEntry } from '../core/agentVault'
+import {
+  agentAccountsProbe, agentAccountCreateDir, agentWhich, agentRunStart, agentRunPoll, agentRunStop,
+  type AgentAccountStatus, type AgentAccountProbeIn,
+} from '../core/agentBridge'
+import { selectPruneVictims, vaultTotals, formatBytes, formatDuration, type VaultEntry } from '../core/agentVault'
 import { PROVIDER_MAP } from '../data/providers'
 import { JellyToggle } from './agentUi'
 
@@ -33,11 +39,12 @@ function parseBinding(v: string): KeyBinding | undefined {
   return undefined
 }
 
-export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, onRedetect, vaultEntries, onPruneNow, notify }: {
+export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, ledger, onRedetect, vaultEntries, onPruneNow, notify }: {
   settings: AgentSettings
   onChange: (s: AgentSettings) => void
   accounts: Account[]
   detectMap: Record<string, AgentDetectResult>
+  ledger: AgentLedgerEntry[]
   onRedetect: () => void
   vaultEntries: VaultEntry[]
   onPruneNow: () => void
@@ -51,6 +58,102 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
     () => selectPruneVictims(vaultEntries, Date.now(), settings.vault.retentionDays, settings.vault.capGB * 1024 * 1024 * 1024).length,
     [vaultEntries, settings.vault.retentionDays, settings.vault.capGB],
   )
+
+  const [acctStatus, setAcctStatus] = useState<Record<string, AgentAccountStatus>>({})
+  const [guide, setGuide] = useState<Record<string, string>>({})
+
+  // 账户条目登录态探测（只查凭据文件在不在，绝不读内容）；单账户 Agent 用合成原生条目
+  useEffect(() => {
+    const probes: AgentAccountProbeIn[] = []
+    for (const e of settings.accounts) {
+      const d = agentDef(e.agentId)
+      if (d?.nativeCredHome && d.credProbeFile) {
+        probes.push({ entryId: e.id, agentId: e.agentId, credDir: e.credDir, nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
+      }
+    }
+    for (const d of AGENT_REGISTRY) {
+      if (d.nativeCredHome && d.credProbeFile && !multiAccountCapable(d)) {
+        probes.push({ entryId: nativeEntryId(d.id), agentId: d.id, credDir: 'native', nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
+      }
+    }
+    if (!probes.length) return
+    let cancelled = false
+    void agentAccountsProbe(probes).then(statuses => {
+      if (cancelled) return
+      const m: Record<string, AgentAccountStatus> = {}
+      for (const st of statuses) m[st.entryId] = st
+      setAcctStatus(m)
+    })
+    return () => { cancelled = true }
+  }, [settings.accounts, detectMap])
+
+  const loginText = (login?: string) => (login === 'yes' ? '已登录' : login === 'no' ? '未登录' : login === 'unknown' ? '读不到' : '检测中…')
+  const entryStats = (entryId: string) => {
+    const es = ledger.filter(l => l.agentEntryId === entryId)
+    return { count: es.length, ms: es.reduce((sum, l) => sum + (l.durationMs || 0), 0) }
+  }
+  const addEntry = async (def: AgentDef) => {
+    const entry = makeAccountEntry(def.id, settings.accounts, Date.now())
+    const path = await agentAccountCreateDir(def.id, entry.id)
+    onChange({ ...settings, accounts: [...settings.accounts, entry] })
+    setGuide(g => ({ ...g, [def.id]: `新账户「${entry.label}」的凭据目录已建好${path ? `（${path}）` : ''}。${fillLoginGuide(def, path)}` }))
+    notify(`已添加账户「${entry.label}」：按行内指引在终端登录后，点「重新检测」确认登录态`)
+  }
+
+  // ---- 一键安装（官方路线）：确认闸 → 子进程流式输出 → 装完自动重新检测 ----
+  const [npmPath, setNpmPath] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void agentWhich('npm').then(p => { if (!cancelled) setNpmPath(p) })
+    return () => { cancelled = true }
+  }, [])
+  const [installs, setInstalls] = useState<Record<string, { phase: 'confirm' | 'running' | 'done' | 'failed'; lines: string[]; error?: string }>>({})
+  const [loginOpen, setLoginOpen] = useState<Record<string, boolean>>({})
+  const installCursors = useRef(new Map<string, number>())
+  useEffect(() => {
+    const active = Object.keys(installs).filter(id => installs[id]?.phase === 'running')
+    if (!active.length) return
+    const timer = window.setInterval(async () => {
+      for (const agentId of active) {
+        const runId = `install-${agentId}`
+        const poll = await agentRunPoll(runId, installCursors.current.get(agentId) ?? 0)
+        installCursors.current.set(agentId, poll.next)
+        if (poll.lines.length) {
+          setInstalls(prev => (prev[agentId] ? { ...prev, [agentId]: { ...prev[agentId], lines: [...prev[agentId].lines, ...poll.lines].slice(-200) } } : prev))
+        }
+        if (!poll.running && poll.exitCode !== null) {
+          if (poll.exitCode === 0) {
+            setInstalls(prev => (prev[agentId] ? { ...prev, [agentId]: { ...prev[agentId], phase: 'done' } } : prev))
+            onRedetect()
+          } else {
+            setInstalls(prev => {
+              const cur = prev[agentId]
+              if (!cur) return prev
+              const tail = [...cur.lines, ...poll.lines].slice(-2).join(' ').slice(0, 200)
+              return { ...prev, [agentId]: { ...cur, phase: 'failed', error: tail || `安装进程退出码 ${poll.exitCode}` } }
+            })
+          }
+        }
+      }
+    }, 700)
+    return () => window.clearInterval(timer)
+  }, [installs, onRedetect])
+
+  const startInstall = async (def: AgentDef) => {
+    const plan = buildInstallCommand(def)
+    if (!plan) return
+    installCursors.current.set(def.id, 0)
+    setInstalls(prev => ({ ...prev, [def.id]: { phase: 'running', lines: [`$ ${plan.display}`] } }))
+    try {
+      await agentRunStart(`install-${def.id}`, plan.command, plan.args, '', [])
+    } catch (e) {
+      setInstalls(prev => ({ ...prev, [def.id]: { phase: 'failed', lines: prev[def.id]?.lines ?? [], error: `启动安装失败：${e instanceof Error ? e.message : String(e)}` } }))
+    }
+  }
+  const stopInstall = async (def: AgentDef) => {
+    await agentRunStop(`install-${def.id}`)
+    setInstalls(prev => (prev[def.id] ? { ...prev, [def.id]: { ...prev[def.id], phase: 'failed', error: '已被你停止' } } : prev))
+  }
 
   const chainOrdered = useMemo(() => {
     const chosen = settings.relay.chain.filter(id => AGENT_REGISTRY.some(a => a.id === id))
@@ -85,9 +188,16 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
             <span>本机 Agent（改动只存本机）</span>
             <button className="btn sm" onClick={onRedetect}><RefreshCw size={13} /> 重新检测</button>
           </div>
+          <div className="aw-agent-row">
+            <div className="aw-agent-main">
+              <b>桌面型送达后自动发送（回车）</b>
+              <div className="aw-note">派活分三档：有官方命令的走「无头直派」（第一档，如 dsh headless / codex exec / agy）；只有桌面应用时才走「粘贴送达（兜底）」——自动等窗口就绪并粘贴进输入框。开这个开关后，粘贴完连回车一起按、直接发出；关着时只粘贴，你到应用里确认后再按发送。自动粘贴需要辅助功能权限（与翻译功能共用同一个权限）。</div>
+            </div>
+            <JellyToggle checked={settings.delivery.autoSend} onChange={v => set({ delivery: { autoSend: v } })} />
+          </div>
           {AGENT_REGISTRY.map(def => {
             const det = detectMap[def.id]
-            const avail = agentAvailability(def, det, settings, accounts)
+            const avail = agentAvailability(def, det, settings, accounts, settings.accounts)
             const installed = !!det?.installed
             return (
               <div key={def.id} className="aw-agent-row">
@@ -95,11 +205,55 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
                   <div className="aw-agent-title">
                     <b>{def.name}</b>
                     <span className={`aw-tag ${def.kind === 'account' ? 'acct' : 'shell'}`}>{def.kind === 'account' ? '账号登录型' : '空壳型'}</span>
-                    <span className={`aw-tag ${installed ? 'ok' : 'off'}`}>{installed ? `已安装${det?.via === 'app' ? '（应用）' : '（CLI）'}` : '未安装'}</span>
+                    {def.headlessCli
+                      ? <span className={`aw-tag ${detectHasCli(det) ? 'ok' : 'off'}`}>{detectHasCli(det) ? '已安装（命令）' : detectHasApp(det) ? '未安装（命令）' : '未安装'}</span>
+                      : <span className={`aw-tag ${installed ? 'ok' : 'off'}`}>{installed ? `已安装${det?.cliPath ? '（命令）' : det?.appPath ? '（应用）' : det?.via === 'app' ? '（应用）' : '（命令）'}` : '未安装'}</span>}
+                    {installed && dispatchTier(def, det) && <span className="aw-tag tier">{tierLabel(dispatchTier(def, det)!)}</span>}
+                    {installed && det?.cliVersion && <span className="aw-note">{det.cliVersion}</span>}
                   </div>
+                  {def.headlessCli && !detectHasCli(det) && detectHasApp(det) && (
+                    <div className="aw-note">桌面应用已安装（仅作粘贴送达兜底）；命令没装之前不算就绪——派活以命令为准。</div>
+                  )}
+                  {(() => {
+                    const plan = buildInstallCommand(def)
+                    const inst = installs[def.id]
+                    const hasCli = detectHasCli(det)
+                    if (!plan || hasCli) return null
+                    return (
+                      <div className="asp-install">
+                        {!inst && (plan.needsNpm && npmPath === ''
+                          ? <div className="aw-note warn">未检测到 npm：先装 Node.js（nodejs.org 官网或 brew install node），再回来一键安装</div>
+                          : <button className="btn sm primary" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>一键安装</button>)}
+                        {inst?.phase === 'confirm' && (
+                          <div className="asp-install-confirm">
+                            <div className="aw-note">将要执行（官方路线，确认后才会运行）：</div>
+                            <code className="asp-install-cmd">{plan.display}</code>
+                            <div className="asp-install-btns">
+                              <button className="btn sm primary" onClick={() => void startInstall(def)}>确认安装</button>
+                              <button className="btn sm ghost" onClick={() => setInstalls(prev => { const n = { ...prev }; delete n[def.id]; return n })}>取消</button>
+                            </div>
+                          </div>
+                        )}
+                        {(inst?.phase === 'running' || inst?.phase === 'done' || inst?.phase === 'failed') && (
+                          <div className="asp-install-run">
+                            <div className="asp-install-head">
+                              <span>{inst.phase === 'running' ? '安装中…' : inst.phase === 'done' ? '安装完成，已重新检测' : `安装失败：${inst.error ?? ''}`}</span>
+                              {inst.phase === 'running' && <button className="btn sm" onClick={() => void stopInstall(def)}>停止</button>}
+                              {inst.phase === 'failed' && <button className="btn sm" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>重试</button>}
+                            </div>
+                            <pre className="asp-install-out">{inst.lines.slice(-30).join('\n')}</pre>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
                   {def.qualification && <div className="aw-note warn">{def.qualification}</div>}
                   {!installed && <div className="aw-note">{def.installHint}</div>}
-                  {installed && def.kind === 'account' && <div className="aw-note">使用自身登录账号（免 Key），魔方只派活与盯进度，不记细账</div>}
+                  {installed && def.headlessCli && !detectHasCli(det) && def.cliInstallHint && (
+                    <div className="aw-note warn">未检测到 {def.cliNames[0]} 命令，现在只能粘贴送达（兜底）；装上命令即可无头直派：{def.cliInstallHint}</div>
+                  )}
+                  {installed && def.kind === 'account' && !def.headlessCli && <div className="aw-note">使用自身登录账号（免 Key），魔方只派活与盯进度，不记细账</div>}
+                  {installed && def.headlessCli && avail.state === 'ready' && <div className="aw-note">{avail.reason}，魔方只派活与盯进度，不记细账</div>}
                   {installed && avail.state === 'blocked' && <div className="aw-note warn">{avail.reason}</div>}
                   {installed && def.kind === 'shell' && (
                     <label className="aw-bind">
@@ -129,6 +283,73 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, on
                   disabled={!installed}
                   onChange={v => set({ enabled: { ...settings.enabled, [def.id]: v } })}
                 />
+                {installed && def.headlessCli && (
+                  multiAccountCapable(def) ? (
+                    <div className="asp-entries">
+                      {settings.accounts.filter(e => e.agentId === def.id).map(e => {
+                        const st = acctStatus[e.id]
+                        const stats = entryStats(e.id)
+                        return (
+                          <div key={e.id} className="asp-entry-row">
+                            <div className="asp-entry-main">
+                              <div className="asp-entry-title">
+                                <b>{e.label}</b>
+                                <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
+                                <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login)}</span>
+                                <span className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</span>
+                              </div>
+                              {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
+                              {st?.login !== 'yes' && (def.loginCommandNative || def.loginCommandIsolated) && (
+                                <div className="asp-login-wrap">
+                                  <button className="btn sm" onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>去登录</button>
+                                  {loginOpen[e.id] && (
+                                    <div className="asp-login-box">
+                                      <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：</div>
+                                      <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
+                                      <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <JellyToggle
+                              checked={e.enabled}
+                              onChange={v => onChange({ ...settings, accounts: settings.accounts.map(x => (x.id === e.id ? { ...x, enabled: v } : x)) })}
+                            />
+                            {e.credDir === 'isolated' && (
+                              <button className="btn sm ghost" aria-label="删除账户条目" onClick={() => onChange({ ...settings, accounts: settings.accounts.filter(x => x.id !== e.id) })}>
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                      <div className="asp-entry-actions">
+                        <button className="btn sm" onClick={() => void addEntry(def)}>＋ 添加账户</button>
+                        <span className="aw-note">派活默认用最久未用的已启用账户；每个账户一份独立凭据目录，只存你本机登录产生的文件，魔方不收集账号密码。</span>
+                      </div>
+                      {guide[def.id] && <div className="aw-note">{guide[def.id]}</div>}
+                    </div>
+                  ) : (
+                    <div className="asp-entries">
+                      <div className="aw-note">
+                        <span className="aw-tag off">仅单账户</span> {def.multiAccountNote} · 当前登录态：{loginText(acctStatus[nativeEntryId(def.id)]?.login)}
+                      </div>
+                      {def.loginCommandNative && (
+                        <div className="asp-login-wrap">
+                          <button className="btn sm" onClick={() => setLoginOpen(o => ({ ...o, [def.id]: !o[def.id] }))}>去登录</button>
+                          {loginOpen[def.id] && (
+                            <div className="asp-login-box">
+                              <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，在打开的界面里用 Google 账号登录，完后点上方「重新检测」：</div>
+                              <code className="asp-install-cmd">{def.loginCommandNative}</code>
+                              <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(def.loginCommandNative ?? ''); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                )}
               </div>
             )
           })}

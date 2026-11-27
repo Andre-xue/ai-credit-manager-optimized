@@ -3392,6 +3392,14 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .aw-review.issues { background: var(--amber-soft); border-color: #fde68a; }
 .aw-review.failed { background: var(--red-soft); border-color: #fecaca; }
 .aw-review svg { flex-shrink: 0; margin-top: 2px; }
+/* v0.1.509 桌面型自动送达：状态 chip + 结果行（成功绿、进行中中性、回落琥珀） */
+.aw-status.dlv { background: var(--green-soft); color: var(--green); border-color: #a7f3d0; }
+.aw-delivery {
+  border-radius: var(--radius-sm); padding: 8px 11px; font-size: 12.5px; line-height: 1.55;
+  margin: 8px 0; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+}
+.aw-delivery.pasted, .aw-delivery.sent { background: var(--green-soft); border-color: #a7f3d0; }
+.aw-delivery.no-permission, .aw-delivery.timeout, .aw-delivery.mismatch, .aw-delivery.no-input, .aw-delivery.failed { background: var(--amber-soft); border-color: #fde68a; }
 .aw-details { margin-bottom: 6px; }
 .aw-details summary { font-size: 12px; color: var(--primary); cursor: pointer; }
 .aw-details-body { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; margin-top: 4px; }
@@ -3430,3 +3438,32 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   .aw-cat-row { grid-template-columns: repeat(2, 1fr); }
   .aw-settle-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* v0.1.509 档位标注与多账户条目 */
+.aw-agent-row { flex-wrap: wrap; }
+.aw-tag.tier { background: var(--primary-soft); color: var(--primary); }
+.aw-tier { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.aw-tier.t1 { background: var(--primary-soft); color: var(--primary); }
+.aw-tier.t3 { background: var(--surface-muted, #f0ead8); color: var(--muted); }
+.aw-task-entry { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.aw-entry-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }
+.aw-entry-label { font-size: 12.5px; color: var(--muted); }
+.aw-entry-chip { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; }
+.aw-entry-chip.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.asp-entries { flex-basis: 100%; margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.asp-entry-row { display: flex; align-items: flex-start; gap: 10px; }
+.asp-entry-main { flex: 1; min-width: 0; }
+.asp-entry-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.asp-login { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-muted, #eee); color: var(--muted); white-space: nowrap; }
+.asp-login.yes { background: #e3f4e5; color: #1d7a2f; }
+.asp-login.no { background: #fbe7e7; color: #b3261e; }
+.asp-dir { font-family: ui-monospace, monospace; font-size: 11.5px; word-break: break-all; }
+.asp-entry-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.asp-install { margin-top: 8px; }
+.asp-install-confirm { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.asp-install-cmd { font-family: ui-monospace, monospace; font-size: 12px; background: var(--surface-muted, #f2efe6); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; word-break: break-all; display: block; }
+.asp-install-btns { display: flex; gap: 8px; }
+.asp-install-head { display: flex; align-items: center; gap: 10px; font-size: 12.5px; font-weight: 600; }
+.asp-install-out { margin: 6px 0 0; max-height: 160px; overflow: auto; background: var(--surface-muted, #f2efe6); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
+.asp-login-wrap { margin-top: 6px; }
+.asp-login-box { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

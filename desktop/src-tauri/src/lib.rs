@@ -604,6 +604,13 @@ struct AgentDetectOut {
     installed: bool,
     via: String,
     path: String,
+    /// v0.1.509：桌面应用与 CLI 命令双通道分开回报（档位判定要用）
+    #[serde(rename = "appPath")]
+    app_path: String,
+    #[serde(rename = "cliPath")]
+    cli_path: String,
+    #[serde(rename = "cliVersion")]
+    cli_version: String,
 }
 
 fn agent_cli_dirs() -> Vec<std::path::PathBuf> {
@@ -700,31 +707,169 @@ fn agent_app_path(name: &str) -> Option<std::path::PathBuf> {
 #[tauri::command]
 fn agent_detect(probes: Vec<AgentProbeIn>) -> Vec<AgentDetectOut> {
     probes.iter().map(|p| {
-        // 桌面应用优先（账号登录型多为桌面端）
+        // v0.1.509：应用与命令双通道都查（档位 = 命令在走第一档无头直派、只有应用走第三档粘贴兜底）
+        let mut app_path = String::new();
         for name in &p.app_names {
             if let Some(path) = agent_app_path(name) {
-                return AgentDetectOut { id: p.id.clone(), installed: true, via: "app".into(), path: path.to_string_lossy().to_string() };
+                app_path = path.to_string_lossy().to_string();
+                break;
             }
         }
-        #[cfg(target_os = "macos")]
-        for bid in &p.bundle_ids {
-            if bid.is_empty() || !bid.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') { continue }
-            if let Ok(out) = std::process::Command::new("mdfind")
-                .arg(format!("kMDItemCFBundleIdentifier == '{}'", bid)).output()
-            {
-                let found = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
-                if !found.is_empty() {
-                    return AgentDetectOut { id: p.id.clone(), installed: true, via: "app".into(), path: found };
+        if app_path.is_empty() {
+            #[cfg(target_os = "macos")]
+            for bid in &p.bundle_ids {
+                if bid.is_empty() || !bid.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') { continue }
+                if let Ok(out) = std::process::Command::new("mdfind")
+                    .arg(format!("kMDItemCFBundleIdentifier == '{}'", bid)).output()
+                {
+                    let found = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                    if !found.is_empty() {
+                        app_path = found;
+                        break;
+                    }
                 }
             }
         }
+        let mut cli_path = String::new();
+        let mut cli_version = String::new();
         for name in &p.cli_names {
             if let Some(path) = agent_resolve_cli(name) {
-                return AgentDetectOut { id: p.id.clone(), installed: true, via: "cli".into(), path: path.to_string_lossy().to_string() };
+                cli_version = agent_cli_version(&path, name);
+                cli_path = path.to_string_lossy().to_string();
+                break;
             }
         }
-        AgentDetectOut { id: p.id.clone(), installed: false, via: String::new(), path: String::new() }
+        let installed = !app_path.is_empty() || !cli_path.is_empty();
+        let (via, path) = if !cli_path.is_empty() {
+            ("cli".to_string(), cli_path.clone())
+        } else if !app_path.is_empty() {
+            ("app".to_string(), app_path.clone())
+        } else {
+            (String::new(), String::new())
+        };
+        AgentDetectOut { id: p.id.clone(), installed, via, path, app_path, cli_path, cli_version }
     }).collect()
+}
+
+/// 无头三家（dsh/codex/agy）的版本行：界面如实展示，headless 接口随版本变，失败靠降档兜底。
+fn agent_cli_version(path: &std::path::Path, name: &str) -> String {
+    if !matches!(name, "dsh" | "codex" | "agy") { return String::new() }
+    let out = match std::process::Command::new(path).arg("--version").output() {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    let text = if out.stdout.is_empty() {
+        String::from_utf8_lossy(&out.stderr).to_string()
+    } else {
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let line = text.lines().next().unwrap_or("").trim();
+    line.chars().take(80).collect()
+}
+
+// ---------------- 多账户凭据目录（v0.1.509，仅本机） ----------------
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAccountProbeIn {
+    entry_id: String,
+    agent_id: String,
+    /// "native" = 用户原生凭据目录；"isolated" = ~/.ai-credit-manager/agents/creds/<agent>/<entry>
+    cred_dir: String,
+    /// 原生目录相对 HOME 的路径（注册表写死，如 ".dsh" / ".gemini/antigravity-cli"）
+    native_home: String,
+    /// 登录态探测文件（相对凭据目录，如 ".credentials.yaml" / "auth.json"）
+    probe_file: String,
+    /// 探测文件缺失时的语义："no" = 确定未登录；"unknown" = 读不到（如登录存在系统钥匙串）
+    missing_means: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAccountStatusOut {
+    entry_id: String,
+    dir_path: String,
+    dir_exists: bool,
+    /// "yes" | "no" | "unknown"
+    login: String,
+}
+
+/// 路径段安全校验：只许字母数字与 - _ .，且不能是 "." / ".."，防目录穿越
+fn agent_safe_segment(seg: &str) -> bool {
+    !seg.is_empty() && seg.len() <= 80 && seg != "." && seg != ".."
+        && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+fn agent_account_dir(agent_id: &str, entry_id: &str, cred_dir: &str, native_home: &str) -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    if cred_dir == "native" {
+        let mut p = home;
+        for seg in native_home.split('/') {
+            if !agent_safe_segment(seg) { return None }
+            p.push(seg);
+        }
+        Some(p)
+    } else if cred_dir == "isolated" {
+        if !agent_safe_segment(agent_id) || !agent_safe_segment(entry_id) { return None }
+        Some(home.join(".ai-credit-manager").join("agents").join("creds").join(agent_id).join(entry_id))
+    } else {
+        None
+    }
+}
+
+/// 批量探测各账户条目的登录态：只看探测文件在不在，绝不读凭据内容
+#[tauri::command]
+fn agent_account_probe(probes: Vec<AgentAccountProbeIn>) -> Vec<AgentAccountStatusOut> {
+    probes.iter().map(|p| {
+        match agent_account_dir(&p.agent_id, &p.entry_id, &p.cred_dir, &p.native_home) {
+            Some(dir) => {
+                let file_ok = agent_safe_segment(&p.probe_file) && dir.join(&p.probe_file).is_file();
+                let login = if file_ok {
+                    "yes"
+                } else if p.missing_means == "no" {
+                    "no"
+                } else {
+                    "unknown"
+                };
+                AgentAccountStatusOut {
+                    entry_id: p.entry_id.clone(),
+                    dir_path: dir.to_string_lossy().to_string(),
+                    dir_exists: dir.is_dir(),
+                    login: login.to_string(),
+                }
+            }
+            None => AgentAccountStatusOut {
+                entry_id: p.entry_id.clone(),
+                dir_path: String::new(),
+                dir_exists: false,
+                login: "unknown".to_string(),
+            },
+        }
+    }).collect()
+}
+
+/// 查一个命令的解析路径（空串 = 找不到）；一键安装前探 npm 在不在用
+#[tauri::command]
+fn agent_which(name: String) -> String {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return String::new();
+    }
+    agent_resolve_cli(&name).map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// 为新账户条目建隔离凭据目录；Codex 额外预置「凭据存文件」配置，登录才会落进本目录的 auth.json
+#[tauri::command]
+fn agent_account_create_dir(agent_id: String, entry_id: String) -> Result<String, String> {
+    let dir = agent_account_dir(&agent_id, &entry_id, "isolated", "")
+        .ok_or_else(|| "凭据目录路径不合法".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建凭据目录失败：{e}"))?;
+    if agent_id == "codex-desktop" {
+        let cfg = dir.join("config.toml");
+        if !cfg.exists() {
+            let _ = std::fs::write(&cfg, "cli_auth_credentials_store = \"file\"\n");
+        }
+    }
+    Ok(dir.to_string_lossy().to_string())
 }
 
 /// 按需打开桌面应用：只负责拉起，绝不强杀用户应用。
@@ -5687,7 +5832,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_account_probe, agent_account_create_dir, agent_which, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel, translator::agent_ax_trusted, translator::agent_app_probe, translator::agent_activate_app, translator::agent_paste_deliver])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

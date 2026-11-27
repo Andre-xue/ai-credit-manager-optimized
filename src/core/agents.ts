@@ -23,6 +23,51 @@ export interface AgentDef {
   installHint: string
   /** 是否提供「使用自身登录」绑定（CLI 自带登录态，如 Claude Code 的 Pro 登录） */
   selfLogin?: boolean
+  /** # 解析的历史别名（如改名前的旧称，用户打旧名也要认） */
+  aliases?: string[]
+  /** v0.1.509：有官方无头/CLI 通道（第一档）；命令在走无头直派，只有应用走第三档粘贴兜底 */
+  headlessCli?: boolean
+  /** 多账户：凭据目录环境变量（DSH_HOME / CODEX_HOME）；有值 = 支持按目录隔离多账户 */
+  credHomeEnv?: string
+  /** 原生凭据目录（相对 HOME，如 .dsh）；也是登录态探测的基准目录 */
+  nativeCredHome?: string
+  /** 登录态探测文件（相对凭据目录）；只查在不在，绝不读内容 */
+  credProbeFile?: string
+  /** 原生目录探测文件缺失的语义：no = 确定未登录；unknown = 读不到（如登录在系统钥匙串） */
+  credProbeMissing?: 'no' | 'unknown'
+  /** 装命令的一行指引（只有应用、没命令时在 Agent 管理里提示） */
+  cliInstallHint?: string
+  /** 新账户条目的登录指引模板（{dir} 替换为隔离凭据目录路径） */
+  loginGuide?: string
+  /** 不支持多账户时的如实说明（界面展示） */
+  multiAccountNote?: string
+  /** 一键安装（仅官方路线）：npm 包或官方安装脚本；无 = 不给一键安装（如纯桌面应用） */
+  installPlan?: { type: 'npm'; pkg: string } | { type: 'script'; url: string }
+  /** 去登录命令原文：原生目录 / 隔离目录（{dir} 替换为凭据目录路径） */
+  loginCommandNative?: string
+  loginCommandIsolated?: string
+}
+
+/** 一键安装的命令拼装（纯函数）：返回给用户确认的完整命令原文与实际执行形式 */
+export function buildInstallCommand(def: AgentDef): { display: string; command: string; args: string[]; needsNpm: boolean } | null {
+  const plan = def.installPlan
+  if (!plan) return null
+  if (plan.type === 'npm') {
+    return { display: `npm install -g ${plan.pkg}`, command: 'npm', args: ['install', '-g', plan.pkg], needsNpm: true }
+  }
+  const display = `curl -fsSL ${plan.url} | bash`
+  return { display, command: 'bash', args: ['-c', display], needsNpm: false }
+}
+
+/** 去登录命令原文（登录由用户本人在官方流程里完成，工作台不经手密码） */
+export function loginCommandFor(def: AgentDef, entry: AgentAccountEntry, dirPath: string): string {
+  if (entry.credDir === 'isolated') return (def.loginCommandIsolated ?? '').replace('{dir}', dirPath || '<凭据目录>')
+  return def.loginCommandNative ?? ''
+}
+
+/** 支持多账户（凭据目录可隔离）的 Agent */
+export function multiAccountCapable(def: AgentDef): boolean {
+  return !!def.credHomeEnv
 }
 
 export const AGENT_REGISTRY: AgentDef[] = [
@@ -30,19 +75,37 @@ export const AGENT_REGISTRY: AgentDef[] = [
   {
     id: 'dsh', name: 'DSH', kind: 'account', dispatch: 'open',
     appNames: ['DeepSeek Harness', 'DSH', 'DeepSeek'], bundleIds: [], cliNames: ['dsh'],
-    installHint: '到 deepseek.com/download 下载 DeepSeek Harness 桌面端（macOS 需 Apple 芯片 + macOS 13 以上）',
+    headlessCli: true, credHomeEnv: 'DSH_HOME', nativeCredHome: '.dsh',
+    credProbeFile: '.credentials.yaml', credProbeMissing: 'no',
+    installPlan: { type: 'npm', pkg: '@deepseek-ai/dsh' },
+    loginCommandNative: 'dsh', loginCommandIsolated: 'DSH_HOME={dir} dsh',
+    installHint: '装 dsh 命令：终端运行 npm install -g @deepseek-ai/dsh（有命令走无头直派）；或到 deepseek.com/download 装桌面端（与命令版共用 ~/.dsh 登录，macOS 需 Apple 芯片 + macOS 13 以上）',
+    cliInstallHint: 'npm install -g @deepseek-ai/dsh',
+    loginGuide: '在终端运行 DSH_HOME={dir} dsh，在打开的界面里登录要添加的账号；登录完成后回到这里点「重新检测」',
   },
   {
     id: 'antigravity', name: 'Antigravity', kind: 'account', dispatch: 'open',
-    appNames: ['Antigravity'], bundleIds: [], cliNames: [],
+    appNames: ['Antigravity'], bundleIds: [], cliNames: ['agy'],
+    headlessCli: true, nativeCredHome: '.gemini/antigravity-cli',
+    credProbeFile: 'antigravity-oauth-token', credProbeMissing: 'unknown',
+    installPlan: { type: 'script', url: 'https://antigravity.google/cli/install.sh' },
+    loginCommandNative: 'agy',
     qualification: '已装可接；其内置 Claude 模型官方标注 2026-11-30 下线，之后以 Gemini 为主',
-    installHint: '到 antigravity.google 下载 Antigravity 桌面端并登录 Google 账号',
+    installHint: '装 agy 命令：按 antigravity.google 的 CLI 安装指引安装（与桌面端同一个 Google 账号、共用登录态）；或到 antigravity.google 下载桌面端并登录',
+    cliInstallHint: '按 antigravity.google 的 CLI 安装指引安装 agy 命令',
+    multiAccountNote: '仅单账户：agy 没有凭据目录变量，登录态在 ~/.gemini 与系统钥匙串里，无法按目录隔离多账户',
   },
   {
-    id: 'codex-desktop', name: 'Codex 桌面端', kind: 'account', dispatch: 'open',
-    appNames: ['Codex'], bundleIds: ['com.openai.codex'], cliNames: [],
-    qualification: '免费档可用（桌面端限量模型）',
-    installHint: '到 OpenAI 官网下载 Codex 桌面端并登录账号',
+    id: 'codex-desktop', name: 'Codex', kind: 'account', dispatch: 'open', aliases: ['Codex 桌面端'],
+    appNames: ['Codex'], bundleIds: ['com.openai.codex'], cliNames: ['codex'],
+    headlessCli: true, credHomeEnv: 'CODEX_HOME', nativeCredHome: '.codex',
+    credProbeFile: 'auth.json', credProbeMissing: 'unknown',
+    installPlan: { type: 'npm', pkg: '@openai/codex' },
+    loginCommandNative: 'codex login', loginCommandIsolated: 'CODEX_HOME={dir} codex login',
+    qualification: '免费档可用（桌面端限量模型）；命令版 codex exec 与桌面端共用同一 ChatGPT 登录',
+    installHint: '装 codex 命令：终端运行 npm install -g @openai/codex（有命令走无头直派，与桌面端共用 ~/.codex 登录）；或到 OpenAI 官网下载 Codex 桌面端并登录账号',
+    cliInstallHint: 'npm install -g @openai/codex',
+    loginGuide: '在终端运行 CODEX_HOME={dir} codex login，登录要添加的账号（该目录已预置 cli_auth_credentials_store = "file"，登录会落到这个目录的 auth.json）；完成后回到这里点「重新检测」',
   },
   {
     id: 'workbuddy-app', name: 'WorkBuddy', kind: 'account', dispatch: 'open',
@@ -58,26 +121,31 @@ export const AGENT_REGISTRY: AgentDef[] = [
   {
     id: 'pi', name: 'Pi', kind: 'shell', dispatch: 'cli',
     appNames: [], bundleIds: [], cliNames: ['pi'], selfLogin: true,
+    installPlan: { type: 'npm', pkg: '@mariozechner/pi-coding-agent' },
     installHint: '终端运行 npm install -g @mariozechner/pi-coding-agent',
   },
   {
     id: 'opencode', name: 'OpenCode', kind: 'shell', dispatch: 'cli',
     appNames: [], bundleIds: [], cliNames: ['opencode'], selfLogin: true,
+    installPlan: { type: 'npm', pkg: 'opencode-ai' },
     installHint: '终端运行 npm install -g opencode-ai（或 brew install opencode）',
   },
   {
     id: 'qwen-code', name: 'Qwen Code', kind: 'shell', dispatch: 'cli',
     appNames: [], bundleIds: [], cliNames: ['qwen'], selfLogin: true,
+    installPlan: { type: 'npm', pkg: '@qwen-code/qwen-code' },
     installHint: '终端运行 npm install -g @qwen-code/qwen-code',
   },
   {
     id: 'kimi-code', name: 'Kimi Code', kind: 'shell', dispatch: 'cli',
     appNames: [], bundleIds: [], cliNames: ['kimi'], selfLogin: true,
-    installHint: '按 Moonshot 官方文档安装 Kimi Code CLI（kimi 命令）',
+    installPlan: { type: 'script', url: 'https://code.kimi.com/kimi-code/install.sh' },
+    installHint: '官方脚本：curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash（免 Node）；或 npm install -g @moonshot-ai/kimi-code（需 Node 22.19+）',
   },
   {
     id: 'claude-code', name: 'Claude Code', kind: 'shell', dispatch: 'cli',
     appNames: [], bundleIds: [], cliNames: ['claude'], selfLogin: true,
+    installPlan: { type: 'npm', pkg: '@anthropic-ai/claude-code' },
     qualification: '免费档不含，需 Pro 订阅或绑定 Anthropic API 账户',
     installHint: '终端运行 npm install -g @anthropic-ai/claude-code',
   },
@@ -87,16 +155,57 @@ export function agentDef(id: string): AgentDef | undefined {
   return AGENT_REGISTRY.find(a => a.id === id)
 }
 
-/** 各 CLI 的非交互派活命令（按各自官方 CLI 约定；kimi 的 --print 组合待真机核对） */
-export function buildCliInvocation(agentId: string, taskText: string): { command: string; args: string[] } | null {
+/** 各 CLI 的非交互派活命令（按各自官方 CLI 约定核实；kimi 的 --print 组合待真机核对）。
+ *  sessionId 给定时走各家官方续会话形式（DSH --session-id / Codex exec resume / agy --conversation）。 */
+export function buildCliInvocation(agentId: string, taskText: string, sessionId?: string): { command: string; args: string[] } | null {
   switch (agentId) {
     case 'pi': return { command: 'pi', args: ['-p', taskText] }
     case 'opencode': return { command: 'opencode', args: ['run', taskText] }
     case 'qwen-code': return { command: 'qwen', args: ['-p', taskText] }
     case 'kimi-code': return { command: 'kimi', args: ['--print', '-p', taskText] }
     case 'claude-code': return { command: 'claude', args: ['-p', taskText] }
+    // v0.1.509 第一档（官方无头）：flags 必须在任务文本之前
+    case 'dsh': return sessionId
+      ? { command: 'dsh', args: ['headless', '--json', '--session-id', sessionId, taskText] }
+      : { command: 'dsh', args: ['headless', '--json', taskText] }
+    case 'codex-desktop': return sessionId
+      ? { command: 'codex', args: ['exec', 'resume', '--json', '--full-auto', '--skip-git-repo-check', sessionId, taskText] }
+      : { command: 'codex', args: ['exec', '--json', '--full-auto', '--skip-git-repo-check', taskText] }
+    case 'antigravity': {
+      const args = ['--output-format', 'stream-json', '--print-timeout', '30m']
+      if (sessionId) args.push('--conversation', sessionId)
+      args.push('-p', taskText)
+      return { command: 'agy', args }
+    }
     default: return null
   }
+}
+
+/** 从无头 CLI 的 JSON 事件输出里捕获会话 id（Codex thread.started 的 thread_id；
+ *  DSH 开场 session 事件 / agy 结果里的 sessionId / conversation_id 等）。供同账户续跑 resume 用。 */
+export function parseSessionId(output: string): string | null {
+  for (const line of output.split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    try {
+      const o = JSON.parse(t) as Record<string, unknown>
+      if (typeof o.thread_id === 'string' && o.thread_id) return o.thread_id
+      for (const k of ['sessionId', 'session_id', 'conversation_id', 'conversationId']) {
+        if (typeof o[k] === 'string' && o[k]) return o[k] as string
+      }
+      if (o.type === 'session' && typeof o.id === 'string' && o.id) return o.id
+    } catch { /* 非 JSON 行跳过 */ }
+  }
+  return null
+}
+
+/** 无头接口失败判定（版本差异把 --json/子命令改掉时）：命中才允许降级到第三档粘贴，
+ *  额度/登录/任务本身的失败不算接口失败，照常如实报错、不降级掩盖。 */
+export function isHeadlessInterfaceFailure(output: string, exitCode: number | null): boolean {
+  const tail = output.split('\n').slice(-12).join('\n')
+  if (/unknown (command|option|argument|flag)|unexpected argument|unrecognized (option|argument)|invalid option|no such command|command not found/i.test(tail)) return true
+  if (exitCode === 2 && /usage:/i.test(tail)) return true
+  return false
 }
 
 // ---------------- 设置（仅本机，绝不进 AppState 同步） ----------------
@@ -123,6 +232,63 @@ export interface AgentSettings {
   relay: { chain: string[]; mode: 'auto' | 'ask' }
   /** 主控与审查（v0.1.508 起执行）：主控拆活 + 交叉审查 */
   master: { masterAgentId: string; crossReview: boolean; reviewerAgentId: string }
+  /** 桌面型自动送达（v0.1.509）：粘贴后是否连回车一起自动发送（默认关） */
+  delivery: { autoSend: boolean }
+  /** 多账户条目（v0.1.509）：仅支持凭据目录隔离的 Agent（DSH / Codex）有条目 */
+  accounts: AgentAccountEntry[]
+}
+
+/** Agent × 账户条目：独立开关 / 独立凭据目录 / 独立记账。凭据只存用户本机登录产生的文件，App 不收集密码。 */
+export interface AgentAccountEntry {
+  id: string
+  agentId: string
+  label: string
+  /** native = 用户原生凭据目录（复用现有登录）；isolated = ~/.ai-credit-manager/agents/creds/<agent>/<id> */
+  credDir: 'native' | 'isolated'
+  enabled: boolean
+  lastUsedAt?: number
+  createdAt: number
+}
+
+export const nativeEntryId = (agentId: string) => `native-${agentId}`
+
+/** 归一化账户条目：给每个多账户 Agent 补上「默认（现有登录）」原生条目（幂等） */
+export function normalizeAccountEntries(raw: unknown): AgentAccountEntry[] {
+  const arr = Array.isArray(raw)
+    ? (raw as AgentAccountEntry[]).filter(e => e && typeof e.id === 'string' && typeof e.agentId === 'string' && (e.credDir === 'native' || e.credDir === 'isolated'))
+    : []
+  const natives: AgentAccountEntry[] = []
+  for (const def of AGENT_REGISTRY) {
+    if (!multiAccountCapable(def)) continue
+    if (!arr.some(e => e.agentId === def.id && e.credDir === 'native')) {
+      natives.push({ id: nativeEntryId(def.id), agentId: def.id, label: '默认（现有登录）', credDir: 'native', enabled: true, createdAt: 0 })
+    }
+  }
+  return [...natives, ...arr]
+}
+
+const ENTRY_LETTERS = 'ABCDEFGH'
+
+/** 新建隔离条目（标签自动按 账号A / 账号B… 递增） */
+export function makeAccountEntry(agentId: string, existing: AgentAccountEntry[], now: number): AgentAccountEntry {
+  const isolated = existing.filter(e => e.agentId === agentId && e.credDir === 'isolated')
+  const label = `账号${ENTRY_LETTERS[isolated.length] ?? String(isolated.length + 1)}`
+  return { id: `ent-${agentId}-${now.toString(36)}-${isolated.length}`, agentId, label, credDir: 'isolated', enabled: true, createdAt: now }
+}
+
+/** 最久未用优先（额度信息读不到时就按这个选，不编造额度）：lastUsedAt 小者先；同值原生条目优先、再按创建序 */
+export function pickEntryLru(entries: AgentAccountEntry[]): AgentAccountEntry | undefined {
+  const en = entries.filter(e => e.enabled)
+  if (!en.length) return undefined
+  return [...en].sort((a, b) =>
+    (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0)
+    || (a.credDir === 'native' ? 0 : 1) - (b.credDir === 'native' ? 0 : 1)
+    || a.createdAt - b.createdAt)[0]
+}
+
+/** 登录指引填入实际目录路径 */
+export function fillLoginGuide(def: AgentDef, dirPath: string): string {
+  return (def.loginGuide ?? '').replace('{dir}', dirPath || '<凭据目录>')
 }
 
 export const AGENT_SETTINGS_KEY = 'acm.agents.settings.v1'
@@ -136,6 +302,8 @@ export function defaultAgentSettings(): AgentSettings {
     vault: { enabled: true, retentionDays: 30, capGB: 5, workdir: '' },
     relay: { chain: [], mode: 'ask' },
     master: { masterAgentId: '', crossReview: false, reviewerAgentId: '' },
+    delivery: { autoSend: false },
+    accounts: normalizeAccountEntries(undefined),
   }
 }
 
@@ -153,6 +321,8 @@ export function loadAgentSettings(): AgentSettings {
       vault: { ...base.vault, ...(p.vault ?? {}) },
       relay: { chain: Array.isArray(p.relay?.chain) ? p.relay!.chain : [], mode: p.relay?.mode === 'auto' ? 'auto' : 'ask' },
       master: { masterAgentId: p.master?.masterAgentId ?? '', crossReview: !!p.master?.crossReview, reviewerAgentId: p.master?.reviewerAgentId ?? '' },
+      delivery: { autoSend: !!p.delivery?.autoSend },
+      accounts: normalizeAccountEntries(p.accounts),
     }
   } catch { return base }
 }
@@ -168,6 +338,43 @@ export interface AgentDetectResult {
   installed: boolean
   via: string
   path: string
+  /** v0.1.509 双通道：桌面应用路径 / CLI 命令路径 / CLI 版本行（旧数据缺失时按 via 兜底） */
+  appPath?: string
+  cliPath?: string
+  cliVersion?: string
+}
+
+export function detectHasCli(det: AgentDetectResult | undefined): boolean {
+  if (!det?.installed) return false
+  if (typeof det.cliPath === 'string') return det.cliPath.length > 0
+  return det.via === 'cli'
+}
+
+export function detectHasApp(det: AgentDetectResult | undefined): boolean {
+  if (!det?.installed) return false
+  if (typeof det.appPath === 'string') return det.appPath.length > 0
+  return det.via === 'app'
+}
+
+/** 有效派活通道：第一档 = 官方无头/CLI；第三档 = 打开应用 + 粘贴送达（兜底）。
+ *  桌面 App 在不在不影响档位——命令在就是第一档。 */
+export function effectiveDispatch(def: AgentDef, det: AgentDetectResult | undefined): AgentDispatch | null {
+  if (!det?.installed) return null
+  if (def.dispatch === 'cli') return 'cli'
+  if (def.headlessCli && detectHasCli(det)) return 'cli'
+  if (detectHasApp(det)) return 'open'
+  return null
+}
+
+export type DispatchTier = 1 | 3
+
+export function dispatchTier(def: AgentDef, det: AgentDetectResult | undefined): DispatchTier | null {
+  const d = effectiveDispatch(def, det)
+  return d === 'cli' ? 1 : d === 'open' ? 3 : null
+}
+
+export function tierLabel(tier: DispatchTier): string {
+  return tier === 1 ? '无头直派' : '粘贴送达（兜底）'
 }
 
 // ---------------- 可用性判定（纯函数） ----------------
@@ -180,10 +387,29 @@ export function agentAvailability(
   detect: AgentDetectResult | undefined,
   settings: AgentSettings,
   accounts: Account[],
+  entries?: AgentAccountEntry[],
 ): AgentAvailability {
   if (!detect?.installed) return { state: 'not-installed', reason: def.installHint }
   if (!settings.enabled[def.id]) return { state: 'disabled', reason: '已安装，未启用（到设置 · Agent 管理打开）' }
-  if (def.kind === 'account') return { state: 'ready', reason: '使用自身登录账号（免 Key）' }
+  if (def.kind === 'account') {
+    // 检测口径（v0.1.509 Ethan 定）：无头三家的就绪只认 CLI 命令在不在——桌面应用在、
+    // 命令不在 = 未安装（桌面应用仅是第三档粘贴兜底的存在条件，不算就绪）
+    if (def.headlessCli && !detectHasCli(detect)) {
+      return {
+        state: 'not-installed',
+        reason: detectHasApp(detect)
+          ? `桌面应用已装，但 ${def.cliNames[0]} 命令未安装：派活以命令为准，桌面应用仅作粘贴送达兜底。点「一键安装」装上命令即可无头直派`
+          : def.installHint,
+      }
+    }
+    if (entries && multiAccountCapable(def) && !entries.some(e => e.agentId === def.id && e.enabled)) {
+      return { state: 'blocked', reason: '账户条目都已停用（到设置 · Agent 管理启用至少一个账户）' }
+    }
+    if (def.headlessCli) {
+      return { state: 'ready', reason: `无头直派（${def.cliNames[0]} 命令）· 使用自身登录账号，免 Key` }
+    }
+    return { state: 'ready', reason: '使用自身登录账号（免 Key）' }
+  }
   // 空壳型必须先有凭据来源
   const binding = settings.bindings[def.id]
   if (!binding) {
@@ -280,7 +506,7 @@ export function parseDelegation(text: string, registry: AgentDef[] = AGENT_REGIS
   const after = text.slice(at + 1)
   // 先按最长名称/id 前缀匹配（长的优先，避免 Pi 抢了 Pi X 之类）
   const candidates = registry
-    .flatMap(a => [{ id: a.id, key: a.name }, { id: a.id, key: a.id }])
+    .flatMap(a => [{ id: a.id, key: a.name }, { id: a.id, key: a.id }, ...(a.aliases ?? []).map(al => ({ id: a.id, key: al }))])
     .sort((x, y) => y.key.length - x.key.length)
   for (const c of candidates) {
     if (after.toLowerCase().startsWith(c.key.toLowerCase())) {
@@ -371,6 +597,13 @@ export interface RelayProposal {
   changedFiles: number
 }
 
+/** 桌面型自动送达状态（v0.1.509）：只记如实结果，失败态都带可手动 ⌘V 的回落文案 */
+export interface AgentDeliveryState {
+  state: 'copied' | 'delivering' | 'pasted' | 'sent' | 'no-permission' | 'timeout' | 'mismatch' | 'no-input' | 'failed'
+  note: string
+  at: number
+}
+
 export interface AgentTask {
   id: string
   text: string
@@ -404,6 +637,16 @@ export interface AgentTask {
   planGroupId?: string
   /** v0.1.508 交叉审查 */
   review?: AgentReviewState
+  /** v0.1.509 桌面型自动送达（仅 dispatch=open 的任务有） */
+  delivery?: AgentDeliveryState
+  /** v0.1.509 本任务实际走的派活通道与档位（1 = 无头直派 / 3 = 粘贴送达兜底），卡片如实标注 */
+  dispatch?: AgentDispatch
+  tier?: DispatchTier
+  /** v0.1.509 无头会话 id（从 JSON 事件输出捕获，同账户续跑时走 resume） */
+  sessionId?: string
+  /** v0.1.509 多账户：本任务用的账户条目（仅 DSH / Codex 等可隔离凭据的 Agent） */
+  accountEntryId?: string
+  accountEntryLabel?: string
 }
 
 export const AGENT_TASKS_KEY = 'acm.agents.tasks.v1'
@@ -415,9 +658,22 @@ export function loadAgentTasks(): AgentTask[] {
     const arr = JSON.parse(raw) as AgentTask[]
     if (!Array.isArray(arr)) return []
     // 上次进程退出时仍在运行/排队的任务不可能还活着：如实标成已中断
-    return arr.map(t => (t.status === 'running' || t.status === 'queued' || t.status === 'queued-heavy')
-      ? { ...t, status: 'stopped' as AgentTaskStatus, note: 'App 已退出，任务中断' }
-      : t)
+    return arr.map(t => {
+      const base = (t.status === 'running' || t.status === 'queued' || t.status === 'queued-heavy')
+        ? { ...t, status: 'stopped' as AgentTaskStatus, note: 'App 已退出，任务中断' }
+        : t
+      // 送达进行中被 App 退出打断：不能留着「正在粘贴」的假状态，如实标中断
+      if (base.delivery?.state === 'delivering') {
+        return {
+          ...base,
+          delivery: {
+            state: 'failed' as const, at: base.delivery.at,
+            note: 'App 已退出，自动送达中断；任务文本可点「复制任务」重新复制后到应用里 ⌘V',
+          },
+        }
+      }
+      return base
+    })
   } catch { return [] }
 }
 
@@ -434,6 +690,9 @@ export interface AgentLedgerEntry {
   /** 空壳型绑定的账户（账号型为空） */
   accountId?: string
   accountLabel?: string
+  /** v0.1.509 多账户条目归因（DSH / Codex 的账户条目，独立记任务数/时长） */
+  agentEntryId?: string
+  agentEntryLabel?: string
   startedAt: number
   endedAt: number
   durationMs: number

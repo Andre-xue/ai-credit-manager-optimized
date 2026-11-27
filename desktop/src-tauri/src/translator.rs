@@ -690,6 +690,101 @@ pub fn translator_paste_text(app: AppHandle, text: String) -> Result<(), String>
     }
 }
 
+// ---------------- Agent 桌面型自动送达（v0.1.509） ----------------
+// 状态机（轮询/超时/文案）在前端 core/agentDelivery.ts；这里只提供平台原语：
+// 权限查询、窗口快照、激活前台、原子粘贴（验前台→写剪贴板→⌘V→可选回车）。
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAppProbe {
+    pub running: bool,
+    pub has_window: bool,
+    pub is_frontmost: bool,
+    pub frontmost_name: String,
+    pub frontmost_bundle_id: String,
+    pub bundle_id: String,
+    pub pid: i32,
+}
+
+#[tauri::command]
+pub fn agent_ax_trusted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mac::ax_trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+#[tauri::command]
+pub fn agent_app_probe(app_names: Vec<String>, bundle_ids: Vec<String>) -> AgentAppProbe {
+    #[cfg(target_os = "macos")]
+    {
+        let p = mac::probe_target_app(&app_names, &bundle_ids);
+        AgentAppProbe {
+            running: p.running,
+            has_window: p.has_window,
+            is_frontmost: p.is_frontmost,
+            frontmost_name: p.frontmost_name,
+            frontmost_bundle_id: p.frontmost_bundle_id,
+            bundle_id: p.bundle_id,
+            pid: p.pid,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_names, bundle_ids);
+        AgentAppProbe {
+            running: false, has_window: false, is_frontmost: false,
+            frontmost_name: String::new(), frontmost_bundle_id: String::new(),
+            bundle_id: String::new(), pid: 0,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn agent_activate_app(app_names: Vec<String>, bundle_ids: Vec<String>) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mac::activate_target_app(&app_names, &bundle_ids)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_names, bundle_ids);
+        false
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPasteOutcome {
+    /// pasted | sent | mismatch | no-input | no-permission | clipboard-failed | unsupported
+    pub status: String,
+    pub frontmost_name: String,
+}
+
+#[tauri::command]
+pub fn agent_paste_deliver(app_names: Vec<String>, bundle_ids: Vec<String>, text: String, auto_send: bool) -> AgentPasteOutcome {
+    #[cfg(target_os = "macos")]
+    {
+        match mac::paste_deliver(&app_names, &bundle_ids, &text, auto_send) {
+            mac::PasteOutcome::Pasted => AgentPasteOutcome { status: "pasted".into(), frontmost_name: String::new() },
+            mac::PasteOutcome::Sent => AgentPasteOutcome { status: "sent".into(), frontmost_name: String::new() },
+            mac::PasteOutcome::Mismatch(name) => AgentPasteOutcome { status: "mismatch".into(), frontmost_name: name },
+            mac::PasteOutcome::NoInput => AgentPasteOutcome { status: "no-input".into(), frontmost_name: String::new() },
+            mac::PasteOutcome::NoPermission => AgentPasteOutcome { status: "no-permission".into(), frontmost_name: String::new() },
+            mac::PasteOutcome::ClipboardFailed => AgentPasteOutcome { status: "clipboard-failed".into(), frontmost_name: String::new() },
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_names, bundle_ids, text, auto_send);
+        AgentPasteOutcome { status: "unsupported".into(), frontmost_name: String::new() }
+    }
+}
+
 // ---------------- 译文小窗 ----------------
 
 // ---------------- 小窗几何记忆（v0.1.477） ----------------
@@ -1637,6 +1732,11 @@ mod mac {
         // kAXTrustedCheckOptionPrompt：官方导出的 CFStringRef 常量（选项字典的
         // key），v0.1.465 起正规声明取用，不再用 NSString 手拼同名串。
         static kAXTrustedCheckOptionPrompt: *const c_void;
+        // v0.1.509 粘贴前焦点确认：AX 元素属性读写与 AXValue 解包（定位聊天输入框）
+        fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+        fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
+        fn AXUIElementSetAttributeValue(element: *const c_void, attribute: *const c_void, value: *const c_void) -> i32;
+        fn AXValueGetValue(value: *const c_void, value_type: i32, value_ptr: *mut c_void) -> bool;
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -1690,6 +1790,10 @@ mod mac {
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CFRelease(cf: *const c_void);
+        fn CFRetain(cf: *const c_void) -> *const c_void;
+        fn CFEqual(a: *const c_void, b: *const c_void) -> bool;
+        fn CFStringGetLength(s: *const c_void) -> isize;
+        fn CFStringGetCString(s: *const c_void, buffer: *mut c_char, buffer_size: isize, encoding: u32) -> bool;
         fn CFArrayGetCount(arr: *const c_void) -> isize;
         fn CFArrayGetValueAtIndex(arr: *const c_void, idx: isize) -> *const c_void;
         fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
@@ -1784,6 +1888,16 @@ mod mac {
     unsafe fn msg_id_usize(recv: Id, sel: Sel, arg: usize) -> Id {
         let f: extern "C" fn(Id, Sel, usize) -> Id = std::mem::transmute(objc_msgSend as usize);
         f(recv, sel, arg)
+    }
+    // v0.1.509 Agent 送达用：bool 返回 + NSUInteger 参数（activateWithOptions:）、
+    // pid_t 返回（processIdentifier）、id 返回 + pid_t 参数（runningApplicationWithProcessIdentifier:）
+    unsafe fn msg_bool_usize(recv: Id, sel: Sel, arg: usize) -> bool {
+        let f: extern "C" fn(Id, Sel, usize) -> bool = std::mem::transmute(objc_msgSend as usize);
+        f(recv, sel, arg)
+    }
+    unsafe fn msg_i32(recv: Id, sel: Sel) -> i32 {
+        let f: extern "C" fn(Id, Sel) -> i32 = std::mem::transmute(objc_msgSend as usize);
+        f(recv, sel)
     }
     unsafe fn msg_arr_objs(recv: Id, sel: Sel, objs: *const Id, count: usize) -> Id {
         let f: extern "C" fn(Id, Sel, *const Id, usize) -> Id = std::mem::transmute(objc_msgSend as usize);
@@ -1923,6 +2037,16 @@ mod mac {
         send_combo(KEY_V);
     }
 
+    const KEY_RETURN: u16 = 36; // kVK_Return
+
+    /// 回车（自动发送用）：无修饰键的按下/抬起
+    pub fn send_return_key() {
+        unsafe {
+            post_key(KEY_RETURN, true, 0);
+            post_key(KEY_RETURN, false, 0);
+        }
+    }
+
     // ---- 剪贴板（走系统 pbcopy/pbpaste，与现有 osascript 用法同风格） ----
 
     fn clipboard_read() -> Option<String> {
@@ -1982,6 +2106,412 @@ mod mac {
                 Err("没有取到选中文本：请先在其他应用里选中文字再按快捷键；若已选中，可能是当前应用不响应模拟复制".to_string())
             }
         }
+    }
+
+    // ---- Agent 桌面型自动送达（v0.1.509） ----
+    // 目标应用识别：NSWorkspace.runningApplications 里按 bundle id / 显示名 /
+    // .app 文件名三路匹配（注册表里多数桌面 Agent 没登记 bundle id，靠后两路兜底）。
+
+    pub struct TargetProbe {
+        pub running: bool,
+        pub pid: i32,
+        pub bundle_id: String,
+        pub has_window: bool,
+        pub is_frontmost: bool,
+        pub frontmost_name: String,
+        pub frontmost_bundle_id: String,
+    }
+
+    unsafe fn ns_str(obj: Id, sel_name: &str) -> String {
+        if obj.is_null() {
+            return String::new();
+        }
+        let v = msg_id(obj, sel(sel_name));
+        ns_utf8(v).unwrap_or_default()
+    }
+
+    /// 在 runningApplications 里找目标应用对象（找不到返回 null）
+    unsafe fn find_target_app(app_names: &[String], bundle_ids: &[String]) -> Id {
+        let ws_cls = class("NSWorkspace");
+        if ws_cls.is_null() {
+            return std::ptr::null_mut();
+        }
+        let ws = msg_id(ws_cls, sel("sharedWorkspace"));
+        if ws.is_null() {
+            return std::ptr::null_mut();
+        }
+        let apps = msg_id(ws, sel("runningApplications"));
+        if apps.is_null() {
+            return std::ptr::null_mut();
+        }
+        let n = msg_usize(apps, sel("count"));
+        for i in 0..n {
+            let app = msg_id_usize(apps, sel("objectAtIndex:"), i);
+            if app.is_null() {
+                continue;
+            }
+            let bid = ns_str(app, "bundleIdentifier");
+            if !bid.is_empty() && bundle_ids.iter().any(|b| b == &bid) {
+                return app;
+            }
+            let name = ns_str(app, "localizedName");
+            if !name.is_empty() && app_names.iter().any(|a| a == &name) {
+                return app;
+            }
+            // .app 文件名（不带扩展名）：与 agent_app_path 的 /Applications/<name>.app 口径一致
+            let url = msg_id(app, sel("bundleURL"));
+            if !url.is_null() {
+                let path = ns_utf8(msg_id(url, sel("path"))).unwrap_or_default();
+                let stem = path.rsplit('/').next().unwrap_or("").trim_end_matches(".app");
+                if !stem.is_empty() && app_names.iter().any(|a| a == stem) {
+                    return app;
+                }
+            }
+        }
+        std::ptr::null_mut()
+    }
+
+    unsafe fn frontmost_app_obj() -> Id {
+        let ws_cls = class("NSWorkspace");
+        if ws_cls.is_null() {
+            return std::ptr::null_mut();
+        }
+        let ws = msg_id(ws_cls, sel("sharedWorkspace"));
+        if ws.is_null() {
+            return std::ptr::null_mut();
+        }
+        msg_id(ws, sel("frontmostApplication"))
+    }
+
+    /// 目标 PID 名下有没有「普通层 + 尺寸像样」的可见窗口：
+    /// DSH 这类冷启动先有进程、后有窗口，只看进程会把任务粘进虚空。
+    unsafe fn pid_has_real_window(pid: i32) -> bool {
+        if pid <= 0 {
+            return false;
+        }
+        // kCGWindowListOptionOnScreenOnly(1) | kCGWindowListExcludeDesktopElements(16)
+        let arr = CGWindowListCopyWindowInfo(0x1 | 0x10, 0);
+        if arr.is_null() {
+            return false;
+        }
+        let mut found = false;
+        let n = CFArrayGetCount(arr);
+        for i in 0..n {
+            let dict = CFArrayGetValueAtIndex(arr, i);
+            if dict.is_null() {
+                continue;
+            }
+            if dict_i32(dict, "kCGWindowOwnerPID") != Some(pid) {
+                continue;
+            }
+            if dict_i32(dict, "kCGWindowLayer") != Some(0) {
+                continue;
+            }
+            let bounds_key = cf_key("kCGWindowBounds");
+            if bounds_key.is_null() {
+                continue;
+            }
+            let bounds = CFDictionaryGetValue(dict, bounds_key);
+            CFRelease(bounds_key);
+            if bounds.is_null() {
+                continue;
+            }
+            let w = dict_f64(bounds, "Width").unwrap_or(0.0);
+            let h = dict_f64(bounds, "Height").unwrap_or(0.0);
+            if w >= 200.0 && h >= 100.0 {
+                found = true;
+                break;
+            }
+        }
+        CFRelease(arr);
+        found
+    }
+
+    pub fn probe_target_app(app_names: &[String], bundle_ids: &[String]) -> TargetProbe {
+        unsafe {
+            let pool = objc_autoreleasePoolPush();
+            let front = frontmost_app_obj();
+            let frontmost_name = ns_str(front, "localizedName");
+            let frontmost_bundle_id = ns_str(front, "bundleIdentifier");
+            let front_pid = if front.is_null() { 0 } else { msg_i32(front, sel("processIdentifier")) };
+            let target = find_target_app(app_names, bundle_ids);
+            let probe = if target.is_null() {
+                TargetProbe {
+                    running: false, pid: 0, bundle_id: String::new(), has_window: false,
+                    is_frontmost: false, frontmost_name, frontmost_bundle_id,
+                }
+            } else {
+                let pid = msg_i32(target, sel("processIdentifier"));
+                TargetProbe {
+                    running: true,
+                    pid,
+                    bundle_id: ns_str(target, "bundleIdentifier"),
+                    has_window: pid_has_real_window(pid),
+                    is_frontmost: pid > 0 && pid == front_pid,
+                    frontmost_name,
+                    frontmost_bundle_id,
+                }
+            };
+            objc_autoreleasePoolPop(pool);
+            probe
+        }
+    }
+
+    pub fn activate_target_app(app_names: &[String], bundle_ids: &[String]) -> bool {
+        unsafe {
+            let pool = objc_autoreleasePoolPush();
+            let target = find_target_app(app_names, bundle_ids);
+            let ok = if target.is_null() {
+                false
+            } else {
+                // NSApplicationActivateIgnoringOtherApps = 2
+                msg_bool_usize(target, sel("activateWithOptions:"), 2)
+            };
+            objc_autoreleasePoolPop(pool);
+            ok
+        }
+    }
+
+    // ---- 粘贴前焦点确认（v0.1.509，Ethan 22:38 在 508 上实机录屏坐实） ----
+    // DSH 被打开后输入框不自动获焦：焦点不在可编辑元素上时 ⌘V 会粘空或落到
+    // 别处。流程：读目标应用焦点元素 → 已是可编辑文本元素直接过；否则遍历
+    // 前台窗口 AX 树找主文本输入（优先窗口下半部、面积最大），AXFocused
+    // 设焦后复读确认；确认不了就如实回落，绝不盲粘。
+
+    /// 复制一个 AX 属性值（+1 引用，调用方负责 CFRelease）；失败/无值返回 null
+    unsafe fn ax_copy_attr(el: *const c_void, name: &str) -> *const c_void {
+        if el.is_null() {
+            return std::ptr::null();
+        }
+        let key = cf_key(name);
+        if key.is_null() {
+            return std::ptr::null();
+        }
+        let mut value: *const c_void = std::ptr::null();
+        let err = AXUIElementCopyAttributeValue(el, key, &mut value);
+        CFRelease(key);
+        if err != 0 || value.is_null() {
+            return std::ptr::null();
+        }
+        value
+    }
+
+    unsafe fn cf_string_value(cf: *const c_void) -> String {
+        if cf.is_null() {
+            return String::new();
+        }
+        let len = CFStringGetLength(cf);
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; (len as usize) * 4 + 2];
+        if CFStringGetCString(cf, buf.as_mut_ptr() as *mut c_char, buf.len() as isize, 0x0800_0100) {
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            String::from_utf8_lossy(&buf[..end]).into_owned()
+        } else {
+            String::new()
+        }
+    }
+
+    unsafe fn ax_role(el: *const c_void) -> String {
+        let v = ax_copy_attr(el, "AXRole");
+        let s = cf_string_value(v);
+        if !v.is_null() {
+            CFRelease(v);
+        }
+        s
+    }
+
+    /// 可编辑文本元素：聊天输入框在原生与 Web 壳应用里基本是这两类角色
+    unsafe fn ax_is_editable_text(el: *const c_void) -> bool {
+        if el.is_null() {
+            return false;
+        }
+        matches!(ax_role(el).as_str(), "AXTextArea" | "AXTextField")
+    }
+
+    /// 元素框（屏幕坐标）：AXPosition/AXSize 都是 AXValue，取不到返回 None
+    unsafe fn ax_frame(el: *const c_void) -> Option<(f64, f64, f64, f64)> {
+        let pos_ref = ax_copy_attr(el, "AXPosition");
+        let size_ref = ax_copy_attr(el, "AXSize");
+        let mut out = None;
+        if !pos_ref.is_null() && !size_ref.is_null() {
+            let mut pt = CGPointF::default();
+            let mut sz = CGSizeF::default();
+            // kAXValueTypeCGPoint = 1，kAXValueTypeCGSize = 2
+            let ok_p = AXValueGetValue(pos_ref, 1, &mut pt as *mut CGPointF as *mut c_void);
+            let ok_s = AXValueGetValue(size_ref, 2, &mut sz as *mut CGSizeF as *mut c_void);
+            if ok_p && ok_s && sz.width > 0.0 && sz.height > 0.0 {
+                out = Some((pt.x, pt.y, sz.width, sz.height));
+            }
+        }
+        if !pos_ref.is_null() {
+            CFRelease(pos_ref);
+        }
+        if !size_ref.is_null() {
+            CFRelease(size_ref);
+        }
+        out
+    }
+
+    /// 在窗口 AX 树里找主文本输入：遍历带节点/深度双上限防病态树，候选先比
+    /// 「位于窗口下半部」再比面积。返回 +1 引用的元素（调用方 CFRelease）。
+    unsafe fn ax_find_main_input(win: *const c_void) -> *const c_void {
+        let win_frame = ax_frame(win);
+        let mut held_arrays: Vec<*const c_void> = Vec::new();
+        let mut best: *const c_void = std::ptr::null();
+        let mut best_key = (false, 0.0f64); // (在窗口下半部, 面积)
+        let mut queue: Vec<(*const c_void, usize)> = vec![(win, 0)];
+        let mut visited = 0usize;
+        while let Some((el, depth)) = queue.pop() {
+            if el.is_null() || visited >= 4000 {
+                continue;
+            }
+            visited += 1;
+            if !std::ptr::eq(el, win) && ax_is_editable_text(el) {
+                let (lower, area) = match ax_frame(el) {
+                    Some((_, y, w, h)) => {
+                        let lower = match win_frame {
+                            Some((_, wy, _, wh)) => (y + h / 2.0) > (wy + wh / 2.0),
+                            None => false,
+                        };
+                        (lower, w * h)
+                    }
+                    None => (false, 0.0),
+                };
+                if best.is_null() || (lower, area) > best_key {
+                    best = el;
+                    best_key = (lower, area);
+                }
+            }
+            if depth < 40 {
+                let children = ax_copy_attr(el, "AXChildren");
+                if !children.is_null() {
+                    held_arrays.push(children);
+                    let n = CFArrayGetCount(children);
+                    for i in 0..n {
+                        let child = CFArrayGetValueAtIndex(children, i);
+                        if !child.is_null() {
+                            queue.push((child, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let result = if best.is_null() { std::ptr::null() } else { CFRetain(best) };
+        for arr in held_arrays {
+            CFRelease(arr);
+        }
+        result
+    }
+
+    /// 确认键盘焦点落在目标应用的可编辑文本元素上（粘贴前最后一道闸）：
+    /// 已聚焦可编辑元素直接过；否则定位主输入 → AXFocused 设焦 → 复读确认。
+    /// 找不到 / 设不上 / 确认不了都返回 false，调用方走「没能定位到输入框」回落。
+    unsafe fn ax_ensure_input_focused(pid: i32) -> bool {
+        if pid <= 0 {
+            return false;
+        }
+        let app_el = AXUIElementCreateApplication(pid);
+        if app_el.is_null() {
+            return false;
+        }
+        let focused = ax_copy_attr(app_el, "AXFocusedUIElement");
+        let already = ax_is_editable_text(focused);
+        if !focused.is_null() {
+            CFRelease(focused);
+        }
+        if already {
+            CFRelease(app_el as *const c_void);
+            return true;
+        }
+        let mut win = ax_copy_attr(app_el, "AXFocusedWindow");
+        if win.is_null() {
+            // 个别应用不给焦点窗口：退回窗口列表第一项
+            let wins = ax_copy_attr(app_el, "AXWindows");
+            if !wins.is_null() {
+                if CFArrayGetCount(wins) > 0 {
+                    let first = CFArrayGetValueAtIndex(wins, 0);
+                    if !first.is_null() {
+                        win = CFRetain(first);
+                    }
+                }
+                CFRelease(wins);
+            }
+        }
+        if win.is_null() {
+            CFRelease(app_el as *const c_void);
+            return false;
+        }
+        let candidate = ax_find_main_input(win);
+        CFRelease(win);
+        if candidate.is_null() {
+            CFRelease(app_el as *const c_void);
+            return false;
+        }
+        let key = cf_key("AXFocused");
+        let mut ok = false;
+        if !key.is_null() {
+            let err = AXUIElementSetAttributeValue(candidate, key, kCFBooleanTrue);
+            CFRelease(key);
+            if err == 0 {
+                // 复读焦点：必须是刚设焦的元素本身，或至少仍落在可编辑元素上
+                let now_focused = ax_copy_attr(app_el, "AXFocusedUIElement");
+                if !now_focused.is_null() {
+                    ok = CFEqual(now_focused, candidate) || ax_is_editable_text(now_focused);
+                    CFRelease(now_focused);
+                }
+            }
+        }
+        CFRelease(candidate);
+        CFRelease(app_el as *const c_void);
+        ok
+    }
+
+    pub enum PasteOutcome {
+        Pasted,
+        Sent,
+        Mismatch(String),
+        NoPermission,
+        ClipboardFailed,
+        NoInput,
+    }
+
+    /// 原子送达：验权限 → 验前台是目标应用 → 焦点确认（焦点不在可编辑输入上
+    /// 就定位主输入设焦并复读确认，确认不了回落 NoInput）→ 写剪贴板 → 合成
+    /// ⌘V →（auto_send 时 600ms 后复验前台仍是目标才合成回车）。校验与按键
+    /// 在同一次调用里完成，不给别的窗口抢焦点的空当；任何一步不符如实返回，
+    /// 绝不盲粘盲发。
+    pub fn paste_deliver(app_names: &[String], bundle_ids: &[String], text: &str, auto_send: bool) -> PasteOutcome {
+        if !ax_trusted() {
+            return PasteOutcome::NoPermission;
+        }
+        let probe = probe_target_app(app_names, bundle_ids);
+        if !probe.is_frontmost {
+            return PasteOutcome::Mismatch(probe.frontmost_name.clone());
+        }
+        // 焦点确认：DSH 打开后输入框不自动获焦（Ethan 22:38 录屏坐实），焦点
+        // 不在文本框时 ⌘V 会粘空/粘错。定位不到可编辑输入就如实回落——任务已
+        // 在剪贴板里，用户手动点一下输入框再 ⌘V 即可。
+        let focus_ok = unsafe { ax_ensure_input_focused(probe.pid) };
+        if !focus_ok {
+            return PasteOutcome::NoInput;
+        }
+        if clipboard_write(text).is_err() {
+            return PasteOutcome::ClipboardFailed;
+        }
+        send_cmd_v();
+        if auto_send {
+            std::thread::sleep(Duration::from_millis(600));
+            let again = probe_target_app(app_names, bundle_ids);
+            if again.is_frontmost {
+                send_return_key();
+                return PasteOutcome::Sent;
+            }
+            // 粘进去了但前台被切走：不盲发回车，停在已粘贴等人确认发送
+            return PasteOutcome::Pasted;
+        }
+        PasteOutcome::Pasted
     }
 
     // ---- 全屏检测（设置项：在全屏应用中禁用快捷键） ----

@@ -36,7 +36,9 @@ describe('注册表分类与资格', () => {
     expect(buildCliInvocation('qwen-code', '干活')).toEqual({ command: 'qwen', args: ['-p', '干活'] })
     expect(buildCliInvocation('claude-code', '干活')).toEqual({ command: 'claude', args: ['-p', '干活'] })
     expect(buildCliInvocation('kimi-code', '干活')?.command).toBe('kimi')
-    expect(buildCliInvocation('dsh', '干活')).toBeNull()
+    // v0.1.509：DSH 有官方 headless 通道（形式在 agentTier.test.ts 详测）；真无调用形式的是纯桌面型
+    expect(buildCliInvocation('dsh', '干活')).toEqual({ command: 'dsh', args: ['headless', '--json', '干活'] })
+    expect(buildCliInvocation('workbuddy-app', '干活')).toBeNull()
   })
 })
 
