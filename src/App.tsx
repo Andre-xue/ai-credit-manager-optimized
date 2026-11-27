@@ -20,7 +20,7 @@ import {
   Cloud, Database, Volume2, HardDrive, Palette, RotateCcw, Menu, Globe, HeartPulse, Loader2,
   Bell, CloudOff, Activity, ClipboardList, Upload, ClipboardPaste, Wrench, History, ChevronDown, ChevronRight, ChevronUp,
   Archive, ArchiveRestore, Puzzle, Folder,
-  ArrowLeft,
+  ArrowLeft, Bot,
 } from 'lucide-react'
 import type { AppState, AccountView, ProviderDefinition, CreditUnit, AccountMode, QuotaSnapshot, AppSettings } from './core/types'
 import { isLocalProvider, mergeToolbarOrder } from './core/types'
@@ -109,6 +109,7 @@ const ChatTranslateView = lazy(() => import('./components/ChatTranslateView').th
 const LocalImageView = lazy(() => import('./components/LocalImageView').then(m => ({ default: m.LocalImageView })))
 const LocalVideoView = lazy(() => import('./components/LocalVideoView').then(m => ({ default: m.LocalVideoView })))
 const WorkshopView = lazy(() => import('./components/WorkshopView').then(m => ({ default: m.WorkshopView })))
+const AgentWorkbench = lazy(() => import('./components/AgentWorkbench').then(m => ({ default: m.AgentWorkbench })))
 const AIView = lazy(() => import('./components/AIView').then(m => ({ default: m.AIView })))
 const VoiceSettings = lazy(() => import('./components/VoiceSettings').then(m => ({ default: m.VoiceSettings })))
 const CalendarView = lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })))
@@ -133,7 +134,7 @@ type CsvImportPreview =
   | { kind: 'quotas'; quotas: ReturnType<typeof parseQuotasCsv> }
   | { kind: 'usage'; events: UsageEventInput[] }
 
-type Tab = 'ai' | 'dashboard' | 'checkin' | 'chat-translate' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'settings' | 'plugins' | 'workshop'
+type Tab = 'ai' | 'dashboard' | 'checkin' | 'chat-translate' | 'local-image' | 'local-video' | 'keys' | 'usage' | 'calendar' | 'report' | 'voice' | 'settings' | 'plugins' | 'workshop' | 'agents'
 
 const UNIT_LABEL: Record<CreditUnit, string> = {
   credit: '积分', token: 'Tokens', request: '次', currency: '元', day: '天',
@@ -327,7 +328,7 @@ function App() {
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
-    if (t && ['ai', 'dashboard', 'checkin', 'chat-translate', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'settings', 'workshop'].includes(t)
+    if (t && ['ai', 'dashboard', 'checkin', 'chat-translate', 'local-image', 'local-video', 'keys', 'usage', 'calendar', 'report', 'voice', 'settings', 'workshop', 'agents'].includes(t)
       && !(isPhone && (t === 'docs' || t === 'local-image' || t === 'local-video'))) return t as Tab
     return 'ai'
   })
@@ -1371,6 +1372,7 @@ function App() {
     { id: 'calendar', label: '额度日历', icon: CalendarDays },
     { id: 'voice', label: '语音配置', icon: Volume2 },
     { id: 'workshop', label: 'AI 工坊', icon: Wrench },
+    { id: 'agents', label: 'Agent 工作台', icon: Bot },
     { id: 'plugins', label: '插件', icon: Puzzle },
     { id: 'settings', label: '设置', icon: Settings },
   ]
@@ -1378,7 +1380,7 @@ function App() {
   // 侧栏分组（仅布局层：不改变任何 tab id / 路由 / 数据逻辑）
   const navGroups: Array<{ label: string; ids: Tab[] }> = [
     // v0.1.334 Ethan 定案：原「概览」组删除；「AI 创作」置顶，内含 AI 助手与 AI 工坊；额度看板在资产管理
-    { label: 'AI 创作', ids: ['ai', 'workshop'] },
+    { label: 'AI 创作', ids: ['ai', 'workshop', 'agents'] },
     { label: '资产管理', ids: ['dashboard', 'keys', 'usage', 'calendar'] },
     { label: '系统', ids: ['voice', 'plugins', 'settings'] },
   ]
@@ -1387,7 +1389,7 @@ function App() {
   const bottomTabs: Tab[] = ['dashboard', 'workshop', 'ai', 'keys', 'settings']
   const shortLabel: Record<Tab, string> = {
     ai: 'AI', dashboard: '看板', checkin: '工具', 'chat-translate': '对话翻译',     'local-image': '本地图像', 'local-video': '本地视频',
-    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', settings: '设置', plugins: '插件', workshop: '工坊',
+    keys: '密钥', usage: '用量', calendar: '日历', report: '报告', voice: '语音', settings: '设置', plugins: '插件', workshop: '工坊', agents: 'Agent',
   }
 
   // ---- 全局搜索（Cmd/Ctrl+K） ----
@@ -1429,7 +1431,7 @@ function App() {
   }, [])
 
   // 手机端侧栏：与桌面端使用同一分组顺序；手机客户端不含文档问答（无本机服务）
-  const drawerTabs: Tab[] = (['ai', 'dashboard', 'workshop', 'keys', 'usage', 'calendar', 'voice', 'plugins', 'settings'] as Tab[])
+  const drawerTabs: Tab[] = (['ai', 'dashboard', 'workshop', 'agents', 'keys', 'usage', 'calendar', 'voice', 'plugins', 'settings'] as Tab[])
 
   // 界面风格：经典（默认，极简留白）/ 液态玻璃（uiStyle==='liquid' 时挂 liquid-ui，
   // 材质覆盖在 liquid-global.css 最后一层；claude-ui 仍作基础设计系统保留）
@@ -1859,6 +1861,8 @@ function App() {
           {tab === 'plugins' && <PluginsView notify={notify} />}
 
           {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={unlockSession} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
+
+          {tab === 'agents' && <AgentWorkbench accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} />}
 
           {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗。
               v0.1.473：Alt+E 输入翻译改开置顶输入小窗（宿主直连 Rust），不再

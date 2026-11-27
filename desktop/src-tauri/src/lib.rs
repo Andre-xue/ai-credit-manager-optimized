@@ -579,6 +579,624 @@ fn plugin_process_output(id: String) -> String {
     }
 }
 
+// ---------------- Agent 工作台（v0.1.507） ----------------
+// 宿主派活的桌面能力层：① 检测本机已装 Agent（桌面 .app / CLI）；
+// ② CLI 型 Agent 真派活：spawn 子进程（新进程组、环境变量注入、输出缓冲轮询、停止杀进程组）；
+// ③ 桌面型 Agent 按需打开（open -a / open -b，只打开不强杀）；
+// ④ 文件保险箱：工作目录基线镜像 + 运行中 diff 把被改/被删文件的上一版沉入保险箱 + 一键还原。
+// 保险箱只存本机 ~/.ai-credit-manager/agent-vault/，不进云同步/备份。
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentProbeIn {
+    id: String,
+    #[serde(default)]
+    app_names: Vec<String>,
+    #[serde(default)]
+    bundle_ids: Vec<String>,
+    #[serde(default)]
+    cli_names: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AgentDetectOut {
+    id: String,
+    installed: bool,
+    via: String,
+    path: String,
+}
+
+fn agent_cli_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    #[cfg(unix)]
+    {
+        let mut extra = vec![
+            std::path::PathBuf::from("/opt/homebrew/bin"),
+            std::path::PathBuf::from("/usr/local/bin"),
+            std::path::PathBuf::from("/opt/homebrew/sbin"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            let h = std::path::PathBuf::from(&home);
+            extra.push(h.join(".local/bin"));
+            extra.push(h.join(".cargo/bin"));
+            extra.push(h.join(".npm-global/bin"));
+            extra.push(h.join(".bun/bin"));
+            extra.push(h.join(".volta/bin"));
+            extra.push(h.join("Library/pnpm"));
+            extra.push(h.join(".local/share/pnpm"));
+            extra.push(h.join(".npm/bin"));
+        }
+        for d in extra.into_iter() {
+            if !dirs.contains(&d) { dirs.push(d); }
+        }
+    }
+    dirs
+}
+
+fn agent_cli_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+/// 解析 CLI 到绝对路径：先查常见 bin 目录，再退回登录 shell 的 which（GUI 进程 PATH 不全）。
+fn agent_resolve_cli(name: &str) -> Option<std::path::PathBuf> {
+    if !agent_cli_name_ok(name) { return None; }
+    if name.contains('/') {
+        let p = std::path::PathBuf::from(name);
+        return if p.is_file() { Some(p) } else { None };
+    }
+    for d in agent_cli_dirs() {
+        let cand = d.join(name);
+        if cand.is_file() { return Some(cand); }
+    }
+    #[cfg(unix)]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        if let Ok(out) = std::process::Command::new(&shell)
+            .args(["-lc", &format!("which {}", name)])
+            .output()
+        {
+            if out.status.success() {
+                let p = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                if !p.is_empty() {
+                    let pb = std::path::PathBuf::from(&p);
+                    if pb.is_file() { return Some(pb); }
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(out) = std::process::Command::new("where").arg(name).output() {
+            if out.status.success() {
+                let p = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                if !p.is_empty() { return Some(std::path::PathBuf::from(p)); }
+            }
+        }
+    }
+    None
+}
+
+fn agent_app_path(name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let file_name = if name.ends_with(".app") { name.to_string() } else { format!("{}.app", name) };
+        let mut roots = vec![std::path::PathBuf::from("/Applications")];
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(std::path::PathBuf::from(&home).join("Applications"));
+        }
+        for r in roots {
+            let cand = r.join(&file_name);
+            if cand.is_dir() { return Some(cand); }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = name;
+    }
+    None
+}
+
+#[tauri::command]
+fn agent_detect(probes: Vec<AgentProbeIn>) -> Vec<AgentDetectOut> {
+    probes.iter().map(|p| {
+        // 桌面应用优先（账号登录型多为桌面端）
+        for name in &p.app_names {
+            if let Some(path) = agent_app_path(name) {
+                return AgentDetectOut { id: p.id.clone(), installed: true, via: "app".into(), path: path.to_string_lossy().to_string() };
+            }
+        }
+        #[cfg(target_os = "macos")]
+        for bid in &p.bundle_ids {
+            if bid.is_empty() || !bid.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') { continue }
+            if let Ok(out) = std::process::Command::new("mdfind")
+                .arg(format!("kMDItemCFBundleIdentifier == '{}'", bid)).output()
+            {
+                let found = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                if !found.is_empty() {
+                    return AgentDetectOut { id: p.id.clone(), installed: true, via: "app".into(), path: found };
+                }
+            }
+        }
+        for name in &p.cli_names {
+            if let Some(path) = agent_resolve_cli(name) {
+                return AgentDetectOut { id: p.id.clone(), installed: true, via: "cli".into(), path: path.to_string_lossy().to_string() };
+            }
+        }
+        AgentDetectOut { id: p.id.clone(), installed: false, via: String::new(), path: String::new() }
+    }).collect()
+}
+
+/// 按需打开桌面应用：只负责拉起，绝不强杀用户应用。
+#[tauri::command]
+fn agent_launch_app(app_names: Vec<String>, bundle_ids: Vec<String>) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        for name in &app_names {
+            if agent_app_path(name).is_some() {
+                let ok = std::process::Command::new("open").arg("-a").arg(name).status()
+                    .map(|s| s.success()).unwrap_or(false);
+                if ok { return Ok(true); }
+            }
+        }
+        for bid in &bundle_ids {
+            if bid.is_empty() || !bid.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') { continue }
+            if let Ok(out) = std::process::Command::new("mdfind")
+                .arg(format!("kMDItemCFBundleIdentifier == '{}'", bid)).output()
+            {
+                if !out.stdout.is_empty() {
+                    let ok = std::process::Command::new("open").arg("-b").arg(bid).status()
+                        .map(|s| s.success()).unwrap_or(false);
+                    if ok { return Ok(true); }
+                }
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_names, bundle_ids);
+        Ok(false)
+    }
+}
+
+struct AgentRun {
+    child: std::process::Child,
+    output: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    exit_code: Option<i32>,
+}
+
+fn agent_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, AgentRun>> {
+    static RUNS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, AgentRun>>> = OnceLock::new();
+    RUNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(unix)]
+extern "C" { fn setsid() -> i32; }
+
+#[tauri::command]
+fn agent_run_start(run_id: String, command: String, args: Vec<String>, cwd: String, env_pairs: Vec<(String, String)>) -> Result<u32, String> {
+    use std::process::{Command, Stdio};
+    let mut map = agent_runs().lock().map_err(|_| "进程表锁定失败".to_string())?;
+    if let Some(e) = map.get_mut(&run_id) {
+        if matches!(e.child.try_wait(), Ok(None)) { return Err("该任务进程已在运行".into()); }
+    }
+    map.remove(&run_id);
+    let cmd_path = agent_resolve_cli(&command)
+        .ok_or_else(|| format!("找不到命令 {}（请先安装并确保终端里能运行）", command))?;
+    let child_path = std::env::join_paths(agent_cli_dirs()).unwrap_or_default();
+    let mut cmd = Command::new(&cmd_path);
+    cmd.args(&args).env("PATH", &child_path).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (k, v) in &env_pairs {
+        // 环境变量名只允许大写字母/数字/下划线，防注入怪名
+        if !k.is_empty() && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            cmd.env(k, v);
+        }
+    }
+    if !cwd.is_empty() && std::path::Path::new(&cwd).is_dir() {
+        cmd.current_dir(&cwd);
+    }
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // 子进程在 fork 后、exec 前执行：自成进程组，停止时可整组杀掉不误伤 App
+            let rc = unsafe { setsid() };
+            if rc == -1 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动失败：{}", e))?;
+    let pid = child.id();
+    let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    fn drain<R: std::io::Read + Send + 'static>(stream: R, buf: std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader};
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                match line {
+                    Ok(l) => {
+                        if let Ok(mut v) = buf.lock() {
+                            v.push(l);
+                            if v.len() > 2000 { let excess = v.len() - 2000; v.drain(0..excess); }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(out) = child.stdout.take() { drain(out, output.clone()); }
+    if let Some(err) = child.stderr.take() { drain(err, output.clone()); }
+    map.insert(run_id, AgentRun { child, output, exit_code: None });
+    Ok(pid)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunPoll {
+    lines: Vec<String>,
+    next: usize,
+    running: bool,
+    exit_code: Option<i32>,
+}
+
+#[tauri::command]
+fn agent_run_poll(run_id: String, cursor: usize) -> AgentRunPoll {
+    let mut map = match agent_runs().lock() { Ok(m) => m, Err(_) => return AgentRunPoll { lines: vec![], next: cursor, running: false, exit_code: None } };
+    let entry = match map.get_mut(&run_id) { Some(e) => e, None => return AgentRunPoll { lines: vec![], next: cursor, running: false, exit_code: None } };
+    if entry.exit_code.is_none() {
+        match entry.child.try_wait() {
+            Ok(Some(status)) => { entry.exit_code = Some(status.code().unwrap_or(-1)); }
+            Ok(None) => {}
+            Err(_) => { entry.exit_code = Some(-1); }
+        }
+    }
+    let running = entry.exit_code.is_none();
+    let (lines, next) = match entry.output.lock() {
+        Ok(v) => {
+            let start = cursor.min(v.len());
+            (v[start..].to_vec(), v.len())
+        }
+        Err(_) => (vec![], cursor),
+    };
+    AgentRunPoll { lines, next, running, exit_code: entry.exit_code }
+}
+
+#[tauri::command]
+fn agent_run_stop(run_id: String) -> Result<(), String> {
+    let mut map = agent_runs().lock().map_err(|_| "进程表锁定失败".to_string())?;
+    if let Some(mut entry) = map.remove(&run_id) {
+        let pid = entry.child.id();
+        #[cfg(unix)]
+        {
+            // 子进程已 setsid 成组长：负 pid 即整组，先 TERM 再兜底 KILL 本进程
+            let _ = std::process::Command::new("kill").arg("-TERM").arg(format!("-{}", pid)).status();
+        }
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
+    }
+    Ok(())
+}
+
+// ---------- 文件保险箱 ----------
+
+const VAULT_SKIP_DIRS: &[&str] = &[".git", "node_modules", ".next", "dist", "build", "target", ".venv", "__pycache__", ".svn", ".hg", "Pods", ".gradle"];
+const VAULT_MAX_FILE: u64 = 64 * 1024 * 1024;
+
+fn agent_vault_root() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    home.join(".ai-credit-manager").join("agent-vault")
+}
+
+fn vault_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn vault_now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct VaultEntry {
+    id: String,
+    task_id: String,
+    agent_id: String,
+    agent_name: String,
+    task_title: String,
+    original_path: String,
+    stored_rel: String,
+    size: u64,
+    created_at: i64,
+    kind: String,
+}
+
+fn vault_index_path() -> std::path::PathBuf { agent_vault_root().join("index.json") }
+
+fn vault_load_index() -> Vec<VaultEntry> {
+    let p = vault_index_path();
+    match std::fs::read_to_string(&p) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn vault_save_index(entries: &[VaultEntry]) -> Result<(), String> {
+    let root = agent_vault_root();
+    std::fs::create_dir_all(&root).map_err(|e| format!("创建保险箱目录失败：{}", e))?;
+    let s = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
+    std::fs::write(vault_index_path(), s).map_err(|e| format!("写入保险箱索引失败：{}", e))
+}
+
+/// 递归收集工作目录文件：rel 路径 -> (size, mtime 秒)。跳过版本控制/依赖等大目录、符号链接与超大文件。
+fn vault_walk(workdir: &std::path::Path) -> (std::collections::HashMap<String, (u64, i64)>, u32) {
+    let mut out: std::collections::HashMap<String, (u64, i64)> = std::collections::HashMap::new();
+    let mut skipped: u32 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![workdir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) { Ok(r) => r, Err(_) => continue };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            let ft = match ent.file_type() { Ok(f) => f, Err(_) => continue };
+            if ft.is_symlink() { skipped += 1; continue; }
+            if ft.is_dir() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if VAULT_SKIP_DIRS.contains(&name.as_str()) { skipped += 1; continue; }
+                stack.push(path);
+                continue;
+            }
+            if !ft.is_file() { continue }
+            let meta = match ent.metadata() { Ok(m) => m, Err(_) => continue };
+            if meta.len() > VAULT_MAX_FILE { skipped += 1; continue; }
+            let rel = path.strip_prefix(workdir).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            let mtime = meta.modified().ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            out.insert(rel, (meta.len(), mtime));
+        }
+    }
+    (out, skipped)
+}
+
+fn vault_task_dir(task_id: &str) -> std::path::PathBuf {
+    let safe: String = task_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    agent_vault_root().join("tasks").join(safe)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultScanOut { files: u32, bytes: u64, skipped: u32 }
+
+#[tauri::command]
+fn agent_vault_scan(workdir: String) -> Result<VaultScanOut, String> {
+    let dir = std::path::PathBuf::from(&workdir);
+    if !dir.is_dir() { return Err("工作目录不存在".into()); }
+    let (map, skipped) = vault_walk(&dir);
+    let bytes: u64 = map.values().map(|v| v.0).sum();
+    Ok(VaultScanOut { files: map.len() as u32, bytes, skipped })
+}
+
+#[tauri::command]
+fn agent_vault_baseline(task_id: String, agent_id: String, agent_name: String, task_title: String, workdir: String) -> Result<VaultScanOut, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let dir = std::path::PathBuf::from(&workdir);
+    if !dir.is_dir() { return Err("工作目录不存在".into()); }
+    let tdir = vault_task_dir(&task_id);
+    if tdir.exists() { let _ = std::fs::remove_dir_all(&tdir); }
+    let mirror = tdir.join("mirror");
+    std::fs::create_dir_all(&mirror).map_err(|e| format!("创建基线目录失败：{}", e))?;
+    let (map, skipped) = vault_walk(&dir);
+    let mut bytes: u64 = 0;
+    let mut manifest = serde_json::Map::new();
+    for (rel, (size, mtime)) in &map {
+        let src = dir.join(rel);
+        let dst = mirror.join(rel);
+        if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
+        if std::fs::copy(&src, &dst).is_ok() {
+            bytes += size;
+            manifest.insert(rel.clone(), serde_json::json!([size, mtime]));
+        }
+    }
+    let meta = serde_json::json!({
+        "task_id": task_id, "agent_id": agent_id, "agent_name": agent_name,
+        "task_title": task_title, "workdir": workdir, "created_at": vault_now_ms(),
+    });
+    std::fs::write(tdir.join("meta.json"), meta.to_string()).map_err(|e| e.to_string())?;
+    std::fs::write(tdir.join("manifest.json"), serde_json::Value::Object(manifest).to_string()).map_err(|e| e.to_string())?;
+    Ok(VaultScanOut { files: map.len() as u32, bytes, skipped })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultPollOut { backed_up: u32, entries: Vec<VaultEntry> }
+
+fn vault_store_entry(tdir: &std::path::Path, meta: &serde_json::Value, rel: &str, original_path: &str, kind: &str, index: &mut Vec<VaultEntry>) -> Option<VaultEntry> {
+    let mirror_file = tdir.join("mirror").join(rel);
+    if !mirror_file.is_file() { return None; }
+    let size = std::fs::metadata(&mirror_file).map(|m| m.len()).unwrap_or(0);
+    let stamp = vault_now_ms();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let entry_id = format!("{}-{}-{}", meta["task_id"].as_str().unwrap_or("task"), stamp, nanos % 1_000_000);
+    let base = std::path::Path::new(rel).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".to_string());
+    let stored_rel = format!("entries/{}/{}", entry_id, base);
+    let stored_abs = agent_vault_root().join(&stored_rel);
+    if let Some(parent) = stored_abs.parent() { let _ = std::fs::create_dir_all(parent); }
+    // 移动镜像里的上一版进保险箱条目（镜像随后会被新版覆盖/删除）
+    if std::fs::rename(&mirror_file, &stored_abs).is_err() {
+        if std::fs::copy(&mirror_file, &stored_abs).is_err() { return None; }
+        let _ = std::fs::remove_file(&mirror_file);
+    }
+    let entry = VaultEntry {
+        id: entry_id,
+        task_id: meta["task_id"].as_str().unwrap_or("").to_string(),
+        agent_id: meta["agent_id"].as_str().unwrap_or("").to_string(),
+        agent_name: meta["agent_name"].as_str().unwrap_or("").to_string(),
+        task_title: meta["task_title"].as_str().unwrap_or("").to_string(),
+        original_path: original_path.to_string(),
+        stored_rel,
+        size,
+        created_at: stamp,
+        kind: kind.to_string(),
+    };
+    index.push(entry.clone());
+    Some(entry)
+}
+
+#[tauri::command]
+fn agent_vault_poll(task_id: String) -> Result<VaultPollOut, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let tdir = vault_task_dir(&task_id);
+    let meta: serde_json::Value = std::fs::read_to_string(tdir.join("meta.json"))
+        .ok().and_then(|s| serde_json::from_str(&s).ok())
+        .ok_or_else(|| "基线不存在（任务可能未建基线）".to_string())?;
+    let workdir = std::path::PathBuf::from(meta["workdir"].as_str().unwrap_or(""));
+    if !workdir.is_dir() { return Err("工作目录不存在".into()); }
+    let manifest_val: serde_json::Value = std::fs::read_to_string(tdir.join("manifest.json"))
+        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::json!({}));
+    let mut last: std::collections::HashMap<String, (u64, i64)> = std::collections::HashMap::new();
+    if let Some(obj) = manifest_val.as_object() {
+        for (k, v) in obj {
+            if let Some(arr) = v.as_array() {
+                last.insert(k.clone(), (arr.first().and_then(|x| x.as_u64()).unwrap_or(0), arr.get(1).and_then(|x| x.as_i64()).unwrap_or(0)));
+            }
+        }
+    }
+    let (current, _skipped) = vault_walk(&workdir);
+    let mut index = vault_load_index();
+    let mut new_entries: Vec<VaultEntry> = Vec::new();
+    let mirror = tdir.join("mirror");
+    // 被删 / 被改：先把镜像里的上一版沉入保险箱
+    for (rel, (size, mtime)) in &last {
+        let cur = current.get(rel);
+        let changed = match cur { None => true, Some((s, m)) => s != size || m != mtime };
+        if changed {
+            let original = workdir.join(rel).to_string_lossy().to_string();
+            if let Some(e) = vault_store_entry(&tdir, &meta, rel, &original, "prev-version", &mut index) {
+                new_entries.push(e);
+            }
+        }
+    }
+    // 刷新镜像到当前状态（新增 + 已改）
+    let mut manifest = serde_json::Map::new();
+    for (rel, (size, mtime)) in &current {
+        manifest.insert(rel.clone(), serde_json::json!([size, mtime]));
+        let need_copy = match last.get(rel) { None => true, Some((s, m)) => s != size || m != mtime };
+        if need_copy {
+            let src = workdir.join(rel);
+            let dst = mirror.join(rel);
+            if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+    // 镜像里已不存在于工作目录的残留清掉
+    for rel in last.keys() {
+        if !current.contains_key(rel) {
+            let stale = mirror.join(rel);
+            if stale.is_file() { let _ = std::fs::remove_file(&stale); }
+        }
+    }
+    std::fs::write(tdir.join("manifest.json"), serde_json::Value::Object(manifest).to_string()).map_err(|e| e.to_string())?;
+    if !new_entries.is_empty() { vault_save_index(&index)?; }
+    Ok(VaultPollOut { backed_up: new_entries.len() as u32, entries: new_entries })
+}
+
+#[tauri::command]
+fn agent_vault_list() -> Vec<VaultEntry> {
+    let mut entries = vault_load_index();
+    entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    entries
+}
+
+#[tauri::command]
+fn agent_vault_restore(entry_id: String) -> Result<String, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let mut index = vault_load_index();
+    let entry = index.iter().find(|e| e.id == entry_id).cloned()
+        .ok_or_else(|| "保险箱条目不存在".to_string())?;
+    let stored_abs = agent_vault_root().join(&entry.stored_rel);
+    if !stored_abs.is_file() { return Err("备份文件已丢失，无法还原".into()); }
+    let target = std::path::PathBuf::from(&entry.original_path);
+    let mut pre_restore_id = String::new();
+    // 还原前先把当前版再备份一份，防误还原
+    if target.is_file() {
+        let stamp = vault_now_ms();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let new_id = format!("restore-{}-{}", stamp, nanos % 1_000_000);
+        let base = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".to_string());
+        let stored_rel = format!("entries/{}/{}", new_id, base);
+        let dst = agent_vault_root().join(&stored_rel);
+        if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
+        if std::fs::copy(&target, &dst).is_ok() {
+            let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+            index.push(VaultEntry {
+                id: new_id.clone(), task_id: entry.task_id.clone(), agent_id: entry.agent_id.clone(),
+                agent_name: entry.agent_name.clone(), task_title: entry.task_title.clone(),
+                original_path: entry.original_path.clone(), stored_rel, size,
+                created_at: stamp, kind: "pre-restore".to_string(),
+            });
+            pre_restore_id = new_id;
+        }
+    }
+    if let Some(parent) = target.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    std::fs::copy(&stored_abs, &target).map_err(|e| format!("还原失败：{}", e))?;
+    vault_save_index(&index)?;
+    Ok(pre_restore_id)
+}
+
+#[tauri::command]
+fn agent_vault_delete_entries(ids: Vec<String>) -> Result<u32, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let mut index = vault_load_index();
+    let mut removed: u32 = 0;
+    let mut kept: Vec<VaultEntry> = Vec::new();
+    for e in index.drain(..) {
+        if ids.contains(&e.id) {
+            let dir = agent_vault_root().join("entries").join(&e.id);
+            let _ = std::fs::remove_dir_all(&dir);
+            removed += 1;
+        } else {
+            kept.push(e);
+        }
+    }
+    if removed > 0 { vault_save_index(&kept)?; }
+    Ok(removed)
+}
+
+/// 清理规则（与前端 core/agentVault.ts 的 selectPruneVictims 同一口径）：先删过期，再按最旧删到容量内。
+#[tauri::command]
+fn agent_vault_prune(retention_days: i64, cap_bytes: u64) -> Result<u32, String> {
+    let _guard = vault_lock().lock().map_err(|_| "保险箱锁定失败".to_string())?;
+    let mut index = vault_load_index();
+    let now = vault_now_ms();
+    let cutoff = now - retention_days.max(0) * 86_400_000;
+    let mut victims: Vec<String> = Vec::new();
+    let mut remaining: Vec<VaultEntry> = Vec::new();
+    for e in index.drain(..) {
+        if e.created_at < cutoff { victims.push(e.id.clone()); } else { remaining.push(e); }
+    }
+    let mut total: u64 = remaining.iter().map(|e| e.size).sum();
+    if total > cap_bytes {
+        let mut sorted = remaining.clone();
+        sorted.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        for e in sorted {
+            if total <= cap_bytes { break; }
+            victims.push(e.id.clone());
+            total = total.saturating_sub(e.size);
+        }
+    }
+    if victims.is_empty() { return Ok(0); }
+    let kept: Vec<VaultEntry> = remaining.into_iter().filter(|e| !victims.contains(&e.id)).collect();
+    for id in &victims {
+        let dir = agent_vault_root().join("entries").join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let removed = victims.len() as u32;
+    vault_save_index(&kept)?;
+    Ok(removed)
+}
+
 // ---------------- MCP 服务器 stdio 桥（v0.1.264） ----------------
 // 本地 MCP 服务器就是普通子进程：JSON-RPC 按行走 stdin/stdout。
 // 前端用 mcp_write 写入一行请求、用 mcp_read 轮询取走新到的 stdout 行（无需 Tauri 事件）。
@@ -4971,7 +5589,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

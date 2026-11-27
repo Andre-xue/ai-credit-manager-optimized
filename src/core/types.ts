@@ -114,6 +114,8 @@ export interface UsageEvent {
   model?: string
   /** 项目标签（记账归类，如「短视频项目」；空 = 未分类） */
   project?: string
+  /** Agent 归因（v0.1.507：Agent 工作台派活产生的用量打此标；空 = 非 Agent 来源） */
+  agent?: string
 }
 
 /** 福利领取标记（仅记录本人已跳转/领取，不执行任何自动操作） */
