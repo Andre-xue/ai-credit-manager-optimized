@@ -318,8 +318,8 @@ function App() {
   // 预览参数仅用于浏览器验收手机端界面，生产环境不会带此参数
   const phonePreview = typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone'))
   const isPhone = isNativeApp() || phonePreview
-  // v0.1.485：桌面标题栏条——macOS 桌面端窗口已改 Overlay 标题栏（红绿灯悬浮在
-  // 自绘条左端之上），条左侧需给红绿灯留 80px 空位；其余桌面/网页端无红绿灯不留。
+  // v0.1.485/491：桌面顶部自绘条——条左侧留 82px 空位（485 时为 Overlay 预期下给红绿灯
+  // 让位；491 起条内已无标题文字，此留白仅为视觉延续、布局不动）；其余桌面/网页端不留。
   const isMacDesktop = isDesktopApp() && typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent ?? '')
   // 标题栏拖动（沿用 480 小窗的显式口径：声明式 drag-region 在真机不可靠）：
   // 按下点落在按钮等交互元素上时不拖（按钮照常可点），其余区域拖动窗口；双击切换最大化。
@@ -1433,14 +1433,15 @@ function App() {
 
   return (
     <div className={shellClass}>
-      {/* v0.1.485：全局搜索按钮统一搬到窗口标题栏右端（Ethan 2026-11-27 09:22 截图圈定
-          红绿灯与窗口标题所在那条的右端空置区）。桌面端自绘标题栏条：macOS 窗口已改
-          Overlay（hiddenTitle），红绿灯悬浮在条左端、标题文字由条内呈现；条身即拖动区
-          （显式 startDragging，按钮除外），右端只放一颗纯放大镜按钮，全页面共用一处。
-          手机壳没有这条桌面标题栏，不渲染（搜索入口保持 481 手机形态，见下方与 AIView）。 */}
+      {/* v0.1.485：全局搜索按钮统一搬到窗口顶部自绘条右端，全页面共用一处；条身即拖动区
+          （显式 startDragging，按钮除外），右端只放一颗纯放大镜按钮。
+          v0.1.491：条内不再写标题文字——Ethan 真机截图里窗口标题出现两次：macOS 构建实际
+          走 tauri.macos.conf.json 的窗口定义（未带 base 配置的 titleBarStyle:Overlay 与
+          hiddenTitle），系统原生标题栏照常显示「AI 魔方」，自绘条又写一遍且叠在原生栏
+          下方。按 Ethan 定案：原生栏标题保留为唯一窗口标题，自绘条只留搜索按钮。
+          手机壳没有这条，不渲染（搜索入口保持 481 手机形态，见下方与 AIView）。 */}
       {!isPhone && (
         <div className={`app-titlebar${isMacDesktop ? ' mac' : ''}`} onMouseDown={onTitlebarMouseDown} onDoubleClick={onTitlebarDoubleClick}>
-          <span className="app-titlebar-title">{t('AI 魔方')}</span>
           <span className="app-titlebar-spacer" />
           <button className="app-titlebar-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
             <Search size={16} />

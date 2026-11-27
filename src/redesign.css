@@ -474,13 +474,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .global-search-btn{position:fixed;top:10px;right:12px;z-index:45;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid var(--border);background:var(--panel);box-shadow:0 4px 14px rgba(16,24,40,.07);color:var(--text-2);cursor:pointer}
 .global-search-btn:hover{border-color:var(--border-strong);color:var(--text)}
 .phone-shell .global-search-btn{top:calc(env(safe-area-inset-top, 0px) + 10px);right:12px;width:36px;height:36px}
-/* v0.1.485：自绘标题栏条（仅非手机壳渲染）——fixed 钉窗口最顶部 40px。macOS 桌面端窗口为
-   Overlay 标题栏：红绿灯悬浮在条左端之上（.mac 左侧留 80px），标题文字在条内呈现；
+/* v0.1.485：自绘标题栏条（仅非手机壳渲染）——fixed 钉窗口最顶部 40px。
    条身是窗口拖动区（App 侧显式 startDragging、按钮除外），右端一颗纯放大镜全局搜索按钮。
-   shell 顶部让出 40px（padding-top），桌面侧栏高度同步扣减（见下方 @media 规则）。 */
+   shell 顶部让出 40px（padding-top），桌面侧栏高度同步扣减（见下方 @media 规则）。
+   v0.1.491：条内标题文字整段移除（.app-titlebar-title 已删）——macOS 构建走
+   tauri.macos.conf.json 的窗口定义、没有 base 配置的 Overlay/hiddenTitle，系统原生
+   标题栏照常显示「AI 魔方」；按 Ethan 定案原生标题保留为唯一窗口标题，条内不再写字。
+   .mac 的左侧 82px 留白保留不动（布局与让位关系维持 485 现状）。 */
 .app-titlebar{position:fixed;top:0;left:0;right:0;height:40px;z-index:45;display:flex;align-items:center;gap:8px;padding:0 10px 0 14px;background:var(--bg);user-select:none;-webkit-user-select:none}
 .app-titlebar.mac{padding-left:82px}
-.app-titlebar-title{font-size:13px;font-weight:600;color:var(--text-2);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .app-titlebar-spacer{flex:1;min-width:0}
 .app-titlebar-btn{width:30px;height:30px;flex:none;display:flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;padding:0}
 .app-titlebar-btn:hover{background:var(--panel-2);color:var(--text)}
