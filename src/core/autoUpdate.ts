@@ -10,15 +10,23 @@
 // v0.1.498：手动打开弹窗/手动检查发现新版同样被静默接管（takeoverUpdate
 // Discovery）；运行期间每 2 小时复查一次；下载双通道卡死有看门狗兜底、
 // 失败落 dlError 态带人话原因与重试，全链关键事件记 update diag 日志。
+// v0.1.503（真机「已下载好点现在更新没反应」二修）：① 待安装记录以内存
+// 副本为第一来源——旧实现安装入口全靠从 localStorage 重读，持久化副本
+// 一旦读不回来（写入被配额吞掉/被作废），界面照常显示「已下载好」但点
+// 击死在重读处：无状态变化、无报错、diag 全空白（2026-11-27 录屏+日志
+// 实证）。② 「现在更新」定案回归：立即安装、不等忙碌（忙碌等待只留给
+// 自动安装与关窗闸门两条路径）。③ 每次安装请求与每种被挡结局都记 diag
+// （install-requested / install-blocked / busy-expired），杜绝无声失败。
+// ④ 自动路径等忙碌时把「在等什么」写进状态供界面明示，不再沉默干等。
 import { isDesktopApp } from './openExternal'
 import {
   checkDesktopUpdate, loadAutoUpdateEnabled, loadPendingUpdate, savePendingUpdate,
   downloadUpdateInBackground, installPendingUpdate, consumeJustUpdated,
-  onSilentUpdatePrefChange, updateDiag,
+  onSilentUpdatePrefChange, updateDiag, getLastInstallError,
   type PendingUpdate,
 } from './updater'
 import { shouldPeriodicRecheck } from './updateStall'
-import { isAppBusy } from './appBusy'
+import { isAppBusy, appBusyEntries, pruneStaleBusy, busyKeyLabel } from './appBusy'
 
 export type AutoUpdateUiState =
   | { kind: 'idle' }
@@ -26,7 +34,7 @@ export type AutoUpdateUiState =
   | { kind: 'downloading'; version: string; downloaded: number; total?: number; since?: number }
   | { kind: 'ready'; version: string; promptOpen: boolean }
   | { kind: 'deferred'; version: string }
-  | { kind: 'installing'; version: string; waitingBusy: boolean }
+  | { kind: 'installing'; version: string; waitingBusy: boolean; waitingFor?: string[] }
   | { kind: 'dlError'; version: string; message: string }
 
 let uiState: AutoUpdateUiState = { kind: 'idle' }
@@ -61,6 +69,24 @@ let installing = false
 /** 上次静默检查时刻（启动检查与运行期复查共用，复查间隔据此判定） */
 let lastCheckAt = 0
 
+// ---- 待安装记录：内存副本第一来源（v0.1.503） ----
+// 下载完成时状态机手里就有这份对象，先存内存再落盘持久化；安装入口一律
+// 走 currentPending()（内存优先、落盘兜底），不再出现「界面显示已下载
+// 好、手里这份却被弃之不用、非要重读落盘副本」的中空环节。
+let pendingMem: PendingUpdate | null = null
+
+function currentPending(): PendingUpdate | null {
+  const want = (uiState as { version?: string }).version
+  if (pendingMem && (!want || pendingMem.version === want)) return pendingMem
+  const p = loadPendingUpdate()
+  if (p && (!want || p.version === want)) { pendingMem = p; return p }
+  return null
+}
+
+function rememberPending(p: PendingUpdate | null): void {
+  pendingMem = p
+}
+
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -73,44 +99,101 @@ const proceedClose = (action: string) => tauriInvoke('update_close_proceed', { a
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-/** 执行安装：先等忙碌任务结束（最长 10 分钟），再装待安装更新并重启 */
-async function runInstall(p: PendingUpdate): Promise<boolean> {
-  if (installing) return false
+/** 当前忙碌来源的人话名列表（等待提示与 diag 用） */
+function busyLabels(): string[] {
+  return appBusyEntries().map(e => busyKeyLabel(e.key))
+}
+
+/** 回收泄漏的忙碌登记并逐条记 diag（防泄漏兜底，见 appBusy 的 TTL） */
+function pruneBusyWithDiag(): void {
+  for (const key of pruneStaleBusy()) updateDiag('busy-expired', `key=${key}`)
+}
+
+export type InstallSource = 'modal-now' | 'auto-idle' | 'gate-close' | 'menu'
+type InstallMode = 'now' | 'wait'
+
+/**
+ * 执行安装（v0.1.503 分模式）：
+ * - mode 'now'（用户点「现在更新」）：立即安装，不等忙碌——这是用户明确
+ *   拍板（2026-11-26 定案「现在就是立即重启」）；旧实现与自动路径共用
+ *   等忙碌逻辑，点击后最长 10 分钟看似没反应。
+ * - mode 'wait'（静默自动安装 / 关窗闸门）：等忙碌结束再装，最长 10 分
+ *   钟；等待期间状态带 waitingFor 明示在等什么，等不到回落 deferred。
+ * 每种结局都记 diag：install-requested / install-blocked(reason) / 后续
+ * install-start、install-done、install-fail 由 installPendingUpdate 与
+ * Rust 侧续记。
+ */
+async function runInstall(p: PendingUpdate, mode: InstallMode, source: InstallSource): Promise<boolean> {
+  updateDiag('install-requested', `source=${source} version=${p.version} mode=${mode}`)
+  if (installing) {
+    updateDiag('install-blocked', `reason=already-installing version=${p.version}`)
+    return false
+  }
   installing = true
-  setUiState({ kind: 'installing', version: p.version, waitingBusy: isAppBusy() })
-  const deadline = Date.now() + 10 * 60_000
-  while (isAppBusy()) {
-    if (Date.now() >= deadline) {
-      installing = false
-      setUiState({ kind: 'deferred', version: p.version })
-      return false
+  if (mode === 'wait') {
+    pruneBusyWithDiag()
+    if (isAppBusy()) {
+      setUiState({ kind: 'installing', version: p.version, waitingBusy: true, waitingFor: busyLabels() })
+      const deadline = Date.now() + 10 * 60_000
+      while (isAppBusy()) {
+        if (Date.now() >= deadline) {
+          updateDiag('install-blocked', `reason=busy-timeout version=${p.version} waiting=${busyLabels().join(',')}`)
+          installing = false
+          setUiState({ kind: 'deferred', version: p.version })
+          return false
+        }
+        await sleep(1500)
+        pruneBusyWithDiag()
+        if (isAppBusy()) setUiState({ kind: 'installing', version: p.version, waitingBusy: true, waitingFor: busyLabels() })
+      }
     }
-    await sleep(1500)
-    setUiState({ kind: 'installing', version: p.version, waitingBusy: true })
   }
   setUiState({ kind: 'installing', version: p.version, waitingBusy: false })
   const ok = await installPendingUpdate(p)
   installing = false
-  if (!ok) setUiState({ kind: 'ready', version: p.version, promptOpen: false })
+  if (ok) rememberPending(null)
+  else setUiState({ kind: 'ready', version: p.version, promptOpen: false })
   return ok
 }
 
-/** 弹窗「现在更新」 */
+/**
+ * 待安装记录彻底丢失时的收尾（v0.1.503）：界面还停在「已下载好」但内存
+ * 与落盘两份都读不回来——不许再像旧版那样静默 return：记 diag、给用户
+ * 人话提示，并对已知版本自动重新下载一份（包还在服务器上，重下即恢复）。
+ */
+function onPendingMissing(source: InstallSource): void {
+  const version = (uiState as { version?: string }).version ?? ''
+  updateDiag('install-blocked', `reason=pending-missing source=${source} state=${uiState.kind} version=${version}`)
+  if (version) {
+    notifyFn('更新包记录异常，正在重新下载，请稍候', 'err')
+    void startBackgroundDownload(version)
+  } else {
+    notifyFn('没有可安装的更新包，请先检查更新', 'err')
+  }
+}
+
+/** 弹窗「现在更新」：立即安装并重启，不等忙碌任务（定案口径） */
 export async function installDownloadedNow(): Promise<void> {
-  const p = loadPendingUpdate()
-  if (!p) return
-  const ok = await runInstall(p)
+  if (uiState.kind === 'installing') {
+    updateDiag('install-blocked', 'reason=already-installing source=modal-now')
+    return
+  }
+  const p = currentPending()
+  if (!p) { onPendingMissing('modal-now'); return }
+  const ok = await runInstall(p, 'now', 'modal-now')
   if (!ok) {
-    notifyFn('更新安装失败，请稍后重试', 'err')
+    const reason = getLastInstallError()
+    notifyFn(reason ? `更新安装失败：${reason}` : '更新安装失败，请稍后重试', 'err')
     setUiState({ kind: 'ready', version: p.version, promptOpen: true })
   }
 }
 
 /** 弹窗「稍后」：持久化待安装并布防关窗闸门，下次关窗/退出时自动安装 */
 export async function deferDownloadedInstall(): Promise<void> {
-  const p = loadPendingUpdate()
-  if (!p) return
+  const p = currentPending()
+  if (!p) { onPendingMissing('modal-now'); return }
   p.deferred = true
+  rememberPending(p)
   savePendingUpdate(p)
   await armClose(true)
   setUiState({ kind: 'deferred', version: p.version })
@@ -131,9 +214,10 @@ export function dismissUpdatePrompt(): void {
 let silentInstallToken = 0
 
 /** 静默更新开启时（v0.1.495 新口径，覆盖 474 的「只下载等询问」）：下载就绪后
-    先布防关窗闸门兜底，再等空闲自动安装并重启——runInstall 内部复用 appBusy
-    等空闲、最长 10 分钟，等不到回落 deferred 由闸门在关窗时兜底。用户点
-    「稍后」/关掉静默更新/本轮已被接管时取消自动装（token + 状态双重校验）。 */
+    先布防关窗闸门兜底，再等空闲自动安装并重启——runInstall 的 wait 模式
+    复用 appBusy 等空闲、最长 10 分钟，等不到回落 deferred 由闸门在关窗
+    时兜底。用户点「稍后」/关掉静默更新/本轮已被接管时取消自动装（token
+    + 状态双重校验）。 */
 function scheduleSilentAutoInstall(version: string): void {
   if (!loadAutoUpdateEnabled()) return
   const token = ++silentInstallToken
@@ -145,22 +229,24 @@ function scheduleSilentAutoInstall(version: string): void {
     const s = uiState
     if (s.kind !== 'ready' || s.version !== version) return
     if (!loadAutoUpdateEnabled()) return
-    const p = loadPendingUpdate()
-    if (!p) return
-    const ok = await runInstall(p)
-    if (!ok) notifyFn('更新安装失败，请稍后重试', 'err')
+    const p = currentPending()
+    if (!p) { onPendingMissing('auto-idle'); return }
+    const ok = await runInstall(p, 'wait', 'auto-idle')
+    // 等不到空闲回落 deferred 是设计内兜底（关窗闸门接手），不算失败不弹错；
+    // 真失败时 runInstall 已把状态打回 ready，据此才提示。
+    if (!ok && uiState.kind === 'ready') notifyFn('更新安装失败，请稍后重试', 'err')
   })()
 }
 
 /** Rust 关窗闸门广播：有待安装更新（选过「稍后」，或静默更新开启等空闲兜底）时，等任务结束装上再放行 */
 async function onCloseRequested(action: 'hide' | 'exit'): Promise<void> {
-  const p = loadPendingUpdate()
+  const p = currentPending()
   if (!p || installing || (!p.deferred && !loadAutoUpdateEnabled())) {
     await proceedClose(action)
     return
   }
   if (isAppBusy()) notifyFn('等待当前任务完成，随后自动安装更新…')
-  const ok = await runInstall(p)
+  const ok = await runInstall(p, 'wait', 'gate-close')
   if (!ok) {
     notifyFn('更新安装失败，已保留下载好的安装包，下次启动会再次提示', 'err')
     await proceedClose(action)
@@ -187,6 +273,7 @@ async function startBackgroundDownload(version: string): Promise<void> {
     setUiState({ kind: 'dlError', version, message: error || '下载失败，请检查网络后重试' })
     return
   }
+  rememberPending(pending)
   setUiState({ kind: 'ready', version: pending.version, promptOpen: true })
   scheduleSilentAutoInstall(pending.version)
 }
@@ -254,7 +341,7 @@ export function initAutoUpdate(opts: { notify: (msg: string, kind?: 'ok' | 'err'
     if (shouldPeriodicRecheck({
       enabled: loadAutoUpdateEnabled(),
       stateKind: uiState.kind,
-      hasPending: !!loadPendingUpdate(),
+      hasPending: !!currentPending(),
       now: Date.now(),
       lastCheckAt,
     })) {
@@ -271,6 +358,7 @@ export function initAutoUpdate(opts: { notify: (msg: string, kind?: 'ok' | 'err'
   })
   const pending = loadPendingUpdate()
   if (pending) {
+    rememberPending(pending)
     // 上次已下载好但没装成（进程被强杀等）：直接再弹窗询问；曾选过「稍后」的重新布防
     if (pending.deferred) void armClose(true)
     setUiState({ kind: 'ready', version: pending.version, promptOpen: true })

@@ -465,16 +465,28 @@ export function loadPendingUpdate(): PendingUpdate | null {
     if (!raw) return null
     const p = JSON.parse(raw) as PendingUpdate
     if (!p || typeof p.version !== 'string' || !versionGreater(p.version, APP_VERSION)) {
-      // 损坏或版本不大于当前的待安装一律作废并清掉，防反复弹/装回旧版
+      // 损坏或版本不大于当前的待安装一律作废并清掉，防反复弹/装回旧版。
+      // v0.1.503：作废要留痕——2026-11-27 真机「已下载好点现在更新没反应」
+      // 的一条嫌疑链就是待安装记录读不回来而全链无声，这里不能再静默。
       try { localStorage.removeItem(PENDING_KEY) } catch { /* 忽略 */ }
+      updateDiag('pending-discarded', `stored=${typeof p?.version === 'string' ? p.version : 'invalid'} current=${APP_VERSION}`)
       return null
     }
     return p
   } catch { return null }
 }
 
-export function savePendingUpdate(p: PendingUpdate): void {
-  try { localStorage.setItem(PENDING_KEY, JSON.stringify(p)) } catch { /* 忽略 */ }
+/** 持久化待安装状态；返回是否写成功（v0.1.503：写失败不再静默吞——
+    localStorage 配额满等情况下 setItem 抛错，旧实现 catch 后无声，导致
+    界面显示「已下载好」但安装入口重读记录为空、点了没反应且日志空白） */
+export function savePendingUpdate(p: PendingUpdate): boolean {
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify(p))
+    return true
+  } catch (e) {
+    updateDiag('pending-persist-fail', `version=${p.version} err=${String((e as Error)?.name ?? e).slice(0, 40)}`)
+    return false
+  }
 }
 
 export function clearPendingUpdate(): void {

@@ -191,7 +191,11 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
           )}
 
           {silentTracking && autoUi.kind === 'installing' && (
-            <div className="upd-state"><Loader2 size={18} className="spin" /> {autoUi.waitingBusy ? t('正在等待当前任务完成，随后自动安装…') : t('正在安装更新…')}</div>
+            <div className="upd-state"><Loader2 size={18} className="spin" /> {autoUi.waitingBusy
+              ? (autoUi.waitingFor?.length
+                ? t('新版本已下载好，等待{what}完成后自动安装…', { what: autoUi.waitingFor.join('、') })
+                : t('正在等待当前任务完成，随后自动安装…'))
+              : t('正在安装更新…')}</div>
           )}
 
           {silentTracking && autoUi.kind === 'dlError' && (

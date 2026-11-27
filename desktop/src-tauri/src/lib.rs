@@ -1325,44 +1325,62 @@ fn download_update_package(
 /// 更新快速安装（v0.1.346）：下载（含测速换源与 SHA256 校验）后立即按平台
 /// 安装：macOS 解压替换 .app 并重启；Windows 运行安装器；其他平台报错由
 /// 前端回退官方 updater。
+/// v0.1.503：改 async + spawn_blocking——旧实现是同步命令，Tauri 同步命令
+/// 在主线程执行，整段下载（测速+流式拉包+SHA256）把 UI 线程堵死，真机
+/// 表现为点下载后 macOS 彩色转圈、窗口无响应（2026-11-27 实证）。
 #[tauri::command]
-fn update_fast_install(
+async fn update_fast_install(
     app: tauri::AppHandle,
     path: String,
     file_name: String,
     version: Option<String>,
     on_progress: tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<String, String> {
-    let (dest, used_url) = download_update_package(&path, &file_name, &on_progress)?;
-    install_downloaded_update(&app, &dest, &file_name, version.as_deref())?;
-    Ok(used_url)
+    tauri::async_runtime::spawn_blocking(move || {
+        let (dest, used_url) = download_update_package(&path, &file_name, &on_progress)?;
+        install_downloaded_update(&app, &dest, &file_name, version.as_deref())?;
+        Ok(used_url)
+    })
+    .await
+    .map_err(|e| format!("更新任务异常结束：{e}"))?
 }
 
 /// 后台下载更新包（v0.1.474）：只下载+校验、落盘，返回绝对路径，不安装。
+/// v0.1.503：同 update_fast_install，改 async + spawn_blocking 离主线程。
 #[tauri::command]
-fn update_fast_download(
+async fn update_fast_download(
     path: String,
     file_name: String,
     on_progress: tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<String, String> {
-    let (dest, _used_url) = download_update_package(&path, &file_name, &on_progress)?;
-    Ok(dest.to_string_lossy().to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let (dest, _used_url) = download_update_package(&path, &file_name, &on_progress)?;
+        Ok(dest.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("下载任务异常结束：{e}"))?
 }
 
 /// 安装此前 update_fast_download 已下载并校验过的更新包（v0.1.474）。
 /// macOS/Windows 安装成功即重启进新版（进程在本调用内退出/交棒）。
+/// v0.1.503：改 async + spawn_blocking——解压/校验/替换 .app 同样是耗时
+/// 同步活，留在主线程会冻结界面（安装遮罩动画都转不动）。
 #[tauri::command]
-fn update_install_downloaded(
+async fn update_install_downloaded(
     app: tauri::AppHandle,
     file_path: String,
     file_name: String,
     version: Option<String>,
 ) -> Result<(), String> {
-    let dest = std::path::PathBuf::from(&file_path);
-    if !dest.exists() {
-        return Err("已下载的更新包不存在（可能已被系统清理），请重新下载".into());
-    }
-    install_downloaded_update(&app, &dest, &file_name, version.as_deref())
+    tauri::async_runtime::spawn_blocking(move || {
+        let dest = std::path::PathBuf::from(&file_path);
+        if !dest.exists() {
+            return Err("已下载的更新包不存在（可能已被系统清理），请重新下载".into());
+        }
+        install_downloaded_update(&app, &dest, &file_name, version.as_deref())
+    })
+    .await
+    .map_err(|e| format!("安装任务异常结束：{e}"))?
 }
 
 /// 下载线程 → 监督线程的消息（v0.1.498 线程监督看门狗）

@@ -15,6 +15,10 @@ import { t } from '../core/i18n'
 export function UpdateReadyPrompt() {
   const [ui, setUi] = useState<AutoUpdateUiState>(() => getAutoUpdateUiState())
   useEffect(() => subscribeAutoUpdate(() => setUi(getAutoUpdateUiState())), [])
+  // 连点防护（v0.1.503）：点下任一按钮立刻禁用两者，等状态机切换后复位，
+  // 不给「点了没反应于是连点」留窗口（状态机层另有 installing 双重守卫）。
+  const [acting, setActing] = useState(false)
+  useEffect(() => { if (ui.kind !== 'ready') setActing(false) }, [ui.kind])
 
   if (ui.kind === 'installing') {
     return (
@@ -23,7 +27,11 @@ export function UpdateReadyPrompt() {
           <div className="modal-body">
             <div className="upd-state">
               <Loader2 size={18} className="spin" />
-              {ui.waitingBusy ? t('正在等待当前任务完成，随后自动安装…') : t('正在安装更新…')}
+              {ui.waitingBusy
+                ? (ui.waitingFor?.length
+                  ? t('新版本已下载好，等待{what}完成后自动安装…', { what: ui.waitingFor.join('、') })
+                  : t('正在等待当前任务完成，随后自动安装…'))
+                : t('正在安装更新…')}
             </div>
           </div>
         </div>
@@ -76,10 +84,10 @@ export function UpdateReadyPrompt() {
           {notes && <pre className="upd-notes">{notes.slice(0, 600)}</pre>}
           <div className="upd-hint">{t('更新包已下载完成。现在更新将立即安装并重启应用；稍后则在下次关闭窗口时自动安装。')}</div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn" style={{ flex: 1 }} onClick={() => void deferDownloadedInstall()}>
+            <button className="btn" style={{ flex: 1 }} disabled={acting} onClick={() => { setActing(true); void deferDownloadedInstall() }}>
               <Clock size={15} /> {t('稍后')}
             </button>
-            <button className="btn primary" style={{ flex: 1 }} onClick={() => void installDownloadedNow()}>
+            <button className="btn primary" style={{ flex: 1 }} disabled={acting} onClick={() => { setActing(true); void installDownloadedNow() }}>
               <Download size={15} /> {t('现在更新')}
             </button>
           </div>
