@@ -123,6 +123,7 @@ import { KEY_FILTER_ALL, KEY_FILTER_NONE, keyCategories, keyGroups, keyPlatforms
 import { inferbaseLimitsText } from './core/inferbase'
 import { oneAiLimitsText } from './core/oneai'
 import { anyApiLimitsText } from './core/anyapi'
+import { tokenRouterLimitsText } from './core/tokenrouter'
 import { momaLimitsText } from './core/moma'
 import {
   buildKeyBackup, backupToCloud, backupToLocalFile, backupToNotes, chooseBackupFolder, importKeyBackup, parseKeyBackup, isReadableFormat,
@@ -4767,6 +4768,11 @@ function AccountFormModal({ provider, sessionPwd, onClose, onSave, groupSuggesti
             {provider.id === 'moma' && (
               <div className="form-hint" style={{ marginTop: 6 }}>
                 {momaLimitsText()}。添加后请到「Key 管理」页对这个账户点健康检查做一次真实冒烟（查 /v1/models 模型列表 + 优先挑九天自营模型发一条测试消息），实测通过后 AI 助手与工坊路线才可手动直选；未通过会显示真实原因。MoMA 默认按量付费，不会自动切换到它。
+              </div>
+            )}
+            {provider.id === 'tokenrouter' && (
+              <div className="form-hint" style={{ marginTop: 6 }}>
+                {tokenRouterLimitsText()}。无公开余额接口、免费额度未公布，余额请在官网控制台查看后手动录入；App 内只按本机发出的调用做请求/token 计数估算（标注「本机估算」）。添加后请到「Key 管理」页对这个账户点健康检查做一次真实冒烟（用免费模型发一条测试消息），实测通过后 AI 助手与工坊路线才启用并进入自动切换链末位；未通过会显示真实原因，不会自动切换到它。
               </div>
             )}
           </div>

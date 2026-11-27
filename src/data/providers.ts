@@ -209,6 +209,14 @@ export const PROVIDERS: ProviderDefinition[] = [
     apiKeyUrl: 'https://ecloud.10086.cn/api/page/maas/moma/apiKeyManage',
     note: '中国移动大模型聚合平台（模型广场按量网关）：OpenAI 兼容，一个 Key 通吃 300+ 模型，模型以 GET /v1/models 按你的 Key 动态拉取为准（不预置）。默认按量付费；另有独立的 2500 万免费试用（控制台模型广场领取，30 天有效，仅部分自营模型）。无公开余额接口，余额与用量请在 MoMA 控制台查看后手动录入；App 内只有本机调用估算。新 Key 需先在 Key 管理页点健康检查做真实冒烟（查 /v1/models + 优先挑九天自营模型发一条测试消息），通过后才启用对话路线；MoMA 是付费平台，不进入免费路线自动切换链。',
   },
+  {
+    id: 'tokenrouter', name: 'TokenRouter', shortName: 'TokenRouter', category: 'llm',
+    officialUrl: 'https://tokenrouter.com/', usageUrl: 'https://tokenrouter.com/',
+    color: '#7c3aed', initials: 'TR', modes: ['api', 'manual'],
+    apiBaseUrl: 'https://api.tokenrouter.com/v1',
+    apiKeyUrl: 'https://tokenrouter.com/',
+    note: '第三方中转网关（运营方 Artemis Tokenrouter Inc.）：OpenAI 兼容，请求数据会经 TokenRouter 及其上游服务商处理，不要跑敏感内容。模型只用精选清单 3 个（不拉全量目录）：免费模型 deepseek/deepseek-v4.1-flash-1017-free（$0、1M 上下文）与 nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free（$0、备选）置顶，同系列付费版 deepseek-v4.1-flash-1017 明确标价（约 $0.075–0.08 输入 / $0.30 输出 每百万 tokens）。免费额度未公布、无公开余额接口，余额与用量请在官网控制台查看后手动录入；App 内只有本机调用估算。免费模型随时可能下线，下线后如实显示不可用。新 Key 需先在 Key 管理页点健康检查做真实冒烟（用免费模型发一条测试消息），通过后才启用对话路线并进入免费路线自动切换链末位（只切免费模型，付费版永不被自动切入）。',
+  },
 
   // ==================== 编程助手 ====================
   {

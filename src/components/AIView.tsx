@@ -30,6 +30,7 @@ import { detectModelCapability, capabilityChatCapable } from '../core/modelCapab
 import { inferbaseGate } from '../core/inferbase'
 import { oneAiGate, ONEAI_SMOKE_MODEL } from '../core/oneai'
 import { anyApiGate, getAnyApiSmokeModel } from '../core/anyapi'
+import { tokenRouterGate, getTokenRouterSmokeModel, isTokenRouterFreeModel, TOKENROUTER_SMOKE_MODEL } from '../core/tokenrouter'
 import {
   momaGate, isMomaChatCandidate, orderMomaProbeModels, momaModelBillingNote, MOMA_PROVIDER_ID,
   isMomaSelfOperated, isMomaAutoTestable, groupMomaModels, loadMomaModelTests, saveMomaModelTest,
@@ -538,7 +539,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     .map(a => ({
       key: `own:${a.id}`,
       // Inferbase 启用门槛（v0.1.432）：冒烟未通过时在选项上明示待实测，不等发送失败才知道
-      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}${a.providerId === 'inferbase' && !inferbaseGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'oneai' && !oneAiGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'anyapi' && !anyApiGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'moma' && !momaGate(a).enabled ? ' · 待实测（未启用）' : ''}`,
+      label: `${a.label}${a.note ? ` · ${a.note.replace(/^\[[^\]]+\]\s*/, '')}` : ''}${a.providerId === 'inferbase' && !inferbaseGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'oneai' && !oneAiGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'anyapi' && !anyApiGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'tokenrouter' && !tokenRouterGate(a).enabled ? ' · 待实测（未启用）' : ''}${a.providerId === 'moma' && !momaGate(a).enabled ? ' · 待实测（未启用）' : ''}`,
       account: a,
       category: categoryForModel(a.note) as ModelCategory,
       free: false,
@@ -599,14 +600,18 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     for (const o of ownOptions) {
       const acct = o.account!
-      const gated = acct.providerId === 'inferbase' || acct.providerId === 'oneai' || acct.providerId === 'anyapi' || acct.providerId === 'moma'
+      const gated = acct.providerId === 'inferbase' || acct.providerId === 'oneai' || acct.providerId === 'anyapi' || acct.providerId === 'moma' || acct.providerId === 'tokenrouter'
       for (const e of enginesFor(acct.providerId)) {
         out.push({
           id: `own:${acct.id}:${e.id}`, name: e.name, platformName: platformNameOf(o), platformKey: `own:${acct.id}`,
           group: groupOf(o.category), vision: isVisionModelId(e.id), price: e.multiplier ?? null,
           // 护栏：MoMA 只自动测自营九天（合作模型按量扣费不进自动探测，469 口径）；
-          // 门槛四平台的冒烟由健康检查负责，探测中心只吃其被动结果，不重复烧额度
-          autoProbe: acct.providerId === 'moma' ? isMomaAutoTestable(e.id) : !gated,
+          // 门槛平台的冒烟由健康检查负责，探测中心只吃其被动结果，不重复烧额度。
+          // TokenRouter（v0.1.514）：两个免费模型同口径只吃被动播种；付费版按普通
+          // 自有账户模型口径可主动探测，但仅限冒烟已通过的账户（未验证不发请求）。
+          autoProbe: acct.providerId === 'moma' ? isMomaAutoTestable(e.id)
+            : acct.providerId === 'tokenrouter' ? (!isTokenRouterFreeModel(e.id) && tokenRouterGate(acct).enabled)
+            : !gated,
           accountId: acct.id,
         })
       }
@@ -642,6 +647,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       const gate = acct.providerId === 'inferbase' ? inferbaseGate(acct)
         : acct.providerId === 'oneai' ? oneAiGate(acct)
         : acct.providerId === 'anyapi' ? anyApiGate(acct)
+        : acct.providerId === 'tokenrouter' ? tokenRouterGate(acct)
         : acct.providerId === 'moma' ? momaGate(acct) : null
       if (gate && gate.state !== 'pending_verification') {
         seedProbeOutcome(id, {
@@ -952,7 +958,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     const effectiveReasoning = voiceMode ? undefined : toReasoningEffort(reasoning)
     const voiceHistory = voiceMode ? history.slice(-2) : history
     // ---- 免费路线自动切换链（v0.1.433）：候选只含免费类（云端/Zen/Kilo、已验证启用的
-    // Inferbase / One AI、WorkBuddy 账号池、APIsFreeLLM 兜底）；自有付费账户永不被自动切入 ----
+    // Inferbase / One AI / AnyAPI、WorkBuddy 账号池、APIsFreeLLM 兜底、TokenRouter 末位
+    // （v0.1.514，只用其免费模型））；自有付费账户永不被自动切入 ----
     const chainMsgs = [{ role: 'system', content: effectiveSystemPrompt }, ...voiceHistory.map(m => ({ role: m.role, content: m.content })), { role: 'user', content }]
     const chainFid = (o: (typeof allOptions)[number]) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
     type AiCand = { id: string; label: string; kind: string; opt?: (typeof allOptions)[number]; acct?: Account; pool?: boolean }
@@ -967,6 +974,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
       for (const o of allOptions.filter(x => x.account?.providerId === 'anyapi')) {
         if (o.account && anyApiGate(o.account).enabled) list.push({ id: `anyapi:${o.account.id}`, label: o.account.label, kind: 'anyapi', acct: o.account })
+      }
+      // TokenRouter（v0.1.514）：已验证启用的才进候选，kind=tokenrouter 排全链末位；
+      // 链上只发免费模型（aiChainAttemptInner 按 kind 选免费主力款），付费版不进链。
+      for (const o of allOptions.filter(x => x.account?.providerId === 'tokenrouter')) {
+        if (o.account && tokenRouterGate(o.account).enabled) list.push({ id: `tokenrouter:${o.account.id}`, label: o.account.label, kind: 'tokenrouter', acct: o.account })
       }
       try { if (hasPoolAccounts()) list.push({ id: 'wbpool', label: 'WorkBuddy 账号池', kind: 'wbpool', pool: true }) } catch { /* 池不可用 */ }
       const filtered = excludeId ? list.filter(c => c.id !== excludeId) : list
@@ -1006,7 +1018,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
           ? (defaultChatEngine('oneai') || ONEAI_SMOKE_MODEL)
           : cand.kind === 'anyapi'
             ? (getAnyApiSmokeModel(cand.acct.id) || defaultChatEngine('anyapi') || '')
-            : (defaultChatEngine('inferbase') || 'auto')
+            : cand.kind === 'tokenrouter'
+              // 链上恒用免费模型：冒烟用通的免费款，无记录回落精选清单免费主力款
+              ? (getTokenRouterSmokeModel(cand.acct.id) || TOKENROUTER_SMOKE_MODEL)
+              : (defaultChatEngine('inferbase') || 'auto')
         const r = await callChat(cand.acct, key, chainMsgs, model)
         if (!r.ok) throw new Error(r.error || r.text || '调用失败')
         return r.text
@@ -1063,6 +1078,11 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       if (acct.providerId === 'moma') {
         const gate = momaGate(acct)
         if (!gate.enabled) throw Object.assign(new Error(gate.message), { momaGate: true })
+      }
+      // TokenRouter 启用门槛（v0.1.514）：与 AnyAPI 同口径，未冒烟通过不调用、不自动切换
+      if (acct.providerId === 'tokenrouter') {
+        const gate = tokenRouterGate(acct)
+        if (!gate.enabled) throw Object.assign(new Error(gate.message), { tokenrouterGate: true })
       }
       if (!acct.encryptedKey) throw new Error(t('该账户未配置 API Key，请在 API Key 管理页添加'))
       const pwd = resolvePwd()
@@ -1254,8 +1274,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       } catch (firstErr) {
         // 自动故障转移：鉴权/额度/限流类失败且同平台有备用账户时，自动换备用 Key 重试（最多 2 个），
         // 全部失败才落到外层 catch（保留手动换 Key 重试条）
-        const fe = firstErr as { needPwd?: boolean; message?: string; inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean; momaGate?: boolean }
-        const retryable = !fe?.needPwd && !fe?.inferbaseGate && !fe?.oneaiGate && !fe?.anyapiGate && !fe?.momaGate && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
+        const fe = firstErr as { needPwd?: boolean; message?: string; inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean; momaGate?: boolean; tokenrouterGate?: boolean }
+        const retryable = !fe?.needPwd && !fe?.inferbaseGate && !fe?.oneaiGate && !fe?.anyapiGate && !fe?.momaGate && !fe?.tokenrouterGate && /401|403|unauthor|invalid|api ?key|余额|额度|quota|insufficient|身份验证|过期|429|rate limit/i.test(fe?.message ?? '')
         const failed0 = !optKey ? allOptions.find(o => o.key === model)?.account : undefined
         const alts = retryable && failed0
           ? ownOptions.filter(o => o.account && o.account.providerId === failed0.providerId && o.account.id !== failed0.id).slice(0, 2)
@@ -1290,9 +1310,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
     } catch (e) {
       const need = (e as { needPwd?: boolean })?.needPwd
-      // Inferbase / One AI / AnyAPI / MoMA 门槛错误含真实状态与原因，原样展示（friendlyAiError 会把含「额度/401」的原文吞成泛化文案）
-      const gateErr = e as { inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean; momaGate?: boolean }
-      const msg = gateErr?.inferbaseGate || gateErr?.oneaiGate || gateErr?.anyapiGate || gateErr?.momaGate ? ((e as Error)?.message ?? '') : friendlyAiError(e)
+      // Inferbase / One AI / AnyAPI / MoMA / TokenRouter 门槛错误含真实状态与原因，原样展示（friendlyAiError 会把含「额度/401」的原文吞成泛化文案）
+      const gateErr = e as { inferbaseGate?: boolean; oneaiGate?: boolean; anyapiGate?: boolean; momaGate?: boolean; tokenrouterGate?: boolean }
+      const msg = gateErr?.inferbaseGate || gateErr?.oneaiGate || gateErr?.anyapiGate || gateErr?.momaGate || gateErr?.tokenrouterGate ? ((e as Error)?.message ?? '') : friendlyAiError(e)
       // needPwd 的情况：不重复 toast（顶部已有常驻解锁条），但仍需在对话里给出可见提示
       if (!need && msg !== '已停止生成' && !String(msg).includes('NEED_AI_PWD')) notify(msg)
       // 鉴权/额度类失败且同平台有备用账户 → 提供一键换 Key 重试（密码未验证/用户中止不触发）

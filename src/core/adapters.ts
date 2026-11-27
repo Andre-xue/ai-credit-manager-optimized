@@ -75,6 +75,7 @@ export const NO_BALANCE_API_NOTE: Record<string, string> = {
   oneai: 'One AI API Key 无公开余额接口，请在官网控制台（oneaiapikey.com）查看余额与用量后手动录入额度；App 内仅有本机调用估算，不代表官方余额',
   anyapi: 'AnyAPI.ai 无公开余额接口，请在官网控制台（anyapi.ai）查看余额与用量后手动录入额度；App 内仅有本机调用估算，不代表官方余额',
   moma: '移动云 MoMA 无公开余额接口，请在 MoMA 控制台（ecloud.10086.cn）查看余额与用量后手动录入额度；App 内仅有本机调用估算，不代表官方余额',
+  tokenrouter: 'TokenRouter 无公开余额接口，免费额度未公布，请在官网控制台（tokenrouter.com）查看余额与用量后手动录入额度；App 内仅有本机调用估算，不代表官方余额',
 }
 
 /** 硅基流动：GET /v1/user/info → data.balance（字符串，人民币） */

@@ -167,8 +167,9 @@ export function saveChainMode(mode: ChainMode): void {
 
 // ---------------- 链执行 ----------------
 
-/** 候选类别的缺省顺序（首选之外按此排；APIsFreeLLM 永远最后兜底） */
-export const CHAIN_KIND_ORDER = ['cloud', 'zen', 'kilo', 'inferbase', 'oneai', 'anyapi', 'wbpool', 'apisfree']
+/** 候选类别的缺省顺序（首选之外按此排；APIsFreeLLM 是无 Key 兜底，
+ * TokenRouter 定位低优先级第三方中转、排全链末位，v0.1.514） */
+export const CHAIN_KIND_ORDER = ['cloud', 'zen', 'kilo', 'inferbase', 'oneai', 'anyapi', 'wbpool', 'apisfree', 'tokenrouter']
 
 /** 首选置顶，其余按类别顺序稳定排序（纯函数） */
 export function orderChainCandidates<T extends { id: string; kind: string }>(selectedId: string, list: T[]): T[] {

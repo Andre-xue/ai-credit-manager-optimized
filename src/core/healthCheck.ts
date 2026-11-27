@@ -22,6 +22,10 @@ import {
   momaStateFromError, momaErrorText, recordMomaVerification, momaEstimateText,
   pickMomaSmokeModel, MOMA_BASE, MOMA_STATE_LABEL, type MomaRouteState,
 } from './moma'
+import {
+  tokenRouterStateFromError, tokenRouterErrorText, recordTokenRouterVerification, tokenRouterEstimateText,
+  pickTokenRouterSmokeModel, TOKENROUTER_BASE, TOKENROUTER_STATE_LABEL, type TokenRouterRouteState,
+} from './tokenrouter'
 
 export type KeyHealthStatus = 'ok' | 'auth' | 'quota' | 'network' | 'error' | 'skipped' | 'rate' | 'pending' | 'model'
 
@@ -310,6 +314,65 @@ async function checkMomaHealth(account: Account, apiKey: string | undefined, sta
   return done({ status: 'ok', modelCount: models.length, message })
 }
 
+/** TokenRouter 状态 → 健康徽标状态（与 Inferbase / One AI / AnyAPI / MoMA 同口径） */
+function tokenRouterHealthStatus(state: TokenRouterRouteState): KeyHealthStatus {
+  switch (state) {
+    case 'available': return 'ok'
+    case 'auth_invalid': return 'auth'
+    case 'quota_exceeded': return 'quota'
+    case 'rate_limited': return 'rate'
+    case 'network_error': return 'network'
+    case 'model_unavailable': return 'model'
+    case 'pending_verification': return 'pending'
+    default: return 'error'
+  }
+}
+
+/**
+ * TokenRouter 专用健康检查 = 真实冒烟（v0.1.514 启用门槛，与 AnyAPI / MoMA 同口径）：
+ * 模型清单是本机精选常量、不发列表请求（也不拉平台全量 100+ 目录），Key 有效性
+ * 直接以聊天冒烟为准：用 Ethan 自己的 Key 拿精选清单里的免费主力模型发一条
+ * 测试消息。全过才记录「已验证」（含用通的免费模型）并启用路线、进入自动切换链
+ * 末位；任一步失败记录真实状态与原因，路线保持未启用。无公开余额接口、不查余额；
+ * 冒烟消耗免费模型 1 次请求（免费额度未公布，量级可忽略但如实说明）。
+ * 免费模型若已轮换下线，网关回 model_not_found → 状态 model_unavailable 如实显示。
+ */
+async function checkTokenRouterHealth(account: Account, apiKey: string | undefined, started: number): Promise<KeyHealthResult> {
+  const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
+    ...r, latencyMs: r.latencyMs ?? (Date.now() - started), checkedAt: Date.now(),
+  })
+  if (!apiKey) {
+    return done({
+      status: 'pending', latencyMs: 0,
+      message: '待实测：保险箱未解锁，无法用你的 Key 做聊天冒烟；解锁后重新点健康检查，通过后才启用（TokenRouter 无公开余额接口、免费额度未公布，本检查不查余额）',
+    })
+  }
+  const eff: Account = { ...account, apiUrl: account.apiUrl?.trim() || TOKENROUTER_BASE }
+  let models: string[]
+  try {
+    models = await fetchProviderModels(eff, apiKey) // TokenRouter 分支返回精选清单（本机常量）
+  } catch (e) {
+    const state = tokenRouterStateFromError(e)
+    const text = tokenRouterErrorText(e)
+    recordTokenRouterVerification(account, 'failed', state, `模型清单读取失败：${text}`)
+    return done({ status: tokenRouterHealthStatus(state), message: `冒烟未通过（${TOKENROUTER_STATE_LABEL[state]}）：模型清单读取失败：${text}` })
+  }
+  const smokeModel = pickTokenRouterSmokeModel(models)
+  try {
+    const res = await callChat(eff, apiKey, [{ role: 'user', content: 'Reply with OK' }], smokeModel)
+    if (!res.ok || res.error) throw new Error(res.error || '聊天接口无有效回复')
+    if (!res.text?.trim()) throw new Error('聊天接口返回空回复')
+  } catch (e) {
+    const state = tokenRouterStateFromError(e)
+    const text = tokenRouterErrorText(e)
+    recordTokenRouterVerification(account, 'failed', state, `聊天冒烟失败：${text}`)
+    return done({ status: tokenRouterHealthStatus(state), modelCount: models.length, message: `冒烟未通过（${TOKENROUTER_STATE_LABEL[state]}）：聊天测试失败：${text}` })
+  }
+  const message = `冒烟通过，已启用：精选清单 ${models.length} 个模型 · ${smokeModel} 聊天可用 · ${tokenRouterEstimateText(account.id)}（TokenRouter 为第三方中转，免费额度未公布；已进入免费路线自动切换链末位，只切免费模型）`
+  recordTokenRouterVerification(account, 'verified', 'available', message, smokeModel)
+  return done({ status: 'ok', modelCount: models.length, message })
+}
+
 export async function checkKeyHealth(account: Account, apiKey?: string): Promise<KeyHealthResult> {
   const started = Date.now()
   const done = (r: Omit<KeyHealthResult, 'checkedAt' | 'latencyMs'> & { latencyMs?: number }): KeyHealthResult => ({
@@ -320,6 +383,7 @@ export async function checkKeyHealth(account: Account, apiKey?: string): Promise
     if (account.providerId === 'oneai') return await checkOneAiHealth(account, apiKey, started)
     if (account.providerId === 'anyapi') return await checkAnyApiHealth(account, apiKey, started)
     if (account.providerId === 'moma') return await checkMomaHealth(account, apiKey, started)
+    if (account.providerId === 'tokenrouter') return await checkTokenRouterHealth(account, apiKey, started)
     if (isLocalProvider(account.providerId)) {
       const base = (account.apiUrl || '').trim()
       if (!base) return done({ status: 'skipped', latencyMs: 0, message: '未填写本地服务地址' })

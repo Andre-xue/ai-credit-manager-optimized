@@ -14,6 +14,7 @@ import { fetchInferbaseModels, inferbaseErrorText } from './inferbase'
 import { recordOneAiLocalUsage, recordOneAiRouteFailure, recordOneAiRouteSuccess } from './oneai'
 import { recordAnyApiLocalUsage, recordAnyApiRouteFailure, recordAnyApiRouteSuccess } from './anyapi'
 import { recordMomaLocalUsage, recordMomaRouteFailure, recordMomaRouteSuccess } from './moma'
+import { TOKENROUTER_MODELS, recordTokenRouterLocalUsage, recordTokenRouterRouteFailure, recordTokenRouterRouteSuccess } from './tokenrouter'
 
 export interface ProviderCallResult {
   ok: boolean
@@ -89,6 +90,12 @@ export async function fetchProviderModels(account: Account, apiKey: string): Pro
     } catch (e) {
       throw new Error(inferbaseErrorText(e))
     }
+  }
+  // TokenRouter（v0.1.514）：只用精选清单（两个免费 + 一个付费），不拉全量目录
+  // （平台全量 100+ 个模型会把菜单塞爆）——清单是本机常量、不发网络请求；
+  // Key 是否有效由健康检查的聊天冒烟判定，不靠列表接口。
+  if (account.providerId === 'tokenrouter') {
+    return TOKENROUTER_MODELS.map(m => m.id)
   }
   const url = modelsUrl(account)
   let raw: string
@@ -232,6 +239,23 @@ function noteMomaCall(account: Account, result: ProviderCallResult, usageTokens 
   return result
 }
 
+/**
+ * TokenRouter 记账（v0.1.514）：只对 tokenrouter 账户——成功记本机估算用量并清路线状态，
+ * 失败记限流冷却/密钥失效（供 tokenRouterGate 与切换链消费）。记账失败不影响调用结果本身。
+ */
+function noteTokenRouterCall(account: Account, result: ProviderCallResult, usageTokens = 0): ProviderCallResult {
+  if (account.providerId !== 'tokenrouter') return result
+  try {
+    if (result.ok) {
+      recordTokenRouterLocalUsage(account.id, usageTokens)
+      recordTokenRouterRouteSuccess(account.id)
+    } else if (result.error) {
+      recordTokenRouterRouteFailure(account.id, new Error(result.error))
+    }
+  } catch { /* 记账失败不影响调用结果 */ }
+  return result
+}
+
 function usageTokensOf(json: any): number {
   const u = json?.usage
   if (typeof u?.total_tokens === 'number') return u.total_tokens
@@ -318,10 +342,10 @@ export async function callChat(
     }
     const json = JSON.parse(raw)
     const text = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? ''
-    if (!text) return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
-    return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: true, text }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
+    if (!text) return noteTokenRouterCall(account, noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: false, text: '', error: '接口未返回文本内容，请检查模型名与账户配置' }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
+    return noteTokenRouterCall(account, noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, { ok: true, text }, usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json)), usageTokensOf(json))
   } catch (e) {
-    return noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, toError(e))))
+    return noteTokenRouterCall(account, noteMomaCall(account, noteAnyApiCall(account, noteOneAiCall(account, toError(e)))))
   }
 }
 

@@ -15,6 +15,7 @@ import { inferbaseGate } from './inferbase'
 import { oneAiGate } from './oneai'
 import { anyApiGate, getAnyApiSmokeModel } from './anyapi'
 import { momaGate, getMomaSmokeModel } from './moma'
+import { tokenRouterGate, getTokenRouterSmokeModel, TOKENROUTER_SMOKE_MODEL } from './tokenrouter'
 import { runFreeChain, loadChainMode, orderChainCandidates, ChainAllFailedError, type ChainCandidate } from './freeChain'
 
 export type WorkshopRoute =
@@ -48,6 +49,11 @@ export function resolveWorkshopModel(acct: Account, route?: WorkshopRoute): stri
   if (acct.providerId === 'moma') {
     const smoke = getMomaSmokeModel(acct.id)
     if (smoke) return smoke
+  }
+  // TokenRouter（v0.1.514）：工坊路线默认用免费模型——冒烟用通的免费款，
+  // 没有验证记录时回落精选清单的免费主力款；付费版不作工坊默认（防误烧钱）
+  if (acct.providerId === 'tokenrouter') {
+    return getTokenRouterSmokeModel(acct.id) ?? TOKENROUTER_SMOKE_MODEL
   }
   const label = (acct.label ?? '').trim()
   const catalog = ENGINE_CATALOG[acct.providerId] ?? []
@@ -86,8 +92,9 @@ export async function loadWorkshopRoutes(accounts: Account[]): Promise<WorkshopR
       const gate = a.providerId === 'inferbase' ? inferbaseGate(a)
         : a.providerId === 'oneai' ? oneAiGate(a)
         : a.providerId === 'anyapi' ? anyApiGate(a)
+        : a.providerId === 'tokenrouter' ? tokenRouterGate(a)
         : a.providerId === 'moma' ? momaGate(a) : null
-      const gateName = a.providerId === 'inferbase' ? 'Inferbase' : a.providerId === 'anyapi' ? 'AnyAPI' : a.providerId === 'moma' ? 'MoMA' : 'One AI'
+      const gateName = a.providerId === 'inferbase' ? 'Inferbase' : a.providerId === 'anyapi' ? 'AnyAPI' : a.providerId === 'moma' ? 'MoMA' : a.providerId === 'tokenrouter' ? 'TokenRouter' : 'One AI'
       return {
         kind: 'account' as const, key: `acct:${a.id}`,
         label: gate && !gate.enabled ? `${a.label}（${gateName} 待实测，未启用）` : a.label,
@@ -162,6 +169,9 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   } else if (acct.providerId === 'moma') {
     const gate = momaGate(acct)
     if (!gate.enabled) throw new Error(gate.message)
+  } else if (acct.providerId === 'tokenrouter') {
+    const gate = tokenRouterGate(acct)
+    if (!gate.enabled) throw new Error(gate.message)
   } else if (route.disabledReason) {
     throw new Error(route.disabledReason)
   }
@@ -176,7 +186,7 @@ async function runOneWorkshopRoute(route: WorkshopRoute, params: WorkshopChatPar
   return r.text
 }
 
-/** 路线在切换链里的类别（决定缺省顺序；APIsFreeLLM 永远最后兜底） */
+/** 路线在切换链里的类别（决定缺省顺序；TokenRouter 排全链末位，v0.1.514） */
 function workshopRouteChainKind(route: WorkshopRoute, params: WorkshopChatParams): string {
   if (route.kind === 'wbpool') return 'wbpool'
   if (route.kind === 'account') {
@@ -184,6 +194,7 @@ function workshopRouteChainKind(route: WorkshopRoute, params: WorkshopChatParams
     if (acct?.providerId === 'inferbase') return 'inferbase'
     if (acct?.providerId === 'oneai') return 'oneai'
     if (acct?.providerId === 'anyapi') return 'anyapi'
+    if (acct?.providerId === 'tokenrouter') return 'tokenrouter'
     return 'account'
   }
   const opt = params.freeOptions.find(o => `free:${o.key}` === route.key)
@@ -208,6 +219,11 @@ export async function buildWorkshopChainRoutes(params: WorkshopChatParams): Prom
       push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
     }
     if (a.providerId === 'anyapi' && anyApiGate(a).enabled) {
+      push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
+    }
+    // TokenRouter（v0.1.514）：已验证启用的才进候选，链序末位（CHAIN_KIND_ORDER 决定）；
+    // 链上模型由 resolveWorkshopModel 给出——恒为免费模型，付费版不进链。
+    if (a.providerId === 'tokenrouter' && tokenRouterGate(a).enabled) {
       push({ kind: 'account', key: `acct:${a.id}`, label: a.label, accountId: a.id, engine: resolveWorkshopModel(a) })
     }
     // 移动云 MoMA（v0.1.456）有意不进候选：它是按量付费平台，433 口径是自动切换只在

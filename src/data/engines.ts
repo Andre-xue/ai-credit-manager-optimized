@@ -69,6 +69,15 @@ export const ENGINE_CATALOG: Record<string, Engine[]> = {
   // 移动云 MoMA（v0.1.456）：同样不在此预置目录——模型全量以 GET /v1/models 按用户 Key
   // 动态拉取为准，冒烟通过的模型（优先九天自营）记在验证记录里作默认对话模型
   // （见 core/moma.ts 的 pickMomaSmokeModel / getMomaSmokeModel）。
+  // TokenRouter（v0.1.514）：与上面两家相反——只用精选短名单（平台全量 100+ 不拉），
+  // 与 core/tokenrouter.ts 的 TOKENROUTER_MODELS 同一份清单：两个免费模型倍率 0 置顶，
+  // 付费版倍率按其平台标价折算的相对参考值（约 $0.075–0.08/$0.30 每百万 tokens）。
+  // 免费名单轮换时两处要一起改（tokenrouter.test 有一致性断言）。
+  tokenrouter: [
+    { id: 'deepseek/deepseek-v4.1-flash-1017-free', name: 'DeepSeek V4.1 Flash 1017（免费）', multiplier: 0, flagship: true },
+    { id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', name: 'Nemotron 3 Nano Omni 30B（免费）', multiplier: 0, reasoning: true },
+    { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash 1017（付费）', multiplier: 0.15 },
+  ],
   // DeepSeek（api-docs.deepseek.com：deepseek-chat/reasoner 已于 2026-07-24 下线）
   deepseek: [
     { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', multiplier: 0.15, tag: '高性价比', flagship: true },
