@@ -548,7 +548,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
         { id: 'table', name: '表格问答', desc: '把 CSV 丢进来，用问话查数、汇总、找异常，不用写公式。', tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
         { id: 'dailycheckin', name: '每日签到', desc: 'WorkBuddy、MiniMax Code 每日积分签到：授权一次，每天点一下领积分。', tag: '领积分', grad: 'g3', icon: <CalendarCheck size={21} />, action: () => setTool('dailycheckin'), isNew: true },
         { id: 'freegames', name: '免费游戏', desc: 'Epic 每周喜加一自动领取：绑定一次，定时自动领入库。', tag: '喜加一', grad: 'g3', icon: <Gamepad2 size={21} />, action: () => setTool('freegames'), isNew: true },
-        { id: 'steamdeals', name: 'Steam 降价', desc: 'Steam 商店当前打折游戏：折扣、现价、原价、好评率，按折扣排序，大促期间列表更长。', tag: '免 Key', tagClass: 'free', grad: 'g3', icon: <BadgePercent size={21} />, action: () => setTool('steamdeals'), isNew: true },
+        { id: 'steamdeals', name: 'Steam 迷你商城', desc: 'Steam 商店特惠与全目录搜索：折扣、现价、好评率，可按分类/平台筛选；绑定 Steam 账户还能看我的库、已拥有的标「已入库」。', tag: '免 Key', tagClass: 'free', grad: 'g3', icon: <BadgePercent size={21} />, action: () => setTool('steamdeals'), isNew: true },
         { id: 'watch', name: '看剧', desc: 'AI 找剧、热门推荐、直播、点播：App 内播放器直接看，直播多套源自动切换，点播带选集与续播；片单与追剧日历只存本机。', tag: '看剧追剧', grad: 'g6', icon: <Tv size={21} />, action: () => setTool('watch'), isNew: true },
         { id: 'wbpool', name: 'WorkBuddy 账号池', desc: '多个 WorkBuddy 账号授权入池成一个模型来源：对话自动轮换、限流自动切换，签到一并带上。', tag: '多账号池', grad: 'g2', icon: <Users size={21} />, action: () => setTool('wbpool'), isNew: true },
         ...(isDesktopApp() ? [{ id: 'mail', name: '邮箱', desc: 'Gmail、Outlook、QQ、163、iCloud 等全部邮箱一个收件箱：验证码自动分类、实时同步、凭据只存本机。', tag: '统一收件箱', grad: 'g5', icon: <Mail size={21} />, action: () => setTool('mail'), isNew: true }] : []),

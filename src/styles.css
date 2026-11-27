@@ -2589,23 +2589,90 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
   .wt-sheet { width: 100%; max-height: 94dvh; border-radius: 18px 18px 0 0; }
 }
 
-/* ---- 工坊 · Steam 降价（v0.1.399） ---- */
-.sd-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.sd-source { font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin-bottom: 12px; }
-.sd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-.sd-card { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); cursor: pointer; text-align: left; padding: 0; transition: border-color .15s, box-shadow .15s; }
-.sd-card:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(30, 25, 70, .10); }
-.sd-cover { position: relative; aspect-ratio: 231 / 87; background: var(--bg-2); display: flex; align-items: center; justify-content: center; color: var(--text-3); }
-.sd-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.sd-cover-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
-.sd-badge { position: absolute; top: 8px; left: 8px; font-size: 12.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #16a34a; color: #fff; }
-.sd-badge-pkg { position: absolute; top: 8px; right: 8px; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #7c3aed; color: #fff; }
-.sd-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
-.sd-card-title { font-size: 14px; font-weight: 700; line-height: 1.35; }
-.sd-card-meta { font-size: 12.5px; color: var(--text-2); }
-.sd-card-meta s { color: var(--text-3); }
-.sd-price { color: var(--text); font-size: 14px; }
-.sd-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* ---- 工坊 · Steam 迷你商城（v0.1.487）：Steam 官方商店深色风，本页专属
+   （底 #1b2838 / 卡片 #16202d / 强调 Steam 蓝 #66c0f4 / 折扣绿 #4c6b22+#beee11；
+   无紫色、无渐变、无发光） ---- */
+.sm-root { background: #1b2838; color: #c7d5e0; border-radius: 14px; padding: 16px; }
+.sm-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.sm-tabs { display: flex; gap: 4px; background: #16202d; padding: 4px; border-radius: 9px; }
+.sm-tab { padding: 6px 20px; border: none; border-radius: 6px; background: transparent; color: #8f98a3; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.sm-tab.on { background: #2a475e; color: #fff; }
+.sm-account { position: relative; }
+.sm-account-btn { display: inline-flex; align-items: center; gap: 8px; background: #16202d; border: 1px solid #2a475e; color: #fff; border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
+.sm-avatar { width: 24px; height: 24px; border-radius: 4px; display: block; }
+.sm-avatar-fallback { display: inline-flex; align-items: center; justify-content: center; background: #2a475e; color: #66c0f4; }
+.sm-account-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.sm-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41; background: #16202d; border: 1px solid #2a475e; border-radius: 9px; min-width: 168px; padding: 4px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
+.sm-menu button { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 8px 10px; border: none; border-radius: 6px; background: transparent; color: #c7d5e0; font-size: 13px; cursor: pointer; }
+.sm-menu button:hover { background: #2a475e; color: #fff; }
+.sm-menu button.danger { color: #f09393; }
+.sm-bind-btn { display: inline-flex; align-items: center; gap: 6px; background: #2a475e; border: 1px solid #66c0f4; color: #fff; border-radius: 8px; padding: 8px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.sm-bind-btn:hover { background: #35607f; }
+.sm-searchbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.sm-searchbox { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; height: 36px; background: #16202d; border: 1px solid #2a475e; border-radius: 8px; padding: 0 10px; color: #8f98a3; }
+.sm-searchbox input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #fff; font-size: 13.5px; }
+.sm-searchbox input::placeholder { color: #67707b; }
+.sm-search-clear { display: inline-flex; background: transparent; border: none; color: #8f98a3; cursor: pointer; padding: 2px; }
+.sm-search-btn, .sm-refresh-btn, .sm-more-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; background: #2a475e; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; }
+.sm-search-btn:hover, .sm-refresh-btn:hover, .sm-more-btn:hover { background: #35607f; }
+.sm-search-btn:disabled, .sm-refresh-btn:disabled, .sm-more-btn:disabled { opacity: .55; cursor: default; }
+.sm-search-note { font-size: 12.5px; color: #8f98a3; margin-bottom: 8px; }
+.sm-link { background: none; border: none; color: #66c0f4; cursor: pointer; font-size: inherit; padding: 0 4px; text-decoration: underline; }
+.sm-filters { background: #16202d; border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.sm-filters-head { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 10px 14px; background: transparent; border: none; color: #fff; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.sm-filters-head-left { display: inline-flex; align-items: center; gap: 8px; }
+.sm-filters-summary { color: #66c0f4; font-size: 12.5px; font-weight: 500; }
+.sm-filters-head > svg { transition: transform .2s; }
+.sm-filters-head > svg.rot { transform: rotate(180deg); }
+.sm-filters-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 14px 12px; }
+.sm-frow { display: flex; gap: 10px; align-items: flex-start; }
+.sm-flabel { flex: none; width: 36px; padding-top: 5px; color: #8f98a3; font-size: 12.5px; }
+.sm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sm-chip { padding: 4px 12px; border-radius: 999px; background: #1b2838; border: 1px solid #2a475e; color: #c7d5e0; font-size: 12.5px; cursor: pointer; }
+.sm-chip:hover { border-color: #66c0f4; }
+.sm-chip.on { background: #2a475e; border-color: #66c0f4; color: #fff; }
+.sm-source { font-size: 12.5px; color: #8f98a3; line-height: 1.6; margin-bottom: 10px; }
+.sm-alert { display: flex; align-items: center; gap: 8px; background: rgba(190, 40, 40, .16); border: 1px solid rgba(220, 60, 60, .45); color: #f3b8b8; border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+.sm-alert.big { padding: 14px; }
+.modal .sm-alert { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.sm-empty { color: #8f98a3; text-align: center; padding: 28px 16px; font-size: 13.5px; line-height: 1.7; }
+.sm-empty.big { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.sm-empty.big p { margin: 0; max-width: 560px; }
+.sm-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .sm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px) { .sm-grid { grid-template-columns: minmax(0, 1fr); } }
+.sm-card { background: #16202d; border: 1px solid transparent; border-radius: 10px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
+.sm-card:hover { border-color: #66c0f4; }
+.sm-cover { position: relative; aspect-ratio: 231 / 87; background: #101822; display: flex; align-items: center; justify-content: center; color: #67707b; }
+.sm-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-cover-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.sm-badge-discount { position: absolute; top: 8px; left: 8px; background: #4c6b22; color: #beee11; font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.sm-badge-pkg { position: absolute; top: 8px; right: 8px; background: #2a475e; color: #66c0f4; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.sm-badge-owned { position: absolute; bottom: 8px; left: 8px; background: #14532d; color: #86efac; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.sm-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.sm-card-title { color: #fff; font-size: 14px; font-weight: 600; line-height: 1.35; }
+.sm-card-meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 12.5px; color: #8f98a3; }
+.sm-card-meta s { color: #67707b; }
+.sm-price { color: #beee11; font-size: 14px; }
+.sm-card-foot { display: flex; align-items: center; }
+.sm-open { display: inline-flex; align-items: center; gap: 4px; color: #66c0f4; font-size: 12.5px; }
+.sm-loadmore { display: flex; justify-content: center; margin-top: 12px; }
+.sm-pagerbar { position: sticky; bottom: 0; z-index: 5; margin-top: 12px; padding: 6px 4px; background: rgba(27, 40, 56, .96); border-top: 1px solid #2a475e; }
+.sm-pagerbar .fm-pager { padding: 4px 6px; margin: 0; color: #8f98a3; }
+.sm-pagerbar .btn { background: #16202d; color: #c7d5e0; border-color: #2a475e; }
+.sm-pagerbar .btn.on { background: #2a475e; color: #fff; border-color: #66c0f4; }
+.sm-pagerbar .btn:disabled { opacity: .5; }
+.sm-lib-summary { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; background: #16202d; border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; font-size: 13.5px; color: #c7d5e0; }
+.sm-lib-summary b { color: #fff; }
+.sm-lib-at { color: #67707b; font-size: 12.5px; }
+.sm-lib-summary .sm-refresh-btn { margin-left: auto; }
+.sm-note { font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin: 0 0 12px; }
+.sm-root .sm-note { color: #8f98a3; }
+.sm-field { display: block; margin-bottom: 12px; }
+.sm-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.sm-field input { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13.5px; }
+.sm-bind-modal { max-width: 520px; width: calc(100vw - 32px); }
 
 /* ================= 邮箱工具（v0.1.436）：大厂风格，中性灰阶 + 单一品牌色，扁平卡片 ================= */
 .btn.danger-ghost { color: var(--red); background: transparent; border-color: transparent; }
