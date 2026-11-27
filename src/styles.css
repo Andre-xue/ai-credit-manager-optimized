@@ -3135,6 +3135,9 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   transition: width .22s ease;
 }
 .trs-prov-left.collapsed { width: 44px; }
+/* 平台列表容器防御：纵向 flex 子项在 WebKit 下自动最小宽度可能被内容撑大，
+   min-width:0 保证它恒等于左栏宽（Chrome 下实测本就 218，此为跨引擎兜底） */
+.trs-prov-plats { min-width: 0; }
 .trs-prov-lefthead, .trs-prov-righthead {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
   padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600;
@@ -3148,11 +3151,19 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   display: flex; flex-direction: column; gap: 2px; text-align: left;
   border: none; border-bottom: 1px solid var(--line); background: none;
   padding: 9px 11px; cursor: pointer; color: inherit; font-size: 13px;
+  /* button 元素按内容（max-content）定宽、不像 div 撑满包含块：长平台名会把
+     按钮顶出 218px 左栏、行内「当前引擎」徽标随之压到右栏模型 id 上
+     （v0.1.501 实机截图+无头量测坐实：按钮 257.9px、徽标溢出栏外 28.9px）。
+     显式 width:100% 让平台行恒等于栏宽（移动横排模式在下方媒体查询恢复 auto） */
+  width: 100%;
 }
 .trs-prov-plat:last-child { border-bottom: none; }
 .trs-prov-plat.sel { background: #efe9ff; }
 .trs-prov-plat.dim { opacity: .55; }
 .trs-prov-plat-name { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+/* 名称占行内剩余空间并可真收缩（min-width:0 是 WebKit 下省略号生效的前提），
+   「当前引擎」徽标恒为行内兄弟元素、永不被顶出栏外压字 */
+.trs-prov-plat-label { flex: 1; min-width: 0; }
 .trs-prov-plat-sub { font-size: 11.5px; opacity: .62; line-height: 1.45; }
 .trs-prov-engine-badge {
   flex: none; font-size: 10.5px; font-weight: 600; color: var(--green);
@@ -3163,12 +3174,14 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .trs-prov-righthead { justify-content: flex-start; }
 .trs-prov-righthead .grow { flex: 1; min-width: 0; }
 .trs-prov-model {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 11px; border-bottom: 1px solid var(--line); font-size: 13px;
 }
 .trs-prov-model:last-child { border-bottom: none; }
 .trs-prov-model.dim { opacity: .55; }
-.trs-prov-model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 模型 id 必须完整可见：占剩余空间、放不下时在自身列内断行（长 id 逐字断），
+   控件组放不下整行时换到下一行——不再用省略号截断、更不与徽标同行硬挤 */
+.trs-prov-model-name { flex: 1 1 170px; min-width: 0; overflow-wrap: anywhere; }
 .trs-prov-model-pick { cursor: pointer; }
 .trs-prov-model-pick:hover { text-decoration: underline; }
 .trs-prov-cur {
@@ -3181,7 +3194,7 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   .trs-prov-left { width: auto; border-right: none; border-bottom: 1px solid var(--line); min-height: 0; }
   .trs-prov-left.collapsed { width: auto; }
   .trs-prov-plats { display: flex; overflow-x: auto; }
-  .trs-prov-plat { border-bottom: none; border-right: 1px solid var(--line); white-space: nowrap; }
+  .trs-prov-plat { border-bottom: none; border-right: 1px solid var(--line); white-space: nowrap; width: auto; }
 }
 
 /* 截图框选层（独立全屏窗口） */

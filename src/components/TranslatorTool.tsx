@@ -547,7 +547,7 @@ export function TranslatorTool({ accounts, sessionPwd, notify }: {
                               className={`trs-prov-plat ${selProvider?.key === info.key ? 'sel' : ''} ${info.listed ? '' : 'dim'}`}
                               onClick={() => setSelProviderKey(info.key)}>
                               <span className="trs-prov-plat-name">
-                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{info.label}</span>
+                                <span className="trs-prov-plat-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{info.label}</span>
                                 {currentEngine?.key === info.key && <span className="trs-prov-engine-badge">当前引擎</span>}
                               </span>
                               <span className="trs-prov-plat-sub">
