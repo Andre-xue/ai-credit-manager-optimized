@@ -828,6 +828,7 @@ Object.assign(D, {
   '修改': { 'zh-TW': '修改', en: 'Change', ja: '変更', ko: '변경' },
   '确认重置': { 'zh-TW': '確認重置', en: 'Confirm reset', ja: 'リセットを確認', ko: '초기화 확인' },
   '主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。': { 'zh-TW': '主密碼僅用於派生加密金鑰，永不儲存明文；"解鎖"僅作用於 API Key 管理頁，不影響其他功能。', en: 'The master password is only used to derive the encryption key and is never stored in plaintext; "unlock" applies only to the API Key page and does not affect other features.', ja: 'マスターパスワードは暗号鍵の導出にのみ使われ、平文では保存されません。「ロック解除」はAPIキー管理ページにのみ適用され、他の機能には影響しません。', ko: '마스터 비밀번호는 암호화 키를 파생하는 데만 사용되며 평문으로 저장되지 않습니다. "잠금 해제"는 API Key 관리 페이지에만 적용되고 다른 기능에는 영향을 주지 않습니다.' },
+  '主密码用于派生加密密钥；开启「在这台设备上保持解锁」时，主密码只存进本设备的系统钥匙串，绝不上传云端。': { 'zh-TW': '主密碼用於派生加密金鑰；開啟「在此裝置上保持解鎖」時，主密碼只存進本裝置的系統鑰匙圈，絕不上傳雲端。', en: 'The master password derives the encryption key. When "Stay unlocked on this device" is on, the master password is kept only in this device’s system keychain and is never uploaded to the cloud.', ja: 'マスターパスワードは暗号鍵の導出に使われます。「このデバイスでロック解除を維持」がオンの場合、マスターパスワードはこのデバイスのシステムキーチェーンにのみ保存され、クラウドへは決してアップロードされません。', ko: '마스터 비밀번호는 암호화 키를 파생하는 데 사용됩니다. "이 기기에서 잠금 해제 유지"가 켜져 있으면 마스터 비밀번호는 이 기기의 시스템 키체인에만 저장되며 클라우드에 절대 업로드되지 않습니다.' },
   '修改主密码': { 'zh-TW': '修改主密碼', en: 'Change master password', ja: 'マスターパスワードを変更', ko: '마스터 비밀번호 변경' },
   '原主密码': { 'zh-TW': '原主密碼', en: 'Current master password', ja: '現在のマスターパスワード', ko: '기존 마스터 비밀번호' },
   '输入当前主密码': { 'zh-TW': '輸入目前主密碼', en: 'Enter the current master password', ja: '現在のマスターパスワードを入力', ko: '현재 마스터 비밀번호 입력' },

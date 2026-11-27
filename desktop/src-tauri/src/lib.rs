@@ -756,6 +756,37 @@ async fn biometric_available(app: tauri::AppHandle) -> Result<bool, String> {
     { let _ = app; Ok(false) }
 }
 
+/// v0.1.486 钥匙串长期解锁：保险箱主密码托管给系统钥匙串（macOS Keychain /
+/// Windows 凭据管理器 / Linux Secret Service）。条目归属本应用，靠应用签名身份
+/// 与系统钥匙串的条目隔离保护；读取不弹系统验证框（桌面固定签名保证同一身份
+/// 跨版本可读回自己写的条目）。密码只存系统钥匙串，绝不落盘明文、绝不上云。
+fn vault_keychain_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("ai-cube-vault", "master-password").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn vault_keychain_set(password: String) -> Result<(), String> {
+    vault_keychain_entry()?.set_password(&password).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn vault_keychain_get() -> Result<Option<String>, String> {
+    match vault_keychain_entry()?.get_password() {
+        Ok(p) => Ok(Some(p)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn vault_keychain_delete() -> Result<(), String> {
+    match vault_keychain_entry()?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 async fn biometric_auth(app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
@@ -4557,7 +4588,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

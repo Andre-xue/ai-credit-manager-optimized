@@ -92,6 +92,11 @@ import { loadCloudBackupPrefs, saveCloudBackupPrefs, cloudBackupDue, cloudBackup
 import { autoCheckinTick, resolveAutoCheckinPassword } from './core/checkinRun'
 import { freeGamesCheckDue, runFreeGamesCheck, summarizeCheckResult, hasLegacyEpicAuth } from './core/freeGames'
 import { migrateAllOperationalCreds } from './core/credMigration'
+import {
+  applyKeepUnlockedChange, canUseKeyMaterial, keepUnlockedEnabled, keychainAvailable,
+  keychainDeleteMasterPassword, keychainStoreMasterPassword, refreshKeychainAfterPasswordChange,
+  requiresStepUp, tryKeychainAutoUnlock, type UnlockKind,
+} from './core/persistentUnlock'
 import { useServiceController, type ServiceController } from './core/useServiceController'
 import { ServiceSwitch } from './components/ServiceSwitch'
 import { CloudLoginModal } from './components/CloudLogin'
@@ -433,6 +438,22 @@ function App() {
    * 因此 Key 管理页的解锁状态不会影响其他功能。指纹/人脸模式则用 biometric 凭据。
    */
   const [sessionPwd, setSessionPwd] = useState('')
+  /**
+   * v0.1.486 解锁来源：manual=本会话内当场验过（密码/指纹）；auto=启动时从系统
+   * 钥匙串静默恢复。「用 Key 本身」的场景两者等效；看明文/删 Key 数据在 auto 态
+   * 必须当场再验一次（step-up，见 persistentUnlock.requiresStepUp）。
+   */
+  const [unlockKind, setUnlockKind] = useState<UnlockKind>('none')
+  /** 当场验证成功后的统一解锁入口：记为 manual；钥匙串托管由下方 effect 按开关统一处理 */
+  const unlockSession = useCallback((pwd: string) => {
+    setSessionPwd(pwd)
+    setUnlockKind(pwd ? 'manual' : 'none')
+  }, [])
+  /** 统一上锁入口：清会话密码并把解锁来源归零 */
+  const lockSession = useCallback(() => {
+    setSessionPwd('')
+    setUnlockKind('none')
+  }, [])
   /** 从设置页指纹/人脸解锁后，带入 Key 管理页的初始解锁密码（仅作用于 Key 页） */
   const [keyPageInitialPwd, setKeyPageInitialPwd] = useState('')
   useEffect(() => {
@@ -1083,7 +1104,7 @@ function App() {
     const mins = state.settings.autoLockMinutes ?? 0
     if (!sessionPwd || !mins) return
     const lock = () => {
-      setSessionPwd('')
+      lockSession()
       window.dispatchEvent(new Event('acm-autolock'))
       notify(t('保险箱已自动上锁（闲置 {mins} 分钟）', { mins }))
     }
@@ -1096,7 +1117,7 @@ function App() {
       window.removeEventListener('pointerdown', reset)
       window.removeEventListener('keydown', reset)
     }
-  }, [sessionPwd, state.settings.autoLockMinutes, notify])
+  }, [sessionPwd, state.settings.autoLockMinutes, notify, lockSession])
 
   // ---- 余额自动巡检：保险箱解锁后（sessionPwd 就绪）静默刷新可查余额平台的官方余额 ----
   // 间隔由设置 → 通用 →「余额自动刷新间隔」决定（本机偏好，默认 6 小时，可关）；
@@ -1163,6 +1184,31 @@ function App() {
     const t = window.setInterval(() => { void tick() }, 30 * 60 * 1000)
     return () => window.clearInterval(t)
   }, [notify, sessionPwd])
+
+  // ---- v0.1.486 钥匙串长期解锁：启动时若「保持解锁」开且系统钥匙串里有能通过
+  // 保险箱校验的主密码，静默恢复 Key 使用能力（记 auto 态）。失败静默回落手动
+  // 解锁，不报错不弹框；用户已先手动解锁时不覆盖其 manual 态。自动解锁同样会
+  // 触发下方 470 凭据迁移 effect（它依赖 sessionPwd），待迁项可静默迁完。 ----
+  const autoUnlockTriedRef = useRef(false)
+  useEffect(() => {
+    if (autoUnlockTriedRef.current) return
+    autoUnlockTriedRef.current = true
+    void (async () => {
+      const pwd = await tryKeychainAutoUnlock()
+      if (pwd && !sessionPwdRef.current) {
+        setSessionPwd(pwd)
+        setUnlockKind('auto')
+      }
+    })()
+  }, [])
+
+  // ---- v0.1.486：手动解锁成功后，按「保持解锁」开关把主密码托管进系统钥匙串
+  // （含改主密码后 sessionPwd 变为新密码的情况，条目随之换新）。auto 态不重复写。 ----
+  useEffect(() => {
+    if (!sessionPwd || unlockKind !== 'manual') return
+    if (!keepUnlockedEnabled() || !keychainAvailable()) return
+    void keychainStoreMasterPassword(sessionPwd)
+  }, [sessionPwd, unlockKind])
 
   // ---- v0.1.470：一次性迁移——每次成功解锁后，把仍为主密码加密的运营凭据
   // （Epic/签到/邮箱/账号池/TMDB）静默换成设备本地密钥加密；迁完这些功能不再
@@ -1679,7 +1725,9 @@ function App() {
               requestBackup(ids, title, confirmLabel, after, backupOnly)
             }}
             onUpdateAccount={(id, patch) => setState(s => updateAccount(s, id, patch))}
-            onUnlocked={(pwd) => setSessionPwd(pwd)}
+            onUnlocked={(pwd) => unlockSession(pwd)}
+            stepUpRequired={requiresStepUp(unlockKind)}
+            usagePwd={canUseKeyMaterial(unlockKind) ? sessionPwd : ''}
             initialPwd={keyPageInitialPwd}
             bioLabel={bioLabel}
           />}
@@ -1690,7 +1738,7 @@ function App() {
 
           {tab === 'plugins' && <PluginsView notify={notify} />}
 
-          {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={setSessionPwd} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
+          {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={unlockSession} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
 
           {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗。
               v0.1.473：Alt+E 输入翻译改开置顶输入小窗（宿主直连 Rust），不再
@@ -1726,7 +1774,7 @@ function App() {
 
           {tab === 'voice' && <div className="set-content set-content-page">
             <SettingsSection title="语音配置" desc="朗读音色、方言、语速与声音克隆 · 所有配置仅保存在此设备" icon={Volume2} tone="blue">
-              <div style={{ padding: '4px 2px 2px' }}><VoiceSettings notify={notify} accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={setSessionPwd} serviceController={isPhone ? undefined : serviceController} /></div>
+              <div style={{ padding: '4px 2px 2px' }}><VoiceSettings notify={notify} accounts={state.accounts} sessionPwd={sessionPwd} onUnlock={unlockSession} serviceController={isPhone ? undefined : serviceController} /></div>
             </SettingsSection>
           </div>}
 
@@ -1770,7 +1818,9 @@ function App() {
             try { localStorage.setItem('acm.state.pre-import-backup', JSON.stringify(state)) } catch { /* 存不下就忽略，不阻断导入 */ }
             // 网关令牌是本机凭据、界面语言是本机偏好：导入备份不覆盖本机的这两项
             setState({ ...imported, settings: { ...imported.settings, gatewayToken: state.settings.gatewayToken, language: state.settings.language } })
-            setSessionPwd('')
+            lockSession()
+            // 备份里的保险箱材料属于来源设备/旧密码：本机钥匙串托管的旧主密码随之失效，清掉避免下次启动白试
+            void keychainDeleteMasterPassword()
             audit('导入完整备份', `账户 ${imported.accounts.length} 个`)
             notify('备份已导入并覆盖当前数据；保险箱已锁定，请用备份来源的主密码重新解锁')
           }}
@@ -1783,14 +1833,17 @@ function App() {
               setState(s => ({ ...s, accounts: s.accounts.map(a => a.id === keyAccounts[i].id ? { ...a, encryptedKey: cipher } : a) }))
             })
             if (state.settings.unlockMethod === 'biometric') { saveBiometricPassword(newPwd); void bindVaultPasswordNative(newPwd) }
-            setSessionPwd(newPwd)
+            unlockSession(newPwd)
+            // v0.1.486：钥匙串托管条目同步换成新密码（开关关时确保条目不存在）
+            void refreshKeychainAfterPasswordChange(newPwd)
             audit('修改主密码')
           }}
           onResetVault={() => {
             clearBiometricPassword()
             void unbindVaultPasswordNative()
+            void keychainDeleteMasterPassword()
             resetVault()
-            setSessionPwd('')
+            lockSession()
             setState(s => ({
               ...s,
               accounts: s.accounts.map(a => ({ ...a, encryptedKey: undefined, keyFingerprint: undefined })),
@@ -1885,7 +1938,7 @@ function App() {
         onClose={() => { setFormProviderId(null); setAddOpen(true) }}
         onSave={(account, pwd) => {
           setState(s => ({ ...s, accounts: [{ ...account }, ...s.accounts] }))
-          if (pwd && !sessionPwd) setSessionPwd(pwd)
+          if (pwd && !sessionPwd) unlockSession(pwd)
           setFormProviderId(null); setAddOpen(true)
           notify(t('已添加本地模型「{label}」，可继续添加或关闭选择平台', { label: account.label }))
         }}
@@ -1902,7 +1955,7 @@ function App() {
             accounts: [{ ...data.account }, ...s.accounts],
             quotas: data.quota ? [...s.quotas, data.quota] : s.quotas,
           }))
-          if (data.pwd && !sessionPwd) setSessionPwd(data.pwd)
+          if (data.pwd && !sessionPwd) unlockSession(data.pwd)
           // 语音配置(APP)：解密 Key 并同步到语音配置模块，让「第三方语音服务配置」立即显示已配置
           if (data.account.providerId === 'voice-config' && data.account.encryptedKey && data.account.voiceProvider) {
             try {
@@ -1927,7 +1980,7 @@ function App() {
           await initVault(pwd)
           if (state.settings.unlockMethod === 'biometric') { saveBiometricPassword(pwd); void bindVaultPasswordNative(pwd) }
           setState(s => ({ ...s, settings: { ...s.settings, vaultInitialized: true } }))
-          setSessionPwd(pwd)
+          unlockSession(pwd)
           notify('保险箱已创建')
         }}
       />}
@@ -1991,7 +2044,7 @@ function App() {
               quotas: [...s.quotas, ...quotas.filter(q => freshIds.has(q.accountId))],
             }
           })
-          if (pwd) setSessionPwd(pwd)
+          if (pwd) unlockSession(pwd)
           setServicePreview(null)
           notify(t('已安全导入 {n} 个服务（密钥已加密）', { n: accounts.length }))
         }}
@@ -2701,8 +2754,12 @@ function QuotaFilterDropdown({ value, stats, onChange }: { value: string; stats:
   )
 }
 
-function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onImportText, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing, onSmartPaste, onAddAccount }: {
+function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, onQuotaFetched, onUpdateAccount, onImportFile, onImportText, onExport, onUnlocked, initialPwd, bioLabel, onAudit, isPhone, onRefresh, refreshing: globalRefreshing, onSmartPaste, onAddAccount, stepUpRequired, usagePwd }: {
   state: AppState; notify: (m: string) => void; onOpenVault: () => void; isPhone?: boolean;
+  /** v0.1.486：钥匙串自动解锁态下，删除 Key 数据必须先当场再验一次（step-up） */
+  stepUpRequired?: boolean;
+  /** v0.1.486：会话级 Key 使用密码（手动/自动解锁均可）：只供健康检查等「用 Key」场景解密，不用于明文展示 */
+  usagePwd?: string;
   onSmartPaste?: () => void; onAddAccount?: () => void;
   onImportFile: (file?: File) => void; onImportText?: (text: string) => void; onExport: () => void;
   onRemoveKeys: (ids: string[]) => void;
@@ -2735,6 +2792,21 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
   const [revealKeyTarget, setRevealKeyTarget] = useState<{ id: string; label: string; plain: string } | null>(null)
   // 点眼睛查看值（余额/Key）时若未解锁：先记下待查看目标，走解锁流程，解锁成功后自动打开查看
   const [pendingView, setPendingView] = useState<{ kind: 'key' | 'balance'; id: string } | null>(null)
+  // v0.1.486 step-up：钥匙串自动解锁态下删除 Key 数据，先走本页解锁验证，成功后继续原删除流程
+  const pendingStepUpRef = useRef<(() => void) | null>(null)
+  const guardDeleteKeys = (ids: string[], proceed: () => void) => {
+    const hasKeyData = ids.some(id => {
+      const a = state.accounts.find(x => x.id === id)
+      return !!a?.encryptedKey && !isLocalProvider(a.providerId)
+    })
+    if (stepUpRequired && !vaultPwd && hasKeyData) {
+      pendingStepUpRef.current = proceed
+      setUnlockOpen(true)
+      notify('删除 Key 数据前请先验证身份（钥匙串自动解锁不包含删除权限）')
+      return
+    }
+    proceed()
+  }
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set())
   // Key 健康检查：结果存本地（healthCheck.ts），逐个/全部探测 /v1/models
   const [health, setHealth] = useState<Record<string, KeyHealthResult>>(() => loadKeyHealth())
@@ -2746,7 +2818,13 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
     let okN = 0, badN = 0, skipN = 0
     await Promise.all(targets.map(async a => {
       const eff = { ...a, apiUrl: a.apiUrl || PROVIDER_MAP[a.providerId]?.apiBaseUrl || '' }
-      const r = await checkKeyHealth(eff, revealed[a.id])
+      // 明文展示仍只认本页解锁（revealed）；健康检查是「用 Key 本身」的场景，
+      // v0.1.486 起可用会话密码（含钥匙串自动解锁）解密探测，但不写入 revealed、不展示明文
+      let plain = revealed[a.id]
+      if (!plain && usagePwd && a.encryptedKey) {
+        try { plain = await decryptSecret(a.encryptedKey, usagePwd) } catch { /* 解不开按未解锁跳过 */ }
+      }
+      const r = await checkKeyHealth(eff, plain)
       if (r.status === 'ok') okN++; else if (r.status === 'skipped') skipN++; else badN++
       setHealth(prev => { const next = { ...prev, [a.id]: r }; saveKeyHealth(next); return next })
       setChecking(s => { const n = new Set(s); n.delete(a.id); return n })
@@ -2781,6 +2859,10 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
       setUnlockPwd('')
       setUnlockOpen(false)
       notify('已解锁，密钥已明文展示')
+      // v0.1.486 step-up：解锁前发起的删除（自动解锁态）在验证通过后继续走备份门禁流程
+      const stepUpAction = pendingStepUpRef.current
+      pendingStepUpRef.current = null
+      if (stepUpAction) stepUpAction()
       // 解锁前点过眼睛查看某个值：解锁成功后自动完成那次查看
       if (pendingView) {
         const pv = pendingView
@@ -2909,11 +2991,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
               notify(r.remaining !== undefined || r.label ? t('查询成功：{balance}', { balance: formatUsageBalance(r) }) : t('查询成功：已用 {used} {unit}', { used: r.used.toLocaleString(), unit: r.unit }))
             } catch (e: any) { notify(errorText(e, '查询失败')) }
           }}><RefreshCw size={15} /></button>}
-          <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
+          <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => guardDeleteKeys([a.id], () => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
             onRemoveKeys([a.id])
             setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
             setRevealed(prev => { const n = { ...prev }; delete n[a.id]; return n })
-          })} />
+          }))} />
         </div>
       </div>
     )
@@ -3111,11 +3193,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
                           notify(r.remaining !== undefined || r.label ? t('查询成功：{balance}', { balance: formatUsageBalance(r) }) : t('查询成功：已用 {used} {unit}', { used: r.used.toLocaleString(), unit: r.unit }))
                         } catch (e: any) { notify(errorText(e, '查询失败')) }
                       }}><RefreshCw size={15} /></button>}
-                      <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
+                      <HoldToConfirm title={isLocalProvider(a.providerId) ? t('删除本地模型') : t('删除前必须先备份')} onConfirm={() => guardDeleteKeys([a.id], () => onRequestBackup([a.id], '删除前必须备份', '确认删除', () => {
                         onRemoveKeys([a.id])
                         setSelectedKeys(prev => { const n = new Set(prev); n.delete(a.id); return n })
                         setRevealed(prev => { const n = { ...prev }; delete n[a.id]; return n })
-                      })} />
+                      }))} />
                     </div>
                   </td>
                 </tr>
@@ -3140,11 +3222,11 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
           <button className="btn sm" disabled={selectedKeys.size === 0} onClick={() => setToolExportOpen(true)}><Download size={13} /> {t('导出工具配置')}</button>
           <button className="btn sm danger" disabled={selectedKeys.size === 0} onClick={() => {
             const ids = Array.from(selectedKeys)
-            onRequestBackup(ids, '删除前必须备份', '确认删除', () => {
+            guardDeleteKeys(ids, () => onRequestBackup(ids, '删除前必须备份', '确认删除', () => {
               onRemoveKeys(ids)
               setRevealed(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n })
               setSelectedKeys(new Set())
-            })
+            }))
           }}><Trash2 size={13} /> {t('批量删除账户')}</button>
         </>}
       />
@@ -3236,7 +3318,7 @@ function KeysView({ state, notify, onOpenVault, onRemoveKeys, onRequestBackup, o
       )}
       {unlockOpen && !vaultPwd && <UnlockModal
         method={state.settings.unlockMethod} bioAvailable={bioAvailable} bioLabel={bioLabel ?? '生物'}
-        onClose={() => { setUnlockOpen(false); setUnlockPwd(''); setPendingView(null) }}
+        onClose={() => { setUnlockOpen(false); setUnlockPwd(''); setPendingView(null); pendingStepUpRef.current = null }}
         onPassword={(pwd) => void unlockWith(pwd)}
         onBiometric={async () => {
           const pwd = await resolveBiometricVaultPassword(t('验证身份以解锁保险箱'))
@@ -5234,6 +5316,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   // 数据清理多选（v0.1.255）：勾选类别 → 确认弹窗 → 执行
   const [clearSel, setClearSel] = useState<ClearCat[]>([])
   const [scanDesktop, setScanDesktopState] = useState(() => comfyScanDesktopEnabled())
+  // v0.1.486「在这台设备上保持解锁」：仅本机偏好（不进云同步/备份），默认开
+  const [keepUnlocked, setKeepUnlocked] = useState(() => keepUnlockedEnabled())
   const [launchDesktop, setLaunchDesktopState] = useState(() => comfyLaunchDesktopEnabled())
   // 自动更新开关（v0.1.474，仅桌面、仅本机 acm.update.autoEnabled.v1，默认开）
   const [autoUpdEnabled, setAutoUpdEnabled] = useState(() => loadAutoUpdateEnabled())
@@ -6356,6 +6440,17 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                 </div>
               </div>
             )}
+            {keychainAvailable() && (
+              <SettingsRow title="在这台设备上保持解锁" desc="在本机手动解锁一次后，主密码会存进这台设备的系统钥匙串（Mac 钥匙串 / Windows 凭据管理器 / 手机系统钥匙串），不上传云端；以后打开 App 自动解锁，聊天、健康检查不用再输密码。查看 Key 明文和删除 Key 时仍会当场再验一次。关掉会立即删掉钥匙串里的记录，回到每次重启输密码。此设置只保存在本设备">
+                <Toggle checked={keepUnlocked} onChange={v => {
+                  setKeepUnlocked(v)
+                  void applyKeepUnlockedChange(v)
+                  // 打开时若本会话已解锁，立即补写钥匙串条目，不必等下次解锁
+                  if (v && sessionPwd) void keychainStoreMasterPassword(sessionPwd)
+                  notify(v ? '已开启保持解锁（本机）' : '已关闭保持解锁，钥匙串记录已删除')
+                }} />
+              </SettingsRow>
+            )}
             <SettingsRow title="闲置自动上锁" desc="解锁后无操作达到此时长，自动清空会话密码并重新上锁（活动会重置计时）">
               <select className="select" style={{ width: 150 }} value={s.autoLockMinutes ?? 0} onChange={e => onChange({ autoLockMinutes: Number(e.target.value) })}>
                 <option value={0}>{t('关闭')}</option>
@@ -6382,7 +6477,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               )}
             </SettingsRow>
           </SettingsSection>
-          <p className="set-note"><Lock size={13} /> {t('主密码仅用于派生加密密钥，永不存储明文；"解锁"仅作用于 API Key 管理页，不影响其他功能。')}</p></>)}
+          <p className="set-note"><Lock size={13} /> {t('主密码用于派生加密密钥；开启「在这台设备上保持解锁」时，主密码只存进本设备的系统钥匙串，绝不上传云端。')}</p></>)}
         </>}
       </div>
 

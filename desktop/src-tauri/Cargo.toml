@@ -38,6 +38,9 @@ tauri-plugin-process = "2.4.0"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
+# v0.1.486 钥匙串长期解锁：系统钥匙串访问（macOS Keychain / Windows 凭据管理器 /
+# Linux Secret Service），把保险箱主密码托管给系统钥匙串，仅本机、绝不上云。
+keyring = "3"
 
 # 火山端到端实时语音桥接骨架（cpal/tokio-tungstenite 等依赖未接入编译）：
 # 当前构建环境无法从 crates.io 下载新依赖，待联网后按 volc_realtime.rs 顶部说明启用。
