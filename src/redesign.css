@@ -967,6 +967,9 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 /* AI 页顶栏功能菜单（v0.1.240 单图标入口 → v0.1.497 横向图标栏）：只有图标，悬停气泡出功能名
    （开关型带当前状态）；分组竖线分隔、44px 图标、间距宽松；窄窗自动换行不挤；仅 AI 页 */
 .ai-top-actions { position: relative; }
+/* 功能菜单入口按钮内的 App 图标（v0.1.497 追加）：原图直用、不叠加符号，圆角与侧边栏底部卡的 mark 同口径 */
+.ai-tools-entry-mark { width: 22px; height: 22px; border-radius: 6px; overflow: hidden; display: block; flex: none; }
+.ai-tools-entry-mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* width: max-content 必须显式给：容器 .ai-top-actions 很窄，abspos 收缩宽度会把图标栏压成竖列（无头截图实证） */
 .ai-tools-bar { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; max-width: min(780px, calc(100vw - 24px)); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow-lg); padding: 10px 12px; z-index: 90; animation: rise .16s ease; }
 .ai-tools-bar-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 8px; }

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback, Fragment, type React
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, ChevronRight, Copy, Volume2, VolumeX,
   Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Mic,
-  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock, Power,
+  Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, Check, Globe, Shuffle, Lock, Power,
 } from 'lucide-react'
 import {
   listModels, loadHistory, rotateConversationId,
@@ -1744,8 +1744,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                 <Search size={17} />
               </button>
             )}
-            <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip={t('全部功能')}>
-              <LayoutGrid size={17} />
+            <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip={t('全部功能')} aria-label={t('全部功能')}>
+              {/* v0.1.497 追加（Ethan 13:59 定）：入口图标由九宫格换成 App 图标原图（与侧边栏底部卡同资源 pwa-512.png），位置/尺寸/功能不变 */}
+              <span className="ai-tools-entry-mark"><img src="./pwa-512.png" alt="" /></span>
             </button>
             {toolsOpen && (
               <div className="ai-tools-bar" role="menu">
