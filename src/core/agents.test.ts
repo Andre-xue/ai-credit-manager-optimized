@@ -4,6 +4,7 @@ import {
   agentAvailability, quotaGate, capCheck, buildShellEnv, parseDelegation,
   pickStartable, isHeavyTask, parseCliUsage, summarizeLedger, ledgerSpentSince,
   loadAgentSettings, saveAgentSettings, markAgentVerified, loginStateText,
+  multiAccountCapable, normalizeAccountEntries, entryEnvPairs, loginCommandFor, nativeEntryId,
   type AgentSettings, type AgentLedgerEntry,
 } from './agents'
 import type { Account } from './types'
@@ -198,6 +199,43 @@ describe('v0.1.511（②）：已验证标记与登录态文案', () => {
     expect(dsh.loginCommandNative).toBe('dsh web')
     expect(dsh.loginGuide).toContain('浏览器')
     expect(dsh.loginGuide).toContain('重新检测')
+  })
+})
+
+describe('v0.1.512（④）：Antigravity HOME 型多条目', () => {
+  it('Antigravity 开多条目且注册表不再有「仅单账户」限制', () => {
+    const agy = agentDef('antigravity')!
+    expect(agy.credIsolation).toBe('home')
+    expect(multiAccountCapable(agy)).toBe(true)
+    expect(agy.multiAccountNote).toBeUndefined()
+    expect(agentDef('dsh')!.credIsolation).toBe('env')
+    expect(agentDef('codex-desktop')!.credIsolation).toBe('env')
+    expect(multiAccountCapable(agentDef('workbuddy-app')!)).toBe(false)
+  })
+  it('条目归一化补 Antigravity 原生条目（与 DSH/Codex 同口径）', () => {
+    const entries = normalizeAccountEntries([])
+    const agy = entries.find(e => e.id === nativeEntryId('antigravity'))
+    expect(agy).toMatchObject({ agentId: 'antigravity', credDir: 'native', enabled: true })
+  })
+  it('entryEnvPairs：HOME 型注入 HOME、env 型注入凭据变量、原生/无目录不注入', () => {
+    const agy = agentDef('antigravity')!
+    const dsh = agentDef('dsh')!
+    const ent = (agentId: string, credDir: 'native' | 'isolated') => ({
+      id: 'e1', agentId, label: '条目', credDir, enabled: true, createdAt: 1,
+    })
+    expect(entryEnvPairs(agy, ent('antigravity', 'isolated'), '/home/u/.ai-credit-manager/agents/creds/antigravity/e1'))
+      .toEqual([['HOME', '/home/u/.ai-credit-manager/agents/creds/antigravity/e1']])
+    expect(entryEnvPairs(dsh, ent('dsh', 'isolated'), '/x/dsh/e1')).toEqual([['DSH_HOME', '/x/dsh/e1']])
+    expect(entryEnvPairs(agy, ent('antigravity', 'native'), '/x')).toEqual([])
+    expect(entryEnvPairs(agy, ent('antigravity', 'isolated'), '')).toEqual([])
+  })
+  it('隔离条目登录命令：Antigravity 走 HOME={dir} agy', () => {
+    const agy = agentDef('antigravity')!
+    const ent = (credDir: 'native' | 'isolated') => ({
+      id: 'e2', agentId: 'antigravity', label: '条目', credDir, enabled: true, createdAt: 1,
+    })
+    expect(loginCommandFor(agy, ent('isolated'), '/dir/agy/e2')).toBe('HOME=/dir/agy/e2 agy')
+    expect(loginCommandFor(agy, ent('native'), '')).toBe('agy')
   })
 })
 

@@ -1,7 +1,7 @@
 // Agent 工作台桌面桥（v0.1.507）：Tauri invoke 封装。非桌面端一律安全降级（空结果/false），
 // 界面层会先用 isDesktopApp() 挡住并显示「需要桌面端」占位，这里只是兜底。
 import { isDesktopApp } from './openExternal'
-import type { AgentDetectResult } from './agents'
+import type { AgentDetectResult, AgentDef, AgentAccountEntry } from './agents'
 import type { VaultEntry, VaultBaselineInfo } from './agentVault'
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
@@ -44,6 +44,28 @@ export interface AgentAccountProbeIn {
   nativeHome: string
   probeFile: string
   missingMeans: 'no' | 'unknown'
+  /** v0.1.512（④）：多段相对探测路径（HOME 型隔离条目查状态目录）；设置时 Rust 优先用它 */
+  probePath?: string
+  /** 探测目标存在时的语义：'unknown' = 存在不等于已登录（agy 状态目录登录前就会建出来） */
+  probeExistsMeans?: string
+}
+
+/** 条目登录态探测入参的统一拼装（设置面板与工作台共用）：
+ *  HOME 型隔离条目查条目 HOME 下的状态目录 .gemini/antigravity-cli；其余查凭据文件。
+ *  没有可探测文件的 Agent 返回 null。 */
+export function entryProbeIn(def: AgentDef, entry: Pick<AgentAccountEntry, 'id' | 'credDir'>): AgentAccountProbeIn | null {
+  if (!def.nativeCredHome || !def.credProbeFile) return null
+  const base: AgentAccountProbeIn = {
+    entryId: entry.id, agentId: def.id, credDir: entry.credDir,
+    nativeHome: def.nativeCredHome, probeFile: def.credProbeFile,
+    missingMeans: def.credProbeMissing ?? 'unknown',
+  }
+  if (def.credIsolation === 'home' && entry.credDir === 'isolated') {
+    // 状态目录在跑过一次 agy 后就在（登录前也会建），只证明跑过、不证明已登录：
+    // 登录态保持 unknown，靠首次派活成功落「已验证」标记（与原生条目同口径）
+    return { ...base, probeFile: '', probePath: '.gemini/antigravity-cli', probeExistsMeans: 'unknown' }
+  }
+  return base
 }
 
 export interface AgentAccountStatus {
@@ -256,4 +278,100 @@ export async function agentVaultDeleteBaseline(taskId: string): Promise<number> 
   const inv = invokeFn()
   if (!inv) return 0
   try { return (await inv<number | null>('agent_vault_delete_baseline', { taskId })) ?? 0 } catch { return 0 }
+}
+
+// ---------------- Antigravity HOME 型条目（v0.1.512 ④） ----------------
+
+/** 建 Antigravity 隔离条目：HOME 目录 + 预建钥匙串；返回条目目录绝对路径。
+ *  失败时抛 Rust 给的人话原因（钥匙串建不出来等），调用方如实展示、不许静默吞。 */
+export async function agentAgySetupEntry(entryId: string): Promise<string> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  return inv<string>('agent_agy_setup_entry', { entryId })
+}
+
+/** 派活前解锁条目钥匙串；失败抛人话原因 */
+export async function agentAgyUnlockKeychain(entryId: string): Promise<void> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  await inv('agent_agy_unlock_keychain', { entryId })
+}
+
+// ---------------- 导入会话（v0.1.512 ①） ----------------
+
+export interface AgentSessionHomeIn {
+  entryId: string
+  entryLabel: string
+  homePath: string
+}
+
+export interface AgentSessionItem {
+  entryId: string
+  entryLabel: string
+  sessionId: string
+  title: string
+  /** archive = 存档自带标题；first-input = 取首条用户输入（界面注明）；none = 无标题 */
+  titleSource: 'archive' | 'first-input' | 'none'
+  cwd: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** 列出某 Agent 在各条目 HOME 下的本地会话存档（只读元信息）；失败抛错由页面如实展示 */
+export async function agentListSessions(
+  agentId: string, homes: AgentSessionHomeIn[],
+): Promise<{ sessions: AgentSessionItem[]; skipped: number }> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  const r = await inv<{ sessions: AgentSessionItem[]; skipped: number }>('agent_list_sessions', { agentId, homes })
+  return { sessions: Array.isArray(r?.sessions) ? r.sessions : [], skipped: r?.skipped ?? 0 }
+}
+
+// ---------------- 赛马 git worktree（v0.1.512 ②） ----------------
+
+export async function agentGitInfo(dir: string): Promise<{ isRepo: boolean; branch: string }> {
+  const inv = invokeFn()
+  if (!inv) return { isRepo: false, branch: '' }
+  try {
+    const r = await inv<{ isRepo: boolean; branch: string }>('agent_git_info', { dir })
+    return { isRepo: !!r?.isRepo, branch: r?.branch ?? '' }
+  } catch { return { isRepo: false, branch: '' } }
+}
+
+/** 给赛马选手建隔离工作区（新分支 + worktree）；失败抛 git 的人话原因 */
+export async function agentWorktreeAdd(repo: string, branch: string, path: string): Promise<void> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  await inv('agent_worktree_add', { repo, branch, path })
+}
+
+export interface AgentWorktreeDiff {
+  stat: string
+  diff: string
+  changedFiles: string[]
+}
+
+export async function agentWorktreeDiff(worktree: string): Promise<AgentWorktreeDiff> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  const r = await inv<AgentWorktreeDiff>('agent_worktree_diff', { worktree })
+  return { stat: r?.stat ?? '', diff: r?.diff ?? '', changedFiles: Array.isArray(r?.changedFiles) ? r.changedFiles : [] }
+}
+
+/** 把胜出分支合并回主仓库当前分支；主工作区不干净/冲突时抛人话原因，什么都不动 */
+export async function agentWorktreeMerge(repo: string, branch: string): Promise<void> {
+  const inv = invokeFn()
+  if (!inv) throw new Error('仅桌面端可用')
+  await inv('agent_worktree_merge', { repo, branch })
+}
+
+export interface AgentWorktreeRemoveResult { worktreeRemoved: boolean; branchDeleted: boolean; note: string }
+
+export async function agentWorktreeRemove(repo: string, path: string, branch: string): Promise<AgentWorktreeRemoveResult> {
+  const inv = invokeFn()
+  if (!inv) return { worktreeRemoved: false, branchDeleted: false, note: '' }
+  try {
+    const r = await inv<AgentWorktreeRemoveResult>('agent_worktree_remove', { repo, path, branch })
+    return { worktreeRemoved: !!r?.worktreeRemoved, branchDeleted: !!r?.branchDeleted, note: r?.note ?? '' }
+  } catch { return { worktreeRemoved: false, branchDeleted: false, note: '' } }
 }

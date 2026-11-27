@@ -101,17 +101,17 @@ describe('无头接口失败判定（只认参数/命令类错误，额度失败
 })
 
 describe('多账户条目', () => {
-  it('归一化给 DSH / Codex 补原生默认条目，agy 与空壳型没有', () => {
+  it('归一化给 DSH / Codex / Antigravity 补原生默认条目，空壳型没有（512 起 agy 多条目）', () => {
     const entries = normalizeAccountEntries(undefined)
     expect(entries.some(e => e.agentId === 'dsh' && e.credDir === 'native' && e.enabled)).toBe(true)
     expect(entries.some(e => e.agentId === 'codex-desktop' && e.credDir === 'native')).toBe(true)
-    expect(entries.some(e => e.agentId === 'antigravity')).toBe(false)
+    expect(entries.some(e => e.agentId === 'antigravity' && e.credDir === 'native')).toBe(true)
     expect(entries.some(e => e.agentId === 'pi')).toBe(false)
     // 幂等：再归一化不重复补
-    expect(normalizeAccountEntries(entries).filter(e => e.credDir === 'native')).toHaveLength(2)
+    expect(normalizeAccountEntries(entries).filter(e => e.credDir === 'native')).toHaveLength(3)
   })
   it('默认设置自带条目', () => {
-    expect(defaultAgentSettings().accounts.length).toBe(2)
+    expect(defaultAgentSettings().accounts.length).toBe(3)
   })
   it('新建条目标签按 账号A / 账号B 递增，目录为隔离', () => {
     const base = normalizeAccountEntries(undefined)

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot, Play, Square, Copy, Trash2, ShieldAlert, FolderLock, Settings2, LayoutList,
   CheckCircle2, XCircle, Clock3, Hourglass, Hand, ExternalLink, Repeat, ClipboardCheck,
+  History, Trophy, Swords,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
@@ -11,7 +12,7 @@ import {
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
   effectiveDispatch, multiAccountCapable, pickEntryLru, fillLoginGuide,
   parseSessionId, tierLabel, nativeEntryId,
-  markAgentVerified, loginStateText,
+  markAgentVerified, loginStateText, entryEnvPairs,
   type AgentDef, type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
   type AgentAccountEntry,
 } from '../core/agents'
@@ -23,8 +24,15 @@ import {
   agentDetect, agentLaunchApp, agentRunStart, agentRunPoll, agentRunStop, agentClipboardWrite,
   agentVaultBaseline, agentVaultPoll, agentVaultList, agentVaultRestore, agentVaultDeleteEntries, agentVaultPrune,
   agentVaultStats, agentVaultDeleteBaseline, agentAccountsProbe, agentDshAccountPatch,
+  entryProbeIn, agentAgyUnlockKeychain, agentGitInfo, agentWorktreeAdd, agentWorktreeDiff,
   type VaultStatsResult, type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
+import {
+  pickRaceCandidates, raceSpeed, raceFreeShare, last7DaysTrend,
+  type RaceCandidateInput,
+} from '../core/agentRace'
+import { AgentSessionsPanel, type SessionImportPayload } from './AgentSessionsPanel'
+import { AgentRaceCompare } from './AgentRaceCompare'
 import { parseCliOutput } from '../core/agentOutput'
 import { runDelivery, deliveryPresentation, deliveryChipLabel, createBridgeDeliveryProvider } from '../core/agentDelivery'
 import { WORKSHOP_SKILLS, buildSkillTaskText, type WorkshopSkill } from '../core/workshopSkills'
@@ -41,7 +49,7 @@ import { enginesFor } from '../data/engines'
 import { PROVIDER_MAP } from '../data/providers'
 import { AgentSettingsPanel } from './AgentSettingsPanel'
 
-type View = 'board' | 'vault' | 'settings'
+type View = 'board' | 'vault' | 'settings' | 'sessions' | 'compare'
 
 const STATUS_META: Record<AgentTask['status'], { label: string; cls: string }> = {
   queued: { label: '排队', cls: 'q' },
@@ -96,6 +104,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const [hovModelId, setHovModelId] = useState('')
   const [usageOpen, setUsageOpen] = useState(false)
   const usage = useMemo(() => buildUsageView(ledger, loadProbeStore()), [ledger])
+  // v0.1.512（②）：赛马模式与付费放行面板、对比层定位
+  const [raceMode, setRaceMode] = useState(false)
+  const [raceNotice, setRaceNotice] = useState<{ text: string; plain?: boolean } | null>(null)
+  const [raceApproval, setRaceApproval] = useState<{
+    text: string; repo: string
+    chosen: Array<RaceCandidateInput & { speed: { basis: string } }>
+    needsApproval: Array<RaceCandidateInput & { speed: { basis: string } }>
+  } | null>(null)
+  const [compareRaceId, setCompareRaceId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [targetAgent, setTargetAgent] = useState<string>('auto')
   const [workdir, setWorkdir] = useState(() => loadAgentSettings().vault.workdir)
@@ -120,6 +137,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const vaultEntriesRef = useRef(vaultEntries)
   vaultEntriesRef.current = vaultEntries
   const reviewRunsRef = useRef(new Map<string, ReviewRun>())
+  // v0.1.512（②）：赛马交叉审查的运行表（key = 被审任务 id）与已发起标记（防重复发起）
+  const raceReviewRunsRef = useRef(new Map<string, ReviewRun>())
+  const raceReviewStartedRef = useRef(new Set<string>())
   const cursorsRef = useRef(new Map<string, number>())
   const outputsRef = useRef(new Map<string, string[]>())
   const startingRef = useRef(new Set<string>())
@@ -187,17 +207,16 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     const map: Record<string, AgentDetectResult> = {}
     for (const r of results) map[r.id] = r
     setDetectMap(map)
-    // 多账户条目登录态探测（只查凭据文件在不在）；单账户的 agy 用合成原生条目探测
+    // 多账户条目登录态探测（只查凭据文件/状态目录在不在）；无条目的单账户 Agent 用合成原生条目探测
     const probes: AgentAccountProbeIn[] = []
     for (const e of settingsRef.current.accounts) {
       const d = agentDef(e.agentId)
-      if (d?.nativeCredHome && d.credProbeFile) {
-        probes.push({ entryId: e.id, agentId: e.agentId, credDir: e.credDir, nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
-      }
+      if (d) { const p = entryProbeIn(d, e); if (p) probes.push(p) }
     }
     for (const d of AGENT_REGISTRY) {
-      if (d.nativeCredHome && d.credProbeFile && !multiAccountCapable(d)) {
-        probes.push({ entryId: nativeEntryId(d.id), agentId: d.id, credDir: 'native', nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
+      if (!multiAccountCapable(d)) {
+        const p = entryProbeIn(d, { id: nativeEntryId(d.id), credDir: 'native' })
+        if (p) probes.push(p)
       }
     }
     if (probes.length) {
@@ -254,13 +273,26 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     }
     if (entry.credDir === 'isolated') {
       if (!status?.dirPath) return { entry, pairs: [], error: '读不到该账户的凭据目录，已取消派活（不会拿其他账户顶替）' }
-      return { entry, pairs: [[def.credHomeEnv!, status.dirPath]] }
+      // env 型注入凭据目录变量；home 型（Antigravity）注入 HOME=<条目目录>
+      return { entry, pairs: entryEnvPairs(def, entry, status.dirPath) }
     }
     return { entry, pairs: [] }
   }, [])
 
   const touchEntryUsed = useCallback((entryId: string) => {
     setSettings(prev => ({ ...prev, accounts: prev.accounts.map(e => (e.id === entryId ? { ...e, lastUsedAt: Date.now() } : e)) }))
+  }, [])
+
+  /** v0.1.512（④）：HOME 型条目（Antigravity 隔离账户）派活前先解锁它自己的钥匙串
+   *  （重启/睡醒后会锁上）；原生条目与 env 型条目不需要。失败返回人话原因、调用方停住。 */
+  const ensureEntryUnlocked = useCallback(async (def: AgentDef, entry?: AgentAccountEntry): Promise<string | null> => {
+    if (def.credIsolation !== 'home' || !entry || entry.credDir !== 'isolated') return null
+    try {
+      await agentAgyUnlockKeychain(entry.id)
+      return null
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e)
+    }
   }, [])
 
   /** 派生任务（接力 / 主控子任务）过闸：付费账户先停住等放行；超上限落待处理，不静默丢弃 */
@@ -495,6 +527,8 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       reviewEntry = cred.entry
       if (reviewEntry) touchEntryUsed(reviewEntry.id)
       reviewEnvPairs = [...reviewEnvPairs, ...cred.pairs]
+      const unlockErr = await ensureEntryUnlocked(rDef, reviewEntry)
+      if (unlockErr) { fail(unlockErr, rDef.name); return }
     }
     const changedFiles = [...new Set(vaultEntriesRef.current.filter(e => e.taskId === task.id).map(e => e.originalPath))]
     const prompt = buildReviewPrompt({
@@ -515,7 +549,72 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } catch (e) {
       fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`, rDef.name)
     }
-  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed, ensureDshPatch])
+  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed, ensureDshPatch, ensureEntryUnlocked])
+
+  /** v0.1.512（②）：赛马两版都完成后互相交叉审查——A 审 B、B 审 A，结论落在被审任务的
+   *  raceReview 上（对比层与任务卡共用），费用记审查者名下。审查者在被审者的 worktree 里
+   *  跑（能看到真实改动）；任一版没完成就不审，不拿审查结论掩盖失败。 */
+  const startRaceReviews = useCallback(async (pair: AgentTask[]) => {
+    const donePair = pair.filter(t => t.status === 'done')
+    if (donePair.length !== 2) return
+    for (const target of donePair) {
+      if (raceReviewStartedRef.current.has(target.id)) continue
+      raceReviewStartedRef.current.add(target.id)
+      const reviewerTask = donePair.find(t => t.id !== target.id)!
+      const rDef = agentDef(reviewerTask.agentId)
+      const fail = (reason: string) => updateTask(target.id, {
+        raceReview: { state: 'failed', reviewerName: rDef?.name, reason },
+      })
+      if (!rDef) { fail('审查者定义丢失'); continue }
+      updateTask(target.id, { raceReview: { state: 'running', reviewerName: rDef.name } })
+      const envRes = await buildRunEnv(rDef, settingsRef.current)
+      if ('error' in envRes) { fail(envRes.error); continue }
+      let envPairs = envRes.envPairs
+      let rEntry: AgentAccountEntry | undefined
+      if (rDef.headlessCli) {
+        const cred = resolveEntryCred(rDef, reviewerTask.accountEntryId)
+        if (cred.error) { fail(cred.error); continue }
+        rEntry = cred.entry
+        if (rEntry) touchEntryUsed(rEntry.id)
+        envPairs = [...envPairs, ...cred.pairs]
+        const unlockErr = await ensureEntryUnlocked(rDef, rEntry)
+        if (unlockErr) { fail(unlockErr); continue }
+      }
+      let changedFiles: string[] = []
+      if (target.raceWorktree) {
+        try { changedFiles = (await agentWorktreeDiff(target.raceWorktree)).changedFiles } catch { changedFiles = [] }
+      }
+      const outputText = (outputsRef.current.get(target.id) ?? target.output).join('\n')
+      const prompt = buildReviewPrompt({
+        taskText: target.text, taskTitle: target.title, agentName: target.agentName,
+        output: outputText, changedFiles,
+      })
+      const inv = buildCliInvocation(rDef.id, prompt, undefined,
+        rDef.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
+      if (!inv) { fail('审查者没有 CLI 派活方式'); continue }
+      const runId = `race-review-${target.id}`
+      try {
+        await agentRunStart(runId, inv.command, inv.args, target.raceWorktree ?? target.workdir, envPairs)
+        raceReviewRunsRef.current.set(target.id, {
+          runId, cursor: 0, output: [], reviewerId: rDef.id, reviewerName: rDef.name, kind: rDef.kind,
+          entryId: rEntry?.id, entryLabel: rEntry?.label, startedAt: Date.now(),
+        })
+      } catch (e) {
+        fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  }, [buildRunEnv, resolveEntryCred, touchEntryUsed, ensureEntryUnlocked, ensureDshPatch, updateTask])
+
+  /** 赛马收尾判定：一件任务到终局后看对手——两件都终局且都完成才发起交叉审查 */
+  const maybeFinishRace = useCallback((finished: AgentTask, status: AgentTask['status']) => {
+    if (!finished.raceId) return
+    const sibling = tasksRef.current.find(t => t.raceId === finished.raceId && t.id !== finished.id)
+    if (!sibling) return
+    if (!['done', 'failed', 'stopped', 'unresolved'].includes(sibling.status)) return
+    if (status === 'done' && sibling.status === 'done') {
+      void startRaceReviews([{ ...finished, status }, sibling])
+    }
+  }, [startRaceReviews])
 
   const finalizeCliTask = useCallback(async (task: AgentTask, exitCode: number) => {
     const now = Date.now()
@@ -566,7 +665,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } else if (status === 'done') {
       void maybeStartReview(task, outputText)
     }
-  }, [addLedger, refreshVault, updateTask, handleMasterPlan, considerRelay, maybeStartReview])
+    // v0.1.512（②）：赛马收尾——两版都到终局后互相交叉审查（结论进对比层）
+    if (task.raceId) maybeFinishRace(task, status)
+  }, [addLedger, refreshVault, updateTask, handleMasterPlan, considerRelay, maybeStartReview, maybeFinishRace])
 
   /** 第三档送达（兜底）：复制任务 → 打开应用 → 等窗口就绪自动粘贴（粘贴前校验前台 +
    *  确认输入框焦点，见 agentDelivery / Rust paste_deliver）→ 按设置决定是否连回车发送。
@@ -638,10 +739,30 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         await deliverToApp(task, def)
         return
       }
-      // 第一档无头 / 空壳 CLI：先建保险箱基线（安全底线，失败就不跑）
-      if (st.vault.enabled && task.workdir) {
+      // v0.1.512（②）：赛马任务开跑前先建自己的 worktree（独立分支、隔离目录），之后
+      // 保险箱基线与子进程都落在这个 worktree 里；建不起来如实失败，绝不在主仓库里跑
+      let effWorkdir = task.workdir
+      if (task.raceId && !task.raceWorktree && task.raceRepo && task.raceSlot) {
+        const slot = task.raceSlot.toLowerCase()
+        const branch = `acm-race/${task.raceId}-${slot}`
+        const repoBase = task.raceRepo.replace(/\/+$/, '')
+        const cut = repoBase.lastIndexOf('/')
+        const parent = cut > 0 ? repoBase.slice(0, cut) : '/'
+        const repoName = repoBase.slice(cut + 1) || 'repo'
+        const wt = `${parent}/${repoName}.acm-worktrees/${task.raceId}-${slot}`
         try {
-          await agentVaultBaseline(task.id, def.id, def.name, task.text.slice(0, 60), task.workdir)
+          await agentWorktreeAdd(task.raceRepo, branch, wt)
+        } catch (e) {
+          updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: `赛马工作区没建起来：${e instanceof Error ? e.message : String(e)}` })
+          return
+        }
+        updateTask(task.id, { raceWorktree: wt, raceBranch: branch, workdir: wt })
+        effWorkdir = wt
+      }
+      // 第一档无头 / 空壳 CLI：先建保险箱基线（安全底线，失败就不跑）
+      if (st.vault.enabled && effWorkdir) {
+        try {
+          await agentVaultBaseline(task.id, def.id, def.name, task.text.slice(0, 60), effWorkdir)
           baselinedRef.current.add(task.id)
         } catch (e) {
           updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: `文件保险箱建基线失败，已取消派活：${e instanceof Error ? e.message : String(e)}` })
@@ -666,6 +787,12 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           if (!task.accountEntryId) updateTask(task.id, { accountEntryId: cred.entry.id, accountEntryLabel: cred.entry.label })
           touchEntryUsed(cred.entry.id)
           envPairs = [...envPairs, ...cred.pairs]
+          // v0.1.512（④）：HOME 型条目派活前解锁它自己的钥匙串（失败如实停住）
+          const unlockErr = await ensureEntryUnlocked(def, cred.entry)
+          if (unlockErr) {
+            updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: unlockErr })
+            return
+          }
         }
       }
       // v0.1.511（⑤）：dsh 派活带账号路线覆盖层（--patch），原生与隔离条目同口径
@@ -673,7 +800,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         def.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
       if (!inv) { updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '该 Agent 没有 CLI 派活方式' }); return }
       try {
-        await agentRunStart(task.id, inv.command, inv.args, task.workdir, envPairs)
+        await agentRunStart(task.id, inv.command, inv.args, effWorkdir, envPairs)
         cursorsRef.current.set(task.id, 0)
         outputsRef.current.set(task.id, [])
       } catch (e) {
@@ -686,7 +813,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } finally {
       startingRef.current.delete(task.id)
     }
-  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed, ensureDshPatch])
+  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed, ensureDshPatch, ensureEntryUnlocked])
 
   // 调度：排队任务按并行上限 + 重活锁启动
   useEffect(() => {
@@ -763,6 +890,38 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
               updateTask(taskId, { review: { state: verdict.verdict, reviewerName: rr.reviewerName, points: verdict.points } })
             } else {
               updateTask(taskId, { review: { state: 'failed', reviewerName: rr.reviewerName, reason: '审查者没有给出可解析的结论' } })
+            }
+          }
+        }
+      }
+      // v0.1.512（②）：赛马交叉审查轮询——结论回填被审任务的 raceReview，费用记审查者名下
+      for (const [taskId, rr] of [...raceReviewRunsRef.current.entries()]) {
+        const poll = await agentRunPoll(rr.runId, rr.cursor)
+        rr.cursor = poll.next
+        if (poll.lines.length) rr.output.push(...poll.lines)
+        if (!poll.running && poll.exitCode !== null) {
+          raceReviewRunsRef.current.delete(taskId)
+          const outText = rr.output.join('\n')
+          const usage = parseCliUsage(outText)
+          const binding = settingsRef.current.bindings[rr.reviewerId]
+          const acct = binding?.kind === 'account' ? accountsRef.current.find(a => a.id === binding.accountId) : undefined
+          addLedger({
+            id: `led-${taskId}-race-review`, taskId, agentId: rr.reviewerId, agentName: rr.reviewerName, kind: rr.kind,
+            agentEntryId: rr.entryId, agentEntryLabel: rr.entryLabel,
+            accountId: acct?.id, accountLabel: acct ? (acct.label || PROVIDER_MAP[acct.providerId]?.name || acct.providerId) : undefined,
+            startedAt: rr.startedAt, endedAt: Date.now(), durationMs: Date.now() - rr.startedAt,
+            status: poll.exitCode === 0 ? 'done' : 'failed', costYuan: null,
+            costUsd: usage ? usage.costUsd : null,
+            inputTokens: usage?.inputTokens, outputTokens: usage?.outputTokens,
+          })
+          if (poll.exitCode !== 0) {
+            updateTask(taskId, { raceReview: { state: 'failed', reviewerName: rr.reviewerName, reason: `审查进程退出码 ${poll.exitCode}` } })
+          } else {
+            const verdict = parseReviewVerdict(outText)
+            if (verdict) {
+              updateTask(taskId, { raceReview: { state: verdict.verdict, reviewerName: rr.reviewerName, points: verdict.points } })
+            } else {
+              updateTask(taskId, { raceReview: { state: 'failed', reviewerName: rr.reviewerName, reason: '审查者没有给出可解析的结论' } })
             }
           }
         }
@@ -924,6 +1083,106 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     setInput(''); setSkillPick(null); setPendingReview(false)
   }
 
+  /** v0.1.512（①）：导入会话续跑——生成带原会话 id 的任务，派活时走各家 resume 形式 */
+  const importSession = (p: SessionImportPayload) => {
+    const def = agentDef(p.agentId)
+    if (!def) return
+    const entry = settings.accounts.find(e => e.id === p.entryId && e.agentId === p.agentId)
+    const task: AgentTask = {
+      id: uid(), text: p.prompt,
+      title: `导入会话续跑：${p.title.slice(0, 44)}`,
+      agentId: def.id, agentName: def.name, kind: def.kind,
+      workdir: p.cwd, heavy: false, outsideOk: p.outsideOk,
+      status: 'queued', output: [], createdAt: Date.now(),
+      sessionId: p.sessionId,
+      accountEntryId: entry?.id, accountEntryLabel: entry?.label,
+      note: `从 ${def.name} 本地存档导入（会话 ${p.sessionId.slice(0, 8)}…），用原会话上下文续跑`,
+    }
+    setTasks(prev => [task, ...prev])
+    setView('board')
+    notify(`已导入 ${def.name} 的会话，排队续跑中`)
+  }
+
+  /** v0.1.512（②）：建一对赛马任务（同题、双槽位），开跑时各自建 worktree 并行执行 */
+  const createRaceTasks = (text: string, repo: string, racers: Array<RaceCandidateInput & { speed: { basis: string } }>) => {
+    const raceId = `race-${Date.now().toString(36)}-${++uidSeq}`
+    const made: AgentTask[] = racers.slice(0, 2).map((c, i) => {
+      const def = agentDef(c.agentId)!
+      const other = racers[1 - i]
+      return {
+        id: uid(), text, title: `赛马 · ${text.split('\n')[0].slice(0, 48)}`,
+        agentId: def.id, agentName: def.name, kind: def.kind,
+        workdir: repo, heavy: false, outsideOk: noVaultCoverage ? outsideOk : false,
+        status: 'queued' as const, output: [], createdAt: Date.now(),
+        raceId, raceSlot: (i === 0 ? 'A' : 'B') as 'A' | 'B', raceRepo: repo,
+        accountEntryId: c.entryId, accountEntryLabel: c.entryLabel,
+        note: `赛马对手：${other.agentName}${other.entryLabel ? ` · ${other.entryLabel}` : ''}；入选依据：${c.speed.basis}`,
+      }
+    })
+    setTasks(prev => [...made, ...prev])
+    setInput(''); setSkillPick(null); setPendingReview(false)
+    setRaceApproval(null); setRaceNotice(null)
+    notify(`赛马开始：${made[0].agentName} vs ${made[1].agentName}，两版完成后先互相审查、再并排对比`)
+  }
+
+  /** v0.1.512（②）赛马发起：仅 git 仓库、显式点赛马才走；选人由实测速度挑最快的两个
+   *  免费选手；免费不够两个时把付费候选摆出来等放行，绝不静默跑付费。 */
+  const submitRace = async () => {
+    const parsed = parseDelegation(input)
+    if (parsed.unknownToken) { notify(`没有叫 #${parsed.unknownToken} 的 Agent，请从 # 列表里选`, 'err'); return }
+    if (parsed.agentId) {
+      setRaceNotice({ text: '赛马的选手由实测速度自动挑，不接受 # 指定；要指定单个 Agent 请切回普通派活。' })
+      return
+    }
+    const text = input.trim()
+    if (!text) { notify('先写下要派的活', 'err'); return }
+    const repo = workdir.trim()
+    if (!repo) {
+      setRaceNotice({ text: '赛马要先填工作目录：得是一个 git 仓库，两边各开一份隔离工作区（worktree）并行跑同一个任务。' })
+      return
+    }
+    if (noVaultCoverage && !outsideOk) {
+      notify(settings.vault.enabled ? '未填工作目录：赛马没有文件保险箱覆盖，请先勾选风险确认' : '文件保险箱已关闭：请先勾选风险确认（赛马的改动也靠保险箱兜底）', 'err')
+      return
+    }
+    const info = await agentGitInfo(repo)
+    if (!info.isRepo) {
+      setRaceNotice({ text: '这个目录不是 git 仓库，赛马走不了（赛马靠 git worktree 隔离两份代码）。普通派活有文件保险箱兜底，可以照常派。', plain: true })
+      return
+    }
+    // 选手池：已就绪且能无头派活的 Agent、条目级展开；费用类别如实标注
+    const cands: RaceCandidateInput[] = []
+    for (const def of readyAgents) {
+      if (effectiveDispatch(def, detectMap[def.id]) !== 'cli') continue
+      const binding = settings.bindings[def.id]
+      const paid = def.kind === 'shell' && binding?.kind === 'account'
+      const acct = paid && binding?.kind === 'account' ? accounts.find(a => a.id === binding.accountId) : undefined
+      const paidLabel = paid ? (acct ? (acct.label || PROVIDER_MAP[acct.providerId]?.name || acct.providerId) : '已绑定的付费账户') : undefined
+      if (multiAccountCapable(def)) {
+        for (const e of settings.accounts.filter(x => x.agentId === def.id && x.enabled)) {
+          cands.push({ agentId: def.id, agentName: def.name, entryId: e.id, entryLabel: e.label, cost: paid ? 'paid' : 'free', paidLabel })
+        }
+      } else {
+        cands.push({ agentId: def.id, agentName: def.name, cost: paid ? 'paid' : 'free', paidLabel })
+      }
+    }
+    const probe = loadProbeStore()
+    const pick = pickRaceCandidates(cands, c => {
+      const b = settings.bindings[c.agentId]
+      return raceSpeed(c.agentId, ledgerRef.current, probe, b?.kind === 'account' ? b.accountId : undefined)
+    })
+    if (pick.shortReason) { setRaceNotice({ text: pick.shortReason }); return }
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+    const cap = capCheck(settings, ledgerSpentSince(ledger, startOfDay.getTime()), ledgerSpentSince(ledger, sessionStartRef.current))
+    if (cap === 'over-stop') { notify('已达到额度护栏上限（单会话/每日），赛马已停住；到设置 · 额度护栏调整上限后再发起', 'err'); return }
+    if (pick.needsApproval.length) {
+      // 免费选手不够两个：付费候选单独摆出来，等用户放行了才凑齐开赛
+      setRaceApproval({ text, repo, chosen: pick.chosen, needsApproval: pick.needsApproval })
+      return
+    }
+    createRaceTasks(text, repo, pick.chosen)
+  }
+
   const stopTask = async (task: AgentTask) => {
     stoppedRef.current.add(task.id)
     await agentRunStop(task.id)
@@ -967,6 +1226,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         <div className="aw-tabs">
           <button className={view === 'board' ? 'on' : ''} onClick={() => setView('board')}><LayoutList size={14} /> 任务板</button>
           <button className={view === 'vault' ? 'on' : ''} onClick={() => setView('vault')}><FolderLock size={14} /> 文件保险箱{vaultEntries.length ? `（${vaultEntries.length}）` : ''}</button>
+          <button className={view === 'sessions' ? 'on' : ''} onClick={() => setView('sessions')}><History size={14} /> 导入会话</button>
           <button className={view === 'settings' ? 'on' : ''} onClick={() => setView('settings')}><Settings2 size={14} /> 设置</button>
         </div>
         <span className="aw-topnote">运行中 {runningCount} / 并行上限 {settings.parallel.maxParallel}</span>
@@ -978,6 +1238,21 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           onRedetect={() => void runDetect()} vaultEntries={vaultEntries}
           onPruneNow={() => { void runPrune('手动清理') }}
           notify={notify}
+        />
+      )}
+
+      {view === 'sessions' && (
+        <AgentSessionsPanel
+          settings={settings} detectMap={detectMap} accountStatus={accountStatus}
+          onImported={importSession}
+          onGoSettings={() => setView('settings')}
+        />
+      )}
+
+      {view === 'compare' && compareRaceId && (
+        <AgentRaceCompare
+          raceId={compareRaceId} tasks={tasks} updateTask={updateTask} notify={notify}
+          onBack={() => setView('board')}
         />
       )}
 
@@ -1071,7 +1346,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           )}
           <div className="aw-card aw-dispatch">
             <div className="aw-dispatch-row">
-              <select className="aw-target" value={targetAgent} onChange={e => setTargetAgent(e.target.value)} title="委派给（# 指定优先）">
+              <select className="aw-target" value={targetAgent} onChange={e => setTargetAgent(e.target.value)} disabled={raceMode} title={raceMode ? '赛马模式：选手由实测速度自动挑' : '委派给（# 指定优先）'}>
                 <option value="auto">自动（主控/第一个可用）</option>
                 {readyAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
@@ -1162,8 +1437,43 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
               ) : (
                 <span className="aw-note">保险箱已覆盖工作目录：开跑前存基线，改动可还原。目录外写入不在覆盖内。</span>
               )}
-              <button className="btn primary" onClick={submit}><Play size={14} /> 派活</button>
+              <span className="aw-dispatch-actions">
+                <span className="aw-seg" role="group" aria-label="派活方式">
+                  <button className={!raceMode ? 'on' : ''} onClick={() => { setRaceMode(false); setRaceNotice(null); setRaceApproval(null) }}>普通派活</button>
+                  <button className={raceMode ? 'on' : ''} onClick={() => setRaceMode(true)}><Swords size={12} /> 赛马</button>
+                </span>
+                {raceMode
+                  ? <button className="btn primary" onClick={() => void submitRace()}><Swords size={14} /> 开始赛马</button>
+                  : <button className="btn primary" onClick={submit}><Play size={14} /> 派活</button>}
+              </span>
             </div>
+            {raceMode && !raceApproval && (
+              <div className="aw-note">赛马：同一个任务让实测最快的两个选手各开一份隔离工作区（git worktree）并行做，完成后先互相审查、再并排对比由你点选胜出合并。只走免费路线，要动付费会先停住问你。</div>
+            )}
+            {raceNotice && (
+              <div className="aw-note warn">
+                {raceNotice.text}
+                {raceNotice.plain && (
+                  <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => { setRaceMode(false); setRaceNotice(null); submit() }}>改用普通派活</button>
+                )}
+                <button className="btn sm ghost" onClick={() => setRaceNotice(null)}>知道了</button>
+              </div>
+            )}
+            {raceApproval && (
+              <div className="aw-approval">
+                <div>
+                  <Hand size={14} /> 免费选手不够两个。已按实测速度选好：
+                  {raceApproval.chosen.map(c => `${c.agentName}${c.entryLabel ? ` · ${c.entryLabel}` : ''}（${c.speed.basis}）`).join('、') || '（无）'}
+                  ；再补一个最快的就得用付费路线：
+                  {raceApproval.needsApproval.map(c => `${c.agentName}（绑定付费账户「${c.paidLabel ?? '付费账户'}」，按量计费）`).join('、')}。
+                  放行后两边一起开跑，付费选手的费用记在它绑定的账户上。
+                </div>
+                <div className="aw-approval-btns">
+                  <button className="btn sm primary" onClick={() => createRaceTasks(raceApproval.text, raceApproval.repo, [...raceApproval.chosen, ...raceApproval.needsApproval])}>放行并开始赛马</button>
+                  <button className="btn sm" onClick={() => setRaceApproval(null)}>不放行</button>
+                </div>
+              </div>
+            )}
             {readyAgents.length === 0 && (
               <div className="aw-note warn">当前没有可委派的 Agent：到「设置 · Agent 管理」启用已安装的 Agent（空壳型还需绑定 Key / 免费路线 / 自身登录）。</div>
             )}
@@ -1196,6 +1506,40 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
               <div><b>{summary.totalCostUsd ? `$${summary.totalCostUsd.toFixed(4)}` : '—'}</b><span>CLI 上报金额（美元原值）</span></div>
               <div><b>{summary.totalCostYuan ? `¥${summary.totalCostYuan.toFixed(2)}` : '—'}</b><span>魔方记账金额</span></div>
             </div>
+            {(() => {
+              // v0.1.512（③）：免费额度占比条 + 近 7 日任务量迷你趋势（数据只来自账本，无数据显空态）
+              const share = raceFreeShare(ledger)
+              const trend = last7DaysTrend(ledger, Date.now())
+              const maxCount = Math.max(1, ...trend.map(d => d.count))
+              return (
+                <div className="aw-settle-dash">
+                  <div className="aw-ratio">
+                    <div className="aw-ratio-head">
+                      <span>免费路线占比（按任务数）</span>
+                      <span className="aw-note">{share.pct == null ? '暂无数据' : `${share.freeTasks} / ${share.totalTasks} 个任务 · ${share.pct}%`}</span>
+                    </div>
+                    <div className="aw-progress"><div style={{ width: `${share.pct ?? 0}%` }} /></div>
+                    <div className="aw-note">账号型自有额度 + 免费路线/自身登录绑定的任务算免费路线；绑付费账户的任务不算。</div>
+                  </div>
+                  <div className="aw-trend">
+                    <div className="aw-ratio-head"><span>近 7 日任务量</span></div>
+                    {share.totalTasks === 0
+                      ? <div className="aw-note">近 7 日暂无任务记录</div>
+                      : (
+                        <div className="aw-trend-bars">
+                          {trend.map(d => (
+                            <div key={d.label} className="aw-trend-col" title={`${d.label}：${d.count} 个任务`}>
+                              <span className="aw-trend-num">{d.count || ''}</span>
+                              <div className="aw-trend-bar" style={{ height: `${Math.max(4, Math.round((d.count / maxCount) * 36))}px` }} />
+                              <span className="aw-trend-label">{d.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                </div>
+              )
+            })()}
             {summary.byAgent.length > 0 && (
               <div className="aw-settle-list">
                 {summary.byAgent.map(a => (
@@ -1289,7 +1633,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
               const meta = STATUS_META[task.status]
               const elapsed = task.startedAt ? (task.endedAt ?? Date.now()) - task.startedAt : 0
               return (
-                <div key={task.id} className="aw-card aw-task">
+                <div key={task.id} className={`aw-card aw-task ${task.status === 'running' ? 'running' : ''}`}>
                   <div className="aw-task-head">
                     <b className="aw-task-agent">{task.agentName}</b>
                     {task.accountEntryLabel && <span className="aw-task-entry">· {task.accountEntryLabel}</span>}
@@ -1297,6 +1641,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                       const tt = task.tier ?? (task.dispatch ? (task.dispatch === 'cli' ? 1 : 3) : null)
                       return tt ? <span className={`aw-tier t${tt}`}>{tierLabel(tt as 1 | 3)}</span> : null
                     })()}
+                    {task.raceId && <span className="aw-tag heavy"><Swords size={11} /> 赛马 {task.raceSlot}</span>}
+                    {task.raceOutcome === 'winner' && <span className="aw-tag ok"><Trophy size={11} /> 胜出（已合并）</span>}
+                    {task.raceOutcome === 'loser' && <span className="aw-tag off">落选（已清理）</span>}
                     <span className={`aw-status ${meta.cls}`}>{meta.label}</span>
                     {task.delivery && deliveryChipLabel(task.delivery.state) && (
                       <span className="aw-status dlv">{deliveryChipLabel(task.delivery.state)}</span>
@@ -1364,6 +1711,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                       {task.review.state === 'failed' && <span>审查未完成：{task.review.reason}</span>}
                     </div>
                   )}
+                  {task.raceReview && (
+                    <div className={`aw-review ${task.raceReview.state}`}>
+                      <ClipboardCheck size={14} />
+                      {task.raceReview.state === 'running' && <span>赛马交叉审查中（对手 {task.raceReview.reviewerName} 在审这一版）…</span>}
+                      {task.raceReview.state === 'pass' && <span>赛马对手审查通过（{task.raceReview.reviewerName}）{task.raceReview.points ? `：${task.raceReview.points}` : ''}</span>}
+                      {task.raceReview.state === 'issues' && <span>赛马对手审查发现问题（{task.raceReview.reviewerName}）：{task.raceReview.points || '未给出要点'}</span>}
+                      {task.raceReview.state === 'failed' && <span>赛马交叉审查未完成：{task.raceReview.reason}</span>}
+                    </div>
+                  )}
                   {!task.review && settings.master.crossReview && (task.dispatch ?? agentDef(task.agentId)?.dispatch) === 'open'
                     && (task.status === 'manual' || task.status === 'done') && (
                     <div className="aw-note">桌面型任务不支持自动审查（没有可审的输出）</div>
@@ -1394,6 +1750,13 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     )
                   })()}
                   <div className="aw-task-btns">
+                    {task.raceId && (() => {
+                      const sib = tasks.find(t => t.raceId === task.raceId && t.id !== task.id)
+                      const term = (s: AgentTask['status']) => ['done', 'failed', 'stopped', 'unresolved'].includes(s)
+                      return sib && term(task.status) && term(sib.status) ? (
+                        <button className="btn sm" onClick={() => { setCompareRaceId(task.raceId!); setView('compare') }}><Swords size={13} /> 看赛马对比</button>
+                      ) : null
+                    })()}
                     {task.status === 'running' && (task.dispatch ?? agentDef(task.agentId)?.dispatch) === 'cli' && (
                       <button className="btn sm" onClick={() => void stopTask(task)}><Square size={13} /> 停止</button>
                     )}

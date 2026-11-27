@@ -30,6 +30,10 @@ export interface AgentDef {
   headlessCli?: boolean
   /** 多账户：凭据目录环境变量（DSH_HOME / CODEX_HOME）；有值 = 支持按目录隔离多账户 */
   credHomeEnv?: string
+  /** v0.1.512（④）：多账户隔离方式——env = 凭据目录变量（DSH/Codex）；
+   *  home = 整个 HOME 隔离（Antigravity：agy 无凭据目录变量，但登录按 HOME 隔离，
+   *  2026-11-28 真机实证；条目目录即 HOME、状态落其下 .gemini、钥匙串由 App 预建） */
+  credIsolation?: 'env' | 'home'
   /** 原生凭据目录（相对 HOME，如 .dsh）；也是登录态探测的基准目录 */
   nativeCredHome?: string
   /** 登录态探测文件（相对凭据目录）；只查在不在，绝不读内容 */
@@ -87,7 +91,17 @@ export function loginCommandFor(def: AgentDef, entry: AgentAccountEntry, dirPath
 
 /** 支持多账户（凭据目录可隔离）的 Agent */
 export function multiAccountCapable(def: AgentDef): boolean {
-  return !!def.credHomeEnv
+  return !!def.credIsolation
+}
+
+/** 条目派活时的环境注入（纯函数）：env 型注入凭据目录变量（DSH_HOME / CODEX_HOME）；
+ *  home 型隔离条目注入 HOME=<条目目录>；原生条目一律不注入（走用户真实环境）。
+ *  dirPath 为空（探测不到目录）时返回空——调用方必须先拦下报错，绝不拿别的目录顶替。 */
+export function entryEnvPairs(def: AgentDef, entry: AgentAccountEntry, dirPath: string): Array<[string, string]> {
+  if (entry.credDir !== 'isolated' || !dirPath) return []
+  if (def.credIsolation === 'home') return [['HOME', dirPath]]
+  if (def.credHomeEnv) return [[def.credHomeEnv, dirPath]]
+  return []
 }
 
 export const AGENT_REGISTRY: AgentDef[] = [
@@ -95,7 +109,7 @@ export const AGENT_REGISTRY: AgentDef[] = [
   {
     id: 'dsh', name: 'DSH', kind: 'account', dispatch: 'open',
     appNames: ['DeepSeek Harness', 'DSH', 'DeepSeek'], bundleIds: [], cliNames: ['dsh'],
-    headlessCli: true, credHomeEnv: 'DSH_HOME', nativeCredHome: '.dsh',
+    headlessCli: true, credHomeEnv: 'DSH_HOME', credIsolation: 'env', nativeCredHome: '.dsh',
     credProbeFile: '.credentials.yaml', credProbeMissing: 'no',
     installPlan: { type: 'npm', pkg: '@deepseek-ai/dsh' },
     loginCommandNative: 'dsh web', loginCommandIsolated: 'DSH_HOME={dir} dsh web',
@@ -106,19 +120,19 @@ export const AGENT_REGISTRY: AgentDef[] = [
   {
     id: 'antigravity', name: 'Antigravity', kind: 'account', dispatch: 'open',
     appNames: ['Antigravity'], bundleIds: [], cliNames: ['agy'],
-    headlessCli: true, nativeCredHome: '.gemini/antigravity-cli',
+    headlessCli: true, credIsolation: 'home', nativeCredHome: '.gemini/antigravity-cli',
     credProbeFile: 'antigravity-oauth-token', credProbeMissing: 'unknown',
     installPlan: { type: 'script', url: 'https://antigravity.google/cli/install.sh' },
-    loginCommandNative: 'agy',
+    loginCommandNative: 'agy', loginCommandIsolated: 'HOME={dir} agy',
     qualification: '已装可接；其内置 Claude 模型官方标注 2026-11-30 下线，之后以 Gemini 为主',
     installHint: '装 agy 命令：按 antigravity.google 的 CLI 安装指引安装（与桌面端同一个 Google 账号、共用登录态）；或到 antigravity.google 下载桌面端并登录',
     cliInstallHint: '按 antigravity.google 的 CLI 安装指引安装 agy 命令',
-    multiAccountNote: '仅单账户：agy 没有凭据目录变量，登录态在 ~/.gemini 与系统钥匙串里，无法按目录隔离多账户',
+    loginGuide: '在终端运行 HOME={dir} agy，在打开的界面里用要添加的 Google 账号登录（这个目录的钥匙串已由魔方预建好，不会再弹「找不到钥匙串」）；登录完成后回到这里点「重新检测」',
   },
   {
     id: 'codex-desktop', name: 'Codex', kind: 'account', dispatch: 'open', aliases: ['Codex 桌面端'],
     appNames: ['Codex'], bundleIds: ['com.openai.codex'], cliNames: ['codex'],
-    headlessCli: true, credHomeEnv: 'CODEX_HOME', nativeCredHome: '.codex',
+    headlessCli: true, credHomeEnv: 'CODEX_HOME', credIsolation: 'env', nativeCredHome: '.codex',
     credProbeFile: 'auth.json', credProbeMissing: 'unknown',
     installPlan: { type: 'npm', pkg: '@openai/codex' },
     loginCommandNative: 'codex login', loginCommandIsolated: 'CODEX_HOME={dir} codex login',
@@ -265,7 +279,7 @@ export interface AgentSettings {
   master: { masterAgentId: string; crossReview: boolean; reviewerAgentId: string }
   /** 桌面型自动送达（v0.1.509）：粘贴后是否连回车一起自动发送（默认关） */
   delivery: { autoSend: boolean }
-  /** 多账户条目（v0.1.509）：仅支持凭据目录隔离的 Agent（DSH / Codex）有条目 */
+  /** 多账户条目（v0.1.509）：支持隔离的 Agent（DSH / Codex 凭据目录、Antigravity 整个 HOME）有条目 */
   accounts: AgentAccountEntry[]
   /** v0.1.511（②）：登录态读不到（凭据在系统钥匙串）的 Agent 首次派活成功的时间戳。
    *  探测永远只能报 unknown，靠真实派活成功落「已验证」标记，免得界面常年挂着像没登录。 */
@@ -713,6 +727,17 @@ export interface AgentTask {
   handoverModel?: string
   /** 交接指定模型命中的自有账户引擎 id（仅空壳型绑定同一账户时注入 env 真生效） */
   handoverEngineId?: string
+  /** v0.1.512（②）赛马：同组两件任务共享 raceId、槽位 A/B；raceRepo 为原仓库目录，
+   *  开跑时各自建 worktree（raceWorktree / raceBranch），workdir 随之改为 worktree 路径 */
+  raceId?: string
+  raceSlot?: 'A' | 'B'
+  raceRepo?: string
+  raceBranch?: string
+  raceWorktree?: string
+  /** 赛马交叉审查结论（对手审本任务产出的结论，复用审查状态结构） */
+  raceReview?: AgentReviewState
+  /** 赛马结局：winner = 胜出已合并；loser = 落选已清理 */
+  raceOutcome?: 'winner' | 'loser'
 }
 
 export const AGENT_TASKS_KEY = 'acm.agents.tasks.v1'

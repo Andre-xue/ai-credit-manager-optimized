@@ -818,6 +818,14 @@ struct AgentAccountProbeIn {
     probe_file: String,
     /// 探测文件缺失时的语义："no" = 确定未登录；"unknown" = 读不到（如登录存在系统钥匙串）
     missing_means: String,
+    /// v0.1.512（④）：多段相对探测路径（如 ".gemini/antigravity-cli"）；非空时优先于
+    /// probe_file，存在性按文件或目录都算
+    #[serde(default)]
+    probe_path: String,
+    /// 探测目标存在时的语义："unknown" = 存在也只证明跑过、不证明已登录（agy 的状态
+    /// 目录在登录前就会被建出来，真令牌在系统钥匙串里读不到），登录态留给派活实证
+    #[serde(default)]
+    probe_exists_means: String,
 }
 
 #[derive(serde::Serialize)]
@@ -859,10 +867,20 @@ fn agent_account_probe(probes: Vec<AgentAccountProbeIn>) -> Vec<AgentAccountStat
     probes.iter().map(|p| {
         match agent_account_dir(&p.agent_id, &p.entry_id, &p.cred_dir, &p.native_home) {
             Some(dir) => {
-                let file_ok = agent_safe_segment(&p.probe_file) && dir.join(&p.probe_file).is_file();
-                let login = if file_ok {
+                let file_ok = if !p.probe_path.is_empty() {
+                    let mut target = dir.clone();
+                    let mut ok = true;
+                    for seg in p.probe_path.split('/') {
+                        if !agent_safe_segment(seg) { ok = false; break }
+                        target.push(seg);
+                    }
+                    ok && target.exists()
+                } else {
+                    agent_safe_segment(&p.probe_file) && dir.join(&p.probe_file).is_file()
+                };
+                let login = if file_ok && p.probe_exists_means != "unknown" {
                     "yes"
-                } else if p.missing_means == "no" {
+                } else if !file_ok && p.missing_means == "no" {
                     "no"
                 } else {
                     "unknown"
@@ -906,6 +924,591 @@ fn agent_account_create_dir(agent_id: String, entry_id: String) -> Result<String
         }
     }
     Ok(dir.to_string_lossy().to_string())
+}
+
+// ---------------- Antigravity HOME 型条目（v0.1.512 ④） ----------------
+// agy 没有凭据目录变量，但登录按 HOME 隔离（2026-11-28 Ethan 真机实证）：条目目录即
+// HOME、状态落其下 .gemini；令牌存 macOS 钥匙串、钥匙串路径随 HOME 走，所以建条目时
+// 必须先在条目 HOME 下预建 Library/Keychains/login.keychain-db，否则 agy 登录时弹
+// 「找不到钥匙串」。钥匙串密码由 App 生成、只存本机 creds 目录旁的 .kcpass 文件
+// （0600 权限），不进日志、不进界面、不随同步走，报错文案也绝不带密码。
+
+fn agent_agy_kcpass_path(entry_id: &str) -> Option<std::path::PathBuf> {
+    if !agent_safe_segment(entry_id) { return None }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    Some(home.join(".ai-credit-manager").join("agents").join("creds").join("antigravity").join(format!("{entry_id}.kcpass")))
+}
+
+fn agent_agy_keychain_path(entry_id: &str) -> Option<std::path::PathBuf> {
+    let dir = agent_account_dir("antigravity", entry_id, "isolated", "")?;
+    Some(dir.join("Library").join("Keychains").join("login.keychain-db"))
+}
+
+fn agent_agy_load_or_make_password(entry_id: &str) -> Result<String, String> {
+    let path = agent_agy_kcpass_path(entry_id).ok_or_else(|| "条目标识不合法".to_string())?;
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let pw = existing.trim().to_string();
+        if pw.len() >= 16 { return Ok(pw) }
+    }
+    // 32 位十六进制随机密码：/dev/urandom 优先，读不到退回时间+进程散列（只本机用）
+    let mut bytes = [0u8; 16];
+    let filled = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| { use std::io::Read; f.read_exact(&mut bytes) })
+        .is_ok();
+    if !filled {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        (std::time::SystemTime::now(), std::process::id(), entry_id).hash(&mut h);
+        bytes[..8].copy_from_slice(&h.finish().to_be_bytes());
+        let mut h2 = DefaultHasher::new();
+        (entry_id, std::process::id(), std::time::SystemTime::now()).hash(&mut h2);
+        bytes[8..].copy_from_slice(&h2.finish().to_be_bytes());
+    }
+    let pw: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    std::fs::write(&path, &pw).map_err(|e| format!("保存钥匙串密码失败：{e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(pw)
+}
+
+/// 建 Antigravity 隔离条目：HOME 目录 + 预建钥匙串（幂等：已在则跳过创建）
+#[tauri::command]
+fn agent_agy_setup_entry(entry_id: String) -> Result<String, String> {
+    let dir = agent_account_dir("antigravity", &entry_id, "isolated", "")
+        .ok_or_else(|| "凭据目录路径不合法".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建条目目录失败：{e}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        let kc_dir = dir.join("Library").join("Keychains");
+        std::fs::create_dir_all(&kc_dir).map_err(|e| format!("创建钥匙串目录失败：{e}"))?;
+        let kc = kc_dir.join("login.keychain-db");
+        if !kc.exists() {
+            let pw = agent_agy_load_or_make_password(&entry_id)?;
+            let out = std::process::Command::new("security")
+                .arg("create-keychain").arg("-p").arg(&pw).arg(&kc)
+                .output().map_err(|e| format!("调用系统钥匙串失败：{e}"))?;
+            if !out.status.success() {
+                return Err("系统钥匙串创建失败：请确认这台 Mac 的钥匙串服务可用，稍后再试一次".to_string());
+            }
+        }
+    }
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 派活前解锁条目钥匙串（重启/睡醒后会锁上）；失败如实报错、绝不带密码原文
+#[tauri::command]
+fn agent_agy_unlock_keychain(entry_id: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let kc = agent_agy_keychain_path(&entry_id).ok_or_else(|| "条目标识不合法".to_string())?;
+        if !kc.exists() {
+            return Err("这个账户条目的钥匙串不存在（条目可能建得不完整）：请删掉该条目后重新添加".to_string());
+        }
+        let pw = agent_agy_load_or_make_password(&entry_id)?;
+        let out = std::process::Command::new("security")
+            .arg("unlock-keychain").arg("-p").arg(&pw).arg(&kc)
+            .output().map_err(|e| format!("调用系统钥匙串失败：{e}"))?;
+        if !out.status.success() {
+            return Err("解锁这个账户的钥匙串失败：可以删掉该条目后重新添加，或先在终端用该条目登录一次".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = entry_id;
+        Ok(())
+    }
+}
+
+// ---------------- 导入会话：读各 CLI 本地会话存档（v0.1.512 ①） ----------------
+// 只读元信息：会话 id / 标题 / 工作目录 / 时间。标题优先取存档自带字段，没有就取首条
+// 用户输入截断并标注来源；解析不出的存档计入 skipped、不糊原始报错给界面。
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSessionHomeIn {
+    entry_id: String,
+    entry_label: String,
+    home_path: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSessionOut {
+    entry_id: String,
+    entry_label: String,
+    session_id: String,
+    title: String,
+    /// "archive" = 存档自带标题；"first-input" = 取首条用户输入；"none" = 无标题可取
+    title_source: String,
+    cwd: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSessionListOut {
+    sessions: Vec<AgentSessionOut>,
+    skipped: u32,
+}
+
+fn sess_mtime_ms(p: &std::path::Path) -> i64 {
+    std::fs::metadata(p).ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+fn sess_read_head_lines(p: &std::path::Path, max_lines: usize, max_bytes: usize) -> Vec<String> {
+    use std::io::{BufRead, BufReader, Read};
+    let f = match std::fs::File::open(p) { Ok(f) => f, Err(_) => return vec![] };
+    let mut reader = BufReader::new(f.take(max_bytes as u64));
+    let mut out = Vec::new();
+    let mut line = String::new();
+    loop {
+        if out.len() >= max_lines { break }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => out.push(line.trim().to_string()),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+fn sess_truncate(s: &str, max_chars: usize) -> String {
+    let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.chars().count() <= max_chars { t } else { format!("{}…", t.chars().take(max_chars).collect::<String>()) }
+}
+
+/// 解析 ISO8601（YYYY-MM-DDTHH:MM:SS(.fff)Z）为毫秒；失败返回 0（调用方退回文件时间）
+fn sess_parse_iso_ms(s: &str) -> i64 {
+    if s.len() < 19 { return 0 }
+    let num = |a: usize, n: usize| -> Option<i64> { s.get(a..a + n)?.parse().ok() };
+    let (y, mo, d) = match (num(0, 4), num(5, 2), num(8, 2)) { (Some(a), Some(b), Some(c)) => (a, b, c), _ => return 0 };
+    let (h, mi, sec) = match (num(11, 2), num(14, 2), num(17, 2)) { (Some(a), Some(b), Some(c)) => (a, b, c), _ => return 0 };
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = if yy >= 0 { yy } else { yy - 399 } / 400;
+    let yoe = yy - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let mut ms = (((days * 24 + h) * 60 + mi) * 60 + sec) * 1000;
+    if s.len() > 20 && s.as_bytes()[19] == b'.' {
+        if let Some(frac) = s.get(20..23) { if let Ok(f) = frac.parse::<i64>() { ms += f } }
+    }
+    ms
+}
+
+fn sess_uuid_from_name(p: &std::path::Path) -> Option<String> {
+    let name = p.file_name()?.to_string_lossy().to_string();
+    let stem = name.strip_suffix(".jsonl").unwrap_or(&name);
+    if stem.len() < 36 { return None }
+    let tail = &stem[stem.len() - 36..];
+    let ok = tail.chars().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == '-',
+        _ => c.is_ascii_hexdigit(),
+    });
+    if ok { Some(tail.to_string()) } else { None }
+}
+
+/// Codex rollout 里的一条用户输入文本（跳过环境注入块，只认真实用户消息）
+fn sess_codex_user_text(v: &serde_json::Value) -> Option<String> {
+    let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    let pl = v.get("payload")?;
+    if ty == "response_item" {
+        if pl.get("type").and_then(|x| x.as_str()) != Some("message") { return None }
+        if pl.get("role").and_then(|x| x.as_str()) != Some("user") { return None }
+        for c in pl.get("content")?.as_array()? {
+            if let Some(t) = c.get("text").and_then(|x| x.as_str()) {
+                let t = t.trim();
+                if !t.is_empty() && !t.starts_with('<') && !t.starts_with("# AGENTS.md") {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        return None;
+    }
+    if ty == "event_msg" && pl.get("type").and_then(|x| x.as_str()) == Some("user_message") {
+        if let Some(m) = pl.get("message").and_then(|x| x.as_str()) {
+            let m = m.trim();
+            if !m.is_empty() { return Some(m.to_string()) }
+        }
+    }
+    None
+}
+
+fn sess_parse_codex_file(p: &std::path::Path, entry: &AgentSessionHomeIn, skipped: &mut u32) -> Option<AgentSessionOut> {
+    let lines = sess_read_head_lines(p, 220, 512 * 1024);
+    let mut session_id = String::new();
+    let mut cwd = String::new();
+    let mut created_at = 0i64;
+    let mut title = String::new();
+    let mut title_source = "none".to_string();
+    for line in &lines {
+        if !line.starts_with('{') { continue }
+        let v: serde_json::Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
+        if v.get("type").and_then(|x| x.as_str()) == Some("session_meta") && session_id.is_empty() {
+            let pl = v.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+            if let Some(id) = pl.get("id").and_then(|x| x.as_str()) { session_id = id.to_string(); }
+            if let Some(c) = pl.get("cwd").and_then(|x| x.as_str()) { cwd = c.to_string(); }
+            if let Some(ts) = pl.get("timestamp").and_then(|x| x.as_str()) { created_at = sess_parse_iso_ms(ts); }
+            if let Some(t) = pl.get("title").and_then(|x| x.as_str()) {
+                if !t.trim().is_empty() { title = sess_truncate(t, 90); title_source = "archive".to_string(); }
+            }
+        }
+        if title.is_empty() {
+            if let Some(t) = sess_codex_user_text(&v) {
+                title = sess_truncate(&t, 90);
+                title_source = "first-input".to_string();
+            }
+        }
+        if !session_id.is_empty() && !title.is_empty() { break }
+    }
+    if session_id.is_empty() {
+        if let Some(id) = sess_uuid_from_name(p) { session_id = id; }
+    }
+    if session_id.is_empty() { *skipped += 1; return None }
+    let updated_at = sess_mtime_ms(p);
+    if created_at == 0 { created_at = updated_at }
+    Some(AgentSessionOut {
+        entry_id: entry.entry_id.clone(), entry_label: entry.entry_label.clone(),
+        session_id, title, title_source, cwd, created_at, updated_at,
+    })
+}
+
+fn sess_collect_jsonl(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+    if depth > 4 { return }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                sess_collect_jsonl(&p, depth + 1, out);
+            } else if ent.file_name().to_string_lossy().starts_with("rollout-")
+                && p.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// DSH 事件日志里尽力提取 (会话 id, 标题, 标题来源, 工作目录)：认标题事件与头部字段
+/// 几种已知形状；日志若是压缩帧读不出就全空返回（调用方退回目录名/文件名当 id）。
+fn sess_dsh_extract(lines: &[String]) -> (String, String, String, String) {
+    let mut id = String::new();
+    let mut title = String::new();
+    let mut title_source = "none".to_string();
+    let mut cwd = String::new();
+    for line in lines {
+        if !line.starts_with('{') { continue }
+        let v: serde_json::Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
+        let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let data = v.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        if id.is_empty() {
+            for cand in [
+                v.get("sessionId"), v.get("session_id"),
+                data.get("sessionId"), data.get("session_id"),
+                if ty.contains("header") || ty == "session" { v.get("id") } else { None },
+            ].into_iter().flatten() {
+                if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { id = s.to_string(); break } }
+            }
+        }
+        if cwd.is_empty() {
+            for cand in [v.get("cwd"), data.get("cwd")].into_iter().flatten() {
+                if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { cwd = s.to_string(); break } }
+            }
+        }
+        if title.is_empty() && ty.contains("title") {
+            for cand in [data.get("title"), v.get("title")].into_iter().flatten() {
+                if let Some(s) = cand.and_then(|x| x.as_str()) {
+                    if !s.trim().is_empty() { title = sess_truncate(s, 90); title_source = "archive".to_string(); break }
+                }
+            }
+        }
+        if !id.is_empty() && !title.is_empty() && !cwd.is_empty() { break }
+    }
+    (id, title, title_source, cwd)
+}
+
+fn sess_parse_dsh_dir(dir: &std::path::Path, entry: &AgentSessionHomeIn) -> Option<AgentSessionOut> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut jsonl_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut meta: Option<serde_json::Value> = None;
+    let mut latest = sess_mtime_ms(dir);
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if !p.is_file() { continue }
+        latest = latest.max(sess_mtime_ms(&p));
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.ends_with(".jsonl") {
+            jsonl_files.push(p);
+        } else if matches!(name.as_str(), "header.json" | "session.json" | "meta.json" | "index.json") {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) { meta = Some(v); }
+            }
+        }
+    }
+    let mut id = String::new();
+    let mut title = String::new();
+    let mut title_source = "none".to_string();
+    let mut cwd = String::new();
+    let mut created_at = 0i64;
+    if let Some(m) = &meta {
+        for cand in [m.get("id"), m.get("sessionId"), m.get("session_id")].into_iter().flatten() {
+            if let Some(s) = cand.and_then(|x| x.as_str()) { if !s.is_empty() { id = s.to_string(); break } }
+        }
+        if let Some(t) = m.get("title").and_then(|x| x.as_str()) {
+            if !t.trim().is_empty() { title = sess_truncate(t, 90); title_source = "archive".to_string(); }
+        }
+        if let Some(c) = m.get("cwd").and_then(|x| x.as_str()) { cwd = c.to_string(); }
+        if let Some(n) = m.get("createdAt").and_then(|x| x.as_i64()) { created_at = n }
+        if created_at == 0 {
+            if let Some(s) = m.get("createdAt").and_then(|x| x.as_str()) { created_at = sess_parse_iso_ms(s) }
+        }
+    }
+    if id.is_empty() || title.is_empty() {
+        for f in &jsonl_files {
+            let lines = sess_read_head_lines(f, 160, 256 * 1024);
+            let (i2, t2, ts2, c2) = sess_dsh_extract(&lines);
+            if id.is_empty() { id = i2 }
+            if title.is_empty() && !t2.is_empty() { title = t2; title_source = ts2 }
+            if cwd.is_empty() { cwd = c2 }
+            if !id.is_empty() && !title.is_empty() { break }
+        }
+    }
+    if id.is_empty() {
+        id = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    }
+    if id.is_empty() { return None }
+    if created_at == 0 { created_at = latest }
+    Some(AgentSessionOut {
+        entry_id: entry.entry_id.clone(), entry_label: entry.entry_label.clone(),
+        session_id: id, title, title_source, cwd, created_at, updated_at: latest,
+    })
+}
+
+fn sess_parse_dsh_file(p: &std::path::Path, entry: &AgentSessionHomeIn) -> Option<AgentSessionOut> {
+    let lines = sess_read_head_lines(p, 160, 256 * 1024);
+    let (mut id, title, title_source, cwd) = sess_dsh_extract(&lines);
+    if id.is_empty() {
+        if let Some(u) = sess_uuid_from_name(p) { id = u }
+    }
+    if id.is_empty() { return None }
+    let updated_at = sess_mtime_ms(p);
+    Some(AgentSessionOut {
+        entry_id: entry.entry_id.clone(), entry_label: entry.entry_label.clone(),
+        session_id: id, title, title_source, cwd, created_at: updated_at, updated_at,
+    })
+}
+
+fn sess_looks_like_session_id(name: &str) -> bool {
+    name.len() >= 8 && name.len() <= 80
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && name.chars().filter(|c| c.is_ascii_digit()).count() >= 2
+}
+
+fn sess_walk_dsh(dir: &std::path::Path, depth: usize, entry: &AgentSessionHomeIn, out: &mut Vec<AgentSessionOut>, skipped: &mut u32) {
+    if depth > 5 { return }
+    let rd = match std::fs::read_dir(dir) { Ok(r) => r, Err(_) => return };
+    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    for ent in rd.flatten() {
+        let p = ent.path();
+        let name = ent.file_name().to_string_lossy().to_string();
+        if p.is_dir() {
+            if sess_looks_like_session_id(&name) {
+                match sess_parse_dsh_dir(&p, entry) {
+                    Some(s) => out.push(s),
+                    None => *skipped += 1,
+                }
+            } else {
+                subdirs.push(p);
+            }
+        } else if name.ends_with(".jsonl") {
+            match sess_parse_dsh_file(&p, entry) {
+                Some(s) => out.push(s),
+                None => *skipped += 1,
+            }
+        }
+    }
+    for d in subdirs { sess_walk_dsh(&d, depth + 1, entry, out, skipped); }
+}
+
+/// 列出某 Agent 在各账户条目 HOME 下的本地会话存档（DSH 发现式扫描多个候选根：
+/// DSH_HOME 直下与各 profile 下的 sessions/projects；Codex 认 CODEX_HOME/sessions）
+#[tauri::command]
+fn agent_list_sessions(agent_id: String, homes: Vec<AgentSessionHomeIn>) -> AgentSessionListOut {
+    let mut sessions: Vec<AgentSessionOut> = Vec::new();
+    let mut skipped: u32 = 0;
+    for home in &homes {
+        if home.home_path.is_empty() { continue }
+        let hp = std::path::PathBuf::from(&home.home_path);
+        if !hp.is_dir() { continue }
+        if agent_id == "codex-desktop" {
+            let mut files = Vec::new();
+            sess_collect_jsonl(&hp.join("sessions"), 0, &mut files);
+            for f in files {
+                if let Some(s) = sess_parse_codex_file(&f, home, &mut skipped) { sessions.push(s); }
+            }
+        } else if agent_id == "dsh" {
+            let mut roots: Vec<std::path::PathBuf> = vec![hp.join("sessions"), hp.join("projects")];
+            if let Ok(rd) = std::fs::read_dir(hp.join("profiles")) {
+                for ent in rd.flatten() {
+                    roots.push(ent.path().join("sessions"));
+                    roots.push(ent.path().join("projects"));
+                }
+            }
+            for root in roots {
+                if root.is_dir() { sess_walk_dsh(&root, 0, home, &mut sessions, &mut skipped); }
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    sessions.retain(|s| seen.insert(format!("{}::{}", s.entry_id, s.session_id)));
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.truncate(120);
+    AgentSessionListOut { sessions, skipped }
+}
+
+// ---------------- 赛马：git worktree 操作（v0.1.512 ②） ----------------
+// 全部走 git 参数数组（不拼 shell 字符串）；分支名逐段校验，防注入怪名。
+
+fn agent_git_run(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git").arg("-C").arg(repo).args(args)
+        .output().map_err(|e| format!("调用 git 失败：{e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        let tail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let tail: String = tail.chars().take(300).collect();
+        Err(if tail.is_empty() { "git 执行失败".to_string() } else { tail })
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentGitInfoOut {
+    is_repo: bool,
+    branch: String,
+}
+
+#[tauri::command]
+fn agent_git_info(dir: String) -> AgentGitInfoOut {
+    let p = std::path::PathBuf::from(&dir);
+    if dir.is_empty() || !p.is_dir() {
+        return AgentGitInfoOut { is_repo: false, branch: String::new() };
+    }
+    match agent_git_run(&p, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(s) if s.trim() == "true" => {
+            let branch = agent_git_run(&p, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .map(|s| s.trim().to_string()).unwrap_or_default();
+            AgentGitInfoOut { is_repo: true, branch }
+        }
+        _ => AgentGitInfoOut { is_repo: false, branch: String::new() },
+    }
+}
+
+fn agent_branch_ok(branch: &str) -> bool {
+    !branch.is_empty() && branch.len() <= 120
+        && branch.split('/').all(|seg| agent_safe_segment(seg))
+}
+
+#[tauri::command]
+fn agent_worktree_add(repo: String, branch: String, path: String) -> Result<(), String> {
+    if !agent_branch_ok(&branch) { return Err("分支名不合法".to_string()) }
+    let repo_p = std::path::PathBuf::from(&repo);
+    let wt_p = std::path::PathBuf::from(&path);
+    if !repo_p.is_dir() { return Err("仓库目录不存在".to_string()) }
+    if wt_p.exists() { return Err("赛马工作目录已存在（可能上次没清理干净），请先到仓库目录里检查".to_string()) }
+    if let Some(parent) = wt_p.parent() { let _ = std::fs::create_dir_all(parent); }
+    agent_git_run(&repo_p, &["worktree", "add", "-b", &branch, &path]).map(|_| ())
+        .map_err(|e| format!("建赛马工作区失败：{e}"))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentWorktreeDiffOut {
+    stat: String,
+    diff: String,
+    changed_files: Vec<String>,
+}
+
+#[tauri::command]
+fn agent_worktree_diff(worktree: String) -> Result<AgentWorktreeDiffOut, String> {
+    let p = std::path::PathBuf::from(&worktree);
+    if !p.is_dir() { return Err("赛马工作区不存在（可能已被清理）".to_string()) }
+    let status = agent_git_run(&p, &["status", "--porcelain"]).unwrap_or_default();
+    let mut changed: Vec<String> = Vec::new();
+    let mut untracked: Vec<String> = Vec::new();
+    for l in status.lines() {
+        if l.len() > 3 {
+            let f = l[3..].trim().to_string();
+            if l.starts_with("??") { untracked.push(f.clone()); }
+            if !f.is_empty() { changed.push(f); }
+        }
+    }
+    changed.sort();
+    changed.dedup();
+    let stat = agent_git_run(&p, &["diff", "HEAD", "--stat"]).unwrap_or_default();
+    let mut diff = agent_git_run(&p, &["diff", "HEAD"]).unwrap_or_default();
+    const CAP: usize = 120_000;
+    if diff.len() > CAP {
+        diff = diff.chars().take(CAP).collect();
+        diff.push_str("\n…（diff 过长已截断，对比时请以文件清单与统计为准）");
+    }
+    if !untracked.is_empty() {
+        diff.push_str("\n\n【未跟踪的新文件（内容未纳入 diff 对比）】\n");
+        for f in &untracked { diff.push_str(&format!("- {f}\n")); }
+    }
+    Ok(AgentWorktreeDiffOut { stat, diff, changed_files: changed })
+}
+
+#[tauri::command]
+fn agent_worktree_merge(repo: String, branch: String) -> Result<String, String> {
+    if !agent_branch_ok(&branch) { return Err("分支名不合法".to_string()) }
+    let p = std::path::PathBuf::from(&repo);
+    if !p.is_dir() { return Err("仓库目录不存在".to_string()) }
+    // 合并前要求主工作区干净：有未提交改动时合并会把用户手头的活搅在一起，先停住
+    let status = agent_git_run(&p, &["status", "--porcelain"]).unwrap_or_default();
+    if !status.trim().is_empty() {
+        return Err("主仓库有未提交的改动：先在仓库里提交或暂存，再回来合并胜出版本".to_string());
+    }
+    let msg = format!("赛马胜出合并：{branch}");
+    agent_git_run(&p, &["merge", "--no-ff", "-m", &msg, &branch])
+        .map(|_| "merged".to_string())
+        .map_err(|e| format!("合并失败（可能有冲突，需要你在仓库里手动处理）：{e}"))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentWorktreeRemoveOut {
+    worktree_removed: bool,
+    branch_deleted: bool,
+    note: String,
+}
+
+#[tauri::command]
+fn agent_worktree_remove(repo: String, path: String, branch: String) -> AgentWorktreeRemoveOut {
+    let p = std::path::PathBuf::from(&repo);
+    let mut note = String::new();
+    let wt_ok = agent_git_run(&p, &["worktree", "remove", "--force", &path]).is_ok();
+    if !wt_ok {
+        // 工作区已被手动删过等情形：清残留目录 + prune 登记
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = agent_git_run(&p, &["worktree", "prune"]);
+        note = "工作区目录已按残留清理".to_string();
+    }
+    let br_ok = if agent_branch_ok(&branch) {
+        agent_git_run(&p, &["branch", "-D", &branch]).is_ok()
+    } else { false };
+    AgentWorktreeRemoveOut { worktree_removed: wt_ok, branch_deleted: br_ok, note }
 }
 
 /// 按需打开桌面应用：只负责拉起，绝不强杀用户应用。
@@ -5947,7 +6550,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, local_store_read, local_store_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_account_probe, agent_account_create_dir, agent_dsh_account_patch, agent_which, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel, translator::agent_ax_trusted, translator::agent_app_probe, translator::agent_activate_app, translator::agent_paste_deliver])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, local_store_read, local_store_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_account_probe, agent_account_create_dir, agent_dsh_account_patch, agent_which, agent_agy_setup_entry, agent_agy_unlock_keychain, agent_list_sessions, agent_git_info, agent_worktree_add, agent_worktree_diff, agent_worktree_merge, agent_worktree_remove, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel, translator::agent_ax_trusted, translator::agent_app_probe, translator::agent_activate_app, translator::agent_paste_deliver])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；

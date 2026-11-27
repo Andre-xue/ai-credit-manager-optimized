@@ -9,6 +9,7 @@ import {
 } from '../core/agents'
 import {
   agentAccountsProbe, agentAccountCreateDir, agentWhich, agentRunStart, agentRunPoll, agentRunStop,
+  entryProbeIn, agentAgySetupEntry,
   type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
 import { selectPruneVictims, vaultTotals, formatBytes, formatDuration, type VaultEntry } from '../core/agentVault'
@@ -68,13 +69,12 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
     const probes: AgentAccountProbeIn[] = []
     for (const e of settings.accounts) {
       const d = agentDef(e.agentId)
-      if (d?.nativeCredHome && d.credProbeFile) {
-        probes.push({ entryId: e.id, agentId: e.agentId, credDir: e.credDir, nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
-      }
+      if (d) { const p = entryProbeIn(d, e); if (p) probes.push(p) }
     }
     for (const d of AGENT_REGISTRY) {
-      if (d.nativeCredHome && d.credProbeFile && !multiAccountCapable(d)) {
-        probes.push({ entryId: nativeEntryId(d.id), agentId: d.id, credDir: 'native', nativeHome: d.nativeCredHome, probeFile: d.credProbeFile, missingMeans: d.credProbeMissing ?? 'unknown' })
+      if (!multiAccountCapable(d)) {
+        const p = entryProbeIn(d, { id: nativeEntryId(d.id), credDir: 'native' })
+        if (p) probes.push(p)
       }
     }
     if (!probes.length) return
@@ -100,7 +100,20 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
   }
   const addEntry = async (def: AgentDef) => {
     const entry = makeAccountEntry(def.id, settings.accounts, Date.now())
-    const path = await agentAccountCreateDir(def.id, entry.id)
+    let path = ''
+    if (def.credIsolation === 'home') {
+      // v0.1.512（④）：HOME 型条目（Antigravity）建目录时连钥匙串一起预建，
+      // 建不出来就如实报错、不建半成品条目（否则登录时必弹「找不到钥匙串」）
+      try {
+        path = await agentAgySetupEntry(entry.id)
+      } catch (e) {
+        notify(`添加账户失败：${e instanceof Error ? e.message : String(e)}`, 'err')
+        return
+      }
+      if (!path) { notify('添加账户失败：条目目录没建起来', 'err'); return }
+    } else {
+      path = await agentAccountCreateDir(def.id, entry.id)
+    }
     onChange({ ...settings, accounts: [...settings.accounts, entry] })
     setGuide(g => ({ ...g, [def.id]: `新账户「${entry.label}」的凭据目录已建好${path ? `（${path}）` : ''}。${fillLoginGuide(def, path)}` }))
     notify(`已添加账户「${entry.label}」：按行内指引在终端登录后，点「重新检测」确认登录态`)
@@ -301,6 +314,10 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                       {settings.accounts.filter(e => e.agentId === def.id).map(e => {
                         const st = acctStatus[e.id]
                         const stats = entryStats(e.id)
+                        // v0.1.511（②）语义在条目行同样成立：钥匙串保管、探测只能 unknown 的
+                        // Agent，未验证时把口径说清；派活成功落「已验证」后不再挂「去登录」
+                        const verifiedAt = settings.verifiedAgents?.[def.id]
+                        const keychainUnknown = st?.login === 'unknown' && def.credProbeMissing === 'unknown'
                         return (
                           <div key={e.id} className="asp-entry-row">
                             <div className="asp-entry-main">
@@ -311,7 +328,8 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                                 <span className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</span>
                               </div>
                               {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
-                              {st?.login !== 'yes' && (def.loginCommandNative || def.loginCommandIsolated) && (
+                              {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
+                              {st?.login !== 'yes' && !(keychainUnknown && verifiedAt) && (def.loginCommandNative || def.loginCommandIsolated) && (
                                 <div className="asp-login-wrap">
                                   <button className={`btn sm ${st?.login === 'unknown' && def.credProbeMissing === 'unknown' ? 'ghost' : ''}`} onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>去登录</button>
                                   {loginOpen[e.id] && (
