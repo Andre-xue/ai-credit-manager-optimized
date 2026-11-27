@@ -734,6 +734,7 @@ Object.assign(D, {
   '{name} 服务已在运行，已直接启用（{already}）': { 'zh-TW': '{name} 服務已在執行，已直接啟用（{already}）', en: 'The {name} service is already running and was enabled directly ({already})', ja: '{name} サービスはすでに実行中のため、そのまま有効化しました（{already}）', ko: '{name} 서비스가 이미 실행 중이라 바로 활성화했습니다({already})' },
   '{name} 无 CLI 后台启动方式，请在 LM Studio 应用内手动开启本地服务器': { 'zh-TW': '{name} 無 CLI 背景啟動方式，請在 LM Studio 應用內手動開啟本機伺服器', en: '{name} has no CLI background start — enable the local server manually inside the LM Studio app', ja: '{name} にはCLIでのバックグラウンド起動がありません。LM Studio アプリ内でローカルサーバーを手動で有効化してください', ko: '{name}은(는) CLI 백그라운드 시작 방법이 없습니다. LM Studio 앱에서 로컬 서버를 직접 켜세요' },
   '停止失败：{msg}': { 'zh-TW': '停止失敗：{msg}', en: 'Stop failed: {msg}', ja: '停止に失敗しました：{msg}', ko: '중지 실패: {msg}' },
+  '{name}：停止失败：{msg}': { 'zh-TW': '{name}：停止失敗：{msg}', en: '{name}: Stop failed: {msg}', ja: '{name}：停止に失敗しました：{msg}', ko: '{name}: 중지 실패: {msg}' },
 })
 
 // ---- 补齐批次 6（设置页内联文案）----

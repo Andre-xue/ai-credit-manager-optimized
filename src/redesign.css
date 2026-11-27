@@ -982,6 +982,15 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
 .ai-tools-icon.on::before { content: ''; position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); width: 5px; height: 5px; border-radius: 50%; background: var(--primary); }
 .ai-tools-icon.svc-on { color: var(--green); }
 .ai-tools-icon.svc-running { background: var(--green-soft); }
+/* v0.1.499：服务项常驻状态点（右上角，不悬停也可辨四态）——运行中绿、开但未运行琥珀、
+   已关闭灰、失败红、切换中琥珀脉冲。状态来自真实探测与启停结果，不按用户点没点关臆测 */
+.ai-tools-icon .svc-dot { position: absolute; top: 5px; right: 5px; width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px var(--panel); pointer-events: none; }
+.ai-tools-icon .svc-dot.running { background: var(--green); }
+.ai-tools-icon .svc-dot.onidle { background: var(--amber); }
+.ai-tools-icon .svc-dot.off { background: #9ca3af; }
+.ai-tools-icon .svc-dot.failed { background: var(--red); }
+.ai-tools-icon .svc-dot.busy { background: var(--amber); animation: svc-dot-pulse 1s ease-in-out infinite; }
+@keyframes svc-dot-pulse { 50% { opacity: .3; } }
 /* 图标悬停气泡（data-tip，与顶栏 .ai-icon-btn 同款式，朝下展开） */
 .ai-tools-icon[data-tip]::after { content: attr(data-tip); position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%) translateY(-3px); background: var(--text); color: var(--bg); font-size: 12px; line-height: 1; padding: 6px 9px; border-radius: 7px; white-space: nowrap; pointer-events: none; z-index: 96; opacity: 0; visibility: hidden; transition: opacity .15s ease .25s, transform .15s ease .25s, visibility 0s .25s; }
 .ai-tools-icon[data-tip]:hover::after, .ai-tools-icon[data-tip]:focus-visible::after { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
@@ -1021,7 +1030,8 @@ span .heat-cell{display:inline-block;width:10px;height:10px;vertical-align:-1px}
   .ai-compare-chips::-webkit-scrollbar { display: none; }
   .ai-compare-chip { flex: 0 0 auto; }
   .claude-ui .ai-topbar { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
-  .toast { max-width: calc(100vw - 32px); bottom: 88px; }
+  .toast { max-width: calc(100vw - 32px); }
+  .toast-stack { bottom: 88px; }
   /* 底部导航恢复显示后，AI 页底部留白避免导航遮住输入区 */
   .phone-shell .content-ai { padding-bottom: 82px !important; }
 }

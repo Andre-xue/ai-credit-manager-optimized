@@ -2274,12 +2274,30 @@ fn save_managed_pids(map: &std::collections::HashMap<String, u32>) {
     if let Ok(json) = serde_json::to_string(map) { let _ = std::fs::write(path, json); }
 }
 
-/// 判断某进程是否仍在运行（macOS/Linux kill -0；Windows 用 tasklist）
+/// 进程是否处于僵尸态（unix：ps 状态以 Z 开头）。僵尸进程已实际死亡——不占端口、
+/// 不耗内存，只剩进程表里一条待父进程回收的记录；kill -0 对僵尸仍返回成功，
+/// 不能据此判活。本 App spawn 的服务子进程句柄在记录 PID 后即被丢弃、无人 waitpid，
+/// 被终止后正会停在僵尸态：v0.1.497 真机上 stop 因此永远误报「仍有进程未退出」
+/// （PID 与托管记录完全一致、端口其实早已释放），v0.1.499 在此定位并修复。
+fn pid_is_zombie(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    { false }
+}
+
+/// 判断某进程是否仍在运行（macOS/Linux kill -0 + 僵尸排除；Windows 用 tasklist）
 fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         use std::process::Command;
-        Command::new("kill").arg("-0").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+        let exists = Command::new("kill").arg("-0").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
+        exists && !pid_is_zombie(pid)
     }
     #[cfg(not(unix))]
     {
@@ -2490,7 +2508,7 @@ fn start_local_service(key: String, launch_desktop: bool) -> Result<String, Stri
     pids.insert(key.clone(), child.id());
     save_managed_pids(&pids);
     let display = match key.as_str() { "qwentts" => "Qwen3-TTS", _ => key.as_str() };
-    Ok(format!("已启动 {} 后台进程（PID {}），请稍候点击「重新检测」。{}", display, child.id(), guide))
+    Ok(format!("已启动 {} 后台进程（PID {}）。{}", display, child.id(), guide))
 }
 
 /// 停止由本 App 启动的本地服务进程；仅处理记录中的 PID，不碰用户手动启动的服务。
@@ -2508,7 +2526,7 @@ fn stop_local_service(key: String) -> Result<String, String> {
     }
     let (_done, forced, still) = stop_pids_confirmed(&[pid]);
     if !still.is_empty() {
-        return Err(format!("进程 {} 经强制结束仍未退出，可能需要管理员权限手动处理", pid));
+        return Err(format!("进程 {} 在终止与强制结束信号后仍未退出（这是你自己账户下运行的进程，不需要管理员权限）。请打开「活动监视器」，搜索并强制退出该进程后，再点一次关闭", pid));
     }
     if forced.is_empty() {
         Ok(format!("已停止由本 App 启动的 {} 服务（PID {}，已确认进程退出，内存已释放）", key, pid))
@@ -2562,8 +2580,8 @@ fn stop_service_by_port(key: String) -> Result<String, String> {
         let mut bad: Vec<u32> = still.iter().copied().chain(listeners.iter().copied()).collect();
         bad.sort_unstable();
         bad.dedup();
-        return Err(format!("{} 服务端口 {} 仍有进程未退出（PID {}），可能需要管理员权限手动处理",
-            key, port, bad.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")));
+        return Err(format!("{} 服务端口 {} 仍有进程未退出（PID {}）。该进程运行在你自己的账户下，不需要管理员权限；请打开「活动监视器」搜索 {} 并强制退出该进程后，再点一次关闭",
+            key, port, bad.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "), key));
     }
     // Ollama 落定复查：等 1.5 秒确认端口没有被任何守护者重新监听；若又出现则再清一次，
     // 仍清不掉才报错——保证「关开关」返回成功时服务是真的停了，而不是杀完瞬间没人、过会儿又回来
@@ -4819,6 +4837,29 @@ mod local_service_tests {
         assert!(fp_lmstudio(&json!({"data": [{"id": "m"}]})));
         assert!(!fp_lmstudio(&json!({"models": []}))); // Ollama 形状不算 LM Studio
         assert!(!fp_lmstudio(&json!({})));
+    }
+
+    /// v0.1.499 回归钉测：复刻真机故障——App spawn 的服务子进程在记录 PID 后句柄被
+    /// 丢弃、无人 waitpid；进程被 SIGKILL 后停在僵尸态，此时 pid_alive 必须判死，
+    /// 否则 stop_pids_confirmed / stop_service_by_port 会永远误报「仍有进程未退出」。
+    #[cfg(unix)]
+    #[test]
+    fn killed_unreaped_child_is_not_alive() {
+        use std::process::{Command, Stdio};
+        let child = Command::new("sleep").arg("30")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().expect("spawn sleep");
+        let pid = child.id();
+        drop(child); // 与 start_local_service 一致：只记 PID，句柄立即丢弃
+        assert!(pid_alive(pid), "刚启动的子进程应判活");
+        signal_pid(pid, true);
+        let mut dead = false;
+        for _ in 0..25 {
+            if !pid_alive(pid) { dead = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert!(dead, "被 SIGKILL 且未被回收的子进程（僵尸态）不应再被 pid_alive 判为存活");
+        assert!(pid_is_zombie(pid) || !pid_alive(pid));
     }
 
     #[test]

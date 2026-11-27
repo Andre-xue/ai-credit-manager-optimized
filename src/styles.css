@@ -270,10 +270,15 @@ tbody tr:hover { background: var(--panel-2); }
 .dots { display: flex; align-items: center; gap: 4px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; }
 
-.toast {
+/* v0.1.499：通知队列容器——多条纵向排队（gap 分隔），不再互相压盖 */
+.toast-stack {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 200;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none;
+}
+.toast {
   background: #111827; color: #fff; padding: 11px 18px; border-radius: 10px; font-size: 13px;
   box-shadow: 0 10px 30px rgba(0,0,0,.25); animation: rise .2s ease; display: flex; align-items: center; gap: 8px;
+  max-width: min(760px, calc(100vw - 32px));
 }
 /* 失败提示不用打勾图标那套黑底：深红底 + 三角警告，免得和成功提示混淆（v0.1.385） */
 .toast.err { background: #991b1b; }
@@ -568,7 +573,11 @@ tbody tr:hover { background: var(--panel-2); }
 }
 .ai-model-btn:hover { border-color: var(--primary); color: var(--primary); }
 .ai-model-menu {
-  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
+  /* v0.1.499：改左锚定。旧版 right:0 右锚定是 496 把选择器移到输入框上方左侧后才暴露的
+     错位——分类按钮贴聊天列最左，菜单向左伸出列外被侧边栏盖住（录屏里只剩选中项的
+     浅紫色带、文字全在被遮部分）；左锚定向右展开，三段菜单都完整可见。
+     手机壳菜单在 claude-ui.css 里是 fixed 底部弹层（left/right 同时设定、特异性更高），不受此改影响 */
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30;
   min-width: 250px; max-width: min(360px, 92vw); max-height: 320px; overflow: auto;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow); padding: 5px;

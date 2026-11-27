@@ -20,6 +20,8 @@ export interface ServiceController {
   status: Partial<Record<LocalServiceKey, string | null>>
   /** 正在切换的服务 key */
   busyKey: LocalServiceKey | null
+  /** 最近一次启停失败的原因（按服务记；成功或重新尝试时清除）。供图标栏红点等真实状态呈现 */
+  failed: Partial<Record<LocalServiceKey, string>>
   /** 切换服务开关（含启停进程、8G 限制） */
   toggle: (key: LocalServiceKey) => Promise<void>
   /** 刷新运行时状态 */
@@ -40,6 +42,18 @@ export function useServiceController(
 ): ServiceController {
   const [status, setStatus] = useState<Partial<Record<LocalServiceKey, string | null>>>({})
   const [busyKey, setBusyKey] = useState<LocalServiceKey | null>(null)
+  const [failed, setFailed] = useState<Partial<Record<LocalServiceKey, string>>>({})
+  const markFailed = useCallback((key: LocalServiceKey, message: string) => {
+    setFailed(prev => ({ ...prev, [key]: message }))
+  }, [])
+  const clearFailed = useCallback((key: LocalServiceKey) => {
+    setFailed(prev => {
+      if (!(key in prev)) return prev
+      const nextMap = { ...prev }
+      delete nextMap[key]
+      return nextMap
+    })
+  }, [])
 
   const refresh = useCallback(() => {
     void Promise.all(LOCAL_SERVICE_KEYS.map(async k => [k, await checkLocalService(k)] as const))
@@ -91,17 +105,37 @@ export function useServiceController(
     if (!plan) return
     const { next, stopKeys, enabled: willEnable } = plan
     setBusyKey(key)
+    clearFailed(key)
     patchSettings({ localServices: next })
     const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : key === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
+    const svcName = (k: LocalServiceKey) => k === 'ollama' ? 'Ollama' : k === 'comfyui' ? 'ComfyUI' : k === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
+    // v0.1.499：停止失败时服务其实还在跑——开关必须回滚到「开」与真实状态一致，
+    // 否则设置已关、服务在跑，用户再点一次会被当成「开启」又拉起一个新进程
+    // （497 真机录屏实证的连锁故障）。reverts 收集所有需要回滚的服务，一次性写回。
+    const reverts: Partial<Record<LocalServiceKey, boolean>> = {}
+    let effectiveEnabled = willEnable
+    const applyReverts = () => {
+      if (Object.keys(reverts).length) patchSettings({ localServices: { ...next, ...reverts } })
+    }
     try {
       // 互斥：先停掉被挤掉的其他服务（关自己留给下方 else 统一处理）
       for (const oldKey of stopKeys) {
         if (oldKey === key) continue
         const r = await stopServiceByPort(oldKey)
-        setStatus(prev => ({ ...prev, [oldKey]: '' }))
-        notifyLocalServiceChanged(oldKey, false)
-        const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : oldKey === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
-        if (r.ok) notify(`已关闭 ${oldName} 以释放内存（${r.message}）`)
+        const oldName = svcName(oldKey)
+        if (r.ok) {
+          setStatus(prev => ({ ...prev, [oldKey]: '' }))
+          notifyLocalServiceChanged(oldKey, false)
+          notify(`已关闭 ${oldName} 以释放内存（${r.message}）`)
+        } else {
+          // 被挤掉的服务没停成：回滚它的开关为开、按真实探测回填状态、记失败态
+          reverts[oldKey] = true
+          const addr = await checkLocalService(oldKey)
+          setStatus(prev => ({ ...prev, [oldKey]: addr }))
+          markFailed(oldKey, r.message)
+          notifyLocalServiceChanged(oldKey, true)
+          notify(`${oldName}：停止失败：${r.message}`)
+        }
       }
       if (willEnable) {
         const already = await checkLocalService(key)
@@ -130,8 +164,9 @@ export function useServiceController(
                     notify('已打开 Comfy Desktop，请在其中打开你的实例，启动后会自动识别')
                   } else {
                     // 启动命令返回成功但服务始终没起来 → 回滚开关，避免"已开启却连不上"的状态脱节
-                    patchSettings({ localServices: { ...(settings?.localServices ?? {}), [key]: false } })
+                    patchSettings({ localServices: { ...next, ...reverts, [key]: false } })
                     setStatus(prev => ({ ...prev, [key]: null }))
+                    markFailed(key, '启动后未能正常监听端口')
                     notifyLocalServiceChanged(key, false)
                     notify(`${name} 启动后未能正常监听端口，已自动关闭开关。请确认本机 ${key} 可正常运行后重试`)
                   }
@@ -140,7 +175,8 @@ export function useServiceController(
             }, 2000)
           } else {
             // 启动命令直接失败 → 回滚开关
-            patchSettings({ localServices: { ...(settings?.localServices ?? {}), [key]: false } })
+            patchSettings({ localServices: { ...next, ...reverts, [key]: false } })
+            markFailed(key, r.message)
             notifyLocalServiceChanged(key, false)
           }
         } else {
@@ -148,14 +184,26 @@ export function useServiceController(
         }
       } else {
         const r = await stopServiceByPort(key)
-        notify(`${name}：${r.ok ? r.message : `停止失败：${r.message}`}`)
-        setStatus(prev => ({ ...prev, [key]: '' }))
-        // Qwen3-TTS 停掉后复位预热状态，下次启动重新预热
-        if (key === 'qwentts') resetQwenWarmup()
+        if (r.ok) {
+          notify(`${name}：${r.message}`)
+          setStatus(prev => ({ ...prev, [key]: '' }))
+          clearFailed(key)
+          // Qwen3-TTS 停掉后复位预热状态，下次启动重新预热
+          if (key === 'qwentts') resetQwenWarmup()
+        } else {
+          // 停止失败：服务还在跑，开关回滚为开、状态按真实探测回填（不许假装已关）
+          reverts[key] = true
+          effectiveEnabled = true
+          const addr = await checkLocalService(key)
+          setStatus(prev => ({ ...prev, [key]: addr }))
+          markFailed(key, r.message)
+          notify(`${name}：停止失败：${r.message}`)
+        }
       }
-      notifyLocalServiceChanged(key, willEnable)
+      applyReverts()
+      notifyLocalServiceChanged(key, effectiveEnabled)
     } finally { setBusyKey(null) }
-  }, [settings, memTier, busyKey, patchSettings, notify])
+  }, [settings, memTier, busyKey, patchSettings, notify, clearFailed, markFailed])
 
-  return { enabled, status, busyKey, toggle, refresh }
+  return { enabled, status, busyKey, failed, toggle, refresh }
 }

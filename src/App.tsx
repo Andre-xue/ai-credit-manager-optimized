@@ -432,7 +432,9 @@ function App() {
     backupOnly: boolean
     after: () => void
   } | null>(null)
-  const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'err' } | null>(null)
+  // v0.1.499：通知改为队列（最多同时 3 条，纵向排队不重叠）——旧实现是单条状态，
+  // 快速连发的两条通知（如启停服务连环报错）在真机录屏里被看成两条压盖在一起。
+  const [toasts, setToasts] = useState<{ id: number; msg: string; kind: 'ok' | 'err'; ts: number }[]>([])
   const [backupDue, setBackupDue] = useState(false)
   const [bioAvailableGlobal, setBioAvailableGlobal] = useState(false)
   const [bioLabel, setBioLabel] = useState('生物识别')
@@ -509,11 +511,16 @@ function App() {
   const stateRef = useRef(state)
   useEffect(() => { stateRef.current = state }, [state])
 
-  const toastTimer = useRef<number | null>(null)
+  const toastSeq = useRef(0)
   const notify = useCallback((msg: string, kind: 'ok' | 'err' = 'ok') => {
-    setToast({ msg, kind })
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600)
+    const now = Date.now()
+    const id = ++toastSeq.current
+    setToasts(prev => {
+      // 同一句话 1.5 秒内重复触发（连点、多路重复上报）只保留一条
+      if (prev.some(x => x.msg === msg && now - x.ts < 1500)) return prev
+      return [...prev.slice(-2), { id, msg, kind, ts: now }]
+    })
+    window.setTimeout(() => setToasts(prev => prev.filter(x => x.id !== id)), kind === 'err' ? 4500 : 2600)
   }, [])
 
   // 后台自动更新（v0.1.474，仅桌面端，init 内部自检平台）：启动静默检查与
@@ -2222,7 +2229,7 @@ function App() {
         <button onClick={() => { try { localStorage.setItem('acm.backup.snoozeUntil', String(Date.now() + 3 * 86400000)) } catch { /* 忽略 */ } setBackupDue(false) }}>{t('3 天后再提醒')}</button>
         <button className="backup-due-close" onClick={() => setBackupDue(false)} title={t('本次忽略')}><X size={14} /></button>
       </div>}
-      {toast && !undo && <div className={toast.kind === 'err' ? 'toast err' : 'toast'}>{toast.kind === 'err' ? <AlertTriangle size={15} /> : <Check size={15} />} {t(toast.msg)}</div>}
+      {!undo && toasts.length > 0 && <div className="toast-stack">{toasts.map(x => <div key={x.id} className={x.kind === 'err' ? 'toast err' : 'toast'}>{x.kind === 'err' ? <AlertTriangle size={15} /> : <Check size={15} />} {t(x.msg)}</div>)}</div>}
     </div>
   )
 }
@@ -5822,15 +5829,27 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
     const { next, stopKeys, enabled } = plan
     onChange({ localServices: next })
     const name = key === 'ollama' ? 'Ollama' : key === 'comfyui' ? 'ComfyUI' : key === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
+    // v0.1.499：停止失败回滚（与 useServiceController 同口径）——服务还在跑就把开关
+    // 写回「开」并按真实探测回填状态，不许设置已关、服务在跑、再点一次又被当成开启
+    const reverts: Partial<Record<LocalServiceKey, boolean>> = {}
+    let effectiveEnabled = enabled
     // 互斥：先停掉被挤掉的旧服务（关自己的情况留给下方 else 分支统一处理）
     for (const oldKey of stopKeys) {
       if (oldKey === key) continue
       const r = await stopServiceByPort(oldKey)
-      setServiceStatus(prev => ({ ...prev, [oldKey]: '' }))
-      setManagedKeys(prev => ({ ...prev, [oldKey]: false }))
-      notifyLocalServiceChanged(oldKey, false)
       const oldName = oldKey === 'ollama' ? 'Ollama' : oldKey === 'comfyui' ? 'ComfyUI' : oldKey === 'qwentts' ? 'Qwen3-TTS' : 'LM Studio'
-      if (r.ok) notify(t('已关闭 {name} 以释放内存（{msg}）', { name: oldName, msg: r.message }))
+      if (r.ok) {
+        setServiceStatus(prev => ({ ...prev, [oldKey]: '' }))
+        setManagedKeys(prev => ({ ...prev, [oldKey]: false }))
+        notifyLocalServiceChanged(oldKey, false)
+        notify(t('已关闭 {name} 以释放内存（{msg}）', { name: oldName, msg: r.message }))
+      } else {
+        reverts[oldKey] = true
+        const addr = await checkLocalService(oldKey)
+        setServiceStatus(prev => ({ ...prev, [oldKey]: addr ?? '' }))
+        notifyLocalServiceChanged(oldKey, true)
+        notify(t('{name}：停止失败：{msg}', { name: oldName, msg: r.message }))
+      }
     }
     if (enabled) {
       // 开启：若端口已有服务在跑则直接复用，否则拉起进程（LM Studio 无 CLI，跳过）
@@ -5853,7 +5872,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
                   notify('已打开 Comfy Desktop，请在其中打开你的实例，启动后会自动识别')
                 } else {
                   // 启动命令返回成功但服务始终没起来 → 回滚开关，避免"已开启却连不上"的状态脱节
-                  onChange({ localServices: { ...(s.localServices ?? {}), [key]: false } })
+                  onChange({ localServices: { ...next, ...reverts, [key]: false } })
                   setServiceStatus(prev => ({ ...prev, [key]: null }))
                   setManagedKeys(prev => ({ ...prev, [key]: false }))
                   notifyLocalServiceChanged(key, false)
@@ -5864,7 +5883,7 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
           }, 2000)
         } else {
           // 启动命令直接失败 → 回滚开关（与 useServiceController 的切换逻辑一致）
-          onChange({ localServices: { ...(s.localServices ?? {}), [key]: false } })
+          onChange({ localServices: { ...next, ...reverts, [key]: false } })
           notifyLocalServiceChanged(key, false)
         }
       } else {
@@ -5874,10 +5893,19 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
       // 关闭：停止端口上的进程（含外部启动的），真正释放端口与内存
       const r = await stopServiceByPort(key)
       notify(t('{name}：{msg}', { name, msg: r.ok ? r.message : t('停止失败：{msg}', { msg: r.message }) }))
-      setServiceStatus(prev => ({ ...prev, [key]: '' }))
-      setManagedKeys(prev => ({ ...prev, [key]: false }))
+      if (r.ok) {
+        setServiceStatus(prev => ({ ...prev, [key]: '' }))
+        setManagedKeys(prev => ({ ...prev, [key]: false }))
+      } else {
+        // 停止失败：开关回滚为开，状态按真实探测回填（服务还在跑就如实显示在跑）
+        reverts[key] = true
+        effectiveEnabled = true
+        const addr = await checkLocalService(key)
+        setServiceStatus(prev => ({ ...prev, [key]: addr ?? '' }))
+      }
     }
-    notifyLocalServiceChanged(key, enabled)
+    if (Object.keys(reverts).length) onChange({ localServices: { ...next, ...reverts } })
+    notifyLocalServiceChanged(key, effectiveEnabled)
   }
 
   /** 切换到指纹解锁：验证主密码后保存到本机，再更新设置 */

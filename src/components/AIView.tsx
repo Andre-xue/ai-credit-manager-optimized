@@ -148,7 +148,7 @@ function saveSessionStore(store: { sessions: ChatSession[]; activeId: string }):
 }
 
 export function AIView({ notify, accounts, settings, serviceController, prompts, onPromptsChange, onOpenSearch }: {
-  notify: (m: string) => void
+  notify: (m: string, kind?: 'ok' | 'err') => void
   accounts: Account[]
   settings?: import('../core/types').AppSettings
   serviceController?: import('../core/useServiceController').ServiceController
@@ -440,9 +440,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' })
   }, [messages, streamingText])
 
-  // 本地型：Ollama 服务开启时自动拉取本机可用模型（文本+视觉，排除嵌入/生图/视频/语音）
+  // 本地型：Ollama 服务开启时拉取本机可用模型（文本+视觉，排除嵌入/生图/视频/语音）。
+  // v0.1.499：开/关 Ollama 只更新本地模型清单，绝不改动当前分类/平台/模型选择——
+  // 497 真机录屏里开 Ollama 后选择被自动跳到本地型/gemma3:4b，已废除两处自动切换。
   const [localModels, setLocalModels] = useState<string[]>([])
-  const localAutoSwitched = useRef(false)
   const ollamaEnabled = useMemo(() => {
     const svc = (settings?.localServices as Record<string, boolean> | undefined)
     return svc?.ollama !== false
@@ -450,13 +451,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   useEffect(() => {
     let alive = true
     if (!ollamaEnabled) {
-      setLocalModels([]); localAutoSwitched.current = false
-      // 服务关闭时若停在「本地型」，切回有模型的分类
-      setCategory(prev => {
-        if (prev !== '本地型') return prev
-        return '免费模型'
-      })
-      setModel('')
+      setLocalModels([])
       return
     }
     // 服务刚启动需短暂就绪时间，延迟拉取；超时保护避免慢服务卡住 UI
@@ -467,12 +462,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       ]).then(ids => {
         if (!alive) return
         setLocalModels(ids)
-        // 开启开关后首次拉到模型，自动切到本地型并选中第一个
-        if (ids.length && !localAutoSwitched.current) {
-          localAutoSwitched.current = true
-          setCategory('本地型')
-          setModel(`local:${ids[0]}`)
-        }
       }).catch(() => { if (alive) setLocalModels([]) })
     }, 1200)
     return () => { alive = false; window.clearTimeout(timer) }
@@ -1474,8 +1463,10 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
     source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: freeModelIdOf(o),
   })
-  /** 一键全测：并发 3 路逐个测活；当前主选已死时自动选第一个活的 */
-  const probeAllFree = async (autoSelect: boolean) => {
+  /** 一键全测：并发 3 路逐个测活。v0.1.499 起检测只报告可用状态，绝不替用户改已选模型
+   * （497 真机录屏：仅打开菜单就触发检测、检测完把已选的 Zen/MiMo 换成 Kilo——已废除）。
+   * 发送路径的免费链自动切换是另一套既有机制（chainMode=auto、发送时兜底），不在这里。 */
+  const probeAllFree = async (fromButton: boolean) => {
     if (probingAll) return
     const list = allOptions.filter(o => o.free)
     if (!list.length) return
@@ -1492,13 +1483,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     }
     await Promise.all([worker(), worker(), worker()])
     setProbingAll(false)
-    if (autoSelect) {
-      const cur = allOptions.find(o => o.key === model)
-      const firstOk = list.find(o => results.get(o.key))
-      if (cur?.free && !results.get(cur.key) && firstOk) {
-        setModel(firstOk.key); saveModel(firstOk.key)
-        notify(t('已自动选到可用的免费模型：{name}', { name: freeModelIdOf(firstOk) }))
-      }
+    const okCount = list.filter(o => results.get(o.key)).length
+    const cur = allOptions.find(o => o.key === model)
+    if (cur?.free && results.has(cur.key) && !results.get(cur.key)) {
+      // 已选模型被证实不可用：只提醒（警告级，停留更久），不改选（改选只发生在用户点选或发送时自动切换）
+      notify(t('当前所选的免费模型 {name} 刚检测未通过，可换一个模型；直接发送时若开了自动切换会顺延到下一条免费路线', { name: freeModelIdOf(cur) }), 'err')
+    } else if (fromButton) {
+      notify(t('检测完成：{ok}/{total} 个免费模型可用', { ok: okCount, total: list.length }))
     }
   }
 
@@ -1548,13 +1539,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       ? (selectedEngine?.name ?? '')
       : (selectedOption && platformKeyOf(selectedOption) === currentPlatform.platformKey ? modelNameOf(selectedOption) : '')
   const modelDropdown = <div className="ai-model-wrap">
-    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); setPlatformOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(true) }} title={t('切换模型')}>
+    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); setPlatformOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(false) }} title={t('切换模型')}>
       {seg3Label} <ChevronDown size={13} />
     </button>
     {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}-${platformKey}`}>
       {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
       {/* v0.1.454：APIsFreeLLM 兜底通道控制块（开关/测活/剩余量/详情）也已摘除——通道控制全 App 只留工坊 RouteSelect 一处；通道开启且测通时 free-ai 仍作为普通模型条目出现在这里（apisFreeOptions） */}
-      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('逐个检测，并自动选到第一个可用的')}</small></button>}
+      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('逐个检测是否可用，不改你已选的模型')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
       {!currentPlatform && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
       {currentPlatform && platformIsAccount && <>
@@ -1639,16 +1630,27 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   type ToolBarItem = {
     id: string; group: number; order: number; tip: string; label: string; icon: ReactNode
     on?: boolean; svcOn?: boolean; svcRunning?: boolean; disabled?: boolean; keepOpen?: boolean
+    /** v0.1.499：服务项的常驻状态点（不悬停也可辨）：切换中/失败/运行中/开但未运行/已关闭 */
+    svcState?: 'busy' | 'failed' | 'running' | 'onidle' | 'off'
     action: () => void
   }
   const ollamaOn = serviceController?.enabled('ollama') ?? false
   const ollamaRunning = !!serviceController?.status.ollama
   const ollamaBusy = serviceController?.busyKey === 'ollama'
+  // 失败态来自控制器记录的真实启停结果；状态本身来自真实探测（status），不按用户点没点关臆测
+  const ollamaFailed = serviceController?.failed?.ollama
+  const ollamaState: NonNullable<ToolBarItem['svcState']> = ollamaBusy ? 'busy'
+    : ollamaFailed ? 'failed'
+    : ollamaRunning ? 'running'
+    : ollamaOn ? 'onidle'
+    : 'off'
   const ollamaTip = ollamaBusy
     ? 'Ollama 本地服务：切换中…'
-    : ollamaOn
-      ? (ollamaRunning ? 'Ollama 本地服务：运行中（点击关闭）' : 'Ollama 本地服务：已开启（点击关闭）')
-      : 'Ollama 本地服务：已关闭（点击开启）'
+    : ollamaFailed
+      ? `Ollama 本地服务：上次启停失败（${ollamaFailed}）${ollamaRunning ? '，服务仍在运行' : ''}（点击重试）`
+      : ollamaOn
+        ? (ollamaRunning ? 'Ollama 本地服务：运行中（点击关闭）' : 'Ollama 本地服务：已开启（点击关闭）')
+        : 'Ollama 本地服务：已关闭（点击开启）'
   const toolBarItems: ToolBarItem[] = [
     ...(tbShow('voiceCall') ? [{
       id: 'voiceCall', group: 0, order: toolOrder('voiceCall'), label: t('语音通话'),
@@ -1720,7 +1722,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       id: 'ollama', group: 3, order: 0, label: 'Ollama 本地服务',
       tip: ollamaTip,
       icon: ollamaBusy ? <Loader2 size={20} className="spin" /> : <Power size={20} />,
-      svcOn: ollamaOn, svcRunning: ollamaRunning, disabled: ollamaBusy, keepOpen: true,
+      svcOn: ollamaOn, svcRunning: ollamaRunning, svcState: ollamaState, disabled: ollamaBusy, keepOpen: true,
       action: () => { void serviceController.toggle('ollama') },
     }] : []),
   ]
@@ -1761,6 +1763,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
                             data-tip={it.tip} aria-label={it.label} disabled={it.disabled}
                             onClick={() => { it.action(); if (!it.keepOpen) setToolsOpen(false) }}>
                             {it.icon}
+                            {it.svcState && <span className={`svc-dot ${it.svcState}`} aria-hidden="true" />}
                           </button>
                         ))}
                       </div>
@@ -1955,9 +1958,15 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               </div>
             ))}
           </div>}
-          {/* 输入框上方一行：右=推理等级 + 添加附件（v0.1.496：「+」由左端移到右侧，与发送按钮同侧；功能不变） */}
-          <div className="ai-compose-top" onClick={() => setComposeActive(true)}>
-            <div className="ai-compose-top-right">
+          {/* 输入框上方同一行（v0.1.499 合并）：左=分类/平台/模型三段级联成组，右=推理等级 + 添加附件，
+              两组同一水平线垂直居中（497 时分居两行高低错位，Ethan 截图点名）。三段级联为 v0.1.496 定版
+              （原「引擎」按钮已删除，引擎面板从第三段菜单底部进入；菜单向上弹）；「+」与推理菜单行为不变 */}
+          <div className="ai-toolbar" onClick={() => setComposeActive(true)}>
+            {/* v0.1.497：Ollama 服务开关已移入右上功能菜单的横向图标栏最右组（电源图标），此处不再渲染 */}
+            {categoryDropdown}
+            {platformDropdown}
+            {modelDropdown}
+            <div className="ai-toolbar-right">
               <div className="reasoning-wrap">
                 <button className="reasoning-btn" onClick={() => setReasoningOpen(v => !v)} title={t(REASONING_DESC[reasoning])}>{t('推理 {level}', { level: reasoning })} <ChevronDown size={12} /></button>
                 {reasoningOpen && <div className="reasoning-menu">
@@ -1975,14 +1984,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               </div>
               <button className="ai-icon-btn" onClick={() => setAttachPickerOpen(true)} title={t('添加附件（点击选择或拖拽）')}><Plus size={18} /></button>
             </div>
-          </div>
-          {/* 输入框上方一行：分类 / 平台 / 模型三段级联（v0.1.496 定版位置：消息区与输入框之间；
-              原「引擎」按钮已删除，引擎面板从第三段菜单底部进入；菜单向上弹，上方空间充足不裁剪） */}
-          <div className="ai-toolbar" onClick={() => setComposeActive(true)}>
-            {/* v0.1.497：Ollama 服务开关已移入右上功能菜单的横向图标栏最右组（电源图标），此处不再渲染 */}
-            {categoryDropdown}
-            {platformDropdown}
-            {modelDropdown}
           </div>
           <div className="ai-compose-box" onClick={() => setComposeActive(true)}
             onDragOver={e => { e.preventDefault() }}

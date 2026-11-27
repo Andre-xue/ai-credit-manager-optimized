@@ -18,6 +18,9 @@ export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
   '自动标出哪些还能用，并选到第一个可用的': { 'zh-TW': '自動標出哪些還能用，並選到第一個可用的', en: 'Marks which ones still work and selects the first available', ja: '使えるものを自動でマークし、最初の利用可能モデルを選択します', ko: '사용 가능한 모델을 자동으로 표시하고 첫 번째 사용 가능 모델을 선택합니다' },
   '免费模型 {name} 不可用，已自动切换到 {next}': { 'zh-TW': '免費模型 {name} 不可用，已自動切換到 {next}', en: 'Free model {name} is unavailable; switched to {next} automatically', ja: '無料モデル {name} は利用できないため、{next} に自動で切り替えました', ko: '무료 모델 {name}을(를) 사용할 수 없어 {next}(으)로 자동 전환했습니다' },
   '已自动选到可用的免费模型：{name}': { 'zh-TW': '已自動選到可用的免費模型：{name}', en: 'Automatically selected an available free model: {name}', ja: '利用可能な無料モデルを自動選択しました：{name}', ko: '사용 가능한 무료 모델을 자동 선택했습니다: {name}' },
+  '逐个检测是否可用，不改你已选的模型': { 'zh-TW': '逐個檢測是否可用，不改你已選的模型', en: 'Checks each one for availability without changing your current selection', ja: '順に使えるかチェックします。選択中のモデルは変更しません', ko: '하나씩 사용 가능한지 검사하며, 현재 선택한 모델은 변경하지 않습니다' },
+  '当前所选的免费模型 {name} 刚检测未通过，可换一个模型；直接发送时若开了自动切换会顺延到下一条免费路线': { 'zh-TW': '目前所選的免費模型 {name} 剛檢測未通過，可換一個模型；直接傳送時若開了自動切換會順延到下一條免費路線', en: 'The free model you selected, {name}, just failed its check. You can pick another one; if auto-switch is on, sending will fall through to the next free route', ja: '選択中の無料モデル {name} はチェックに通りませんでした。別のモデルに変えられます。自動切替がオンなら、送信時に次の無料ルートへ順送りされます', ko: '현재 선택한 무료 모델 {name}이(가) 방금 검사에 통과하지 못했습니다. 다른 모델로 바꿀 수 있으며, 자동 전환이 켜져 있으면 전송 시 다음 무료 경로로 넘어갑니다' },
+  '检测完成：{ok}/{total} 个免费模型可用': { 'zh-TW': '檢測完成：{ok}/{total} 個免費模型可用', en: 'Check complete: {ok}/{total} free models available', ja: 'チェック完了：{ok}/{total} 件の無料モデルが利用可能', ko: '검사 완료: {ok}/{total}개의 무료 모델 사용 가능' },
   // ---- 问候语（timeGreeting / welcomeText 动态键） ----
   '早上好': { 'zh-TW': '早安', en: 'Good morning', ja: 'おはようございます', ko: '좋은 아침입니다' },
   '中午好': { 'zh-TW': '午安', en: 'Good afternoon', ja: 'こんにちは', ko: '안녕하세요' },

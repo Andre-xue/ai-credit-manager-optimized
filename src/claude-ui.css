@@ -350,15 +350,19 @@
 .ai-compose-top .reasoning-wrap { flex: 0 0 auto; }
 .ai-compose-top .reasoning-btn { white-space: nowrap; }
 
-/* 输入框上方一行：分类/平台/模型三段级联（v0.1.496 定版位置），菜单向上弹。
-   v0.1.497：Ollama 开关移入功能图标栏后，行内只剩三段——左对齐成组、自然宽度、统一 gap，
-   不许 space-between 拉散（Ethan 496 实机截图反馈：三段被拉散、第三段顶到最右端） */
+/* 输入框上方同一行（v0.1.496 定版位置；v0.1.499 合并）：左=分类/平台/模型三段级联成组
+   （左对齐、自然宽度、统一 gap，不许 space-between 拉散——Ethan 496 实机截图反馈），
+   右=推理等级 + 添加附件（.ai-toolbar-right 以 margin-left:auto 顶到右端），
+   两组同一水平线垂直居中（499 前分居两行高低错位，Ethan 截图点名合并） */
 .ai-toolbar {
   display: flex; align-items: center; justify-content: flex-start;
   gap: 12px; margin-bottom: 10px;
 }
 .ai-toolbar .ai-model-btn { flex: 0 0 auto; white-space: nowrap; }
 .ai-toolbar .ai-icon-btn { flex: 0 0 auto; }
+.ai-toolbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+.ai-toolbar-right .reasoning-wrap { flex: 0 0 auto; }
+.ai-toolbar-right .reasoning-btn { white-space: nowrap; }
 .ai-hint-inline {
   display: flex; align-items: center; justify-content: center; gap: 5px;
   font-size: 11px; color: var(--text-3); margin-top: 8px;
