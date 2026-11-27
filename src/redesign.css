@@ -467,16 +467,31 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .health-badge.skipped .health-dot{background:#b6b0c8}
 
 /* ===== A 批新增：全局搜索 / 日历 / 审计 / 分段控件 ===== */
-/* v0.1.481：全局搜索入口移位——侧栏底部搜索框（旧 .cmdk-trigger）已撤，改主区右上角纯图标按钮。
-   非 AI 页用这个独立胶囊按钮（与 AI 页顶栏胶囊同款式），fixed 钉在窗口右上角、与侧栏折叠状态无关；
-   AI 页不渲染它（按钮在 AIView 顶栏胶囊内、宫格按钮左侧）。 */
+/* v0.1.485：桌面端全局搜索统一到窗口标题栏条右端（.app-titlebar，见下方），481 的两处旧落点已撤：
+   AIView 顶栏胶囊里的放大镜（桌面端不再渲染，胶囊只剩宫格）、非 AI 页的 fixed 胶囊（桌面端不再渲染）。
+   .global-search-btn 仅剩手机壳在用：非 AI 页落在顶部预留的 62px 带内（与 AI 页顶栏胶囊同高同位），不压内容。
+   481 为桌面 fixed 胶囊留的 .content 56px 顶部带已一并回收（内容恢复原 padding）。 */
 .global-search-btn{position:fixed;top:10px;right:12px;z-index:45;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid var(--border);background:var(--panel);box-shadow:0 4px 14px rgba(16,24,40,.07);color:var(--text-2);cursor:pointer}
 .global-search-btn:hover{border-color:var(--border-strong);color:var(--text)}
-/* 手机壳：落在非 AI 页顶部预留的 62px 带内（与 AI 页顶栏胶囊同高同位），不压内容 */
 .phone-shell .global-search-btn{top:calc(env(safe-area-inset-top, 0px) + 10px);right:12px;width:36px;height:36px}
-/* 桌面非 AI 页：内容顶部留 56px 带给右上角按钮——否则 Key 页工具栏的「添加账户」等第一行右侧控件会被按钮压住
-   （无头 1400 宽实测改前重叠 30×16px）。AI 页不用（胶囊层自理），手机壳不用（已有预留带）。 */
-.app-shell:not(.phone-shell) .main .content:not(.content-ai){padding-top:56px}
+/* v0.1.485：自绘标题栏条（仅非手机壳渲染）——fixed 钉窗口最顶部 40px。macOS 桌面端窗口为
+   Overlay 标题栏：红绿灯悬浮在条左端之上（.mac 左侧留 80px），标题文字在条内呈现；
+   条身是窗口拖动区（App 侧显式 startDragging、按钮除外），右端一颗纯放大镜全局搜索按钮。
+   shell 顶部让出 40px（padding-top），桌面侧栏高度同步扣减（见下方 @media 规则）。 */
+.app-titlebar{position:fixed;top:0;left:0;right:0;height:40px;z-index:45;display:flex;align-items:center;gap:8px;padding:0 10px 0 14px;background:var(--bg);user-select:none;-webkit-user-select:none}
+.app-titlebar.mac{padding-left:82px}
+.app-titlebar-title{font-size:13px;font-weight:600;color:var(--text-2);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.app-titlebar-spacer{flex:1;min-width:0}
+.app-titlebar-btn{width:30px;height:30px;flex:none;display:flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;padding:0}
+.app-titlebar-btn:hover{background:var(--panel-2);color:var(--text)}
+.app-shell:not(.phone-shell){padding-top:40px}
+@media (min-width:861px){
+  .app-shell:not(.phone-shell) .sidebar{height:calc(100dvh - 52px)}
+}
+@media (max-width:860px){
+  /* 窄窗下基础规则有 .app-shell{padding:0 !important}，标题栏让位必须保住 */
+  .app-shell:not(.phone-shell){padding-top:40px !important}
+}
 .cmdk-overlay{align-items:flex-start;padding-top:12vh}
 .cmdk-panel{width:min(560px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden}
 .cmdk-input-row{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);color:var(--text-3)}

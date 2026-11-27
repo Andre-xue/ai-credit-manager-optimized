@@ -1626,10 +1626,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         {/* 顶部栏：朗读开关 / 电话 / 刷新，靠右间距适中 */}
         <div className="ai-topbar">
           <div className="ai-top-actions" ref={toolsRef}>
-            {/* v0.1.481：全局搜索移位到右上角——纯放大镜图标，排在宫格（全部功能）按钮左侧，与 ⌘K 打开同一个面板 */}
-            <button className="ai-icon-btn" onClick={() => onOpenSearch?.()} data-tip={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
-              <Search size={17} />
-            </button>
+            {/* 全局搜索：桌面端已统一到窗口标题栏右端（v0.1.485），胶囊里只剩宫格；
+                手机壳无桌面标题栏，保留 481 形态——仅手机端传入 onOpenSearch 时才渲染这颗放大镜（宫格左侧） */}
+            {onOpenSearch && (
+              <button className="ai-icon-btn" onClick={() => onOpenSearch()} data-tip={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+                <Search size={17} />
+              </button>
+            )}
             <button className={`ai-icon-btn ${toolsOpen || anyToolOn ? 'active' : ''}`} onClick={() => setToolsOpen(v => !v)} data-tip={t('全部功能')}>
               <LayoutGrid size={17} />
             </button>

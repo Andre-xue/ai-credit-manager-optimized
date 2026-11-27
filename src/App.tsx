@@ -313,6 +313,31 @@ function App() {
   // 预览参数仅用于浏览器验收手机端界面，生产环境不会带此参数
   const phonePreview = typeof location !== 'undefined' && (new URLSearchParams(location.search).get('preview') === 'phone' || location.hash.includes('preview=phone'))
   const isPhone = isNativeApp() || phonePreview
+  // v0.1.485：桌面标题栏条——macOS 桌面端窗口已改 Overlay 标题栏（红绿灯悬浮在
+  // 自绘条左端之上），条左侧需给红绿灯留 80px 空位；其余桌面/网页端无红绿灯不留。
+  const isMacDesktop = isDesktopApp() && typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent ?? '')
+  // 标题栏拖动（沿用 480 小窗的显式口径：声明式 drag-region 在真机不可靠）：
+  // 按下点落在按钮等交互元素上时不拖（按钮照常可点），其余区域拖动窗口；双击切换最大化。
+  const onTitlebarMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 || !isDesktopApp()) return
+    if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [data-no-drag]')) return
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        await getCurrentWindow().startDragging()
+      } catch { /* 非桌面/无权限时忽略 */ }
+    })()
+  }
+  const onTitlebarDoubleClick = (e: React.MouseEvent) => {
+    if (!isDesktopApp()) return
+    if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [data-no-drag]')) return
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        await getCurrentWindow().toggleMaximize()
+      } catch { /* 非桌面/无权限时忽略 */ }
+    })()
+  }
   const [tab, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(location.search).get('tab')
     // 手机客户端已移除文档问答与本地生成：即使外部带参指向这些页也回落到默认页
@@ -1362,6 +1387,20 @@ function App() {
 
   return (
     <div className={shellClass}>
+      {/* v0.1.485：全局搜索按钮统一搬到窗口标题栏右端（Ethan 2026-11-27 09:22 截图圈定
+          红绿灯与窗口标题所在那条的右端空置区）。桌面端自绘标题栏条：macOS 窗口已改
+          Overlay（hiddenTitle），红绿灯悬浮在条左端、标题文字由条内呈现；条身即拖动区
+          （显式 startDragging，按钮除外），右端只放一颗纯放大镜按钮，全页面共用一处。
+          手机壳没有这条桌面标题栏，不渲染（搜索入口保持 481 手机形态，见下方与 AIView）。 */}
+      {!isPhone && (
+        <div className={`app-titlebar${isMacDesktop ? ' mac' : ''}`} onMouseDown={onTitlebarMouseDown} onDoubleClick={onTitlebarDoubleClick}>
+          <span className="app-titlebar-title">{t('AI 魔方')}</span>
+          <span className="app-titlebar-spacer" />
+          <button className="app-titlebar-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
+            <Search size={16} />
+          </button>
+        </div>
+      )}
       {/* 手机端抽屉遮罩：点击关闭侧栏 */}
       {isPhone && sidebarVisible && <button className="phone-scrim" aria-label={t('关闭菜单')} onClick={() => setSidebarVisible(false)} />}
       <aside className="sidebar">
@@ -1477,7 +1516,7 @@ function App() {
 
         <div className={`content ${tab === 'ai' ? 'content-ai' : ''}`}>
           <Suspense fallback={<div style={{ padding: 32, color: 'var(--text-3)', fontSize: 13 }}>{t('加载中…')}</div>}>
-          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} onOpenSearch={() => setPaletteOpen(true)} />}
+          {tab === 'ai' && <AIView notify={notify} accounts={state.accounts} settings={state.settings} serviceController={isPhone ? undefined : serviceController} prompts={state.prompts ?? []} onPromptsChange={(prompts) => setState(s => ({ ...s, prompts }))} onOpenSearch={isPhone ? () => setPaletteOpen(true) : undefined} />}
           {tab === 'dashboard' && <>
           {state.accounts.length === 0 && !onboardingOff && <div className="onboarding-card">
             <button className="onboarding-close" onClick={() => { try { localStorage.setItem('acm.onboarding.dismissed', '1') } catch { /* 忽略 */ } setOnboardingOff(true) }} title={t('不再显示')}><X size={15} /></button>
@@ -1974,9 +2013,10 @@ function App() {
         }}
       />}
       {loginOpen && <CloudLoginModal onClose={() => setLoginOpen(false)} onSuccess={handleCloudLogin} />}
-      {/* v0.1.481：全局搜索入口移位——侧栏底部搜索框撤掉，改主区右上角纯图标按钮（与原搜索框、⌘K 打开同一个面板）。
-          AI 页的按钮在 AIView 顶栏胶囊内、宫格按钮左侧；其余页面用这个同款胶囊按钮钉在右上角，与侧栏折叠状态无关。 */}
-      {tab !== 'ai' && (
+      {/* 全局搜索入口：桌面端已统一到窗口标题栏右端（v0.1.485，见根节点 app-titlebar）。
+          这里只保留手机壳形态（v0.1.481）：非 AI 页用同款胶囊按钮落在手机顶部预留带内；
+          手机 AI 页的按钮在 AIView 顶栏胶囊内（onOpenSearch 仅手机端传入）。 */}
+      {isPhone && tab !== 'ai' && (
         <button className="global-search-btn" onClick={() => setPaletteOpen(true)} title={`${t('搜索页面 / 账户 / 工具')} (⌘K)`} aria-label={t('搜索页面 / 账户 / 工具')}>
           <Search size={17} />
         </button>
