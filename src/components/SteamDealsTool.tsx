@@ -4,7 +4,7 @@
 // 价格/分类以 Steam 返回为准，不编造；拉不到时明确显示原因，不静默兜底。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ChevronDown, Clock, ExternalLink, Gamepad2, Loader2, RefreshCw,
+  ArrowLeft, ChevronDown, ChevronRight, Clock, ExternalLink, Gamepad2, Loader2, RefreshCw,
   Search, SlidersHorizontal, TriangleAlert, Unlink, X,
 } from 'lucide-react'
 import { ToolShell } from './WorkshopView'
@@ -12,9 +12,13 @@ import { Pager } from './Pager'
 import {
   loadSteamCache, loadSteamDeals, loadMoreSteamDeals,
   shouldEntryRefreshSteam,
-  sortSteamDeals, enrichSteamPackages, dealKey, storeUrlOf,
+  sortSteamDeals, dealKey, storeUrlOf,
   type SteamDeal, type SteamDealsCache, type SteamSort,
 } from '../core/steamDeals'
+import {
+  fetchSteamGameDetail,
+  type SteamGameDetail, type SteamPackageOption,
+} from '../core/steamDetail'
 import {
   STEAM_CATEGORIES, STEAM_PLATFORMS, AAA_NOTE, HORROR_NOTE,
   STEAM_HORROR_TAG_ID, filterSteamDeals, buildFilterSummary,
@@ -46,8 +50,6 @@ const LIB_SORTS: { key: LibrarySort; label: string }[] = [
   { key: 'name', label: '名称' },
 ]
 
-type KindFilter = 'all' | 'game' | 'package'
-
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
@@ -62,25 +64,27 @@ function fmtDate(sec: number): string {
   return new Date(sec * 1000).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' })
 }
 
-function DealCard({ deal, owned, onOpen }: { deal: SteamDeal; owned: boolean; onOpen: (d: SteamDeal) => void }) {
+function DealCard({ deal, owned, onOpen, onDetail }: {
+  deal: SteamDeal; owned: boolean
+  /** 「直达 Steam 商店」小链接：直达客户端/浏览器，不进详情 */
+  onOpen: (d: SteamDeal) => void
+  /** 整卡点击：进 App 内详情页 */
+  onDetail: (d: SteamDeal) => void
+}) {
   const [imgOk, setImgOk] = useState(true)
   return (
-    <div className="sm-card" role="button" tabIndex={0} title="点击在 Steam 客户端打开商店页（没装客户端时走浏览器）"
-      onClick={() => onOpen(deal)}
-      onKeyDown={e => { if (e.key === 'Enter') onOpen(deal) }}>
+    <div className="sm-card" role="button" tabIndex={0} title="点击查看游戏详情"
+      onClick={() => onDetail(deal)}
+      onKeyDown={e => { if (e.key === 'Enter') onDetail(deal) }}>
       <div className="sm-cover">
         {deal.imageUrl && imgOk
           ? <img src={deal.imageUrl} alt={deal.title} loading="lazy" onError={() => setImgOk(false)} />
           : <span className="sm-cover-fallback"><Gamepad2 size={26} /></span>}
         {deal.discountPct > 0 && <span className="sm-badge-discount">-{deal.discountPct}%</span>}
-        {deal.kind === 'package' && <span className="sm-badge-pkg">合集包</span>}
         {owned && <span className="sm-badge-owned">已入库</span>}
       </div>
       <div className="sm-card-body">
         <div className="sm-card-title">{deal.title}</div>
-        {deal.kind === 'package' && deal.contents && deal.contents.length > 0 && (
-          <div className="sm-card-meta">包含：{deal.contents.slice(0, 3).join('、')}{deal.contents.length > 3 ? ` 等 ${deal.contents.length} 款` : ''}</div>
-        )}
         <div className="sm-card-meta">
           {deal.finalPrice
             ? <>{deal.originalPrice && deal.discountPct > 0 && <s>{deal.originalPrice}</s>} <b className="sm-price">{deal.finalPrice}</b></>
@@ -93,7 +97,10 @@ function DealCard({ deal, owned, onOpen }: { deal: SteamDeal; owned: boolean; on
           {deal.released && <span>{deal.reviewPct !== undefined ? ' · ' : ''}{deal.released} 发售</span>}
         </div>
         <div className="sm-card-foot">
-          <span className="sm-open"><ExternalLink size={12} /> 直达 Steam 商店</span>
+          <button className="sm-open" title="在 Steam 客户端打开商店页（没装客户端时走浏览器）"
+            onClick={e => { e.stopPropagation(); onOpen(deal) }}>
+            <ExternalLink size={12} /> 直达 Steam 商店
+          </button>
         </div>
       </div>
     </div>
@@ -132,11 +139,11 @@ export function SteamDealsTool({ notify, onBack }: {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<SteamSort>('discount')
-  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [page, setPage] = useState(1)
-  const [enriching, setEnriching] = useState(false)
-  const [enrichFailed, setEnrichFailed] = useState(false)
-  const enrichRunning = useRef(false)
+  // 详情页（v0.1.505）：点卡片进详情；列表的筛选/排序/页码都是本组件 state，
+  // 进出详情不卸载列表，返回时天然保留；滚动位置单独存取（见 openDetail/closeDetail）
+  const [detailDeal, setDetailDeal] = useState<SteamDeal | null>(null)
+  const listScrollTop = useRef(0)
 
   // 搜索（已拉数据先筛 + storesearch 全目录）
   const [queryInput, setQueryInput] = useState('')
@@ -173,6 +180,34 @@ export function SteamDealsTool({ notify, onBack }: {
     const clientUrl = steamClientUrlOfDeal(deal)
     if (!clientUrl) { void openExternal(deal.url); return }
     const res = await openViaClient(clientUrl, deal.url)
+    if (res.via === 'web' && isDesktopApp()) {
+      notify(res.browserOpened === false
+        ? `Steam 客户端直达失败（${res.reason}），浏览器也没打开，请手动打开 Steam 商店`
+        : `Steam 客户端直达失败（${res.reason}），已在浏览器打开商店页`, 'err')
+    }
+  }
+
+  // 进详情前记下列表滚动位置（滚动容器是外层 .main），返回时恢复
+  const openDetail = (deal: SteamDeal) => {
+    const scroller = document.querySelector('.main')
+    listScrollTop.current = scroller?.scrollTop ?? 0
+    setDetailDeal(deal)
+    if (scroller) scroller.scrollTop = 0
+  }
+
+  const closeDetail = () => {
+    setDetailDeal(null)
+    requestAnimationFrame(() => {
+      const scroller = document.querySelector('.main')
+      if (scroller) scroller.scrollTop = listScrollTop.current
+    })
+  }
+
+  /** 详情页里打开某个版本/合集包：客户端直达 sub 页，失败回落浏览器（口径同卡片直达） */
+  const openPackage = async (pkg: SteamPackageOption) => {
+    const clientUrl = steamClientUrlOfDeal({ kind: 'package', appid: pkg.packageId, url: pkg.url })
+    if (!clientUrl) { void openExternal(pkg.url); return }
+    const res = await openViaClient(clientUrl, pkg.url)
     if (res.via === 'web' && isDesktopApp()) {
       notify(res.browserOpened === false
         ? `Steam 客户端直达失败（${res.reason}），浏览器也没打开，请手动打开 Steam 商店`
@@ -222,29 +257,6 @@ export function SteamDealsTool({ notify, onBack }: {
     return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // 后台补齐合集包（v0.1.412）：跑在后台不挡首屏，查过的本体记进缓存。
-  useEffect(() => {
-    if (!cache || enrichRunning.current) return
-    const checked = new Set(cache.checkedAppids ?? [])
-    if (!cache.items.some(d => d.kind === 'game' && !checked.has(d.appid))) return
-    void (async () => {
-      enrichRunning.current = true
-      setEnriching(true)
-      setEnrichFailed(false)
-      try {
-        const r = await enrichSteamPackages(cache)
-        if (r.added > 0) setCache(r.cache)
-        if (r.failed) setEnrichFailed(true)
-      } catch {
-        setEnrichFailed(true)
-      } finally {
-        setEnriching(false)
-        enrichRunning.current = false
-      }
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cache?.at, cache?.items.length])
 
   // 恐怖分类：切到恐怖时按标签拉特惠（Steam 无恐怖类型，标签 1667）
   useEffect(() => {
@@ -324,8 +336,8 @@ export function SteamDealsTool({ notify, onBack }: {
   }, [category, platform, baseGameIdsKey])
 
   const filtered = useMemo(
-    () => filterSteamDeals(baseList, metaMap, { category, platform, discountOnly, kind: kindFilter }),
-    [baseList, metaMap, category, platform, discountOnly, kindFilter],
+    () => filterSteamDeals(baseList, metaMap, { category, platform, discountOnly }),
+    [baseList, metaMap, category, platform, discountOnly],
   )
   const sorted = useMemo(() => sortSteamDeals(filtered, sort), [filtered, sort])
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
@@ -333,7 +345,6 @@ export function SteamDealsTool({ notify, onBack }: {
   const pageItems = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
   const searchFetched = cache?.searchFetched ?? cache?.items.length ?? 0
   const hasMore = !!cache && !query && category !== 'horror' && searchFetched < cache.total
-  const packageCount = useMemo(() => (cache ? cache.items.filter(d => d.kind === 'package').length : 0), [cache])
   const summary = buildFilterSummary({ category, platform, discountOnly })
   const metaPending = useMemo(
     () => baseList.filter(d => d.kind === 'game' && !metaMap[d.appid]).length,
@@ -446,7 +457,17 @@ export function SteamDealsTool({ notify, onBack }: {
           </div>
         </div>
 
-        {tab === 'mall' && (
+        {tab === 'mall' && detailDeal && (
+          <SteamDetailView
+            deal={detailDeal}
+            owned={ownedSet.has(detailDeal.appid)}
+            onBack={closeDetail}
+            onOpenApp={openDeal}
+            onOpenPackage={openPackage}
+          />
+        )}
+
+        {tab === 'mall' && !detailDeal && (
           <>
             <div className="sm-searchbar">
               <div className="sm-searchbox">
@@ -496,19 +517,6 @@ export function SteamDealsTool({ notify, onBack }: {
                     </div>
                   </div>
                   <div className="sm-frow">
-                    <span className="sm-flabel">类型</span>
-                    <div className="sm-chips">
-                      {([
-                        { key: 'all', label: `全部（${baseList.length}）` },
-                        { key: 'game', label: '游戏本体' },
-                        { key: 'package', label: '合集包' },
-                      ] as { key: KindFilter; label: string }[]).map(f => (
-                        <button key={f.key} className={`sm-chip ${kindFilter === f.key ? 'on' : ''}`}
-                          onClick={() => { setKindFilter(f.key); setPage(1) }}>{f.label}</button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="sm-frow">
                     <span className="sm-flabel">分类</span>
                     <div className="sm-chips">
                       {STEAM_CATEGORIES.map(c => (
@@ -535,10 +543,7 @@ export function SteamDealsTool({ notify, onBack }: {
             {cache && !query && category !== 'horror' && (
               <div className="sm-source">
                 Steam 商店公开接口 · 更新于 {fmtTime(cache.at)}
-                · 共 {cache.total.toLocaleString('zh-CN')} 款打折中，已拉 {searchFetched.toLocaleString('zh-CN')} 款
-                {packageCount > 0 && `，其中 ${packageCount} 款为合集包`}
-                {enriching && ' · 正在补齐合集包…'}
-                {enrichFailed && ' · 合集包补齐失败（网络原因，主列表不受影响，刷新可再试）'}
+                · 共 {cache.total.toLocaleString('zh-CN')} 款打折中，已拉 {searchFetched.toLocaleString('zh-CN')} 款（列表只显示游戏本体，合集包在各游戏详情页里看）
               </div>
             )}
             {category === 'horror' && (
@@ -551,7 +556,7 @@ export function SteamDealsTool({ notify, onBack }: {
                   ? `正在补齐分类信息… ${metaProgress.done}/${metaProgress.total}（补齐一款显示一款，补过的会缓存）`
                   : metaPending > 0
                     ? `还有 ${metaPending} 款的分类信息没补齐，稍后自动继续`
-                    : '分类信息已补齐'} · 启用分类/平台筛选时只显示游戏本体（合集包没有类型数据）
+                    : '分类信息已补齐'}
               </div>
             ) : null}
 
@@ -578,7 +583,7 @@ export function SteamDealsTool({ notify, onBack }: {
             {pageItems.length > 0 && (
               <div className="sm-grid">
                 {pageItems.map(d => (
-                  <DealCard key={dealKey(d)} deal={d} owned={d.kind === 'game' && ownedSet.has(d.appid)} onOpen={openDeal} />
+                  <DealCard key={dealKey(d)} deal={d} owned={ownedSet.has(d.appid)} onOpen={openDeal} onDetail={openDetail} />
                 ))}
               </div>
             )}
@@ -588,9 +593,7 @@ export function SteamDealsTool({ notify, onBack }: {
                   ? '没有匹配的游戏：换个关键词，或清掉分类/平台筛选再看。'
                   : (category !== null && category !== 'horror') || platform !== null
                     ? (metaProgress ? '正在补齐分类信息，补齐后会自动出现…' : '当前已拉到的列表里没有符合这个分类/平台的游戏，点「加载更多」拉更多再看。')
-                    : kindFilter === 'package'
-                      ? '当前已拉到的列表里还没有合集包，点「加载更多」继续拉，或等后台补齐。'
-                      : 'Steam 当前没有打折游戏（或返回为空），过会儿再刷新看看。'}
+                    : 'Steam 当前没有打折游戏（或返回为空），过会儿再刷新看看。'}
               </div>
             )}
 
@@ -684,6 +687,195 @@ export function SteamDealsTool({ notify, onBack }: {
         />
       )}
     </ToolShell>
+  )
+}
+
+/**
+ * 游戏详情页（v0.1.505，商城内部视图）：数据进页才拉（appdetails + appreviews +
+ * packagedetails，带 1 小时本机缓存）。缺字段就不显示那一行；拉失败显示
+ * 人话原因 + 重试，不白屏。购买仍在 Steam 客户端/浏览器完成，App 内只看不下单。
+ */
+function SteamDetailView({ deal, owned, onBack, onOpenApp, onOpenPackage }: {
+  deal: SteamDeal
+  owned: boolean
+  onBack: () => void
+  onOpenApp: (d: SteamDeal) => void
+  onOpenPackage: (p: SteamPackageOption) => void
+}) {
+  const [detail, setDetail] = useState<SteamGameDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [retryTick, setRetryTick] = useState(0)
+  const [shotIdx, setShotIdx] = useState(0)
+  const [imgOk, setImgOk] = useState(true)
+
+  useEffect(() => {
+    let dead = false
+    setLoading(true)
+    setError(null)
+    setDetail(null)
+    setShotIdx(0)
+    setImgOk(true)
+    void (async () => {
+      try {
+        const d = await fetchSteamGameDetail(deal.appid, retryTick > 0)
+        if (!dead) setDetail(d)
+      } catch (e) {
+        if (!dead) setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (!dead) setLoading(false)
+      }
+    })()
+    return () => { dead = true }
+  }, [deal.appid, retryTick])
+
+  const shots = useMemo(() => {
+    if (!detail) return [] as { thumb: string; full: string }[]
+    const head = detail.headerImage ? [{ thumb: detail.headerImage, full: detail.headerImage }] : []
+    return [...head, ...detail.screenshots]
+  }, [detail])
+  const activeShot = shots[Math.min(shotIdx, Math.max(0, shots.length - 1))]
+
+  // 价格：详情接口的总览价优先；接口没给时回落列表行自带价格（同为 Steam 返回，不编造）
+  const price = detail?.price ?? (deal.finalPrice
+    ? { discountPct: deal.discountPct, originalPrice: deal.originalPrice, finalPrice: deal.finalPrice, finalPriceCents: deal.finalPriceCents }
+    : undefined)
+  const reviewPct = detail?.reviewPct ?? deal.reviewPct
+  const reviewCount = detail?.reviewCount ?? deal.reviewCount
+
+  return (
+    <div className="sm-detail">
+      <div className="sm-detail-topbar">
+        <button className="sm-back-btn" onClick={onBack}><ArrowLeft size={15} /> 返回商城</button>
+        <div className="sm-crumb">
+          <button className="sm-crumb-link" onClick={onBack}>商城</button>
+          <ChevronRight size={13} />
+          <span className="sm-crumb-here">{detail?.name ?? deal.title}</span>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="sm-empty"><Loader2 size={14} className="spin" /> 正在加载游戏详情…</div>
+      )}
+      {error && !loading && (
+        <div className="sm-alert big">
+          <TriangleAlert size={14} />
+          <span>{error}</span>
+          <button className="sm-search-btn" onClick={() => setRetryTick(t => t + 1)}>重试</button>
+        </div>
+      )}
+
+      {detail && !loading && (
+        <>
+          <div className="sm-detail-main">
+            <div className="sm-detail-left">
+              <div className="sm-detail-hero">
+                {activeShot && imgOk
+                  ? <img src={activeShot.full} alt={detail.name} onError={() => setImgOk(false)} />
+                  : <span className="sm-cover-fallback"><Gamepad2 size={34} /></span>}
+              </div>
+              {shots.length > 1 && (
+                <div className="sm-detail-thumbs">
+                  {shots.map((s, i) => (
+                    <button key={`${s.full}-${i}`} className={`sm-thumb ${i === shotIdx ? 'on' : ''}`}
+                      onClick={() => { setShotIdx(i); setImgOk(true) }} title={`截图 ${i + 1}`}>
+                      <img src={s.thumb} alt="" loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="sm-detail-right">
+              <h2 className="sm-detail-title">{detail.name}</h2>
+              {detail.shortDescription && <p className="sm-detail-short">{detail.shortDescription}</p>}
+              <div className="sm-detail-facts">
+                {reviewPct !== undefined && (
+                  <div className="sm-fact"><span>好评率</span><b>{reviewPct}%{reviewCount !== undefined ? `（${reviewCount.toLocaleString('zh-CN')} 篇评测）` : ''}</b></div>
+                )}
+                {detail.releaseDate && <div className="sm-fact"><span>发售日</span><b>{detail.releaseDate}</b></div>}
+                {detail.developers.length > 0 && <div className="sm-fact"><span>开发商</span><b>{detail.developers.join('、')}</b></div>}
+                {detail.publishers.length > 0 && <div className="sm-fact"><span>发行商</span><b>{detail.publishers.join('、')}</b></div>}
+              </div>
+              {detail.genres.length > 0 && (
+                <div className="sm-detail-genres">
+                  {detail.genres.map(g => <span key={g} className="sm-genre-chip">{g}</span>)}
+                </div>
+              )}
+              {owned && <div className="sm-owned-bar">已入库 · 这款游戏已经在你的游戏库里</div>}
+              <div className="sm-detail-pricebox">
+                {detail.isFree
+                  ? <span className="sm-detail-free">免费游玩</span>
+                  : price
+                    ? <>
+                        {price.discountPct > 0 && <span className="sm-badge-discount inline">-{price.discountPct}%</span>}
+                        {price.originalPrice && price.discountPct > 0 && <s className="sm-detail-orig">{price.originalPrice}</s>}
+                        <span className="sm-detail-final">{price.finalPrice}</span>
+                      </>
+                    : <span className="sm-detail-noprice">价格见商店页</span>}
+              </div>
+              <div className="sm-detail-actions">
+                <button className="sm-client-btn" onClick={() => onOpenApp(deal)}>在 Steam 客户端打开</button>
+                <button className="sm-browser-btn" onClick={() => void openExternal(storeUrlOf(deal.appid))}>浏览器打开</button>
+              </div>
+            </div>
+          </div>
+
+          {detail.packages.length > 1 && (
+            <div className="sm-pkg-section">
+              <h3 className="sm-detail-h">版本与合集包</h3>
+              <div className="sm-pkg-list">
+                {detail.packages.map(pkg => (
+                  <div key={pkg.packageId} className={`sm-pkg-row ${pkg.isBase ? 'base' : ''}`}>
+                    <div className="sm-pkg-main">
+                      <div className="sm-pkg-name">
+                        {pkg.name || `合集包 ${pkg.packageId}`}
+                        {pkg.isBase && <span className="sm-pkg-base-badge">当前展示价</span>}
+                      </div>
+                      {pkg.description && <div className="sm-pkg-desc">{pkg.description}</div>}
+                    </div>
+                    <div className="sm-pkg-price">
+                      {pkg.discountPct > 0 && <span className="sm-badge-discount inline">-{pkg.discountPct}%</span>}
+                      {pkg.originalPrice && pkg.discountPct > 0 && <s>{pkg.originalPrice}</s>}
+                      {pkg.finalPrice
+                        ? <b>{pkg.finalPrice}</b>
+                        : <span className="sm-pkg-noprice">价格见商店页</span>}
+                    </div>
+                    <button className="sm-pkg-open" onClick={() => onOpenPackage(pkg)}>在 Steam 打开</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {detail.aboutText && (
+            <div className="sm-detail-about-wrap">
+              <h3 className="sm-detail-h">关于这款游戏</h3>
+              <div className="sm-detail-about">{detail.aboutText}</div>
+            </div>
+          )}
+
+          {detail.requirements && (detail.requirements.minimum || detail.requirements.recommended) && (
+            <div className="sm-detail-req-wrap">
+              <h3 className="sm-detail-h">系统配置</h3>
+              <div className="sm-detail-reqs">
+                {detail.requirements.minimum && (
+                  <div className="sm-req">
+                    <div className="sm-req-title">最低配置</div>
+                    <div className="sm-req-body">{detail.requirements.minimum}</div>
+                  </div>
+                )}
+                {detail.requirements.recommended && (
+                  <div className="sm-req">
+                    <div className="sm-req-title">推荐配置</div>
+                    <div className="sm-req-body">{detail.requirements.recommended}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 

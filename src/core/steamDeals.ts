@@ -46,11 +46,10 @@ export interface SteamDealsCache {
   at: number
   /** Steam 返回的打折总数（当前约两万款，大促期间更多） */
   total: number
+  /** 只存游戏本体（v0.1.505 起：合集包不再进列表，合集包只在详情页的「版本与合集包」区出现） */
   items: SteamDeal[]
-  /** 已从搜索接口拉到的行数（本体+合集包行；与 items.length 区分：补齐的合集包不占搜索偏移） */
+  /** 已从搜索接口拉到的原始行数（本体+合集包行都算；与 items.length 区分：过滤掉的合集包行也占搜索偏移） */
   searchFetched: number
-  /** 已反查过合集包的本体 appid（补齐只跑未查过的，避免重复请求） */
-  checkedAppids?: string[]
 }
 
 /** 去重/列表 key：appid 与 sub id 是两个命名空间，数字可能撞号，必须带 kind */
@@ -234,208 +233,37 @@ export async function fetchSteamDealsPage(start: number, count = STEAM_DEALS_PAG
   return { total, items }
 }
 
-/** 首屏加载：缓存新鲜（1 小时内）直接用，否则拉第一页并写缓存。 */
+/** 列表只保留游戏本体（v0.1.505）：搜索结果里的合集包行（sub）过滤掉，不进缓存。 */
+export function onlyGameDeals(items: SteamDeal[]): SteamDeal[] {
+  return items.filter(d => d.kind === 'game')
+}
+
+/** 首屏加载：缓存新鲜（1 小时内）直接用，否则拉第一页并写缓存（只存本体）。 */
 export async function loadSteamDeals(force = false): Promise<SteamDealsCache> {
   const cached = loadSteamCache()
-  if (!force && isSteamCacheFresh(cached)) return cached as SteamDealsCache
+  if (!force && isSteamCacheFresh(cached)) {
+    // 旧缓存（505 之前）可能混有合集包条目：读时顺手剔掉，保证列表只有本体
+    const c = cached as SteamDealsCache
+    return c.items.some(d => d.kind !== 'game') ? { ...c, items: onlyGameDeals(c.items) } : c
+  }
   const { total, items } = await fetchSteamDealsPage(0)
-  const next: SteamDealsCache = { at: Date.now(), total, items: sortSteamDeals(items, 'discount'), searchFetched: items.length }
+  const next: SteamDealsCache = { at: Date.now(), total, items: sortSteamDeals(onlyGameDeals(items), 'discount'), searchFetched: items.length }
   saveSteamCache(next)
   return next
 }
 
-/** 加载更多：拉下一页并入缓存（按 kind:id 去重，重新按折扣排）。 */
+/** 加载更多：拉下一页并入缓存（按 kind:id 去重，只留本体，重新按折扣排）。 */
 export async function loadMoreSteamDeals(): Promise<SteamDealsCache> {
   const cached = loadSteamCache()
   const start = cached?.searchFetched ?? cached?.items.length ?? 0
   const { total, items } = await fetchSteamDealsPage(start)
   const seen = new Set((cached?.items ?? []).map(dealKey))
-  const merged = [...(cached?.items ?? []), ...items.filter(d => !seen.has(dealKey(d)))]
+  const merged = [...onlyGameDeals(cached?.items ?? []), ...onlyGameDeals(items).filter(d => !seen.has(dealKey(d)))]
   const next: SteamDealsCache = {
     at: Date.now(), total,
     items: sortSteamDeals(merged, 'discount'),
     searchFetched: start + items.length,
-    checkedAppids: cached?.checkedAppids,
   }
   saveSteamCache(next)
   return next
-}
-
-// ---------------- 合集包补齐（v0.1.412） ----------------
-// 搜索接口只返回它认为的打折合集包行（实测 21,398 款里只有 73 行），
-// 有的合集包不在搜索索引里——例如战地风云 5 决定版（sub 505826）：
-// packagedetails 与 sub 页都显示 -95%（¥228.00→¥11.40），但全量扫
-// 214 页搜索结果也找不到它。所以对折扣最高的本体再反查一次：
-// appdetails（filters=packages，只返回 packages 字段）拿合集包 id，
-// 再逐个调 packagedetails 拿结构化价格；没有价格/不打折的不要（不编造）。
-// 多 id 批量调 appdetails/packagedetails 会被 Steam 直接返回 null（2026-11-24
-// 沙箱实测：单 id 通、2 个 id 即 null），所以必须逐个调、控制并发，
-// 只查折扣最高的 30 款本体、每款最多 5 个合集包、每轮最多补 20 个合集包，
-// 查过的 appid 记进缓存不再重复查；补齐跑在后台，不挡首屏列表。
-
-export const STEAM_ENRICH_POOL_SIZE = 30
-export const STEAM_ENRICH_MAX_PACKAGES_PER_APP = 5
-export const STEAM_ENRICH_MAX_NEW_PACKAGES = 20
-const STEAM_ENRICH_CONCURRENCY = 4
-
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length)
-  let idx = 0
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (idx < items.length) {
-      const i = idx++
-      out[i] = await fn(items[i])
-    }
-  })
-  await Promise.all(workers)
-  return out
-}
-
-function buildAppDetailsUrl(appid: string): string {
-  const q = new URLSearchParams({ appids: appid, filters: 'packages', cc: 'CN', l: 'schinese' })
-  return `https://store.steampowered.com/api/appdetails?${q.toString()}`
-}
-
-function buildPackageDetailsUrl(packageId: string): string {
-  const q = new URLSearchParams({ packageids: packageId, cc: 'CN', l: 'schinese' })
-  return `https://store.steampowered.com/api/packagedetails?${q.toString()}`
-}
-
-/** 一个本体的合集包 id 列表（appdetails filters=packages）。失败抛错，由调用方按个跳过。 */
-export async function fetchAppPackageIds(appid: string): Promise<number[]> {
-  let res: { ok: boolean; status: number; text: string }
-  try {
-    res = await epicRequest(buildAppDetailsUrl(appid), 'GET', { Accept: 'application/json' })
-  } catch (e) {
-    throw toSteamFetchError(e)
-  }
-  if (!res.ok) throw new Error(`Steam 降价加载失败：Steam 商店返回 HTTP ${res.status}`)
-  let data: Record<string, { success?: boolean; data?: { packages?: unknown } }>
-  try {
-    data = JSON.parse(res.text) as Record<string, { success?: boolean; data?: { packages?: unknown } }>
-  } catch {
-    throw new Error('Steam 降价加载失败：Steam 返回的数据不是有效 JSON')
-  }
-  const entry = data?.[appid]
-  const pkgs = entry?.data?.packages
-  if (!Array.isArray(pkgs)) return []
-  return pkgs.filter((p): p is number => typeof p === 'number')
-}
-
-/**
- * packagedetails → 合集包卡片。价格必须真实存在且确实打折（initial > final，
- * discount_percent > 0），否则返回 null（无价/不打折的合集包不列、不编造）。
- * packagedetails 没有好评数据，合集包的好评字段留空（界面显示“暂无评价”）；
- * 封面用本体卡片的图（同一款游戏的 capsule，Steam 自带）。
- */
-export function parsePackageDetails(packageId: string, data: unknown, imageUrl = ''): SteamDeal | null {
-  const d = (data ?? {}) as {
-    name?: unknown; apps?: unknown; price?: unknown; release_date?: unknown
-  }
-  const name = typeof d.name === 'string' ? d.name.trim() : ''
-  if (!name) return null
-  const price = (d.price ?? {}) as { currency?: unknown; initial?: unknown; final?: unknown; discount_percent?: unknown }
-  const initial = typeof price.initial === 'number' ? price.initial : 0
-  const final = typeof price.final === 'number' ? price.final : 0
-  const discount = typeof price.discount_percent === 'number' ? price.discount_percent : 0
-  const currency = typeof price.currency === 'string' ? price.currency : 'CNY'
-  if (initial <= 0 || final < 0 || initial <= final || discount <= 0) return null
-  const apps = Array.isArray(d.apps) ? d.apps : []
-  const contents = apps
-    .map(a => (a as { name?: unknown }).name)
-    .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
-  const released = (d.release_date as { date?: unknown } | undefined)?.date
-  return {
-    appid: packageId,
-    kind: 'package',
-    title: name,
-    url: storeSubUrlOf(packageId),
-    imageUrl,
-    discountPct: discount,
-    originalPrice: formatSteamCents(initial, currency),
-    finalPrice: formatSteamCents(final, currency),
-    finalPriceCents: final,
-    released: typeof released === 'string' && released ? released : undefined,
-    contents: contents.length > 0 ? contents : undefined,
-  }
-}
-
-/** 一个合集包的 packagedetails；无价/不打折返回 null，网络失败抛错。 */
-export async function fetchPackageDeal(packageId: string, imageUrl = ''): Promise<SteamDeal | null> {
-  let res: { ok: boolean; status: number; text: string }
-  try {
-    res = await epicRequest(buildPackageDetailsUrl(packageId), 'GET', { Accept: 'application/json' })
-  } catch (e) {
-    throw toSteamFetchError(e)
-  }
-  if (!res.ok) throw new Error(`Steam 降价加载失败：Steam 商店返回 HTTP ${res.status}`)
-  let data: Record<string, { success?: boolean; data?: unknown }>
-  try {
-    data = JSON.parse(res.text) as Record<string, { success?: boolean; data?: unknown }>
-  } catch {
-    throw new Error('Steam 降价加载失败：Steam 返回的数据不是有效 JSON')
-  }
-  const entry = data?.[packageId]
-  if (!entry?.success) return null
-  return parsePackageDetails(packageId, entry.data, imageUrl)
-}
-
-export interface SteamEnrichResult {
-  cache: SteamDealsCache
-  /** 本轮新补进来的合集包数 */
-  added: number
-  /** 补齐是否因网络失败而完全没跑成（主列表不受影响，界面只作提示） */
-  failed: boolean
-}
-
-/**
- * 后台补齐合集包：取缓存里折扣最高的 30 款本体（未查过的），逐个反查合集包，
- * 有真实折扣价的并入缓存。单次失败只跳过该款，不中断整轮；全部失败时 failed=true。
- */
-export async function enrichSteamPackages(cache: SteamDealsCache): Promise<SteamEnrichResult> {
-  const checked = new Set(cache.checkedAppids ?? [])
-  const pool = sortSteamDeals(cache.items.filter(d => d.kind === 'game'), 'discount')
-    .filter(d => !checked.has(d.appid))
-    .slice(0, STEAM_ENRICH_POOL_SIZE)
-  if (pool.length === 0) return { cache, added: 0, failed: false }
-  let anyError = false
-  const packageIds = new Set<number>()
-  await mapWithConcurrency(pool, STEAM_ENRICH_CONCURRENCY, async (game) => {
-    try {
-      const ids = await fetchAppPackageIds(game.appid)
-      ids.slice(0, STEAM_ENRICH_MAX_PACKAGES_PER_APP).forEach(id => packageIds.add(id))
-    } catch {
-      anyError = true
-    }
-  })
-  const existing = new Set(cache.items.filter(d => d.kind === 'package').map(d => d.appid))
-  const fresh = [...packageIds].filter(id => !existing.has(String(id))).slice(0, STEAM_ENRICH_MAX_NEW_PACKAGES)
-  const deals: SteamDeal[] = []
-  if (fresh.length > 0) {
-    const found = await mapWithConcurrency(fresh, STEAM_ENRICH_CONCURRENCY, async (id) => {
-      try {
-        return await fetchPackageDeal(String(id), '')
-      } catch {
-        anyError = true
-        return null
-      }
-    })
-    for (const deal of found) {
-      if (!deal) continue
-      // 封面：用包内第一款游戏在缓存里的 capsule（找不到就留空，走占位图标，不乱配图）
-      const firstApp = deal.contents?.[0]
-      const game = firstApp
-        ? cache.items.find(d => d.kind === 'game' && d.title === firstApp)
-        : undefined
-      if (game?.imageUrl) deal.imageUrl = game.imageUrl
-      deals.push(deal)
-    }
-  }
-  const next: SteamDealsCache = {
-    ...cache,
-    items: sortSteamDeals([...cache.items, ...deals], 'discount'),
-    checkedAppids: [...checked, ...pool.map(d => d.appid)],
-  }
-  saveSteamCache(next)
-  return { cache: next, added: deals.length, failed: anyError && deals.length === 0 && fresh.length > 0 }
 }

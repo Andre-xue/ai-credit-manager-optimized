@@ -94,10 +94,10 @@ describe('filterSteamDeals', () => {
     '11': meta({ appid: '11', genres: [1], platforms: { windows: true, mac: true, linux: false } }),
   }
   const all = [racing, macGame, pkg, noMeta]
-  const base: SteamMallFilters = { category: null, platform: null, discountOnly: false, kind: 'all' }
+  const base: SteamMallFilters = { category: null, platform: null, discountOnly: false }
 
-  it('无筛选时全保留（含合集包与未补元数据）', () => {
-    expect(filterSteamDeals(all, metas, base)).toHaveLength(4)
+  it('无筛选时保留全部本体（含未补元数据），合集包恒排除（v0.1.505 列表只留本体）', () => {
+    expect(filterSteamDeals(all, metas, base).map(d => d.appid)).toEqual(['10', '11', '13'])
   })
   it('分类筛选：只留 genres 命中的本体，合集包与未补元数据的排除', () => {
     expect(filterSteamDeals(all, metas, { ...base, category: 'racing' }).map(d => d.appid)).toEqual(['10'])
@@ -115,11 +115,8 @@ describe('filterSteamDeals', () => {
     const free = deal({ appid: '14', title: '不打折', discountPct: 0 })
     expect(filterSteamDeals([racing, free], metas, { ...base, discountOnly: true }).map(d => d.appid)).toEqual(['10'])
   })
-  it('类型筛选与既有口径一致', () => {
-    expect(filterSteamDeals(all, metas, { ...base, kind: 'package' }).map(d => d.appid)).toEqual(['12'])
-  })
-  it('恐怖分类在过滤层不筛（来源即标签结果）', () => {
-    expect(filterSteamDeals(all, metas, { ...base, category: 'horror' })).toHaveLength(4)
+  it('恐怖分类在过滤层不筛分类（来源即标签结果），但合集包仍排除', () => {
+    expect(filterSteamDeals(all, metas, { ...base, category: 'horror' })).toHaveLength(3)
   })
   it('3A 分类走圈选口径', () => {
     const aaaMeta = { ...metas, '10': meta({ appid: '10', genres: [9], publishers: ['Electronic Arts'], recommendations: 200000 }) }
@@ -166,6 +163,19 @@ describe('parseStoreSearchResults / buildStoreSearchUrl', () => {
     expect(parseStoreSearchResults(null)).toEqual([])
     expect(parseStoreSearchResults({})).toEqual([])
     expect(parseStoreSearchResults({ items: [{ name: '无 id' }] })).toEqual([])
+  })
+  it('合集包（type=sub）不进搜索结果，只留本体 app（v0.1.505）', () => {
+    const json = {
+      total: 3,
+      items: [
+        { id: 730, type: 'app', name: '本体游戏', tiny_image: '', price: { currency: 'CNY', initial: 10000, final: 5000, discount_percent: 50 } },
+        { id: 94174, type: 'sub', name: '豪华合集包', tiny_image: '', price: { currency: 'CNY', initial: 39800, final: 19900, discount_percent: 50 } },
+        { id: 570, name: '无 type 字段的旧数据', tiny_image: '' },
+      ],
+    }
+    const out = parseStoreSearchResults(json)
+    expect(out.map(d => d.appid)).toEqual(['730', '570'])
+    expect(out.every(d => d.kind === 'game')).toBe(true)
   })
   it('搜索地址带 term/cc/l', () => {
     const u = new URL(buildStoreSearchUrl('巫师 3'))

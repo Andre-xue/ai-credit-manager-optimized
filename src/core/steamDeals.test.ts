@@ -4,7 +4,7 @@ import {
   loadSteamCache, saveSteamCache, isSteamCacheFresh,
   STEAM_DEALS_CACHE_KEY, STEAM_DEALS_CACHE_TTL_MS,
   shouldEntryRefreshSteam, STEAM_ENTRY_REFRESH_SKIP_MS,
-  toSteamFetchError, parsePackageDetails, formatSteamCents, dealKey,
+  toSteamFetchError, formatSteamCents, dealKey, onlyGameDeals,
   type SteamDeal,
 } from './steamDeals'
 
@@ -94,22 +94,6 @@ const PACKAGE_ROW_HTML = `
 </a>
 `
 
-// fixture：2026-11-24 实测的 packagedetails 响应（sub 505826 战地风云 5 决定版，
-// 与 sub 页 HTML 双重核对：¥228.00→¥11.40，-95%）
-const PACKAGE_DETAILS_505826 = {
-  name: 'Battlefield™ V Definitive Edition',
-  apps: [{ id: 1238810, name: '战地风云 5' }],
-  price: { currency: 'CNY', initial: 22800, final: 1140, discount_percent: 95, individual: 0 },
-  release_date: { coming_soon: false, date: '2020 年 10 月 22 日' },
-}
-
-// fixture：同日实测的 packagedetails 响应（sub 514626，无 price 字段 → 不列）
-const PACKAGE_DETAILS_514626_NO_PRICE = {
-  name: 'Battlefield ™ V Year 2 Edition',
-  apps: [{ id: 1238810, name: '战地风云 5' }],
-  release_date: { coming_soon: false, date: '' },
-}
-
 describe('parseSteamSearchHtml', () => {
   it('解析出打折行：折扣、原价、现价、好评率、评测数、档位词、发售日', () => {
     const items = parseSteamSearchHtml(SEARCH_HTML)
@@ -180,32 +164,13 @@ describe('parseSteamSearchHtml', () => {
   })
 })
 
-describe('parsePackageDetails', () => {
-  it('战地风云 5 决定版：-95%，¥228.00→¥11.40，含本体，发售日', () => {
-    const d = parsePackageDetails('505826', PACKAGE_DETAILS_505826)
-    expect(d).not.toBeNull()
-    expect(d!.kind).toBe('package')
-    expect(d!.title).toBe('Battlefield™ V Definitive Edition')
-    expect(d!.url).toBe('https://store.steampowered.com/sub/505826/')
-    expect(d!.discountPct).toBe(95)
-    expect(d!.originalPrice).toBe('¥228.00')
-    expect(d!.finalPrice).toBe('¥11.40')
-    expect(d!.finalPriceCents).toBe(1140)
-    expect(d!.contents).toEqual(['战地风云 5'])
-    expect(d!.released).toBe('2020 年 10 月 22 日')
-    expect(d!.reviewPct).toBeUndefined()
-  })
-  it('无价格的合集包返回 null（不列、不编造）', () => {
-    expect(parsePackageDetails('514626', PACKAGE_DETAILS_514626_NO_PRICE)).toBeNull()
-  })
-  it('不打折的合集包返回 null', () => {
-    expect(parsePackageDetails('1', {
-      name: 'X 包', apps: [], price: { currency: 'CNY', initial: 10000, final: 10000, discount_percent: 0 },
-    })).toBeNull()
-  })
-  it('无名/空数据返回 null', () => {
-    expect(parsePackageDetails('1', {})).toBeNull()
-    expect(parsePackageDetails('1', null)).toBeNull()
+describe('onlyGameDeals（v0.1.505：列表只留本体）', () => {
+  it('合集包行过滤掉，本体保留，顺序不变', () => {
+    const g = deal({ appid: '1', title: 'G' })
+    const p = deal({ appid: '94174', title: 'P', kind: 'package', url: storeSubUrlOf('94174') })
+    const g2 = deal({ appid: '2', title: 'G2' })
+    expect(onlyGameDeals([g, p, g2]).map(d => d.appid)).toEqual(['1', '2'])
+    expect(onlyGameDeals([])).toEqual([])
   })
 })
 

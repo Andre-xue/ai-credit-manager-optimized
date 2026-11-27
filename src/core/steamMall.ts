@@ -208,12 +208,12 @@ export interface SteamMallFilters {
   category: SteamCategoryKey | null
   platform: SteamPlatformKey | null
   discountOnly: boolean
-  kind: 'all' | 'game' | 'package'
 }
 
 /**
- * 按分类/平台/仅打折/类型筛。分类与平台只认有元数据的本体（合集包没有
- * genres/platforms，启用分类或平台筛选时合集包不显示）；还没有元数据的
+ * 按分类/平台/仅打折筛。列表只展示游戏本体（v0.1.505 起）：合集包恒不进
+ * 列表（旧缓存里混进来的也在这里剔掉），合集包只出现在详情页的
+ * 「版本与合集包」区。分类与平台只认有元数据的本体；还没有元数据的
  * 本体先不显示（界面会后台补齐，补齐后自动出现）。
  * 'horror' 在这一层不筛（恐怖的列表来源本身就是标签筛选结果）。
  */
@@ -223,7 +223,7 @@ export function filterSteamDeals(
   f: SteamMallFilters,
 ): SteamDeal[] {
   return deals.filter(d => {
-    if (f.kind !== 'all' && d.kind !== f.kind) return false
+    if (d.kind !== 'game') return false
     if (f.discountOnly && d.discountPct <= 0) return false
     const needMeta = (f.category !== null && f.category !== 'horror') || f.platform !== null
     if (!needMeta) return true
@@ -259,16 +259,21 @@ export function buildStoreSearchUrl(term: string): string {
   return `https://store.steampowered.com/api/storesearch/?${q.toString()}`
 }
 
-/** 解析 storesearch 响应 → SteamDeal[]（含不打折的：搜全目录不限特惠）。 */
+/**
+ * 解析 storesearch 响应 → SteamDeal[]（含不打折的：搜全目录不限特惠）。
+ * 只保留游戏本体（v0.1.505）：items 带 type 字段，'sub' 是合集包，跳过；
+ * 无 type 字段的按本体处理（旧数据/夹具兼容）。
+ */
 export function parseStoreSearchResults(json: unknown): SteamDeal[] {
   const items = (json as { items?: unknown })?.items
   if (!Array.isArray(items)) return []
   const out: SteamDeal[] = []
   for (const it of items) {
     const r = (it ?? {}) as {
-      id?: unknown; name?: unknown; tiny_image?: unknown
+      id?: unknown; name?: unknown; tiny_image?: unknown; type?: unknown
       price?: { currency?: unknown; initial?: unknown; final?: unknown; discount_percent?: unknown } | null
     }
+    if (r.type === 'sub') continue
     const id = typeof r.id === 'number' ? String(r.id) : typeof r.id === 'string' ? r.id : ''
     const name = typeof r.name === 'string' ? r.name.trim() : ''
     if (!id || !name) continue

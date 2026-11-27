@@ -2673,7 +2673,8 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .sm-card-meta s { color: #67707b; }
 .sm-price { color: #beee11; font-size: 14px; }
 .sm-card-foot { display: flex; align-items: center; }
-.sm-open { display: inline-flex; align-items: center; gap: 4px; color: #66c0f4; font-size: 12.5px; }
+.sm-open { display: inline-flex; align-items: center; gap: 4px; color: #66c0f4; font-size: 12.5px; background: none; border: none; padding: 0; cursor: pointer; font-family: inherit; }
+.sm-open:hover { color: #a8d8f8; text-decoration: underline; }
 .sm-loadmore { display: flex; justify-content: center; margin-top: 12px; }
 .sm-pagerbar { position: sticky; bottom: 0; z-index: 5; margin-top: 12px; padding: 6px 4px; background: rgba(27, 40, 56, .96); border-top: 1px solid #2a475e; }
 .sm-pagerbar .fm-pager { padding: 4px 6px; margin: 0; color: #8f98a3; }
@@ -2690,6 +2691,63 @@ video.fm-thumb { object-fit: cover; background: #000; pointer-events: none; }
 .sm-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .sm-field input { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13.5px; }
 .sm-bind-modal { max-width: 520px; width: calc(100vw - 32px); }
+/* ---- 游戏详情页（v0.1.505）：商城内部视图，Steam 商店风 ---- */
+.sm-detail { display: flex; flex-direction: column; gap: 14px; }
+.sm-detail-topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.sm-back-btn { display: inline-flex; align-items: center; gap: 6px; background: #2a475e; border: none; border-radius: 8px; color: #fff; font-size: 13px; padding: 8px 14px; cursor: pointer; font-family: inherit; }
+.sm-back-btn:hover { background: #35607f; }
+.sm-crumb { display: inline-flex; align-items: center; gap: 6px; color: #67707b; font-size: 13px; }
+.sm-crumb-link { background: none; border: none; color: #66c0f4; cursor: pointer; font-size: 13px; padding: 0; font-family: inherit; }
+.sm-crumb-link:hover { text-decoration: underline; }
+.sm-crumb-here { color: #c7d5e0; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-detail-main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .sm-detail-main { grid-template-columns: minmax(0, 1fr); } }
+.sm-detail-hero { aspect-ratio: 16 / 9; background: #101822; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #67707b; }
+.sm-detail-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-detail-thumbs { display: flex; gap: 8px; margin-top: 8px; overflow-x: auto; padding-bottom: 2px; }
+.sm-thumb { flex: none; width: 104px; aspect-ratio: 16 / 9; padding: 0; border: 2px solid transparent; border-radius: 6px; overflow: hidden; background: #101822; cursor: pointer; }
+.sm-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-thumb.on { border-color: #66c0f4; }
+.sm-detail-title { margin: 0 0 8px; color: #fff; font-size: 22px; line-height: 1.3; }
+.sm-detail-short { margin: 0 0 12px; color: #c7d5e0; font-size: 13.5px; line-height: 1.65; }
+.sm-detail-facts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.sm-fact { display: flex; gap: 10px; font-size: 13px; }
+.sm-fact span { flex: none; width: 52px; color: #67707b; }
+.sm-fact b { color: #c7d5e0; font-weight: 500; }
+.sm-detail-genres { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.sm-genre-chip { background: #2a475e; color: #66c0f4; font-size: 12px; padding: 3px 10px; border-radius: 4px; }
+.sm-owned-bar { background: #14532d; color: #86efac; border-radius: 8px; padding: 9px 12px; font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+.sm-detail-pricebox { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #16202d; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+.sm-badge-discount.inline { position: static; }
+.sm-detail-orig { color: #67707b; font-size: 15px; }
+.sm-detail-final { color: #beee11; font-size: 22px; font-weight: 700; }
+.sm-detail-free { color: #beee11; font-size: 18px; font-weight: 700; }
+.sm-detail-noprice { color: #8f98a3; font-size: 14px; }
+.sm-detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.sm-client-btn { background: #66c0f4; color: #0b1620; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; }
+.sm-client-btn:hover { background: #8fd0f7; }
+.sm-browser-btn { background: #2a475e; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; font-family: inherit; }
+.sm-browser-btn:hover { background: #35607f; }
+.sm-detail-h { margin: 4px 0 10px; color: #fff; font-size: 16px; }
+.sm-pkg-list { display: flex; flex-direction: column; gap: 8px; }
+.sm-pkg-row { display: flex; align-items: center; gap: 14px; background: #16202d; border: 1px solid #2a475e; border-radius: 10px; padding: 12px 14px; flex-wrap: wrap; }
+.sm-pkg-row.base { border-color: #4c6b22; background: rgba(76, 107, 34, .14); }
+.sm-pkg-main { flex: 1; min-width: 220px; }
+.sm-pkg-name { color: #fff; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sm-pkg-base-badge { background: #4c6b22; color: #beee11; font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.sm-pkg-desc { color: #8f98a3; font-size: 12.5px; margin-top: 4px; line-height: 1.55; }
+.sm-pkg-price { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: #c7d5e0; }
+.sm-pkg-price s { color: #67707b; }
+.sm-pkg-price b { color: #beee11; font-size: 16px; }
+.sm-pkg-noprice { color: #8f98a3; font-size: 12.5px; }
+.sm-pkg-open { flex: none; background: #2a475e; color: #fff; border: none; border-radius: 7px; padding: 7px 12px; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.sm-pkg-open:hover { background: #35607f; }
+.sm-detail-about { color: #c7d5e0; font-size: 13.5px; line-height: 1.75; white-space: pre-wrap; background: #16202d; border-radius: 10px; padding: 14px 16px; }
+.sm-detail-reqs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .sm-detail-reqs { grid-template-columns: minmax(0, 1fr); } }
+.sm-req { background: #16202d; border-radius: 10px; padding: 12px 14px; }
+.sm-req-title { color: #fff; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
+.sm-req-body { color: #8f98a3; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
 
 /* ================= 邮箱工具（v0.1.436）：大厂风格，中性灰阶 + 单一品牌色，扁平卡片 ================= */
 .btn.danger-ghost { color: var(--red); background: transparent; border-color: transparent; }
