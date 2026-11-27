@@ -340,19 +340,20 @@
 .ai-layout-welcome .ai-welcome h2,
 .ai-layout-focus .ai-welcome h2 { margin: 0; }
 
-/* 输入框上方一行：左=添加附件，右=推理等级 */
+/* 输入框上方一行：右侧=推理等级 + 添加附件（v0.1.496：「+」移到右端） */
 .ai-compose-top {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 14px;
 }
+.ai-compose-top-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .ai-compose-top .ai-icon-btn { flex: 0 0 auto; }
 .ai-compose-top .reasoning-wrap { flex: 0 0 auto; }
 .ai-compose-top .reasoning-btn { white-space: nowrap; }
 
-/* 输入框下方一行：模型分组/模型名/引擎，三分分散、不紧贴也不过远 */
+/* 输入框上方一行：分类/平台/模型三段级联（v0.1.496 定版位置），菜单向上弹 */
 .ai-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; margin-top: 20px;
+  gap: 12px; margin-bottom: 10px;
 }
 .ai-toolbar .ai-model-btn { flex: 0 0 auto; white-space: nowrap; }
 .ai-toolbar .ai-icon-btn { flex: 0 0 auto; }
@@ -379,7 +380,7 @@
 .ai-layout-focus .ai-compose { margin-top: 26px; }
 @media (max-width: 680px) {
   .ai-compose-top { margin-bottom: 12px; }
-  .ai-toolbar { gap: 8px; margin-top: 18px; }
+  .ai-toolbar { gap: 8px; margin-bottom: 10px; }
   .ai-layout-welcome .ai-compose,
   .ai-layout-focus .ai-compose { margin-top: 20px; }
 }

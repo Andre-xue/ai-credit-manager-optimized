@@ -9,6 +9,11 @@ import type { Lang } from './i18n'
 export const PART_AI: Record<string, Partial<Record<Lang, string>>> = {
   '已停止': { 'zh-TW': '已停止', en: 'Stopped', ja: '停止しました', ko: '중지됨' },
   '一键检测全部免费模型': { 'zh-TW': '一鍵檢測全部免費模型', en: 'Check all free models', ja: '無料モデルをすべてチェック', ko: '무료 모델 전체 검사' },
+  '逐个检测，并自动选到第一个可用的': { 'zh-TW': '逐個檢測，並自動選到第一個可用的', en: 'Tests each one and selects the first that works', ja: '順にテストし、最初に使えるものを自動選択します', ko: '하나씩 검사하고 첫 번째로 사용 가능한 모델을 자동 선택합니다' },
+  '模型平台': { 'zh-TW': '模型平台', en: 'Model platform', ja: 'モデルプラットフォーム', ko: '모델 플랫폼' },
+  '全部模型与测速': { 'zh-TW': '全部模型與測速', en: 'All models & speed tests', ja: '全モデルと速度テスト', ko: '전체 모델 및 속도 테스트' },
+  '正在获取实时引擎…': { 'zh-TW': '正在取得即時引擎…', en: 'Fetching live engines…', ja: 'リアルタイムエンジンを取得中…', ko: '실시간 엔진을 가져오는 중…' },
+  '该平台暂无内置引擎目录': { 'zh-TW': '該平台暫無內建引擎目錄', en: 'No built-in engine catalog for this platform', ja: 'このプラットフォームには内蔵エンジンカタログがありません', ko: '이 플랫폼에는 내장 엔진 카탈로그가 없습니다' },
   '正在检测全部免费模型…': { 'zh-TW': '正在檢測全部免費模型…', en: 'Checking all free models…', ja: '無料モデルをすべてチェック中…', ko: '무료 모델 전체 검사 중…' },
   '自动标出哪些还能用，并选到第一个可用的': { 'zh-TW': '自動標出哪些還能用，並選到第一個可用的', en: 'Marks which ones still work and selects the first available', ja: '使えるものを自動でマークし、最初の利用可能モデルを選択します', ko: '사용 가능한 모델을 자동으로 표시하고 첫 번째 사용 가능 모델을 선택합니다' },
   '免费模型 {name} 不可用，已自动切换到 {next}': { 'zh-TW': '免費模型 {name} 不可用，已自動切換到 {next}', en: 'Free model {name} is unavailable; switched to {next} automatically', ja: '無料モデル {name} は利用できないため、{next} に自動で切り替えました', ko: '무료 모델 {name}을(를) 사용할 수 없어 {next}(으)로 자동 전환했습니다' },

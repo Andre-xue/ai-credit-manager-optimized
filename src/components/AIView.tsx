@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
   Send, Square, Plus, ChevronDown, ChevronUp, ChevronRight, Copy, Volume2, VolumeX,
-  Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Cpu, Mic,
+  Phone, Layers, ExternalLink, Info, Loader2, FileText, Image as ImageIcon, Video, X, RotateCcw, Mic,
   Search, Download, Database, BookMarked, Columns2, Trash2, MessagesSquare, ArrowLeft, LayoutGrid, Check, Globe, Shuffle, Lock,
 } from 'lucide-react'
 import {
@@ -43,8 +43,7 @@ import { buildDataDigest } from '../core/dataDigest'
 import { SESSIONS_EVENT, OPEN_SESSION_EVENT, NEW_SESSION_EVENT, requestToggleHistory, consumePendingSessionActions } from '../core/chatSessions'
 import { callByCategory, fetchProviderModels, callLocalChat, fetchLocalAssistantModels, callChat } from '../core/providerCall'
 import { fetchUpstreamFreeModels, chatUpstream, UPSTREAM_LABEL, upstreamRetryDelayMs, type UpstreamModel, type UpstreamSource } from '../core/upstreamFree'
-import { classifyModelPurpose, PURPOSE_ORDER, PURPOSE_ICON } from '../core/modelPurpose'
-import { testFreeAiOption, classifyFreeTestError, type FreeAiOption } from '../core/freeAi'
+import { testFreeAiOption, type FreeAiOption } from '../core/freeAi'
 import {
   loadApisFreeState, apisFreeReady, chatApisFree,
   APISFREE_MODEL, APISFREE_CHANGED_EVENT, type ApisFreeState,
@@ -63,6 +62,7 @@ import { mergeToolbarOrder } from '../core/types'
 import { LOCAL_SERVICE_CHANGED_EVENT, isAccountServiceEnabled, shouldShowLocalCategory } from '../core/localServicesSettings'
 import { decryptSecret, getBiometricPassword, verifyVault } from '../core/crypto'
 import { PROVIDER_MAP } from '../data/providers'
+import { groupOptionsByPlatform, platformKeyOf, modelNameOf } from '../core/modelCascade'
 import {
   fileToAttachment, isTextAttachment, decodeAttachmentText, type PickedAttachment,
 } from '../core/attachments'
@@ -70,7 +70,7 @@ import { needsBinaryParse, parseBinaryDocument } from '../core/documentParse'
 import { AttachmentPicker } from './AttachmentPicker'
 import { ServiceSwitch } from './ServiceSwitch'
 import {
-  enginesFor, enginesFromRemote, hasCatalog, isChatProbeCandidate, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
+  enginesFor, enginesFromRemote, isChatProbeCandidate, REASONING_LEVELS, REASONING_DESC, toReasoningEffort, defaultReasoningLevel,
   type ReasoningLevel, type Engine,
 } from '../data/engines'
 
@@ -169,6 +169,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const [modelOpen, setModelOpen] = useState(false)
   const [category, setCategory] = useState<ModelCategory>('免费模型')
   const [categoryOpen, setCategoryOpen] = useState(false)
+  // 三段选择器（v0.1.496）：第二段「平台」的展开态与当前平台上下文（分组键，见 modelCascade）
+  const [platformOpen, setPlatformOpen] = useState(false)
+  const [platformKey, setPlatformKey] = useState('')
   const [streamingText, setStreamingText] = useState('')
   // 联网搜索进行中（驱动流式气泡里的旋转地球动画，v0.1.323 Ethan 要求）
   const [searching, setSearching] = useState(false)
@@ -558,6 +561,17 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const allOptions = useMemo(() => [...freeOptions, ...upstreamOptions, ...apisFreeOptions, ...ownOptions, ...localOptions], [freeOptions, upstreamOptions, apisFreeOptions, ownOptions, localOptions])
   const visibleOptions = useMemo(() => allOptions.filter(o => o.category === category), [category, allOptions])
   const selectedOption = allOptions.find(o => o.key === model) ?? null
+  // 三段选择器（v0.1.496）：当前分类的选项按平台分组（第二段的数据来源，纯视图分组）
+  const platformGroups = useMemo(() => groupOptionsByPlatform(visibleOptions), [visibleOptions])
+  const currentPlatform = platformGroups.find(g => g.platformKey === platformKey) ?? null
+  // 选中项变化时平台上下文跟随其所属平台（用户在第二段里临时浏览其他平台时不覆盖，
+  // 只在选中项真正变化时同步，避免浏览态被弹回）
+  const lastModelKeyRef = useRef('')
+  useEffect(() => {
+    if (model === lastModelKeyRef.current) return
+    lastModelKeyRef.current = model
+    setPlatformKey(selectedOption ? platformKeyOf(selectedOption) : '')
+  }, [model, selectedOption])
   const canChat = !selectedOption || selectedOption.free || CATEGORY_META[selectedOption.category].canChat
   // 当前自有账户 → 引擎列表：动态拉取优先，内置目录兜底
   const currentAccount = selectedOption?.account ?? null
@@ -646,10 +660,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     return () => { alive = false }
   }, [currentAccount, resolvePwd])
 
-  // 引擎列表变化时：保留仍有效的选择，否则优先旗舰模型（无旗舰则取第一个）
+  // 引擎列表变化时：保留仍有效的选择；失效（换平台/列表刷新后不在列）即清空回未选，
+  // 不自动替选（v0.1.496 三段选择器口径：第三段未选时按钮显示空）。发送时 engineId
+  // 为空走平台默认引擎（callByCategory 的既有兜底），生效逻辑不变。
   useEffect(() => {
     if (currentAccount) {
-      setEngineId(prev => engines.some(e => e.id === prev) ? prev : (engines.find(e => e.flagship)?.id ?? engines[0]?.id ?? ''))
+      setEngineId(prev => engines.some(e => e.id === prev) ? prev : '')
     } else setEngineId('')
   }, [currentAccount, engines])
 
@@ -767,17 +783,8 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         { extraAvailability: cand => aiChainAvailability(byId.get(cand.id)!) },
       )
     }
-    /** 链的成败同步进免费模型测活标记（菜单里能直接看到哪条刚失败/刚跑通） */
-    const markChainFreeTest = (failures: { id: string; message: string }[], usedId?: string) => {
-      for (const f of failures) {
-        if (allOptions.some(o => o.key === f.id && o.free)) {
-          setFreeTest(prev => ({ ...prev, [f.id]: { state: 'done', ok: false, ms: 0, error: classifyFreeTestError(new Error(f.message)) } }))
-        }
-      }
-      if (usedId && allOptions.some(o => o.key === usedId && o.free)) {
-        setFreeTest(prev => ({ ...prev, [usedId]: { state: 'done', ok: true, ms: 0 } }))
-      }
-    }
+    // 注：旧版把链的成败同步进模型菜单的测活标记；v0.1.496 起第三段列表只展示
+    // 模型名、不再打标，切换结果由下方 notify 逐条明示，标记逻辑随之移除。
     // 用户自己的账户：用其 Key 真正调用
     if (opt?.account) {
       const acct = opt.account
@@ -853,7 +860,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         if (!optKey && loadChainMode() === 'auto' && CATEGORY_META[opt.category].canChat && failoverEligible(cls.kind)) {
           try {
             const res = await runAiChain(undefined, `${acct.providerId}:${acct.id}`)
-            markChainFreeTest(res.failures, res.usedId)
             notify(`「${acct.label}」${CHAIN_KIND_REASON[cls.kind]}，已自动切换到「${res.usedLabel}」（免费路线）`)
             return res.text
           } catch (chainErr) {
@@ -891,7 +897,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
       }
       try {
         const res = await runAiChain(opt.key)
-        markChainFreeTest(res.failures, res.usedId)
         if (res.usedId !== opt.key) {
           const usedOpt = allOptions.find(o => o.key === res.usedId)
           if (usedOpt?.free) { setModel(usedOpt.key); saveModel(usedOpt.key) }
@@ -900,7 +905,7 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         return res.text
       } catch (e) {
         if (e instanceof ChainPartialError) throw new Error(`${e.message}（已输出部分内容，未自动重发；可点重试或换一个模型）`)
-        if (e instanceof ChainAllFailedError) { markChainFreeTest(e.failures); throw new Error(e.message) }
+        if (e instanceof ChainAllFailedError) { throw new Error(e.message) }
         throw e
       }
     }
@@ -1434,9 +1439,9 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const enteredChat = composeActive || hasChat
   const layoutMode = !enteredChat ? 'welcome' : (hasChat ? 'chat' : 'focus')
 
-  // 工具条下拉：分类 / 模型（与模型下拉联动）
+  // 工具条下拉：分类 / 平台 / 模型三段级联（v0.1.496 定版：每段只展示本段的名字）
   const categoryDropdown = <div className="ai-model-wrap">
-    <button className="ai-model-btn" onClick={() => { setCategoryOpen(v => !v); setModelOpen(false) }} title={t('模型分类')}>
+    <button className="ai-model-btn" onClick={() => { setCategoryOpen(v => !v); setPlatformOpen(false); setModelOpen(false) }} title={t('模型分类')}>
       <Layers size={13} /> {t(category)} <ChevronDown size={13} />
     </button>
     {categoryOpen && <div className="ai-model-menu me-panel-in" key={`cat-${category}`}>
@@ -1452,26 +1457,12 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
             if (list.length && !list.some(o => o.key === model)) { setModel(list[0].key); saveModel(list[0].key) }
           }}>
           <span>{CATEGORY_META[c].icon} {t(c)}</span>
-          <small>{allOptions.filter(o => o.category === c).length}</small>
         </button>
       ))}
     </div>}
   </div>
-  // 免费模型：按用途分组（v0.1.317）+ 选中即测活，结果记状态供菜单打标并通知用户
-  type FreeTestState = { state: 'testing' } | { state: 'done'; ok: boolean; ms: number; error?: string }
-  const [freeTest, setFreeTest] = useState<Record<string, FreeTestState>>({})
+  // 免费模型：选中即测活，结果以通知反馈（v0.1.496 起第三段只展示模型名，列表内不再打标）
   const freeModelIdOf = (o: { key: string; upstream?: UpstreamSource; apisFree?: boolean }) => (o.apisFree ? APISFREE_MODEL : (o.upstream ? o.key.slice(`up:${o.upstream}:`.length) : o.key))
-  const groupedFreeOptions = useMemo(() => {
-    if (category !== '免费模型') return null
-    const byPurpose = new Map<string, typeof visibleOptions>()
-    for (const o of visibleOptions) {
-      const purpose = classifyModelPurpose(freeModelIdOf(o)).purpose
-      const arr = byPurpose.get(purpose) ?? []
-      arr.push(o)
-      byPurpose.set(purpose, arr)
-    }
-    return PURPOSE_ORDER.filter(p => byPurpose.has(p)).map(p => ({ purpose: p, options: byPurpose.get(p)! }))
-  }, [category, visibleOptions])
 
   const [probingAll, setProbingAll] = useState(false)
   const lastProbeAtRef = useRef(0)
@@ -1480,14 +1471,13 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
     group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
     source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: freeModelIdOf(o),
   })
-  /** 一键全测：并发 3 路逐个测活，结果实时打标；当前主选已死时自动选第一个活的 */
+  /** 一键全测：并发 3 路逐个测活；当前主选已死时自动选第一个活的 */
   const probeAllFree = async (autoSelect: boolean) => {
     if (probingAll) return
     const list = allOptions.filter(o => o.free)
     if (!list.length) return
     setProbingAll(true)
     lastProbeAtRef.current = Date.now()
-    setFreeTest(prev => { const n = { ...prev }; for (const o of list) n[o.key] = { state: 'testing' }; return n })
     const results = new Map<string, boolean>()
     let idx = 0
     const worker = async () => {
@@ -1495,7 +1485,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
         const o = list[idx++]
         const r = await testFreeAiOption(toFreeAiOption(o), 12000)
         results.set(o.key, r.ok)
-        setFreeTest(prev => ({ ...prev, [o.key]: { state: 'done', ok: r.ok, ms: r.ms, error: r.error } }))
       }
     }
     await Promise.all([worker(), worker(), worker()])
@@ -1513,51 +1502,75 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
   const selectFreeModel = (o: (typeof visibleOptions)[number]) => {
     setModel(o.key); saveModel(o.key); setModelOpen(false)
     const id = freeModelIdOf(o)
-    setFreeTest(prev => ({ ...prev, [o.key]: { state: 'testing' } }))
     const opt: FreeAiOption = {
       key: o.key, label: o.label,
       group: o.apisFree ? 'APIsFreeLLM 兜底通道' : (o.upstream ? (o.upstream === 'zen' ? 'Zen 免费通道' : 'Kilo 免费通道') : '云端免费'),
       source: o.apisFree ? 'apisfree' : (o.upstream ?? 'cloud'), modelId: id,
     }
     void testFreeAiOption(opt).then(r => {
-      setFreeTest(prev => ({ ...prev, [o.key]: { state: 'done', ok: r.ok, ms: r.ms, error: r.error } }))
       if (r.ok) notify(t('免费模型已跑通：{name}（{ms} 毫秒）', { name: id, ms: String(r.ms) }))
       else notify(t('免费模型测不通：{name} —— {err}', { name: id, err: r.error ?? '' }))
     })
   }
 
-  const modelDropdown = <div className="ai-model-wrap">
-    <button className="ai-model-btn" onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(true) }} title={t('切换模型')}>
-      {currentModel} <ChevronDown size={13} />
+  // 第二段「平台」：按钮与列表只展示平台名（分组逻辑见 modelCascade）。
+  // 自有账户平台点选即选中该账户；多模型平台（WorkBuddy / Zen / Kilo / APIsFreeLLM /
+  // Ollama）点选只切换平台上下文，具体模型到第三段里选。
+  const platformDropdown = <div className="ai-model-wrap">
+    <button className="ai-model-btn" onClick={() => { setPlatformOpen(v => !v); setCategoryOpen(false); setModelOpen(false) }} title={t('模型平台')}>
+      {currentPlatform?.platformName ?? ''} <ChevronDown size={13} />
     </button>
-    {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}`}>
+    {platformOpen && <div className="ai-model-menu me-panel-in" key={`plat-${category}`}>
+      {platformGroups.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
+      {platformGroups.map(g => (
+        <button key={g.platformKey} className={`ai-model-option ${g.platformKey === platformKey ? 'active' : ''}`}
+          onClick={() => {
+            setPlatformKey(g.platformKey); setPlatformOpen(false)
+            const first = g.options[0]
+            if (first?.account) { setModel(first.key); saveModel(first.key) }
+          }}>
+          <span>{g.platformName}</span>
+        </button>
+      ))}
+    </div>}
+  </div>
+
+  // 第三段「模型」：按钮与列表只展示模型名；未选时按钮显示空、不自动替选。
+  // 自有账户平台下是该账户的引擎列表，菜单底部「全部模型与测速 →」进引擎面板
+  // （原底部行「引擎」按钮的去处，469 面板功能原样保留）；其余平台下是平台内的模型选项。
+  const platformIsAccount = !!currentPlatform?.options[0]?.account
+  const seg3Label = !currentPlatform
+    ? ''
+    : platformIsAccount
+      ? (selectedEngine?.name ?? '')
+      : (selectedOption && platformKeyOf(selectedOption) === currentPlatform.platformKey ? modelNameOf(selectedOption) : '')
+  const modelDropdown = <div className="ai-model-wrap">
+    <button className={`ai-model-btn ${seg3Label ? '' : 'seg-empty'}`} onClick={() => { const opening = !modelOpen; setModelOpen(opening); setCategoryOpen(false); setPlatformOpen(false); if (opening && category === '免费模型' && Date.now() - lastProbeAtRef.current > 180000) void probeAllFree(true) }} title={t('切换模型')}>
+      {seg3Label} <ChevronDown size={13} />
+    </button>
+    {modelOpen && <div className="ai-model-menu me-panel-in" key={`model-${category}-${platformKey}`}>
       {/* v0.1.448：433 的「免费路线切换」模式块已摘除——模式切换全 App 只保留右上角「···」菜单一处（v0.1.439），这里回归纯选择列表 */}
       {/* v0.1.454：APIsFreeLLM 兜底通道控制块（开关/测活/剩余量/详情）也已摘除——通道控制全 App 只留工坊 RouteSelect 一处；通道开启且测通时 free-ai 仍作为普通模型条目出现在这里（apisFreeOptions） */}
-      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('自动标出哪些还能用，并选到第一个可用的')}</small></button>}
+      {category === '免费模型' && <button className="ai-model-option" disabled={probingAll} onClick={() => void probeAllFree(true)}><span>⚡ {probingAll ? t('正在检测全部免费模型…') : t('一键检测全部免费模型')}</span><small>{t('逐个检测，并自动选到第一个可用的')}</small></button>}
       {category === '免费模型' && upstreamFreeOn && upstreamErr && <div className="ai-model-empty">{t('Zen / Kilo 免费通道清单没拉到（网络或上游问题），自动重试后仍失败。')}<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => retryUpstream()}>{t('重试')}</button></div>}
-      {visibleOptions.length === 0 && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
-      {category === '免费模型' && groupedFreeOptions?.map(g => (
-        <div key={g.purpose}>
-          <div className="ai-model-group-label">{PURPOSE_ICON[g.purpose]} {t(g.purpose)}</div>
-          {g.options.map(o => {
-            const info = classifyModelPurpose(freeModelIdOf(o))
-            const test = freeTest[o.key]
-            const displayLabel = o.upstream ? o.label.replace(` · ${UPSTREAM_LABEL[o.upstream]}`, '') : o.label
-            return (
-              <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
-                onClick={() => selectFreeModel(o)}>
-                <span>⚡ {displayLabel}</span>
-                <small>{o.apisFree ? 'APIsFreeLLM' : (o.upstream ? UPSTREAM_LABEL[o.upstream] : t('云端'))} · {info.tags.map(x => t(x)).join(' / ')}{test?.state === 'testing' ? ` · ${t('测活中…')}` : test?.state === 'done' ? (test.ok ? ` · ✅ ${t('已跑通')} ${test.ms}ms` : ` · ❌ ${test.error ?? ''}`) : ''}</small>
-              </button>
-            )
-          })}
-        </div>
-      ))}
-      {category !== '免费模型' && visibleOptions.map(o => (
+      {!currentPlatform && <div className="ai-model-empty">{category === '免费模型' && needLogin ? t('免费模型需先登录云同步：点左侧边栏底部的同步状态条即可登录') : t('该分类暂无模型，请到 API Key 管理页添加')}</div>}
+      {currentPlatform && platformIsAccount && <>
+        {loadingEngines && <div className="ai-model-empty">{t('正在获取实时引擎…')}</div>}
+        {!loadingEngines && engines.length === 0 && <div className="ai-model-empty">{t('该平台暂无内置引擎目录')}</div>}
+        {engines.map(e => (
+          <button key={e.id} className={`ai-model-option ${e.id === engineId ? 'active' : ''}`}
+            onClick={() => { setEngineId(e.id); setModelOpen(false); notify(t('已选引擎：{name}', { name: e.name })) }}>
+            <span>{e.name}</span>
+          </button>
+        ))}
+        <button className="ai-model-option ai-model-more" onClick={() => { setModelOpen(false); setEnginePanelOpen(true) }}>
+          <span>{t('全部模型与测速')} →</span>
+        </button>
+      </>}
+      {currentPlatform && !platformIsAccount && currentPlatform.options.map(o => (
         <button key={o.key} className={`ai-model-option ${o.key === model ? 'active' : ''}`}
-          onClick={() => { setModel(o.key); saveModel(o.key); setModelOpen(false) }}>
-          <span>{o.free ? '⚡ ' : o.localModel ? '🖥️ ' : '🔑 '}{o.label}</span>
-          {!o.free && !o.localModel && <small>{t(o.category)}</small>}
+          onClick={() => { if (o.free) selectFreeModel(o); else { setModel(o.key); saveModel(o.key); setModelOpen(false) } }}>
+          <span>{modelNameOf(o)}</span>
         </button>
       ))}
     </div>}
@@ -1873,24 +1886,34 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               </div>
             ))}
           </div>}
-          {/* 输入框上方一行：左=添加附件，右=推理等级 */}
+          {/* 输入框上方一行：右=推理等级 + 添加附件（v0.1.496：「+」由左端移到右侧，与发送按钮同侧；功能不变） */}
           <div className="ai-compose-top" onClick={() => setComposeActive(true)}>
-            <button className="ai-icon-btn" onClick={() => setAttachPickerOpen(true)} title={t('添加附件（点击选择或拖拽）')}><Plus size={18} /></button>
-            <div className="reasoning-wrap">
-              <button className="reasoning-btn" onClick={() => setReasoningOpen(v => !v)} title={t(REASONING_DESC[reasoning])}>{t('推理 {level}', { level: reasoning })} <ChevronDown size={12} /></button>
-              {reasoningOpen && <div className="reasoning-menu">
-                {REASONING_LEVELS.map(l => (
-                  <button key={l} className={`reasoning-option ${l === reasoning ? 'active' : ''}`} title={t(REASONING_DESC[l])}
-                    onClick={() => {
-                      setReasoning(l); setReasoningOpen(false)
-                      notify(t('{level}：{desc}', { level: l, desc: t(REASONING_DESC[l]) }))
-                    }}>
-                    <span className="reasoning-option-label">{l} {l === reasoning && <span>✓</span>}</span>
-                    <small>{t(REASONING_DESC[l])}</small>
-                  </button>
-                ))}
-              </div>}
+            <div className="ai-compose-top-right">
+              <div className="reasoning-wrap">
+                <button className="reasoning-btn" onClick={() => setReasoningOpen(v => !v)} title={t(REASONING_DESC[reasoning])}>{t('推理 {level}', { level: reasoning })} <ChevronDown size={12} /></button>
+                {reasoningOpen && <div className="reasoning-menu">
+                  {REASONING_LEVELS.map(l => (
+                    <button key={l} className={`reasoning-option ${l === reasoning ? 'active' : ''}`} title={t(REASONING_DESC[l])}
+                      onClick={() => {
+                        setReasoning(l); setReasoningOpen(false)
+                        notify(t('{level}：{desc}', { level: l, desc: t(REASONING_DESC[l]) }))
+                      }}>
+                      <span className="reasoning-option-label">{l} {l === reasoning && <span>✓</span>}</span>
+                      <small>{t(REASONING_DESC[l])}</small>
+                    </button>
+                  ))}
+                </div>}
+              </div>
+              <button className="ai-icon-btn" onClick={() => setAttachPickerOpen(true)} title={t('添加附件（点击选择或拖拽）')}><Plus size={18} /></button>
             </div>
+          </div>
+          {/* 输入框上方一行：分类 / 平台 / 模型三段级联（v0.1.496 定版位置：消息区与输入框之间；
+              原「引擎」按钮已删除，引擎面板从第三段菜单底部进入；菜单向上弹，上方空间充足不裁剪） */}
+          <div className="ai-toolbar" onClick={() => setComposeActive(true)}>
+            {serviceController && <span className="ai-toolbar-service" onClick={e => e.stopPropagation()}><ServiceSwitch controller={serviceController} serviceKey="ollama" compact /></span>}
+            {categoryDropdown}
+            {platformDropdown}
+            {modelDropdown}
           </div>
           <div className="ai-compose-box" onClick={() => setComposeActive(true)}
             onDragOver={e => { e.preventDefault() }}
@@ -1909,17 +1932,6 @@ export function AIView({ notify, accounts, settings, serviceController, prompts,
               <button className="ai-send stop" onClick={stop} title={t('停止生成')}><Square size={15} fill="currentColor" /></button>
             ) : (
               <button className="ai-send" onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} title={t('发送')}><Send size={17} /></button>
-            )}
-          </div>
-          {/* 输入框下方一行：左=模型分组，中=模型名，右=模型引擎，三分分散 */}
-          <div className="ai-toolbar" onClick={() => setComposeActive(true)}>
-            {serviceController && <span className="ai-toolbar-service" onClick={e => e.stopPropagation()}><ServiceSwitch controller={serviceController} serviceKey="ollama" compact /></span>}
-            {categoryDropdown}
-            {modelDropdown}
-            {currentAccount && (hasCatalog(currentAccount.providerId) || engines.length > 0 || loadingEngines) && (
-              <button className="ai-model-btn ai-engine-btn" onClick={() => setEnginePanelOpen(v => !v)} title={t('选择该平台的模型引擎')}>
-                <Cpu size={13} /> {t('引擎')} <ChevronDown size={13} />
-              </button>
             )}
           </div>
           {resolvingKey && <div className="ai-hint-inline"><Loader2 size={12} className="spin" /> {t('正在解锁密钥…')}</div>}
