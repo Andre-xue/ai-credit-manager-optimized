@@ -4,7 +4,8 @@ import {
   parseOwnedGames, parseRecentlyPlayed, mergeRecentlyPlayed,
   sortLibraryGames, summarizeLibrary, ownedAppidSet,
   buildResolveVanityUrl, buildOwnedGamesUrl,
-  type SteamLibraryGame,
+  STEAM_PRIVACY_MSG, STEAM_ID_INPUT_HELP, buildBindFeedback,
+  type SteamLibraryGame, type SteamProfile,
 } from './steamAccount'
 
 if (!(globalThis as unknown as Record<string, unknown>).localStorage) {
@@ -99,6 +100,36 @@ describe('parseOwnedGames', () => {
     const r = parseOwnedGames({ response: { game_count: 0, games: [] } })
     expect(r.status).toBe('ok')
     if (r.status === 'ok') expect(r.games).toEqual([])
+  })
+})
+
+describe('绑错账户防呆文案（492）', () => {
+  it('读不到库的报错双因并列：隐私未公开 + 可能绑错账户，不再一口咬定隐私', () => {
+    expect(STEAM_PRIVACY_MSG).toContain('隐私没设为公开')
+    expect(STEAM_PRIVACY_MSG).toContain('绑定的可能不是你自己的账户')
+    expect(STEAM_PRIVACY_MSG).toContain('SteamID')
+    expect(STEAM_PRIVACY_MSG).toContain('解绑后用个人资料链接重新绑定')
+    expect(STEAM_PRIVACY_MSG).not.toContain('多半是')
+  })
+  it('绑定输入指引：填资料链接/SteamID64、不要填登录用户名或昵称、裸名可能绑到陌生人', () => {
+    expect(STEAM_ID_INPUT_HELP).toContain('个人资料链接')
+    expect(STEAM_ID_INPUT_HELP).toContain('17 位 SteamID64')
+    expect(STEAM_ID_INPUT_HELP).toContain('不要填登录用户名或昵称')
+    expect(STEAM_ID_INPUT_HELP).toContain('陌生人')
+  })
+  const prof: SteamProfile = { steamid: '76561198983661908', personaName: 'andre', avatarUrl: '' }
+  it('绑定反馈（拉库成功）：带昵称 + SteamID 并提醒核对', () => {
+    const fb = buildBindFeedback(prof, null)
+    expect(fb.ok).toBe(true)
+    expect(fb.message).toContain('andre')
+    expect(fb.message).toContain('76561198983661908')
+    expect(fb.message).toContain('游戏库已拉取')
+  })
+  it('绑定反馈（拉库失败）：点明先核对页头头像和昵称是不是本人', () => {
+    const fb = buildBindFeedback(prof, '读不到……')
+    expect(fb.ok).toBe(false)
+    expect(fb.message).toContain('76561198983661908')
+    expect(fb.message).toContain('请先核对页头头像和昵称是不是你本人')
   })
 })
 

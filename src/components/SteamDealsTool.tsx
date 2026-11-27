@@ -23,9 +23,9 @@ import {
   type SteamAppMeta, type SteamCategoryKey, type SteamPlatformKey,
 } from '../core/steamMall'
 import {
-  STEAM_PRIVACY_NOTE, STEAM_API_KEY_HELP,
+  STEAM_PRIVACY_NOTE, STEAM_API_KEY_HELP, STEAM_ID_INPUT_HELP,
   loadSteamProfileFast, loadSteamBinding, loadSteamLibraryCache,
-  fetchSteamLibrary, bindSteamAccount, clearSteamBinding,
+  fetchSteamLibrary, bindSteamAccount, clearSteamBinding, buildBindFeedback,
   sortLibraryGames, summarizeLibrary, ownedAppidSet, humanizeSteamApiError,
   type SteamProfile, type SteamLibraryGame, type LibrarySort,
 } from '../core/steamAccount'
@@ -422,13 +422,17 @@ export function SteamDealsTool({ notify, onBack }: {
                   {profile.avatarUrl
                     ? <img src={profile.avatarUrl} alt="" className="sm-avatar" />
                     : <span className="sm-avatar sm-avatar-fallback"><Gamepad2 size={14} /></span>}
-                  <span className="sm-account-name">{profile.personaName}</span>
+                  <span className="sm-account-meta">
+                    <span className="sm-account-name">{profile.personaName}</span>
+                    <span className="sm-account-id">SteamID {profile.steamid}</span>
+                  </span>
                   <ChevronDown size={14} />
                 </button>
                 {menuOpen && (
                   <>
                     <div className="sm-menu-backdrop" onClick={() => setMenuOpen(false)} />
                     <div className="sm-menu">
+                      <div className="sm-menu-id">SteamID {profile.steamid}</div>
                       <button onClick={() => { setTab('library'); setMenuOpen(false) }}>查看我的库</button>
                       <button onClick={() => { setMenuOpen(false); void refreshLibrary() }}>刷新游戏库</button>
                       <button className="danger" onClick={unbind}><Unlink size={13} /> 解绑</button>
@@ -674,7 +678,8 @@ export function SteamDealsTool({ notify, onBack }: {
             setBindOpen(false)
             if (lib) { setLibrary(lib); setLibAt(Date.now()); setLibError(null) }
             else if (libErr) { setLibError(libErr) }
-            notify(libErr ? `已绑定 Steam 账户，但游戏库没拉到：${libErr}` : 'Steam 账户已绑定，游戏库已拉取', libErr ? 'err' : 'ok')
+            const fb = buildBindFeedback(prof, libErr)
+            notify(fb.message, fb.ok ? 'ok' : 'err')
           }}
         />
       )}
@@ -722,9 +727,10 @@ function BindModal({ onClose, onBound }: {
           </p>
           <label className="sm-field">
             <span>SteamID 或个人资料链接</span>
-            <input value={idInput} placeholder="7656119… 或 steamcommunity.com/id/你的名字"
+            <input value={idInput} placeholder="粘贴个人资料链接，或填 17 位 SteamID64"
               onChange={e => setIdInput(e.target.value)} autoComplete="off" />
           </label>
+          <p className="sm-note">{STEAM_ID_INPUT_HELP}</p>
           <p className="sm-note">{STEAM_PRIVACY_NOTE}</p>
           {err && <div className="sm-alert"><TriangleAlert size={14} /><span>{err}</span></div>}
         </div>

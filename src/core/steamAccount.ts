@@ -9,7 +9,8 @@ import { encryptLocalSecret, decryptLocalSecret } from './deviceKey'
 
 export const STEAM_ACCOUNT_KEY = 'acm.steam.account.v1'
 export const STEAM_LIBRARY_KEY = 'acm.steam.library.v1'
-export const STEAM_PRIVACY_NOTE = '绑定前提：Steam 个人资料与「游戏详情」隐私都要设为公开，否则官方接口读不到你的游戏库。设置路径：Steam 客户端/网页 → 头像 → 查看个人资料 → 编辑个人资料 → 隐私设置 → 「我的个人资料」与「游戏详情」都选公开。'
+export const STEAM_PRIVACY_NOTE = '绑定前提：Steam 个人资料与「游戏详情」隐私都要设为公开，否则官方接口读不到你的游戏库。设置路径：Steam 客户端/网页 → 头像 → 查看个人资料 → 编辑个人资料 → 隐私设置 → 「我的个人资料」与「游戏详情」都选公开。绑定后请核对页面右上角的头像、昵称和 SteamID 是不是你本人。'
+export const STEAM_ID_INPUT_HELP = '请填个人资料链接（steamcommunity.com/profiles/… 或 /id/…）或 17 位 SteamID64，不要填登录用户名或昵称：只填名字会按自定义网址去解析，可能解析到同名的陌生人、绑错账户。'
 export const STEAM_API_KEY_HELP = 'API Key 免费申请：打开 steamcommunity.com/dev/apikey，用你的 Steam 账户登录后随便填一个域名（如 localhost）即可拿到。Key 只加密存在这台设备上，不会上传到任何地方。'
 
 // ---------------- SteamID / 资料链接解析 ----------------
@@ -105,8 +106,9 @@ export type OwnedGamesParse =
   | { status: 'unreadable' }
 
 /**
- * GetOwnedGames 响应解析。隐私未公开/游戏详情不可见时 Steam 返回空 response
- * （没有 games 字段）→ 'unreadable'，绝不当成空库。
+ * GetOwnedGames 响应解析。隐私未公开/游戏详情不可见（也包括绑错到游戏详情
+ * 私密的他人账户）时 Steam 返回空 response（没有 games 字段）→ 'unreadable'，
+ * 绝不当成空库。
  */
 export function parseOwnedGames(json: unknown): OwnedGamesParse {
   const resp = (json as { response?: { games?: unknown } })?.response
@@ -194,7 +196,7 @@ export class SteamApiError extends Error {
 }
 
 export const STEAM_KEY_INVALID_MSG = 'Steam API Key 无效或已被撤销：请到 steamcommunity.com/dev/apikey 检查 Key 后重新绑定。'
-export const STEAM_PRIVACY_MSG = '读不到你的游戏库：多半是个人资料或「游戏详情」隐私没设为公开。在 Steam 里打开 头像 → 查看个人资料 → 编辑个人资料 → 隐私设置，把「我的个人资料」和「游戏详情」都设为公开，再点「刷新游戏库」。'
+export const STEAM_PRIVACY_MSG = '读不到这个账户的游戏库，常见有两种原因：① 个人资料或「游戏详情」隐私没设为公开——在 Steam 里打开 头像 → 查看个人资料 → 编辑个人资料 → 隐私设置，把「我的个人资料」和「游戏详情」都设为公开，再点「刷新游戏库」；② 绑定的可能不是你自己的账户——请核对页面右上角的头像、昵称和 SteamID 是不是你本人，不是就解绑后用个人资料链接重新绑定。'
 export const STEAM_NETWORK_MSG = '连不上 Steam 接口：网络请求失败，可能被代理/网络拦截，请换个节点再试。'
 
 export function humanizeSteamApiError(e: unknown): string {
@@ -310,7 +312,7 @@ export async function fetchSteamProfile(apiKey: string, steamid: string): Promis
 }
 
 /**
- * 拉全库：GetOwnedGames 为主（读不到按隐私未公开报错，不假装空库），
+ * 拉全库：GetOwnedGames 为主（读不到按 STEAM_PRIVACY_MSG 双因报错，不假装空库），
  * GetRecentlyPlayedGames 补近两周时长（失败不挡主库）。
  */
 export async function fetchSteamLibrary(apiKey: string, steamid: string): Promise<SteamLibraryGame[]> {
@@ -324,6 +326,18 @@ export async function fetchSteamLibrary(apiKey: string, steamid: string): Promis
   } catch { /* 近期游玩只是补充，失败不挡主库 */ }
   saveSteamLibraryCache(games)
   return games
+}
+
+/**
+ * 绑定结果反馈文案：带昵称 + SteamID 让用户核对绑的是不是自己；
+ * 拉库失败时额外点明先核对页头头像和昵称（绑错账户时库必然读不到，别只往隐私上想）。
+ */
+export function buildBindFeedback(profile: SteamProfile, libraryError: string | null): { message: string; ok: boolean } {
+  const who = `${profile.personaName}（SteamID ${profile.steamid}）`
+  if (libraryError) {
+    return { message: `已绑定 ${who}，但游戏库没拉到：${libraryError} 请先核对页头头像和昵称是不是你本人。`, ok: false }
+  }
+  return { message: `Steam 账户已绑定：${who}，游戏库已拉取。请核对页头头像和昵称是不是你本人。`, ok: true }
 }
 
 /** 绑定全流程：解析输入 → 解析 vanity → 验证 Key 并拉资料 → 存绑定 → 自动拉一次库。 */
