@@ -1430,6 +1430,7 @@ Object.assign(D, {
   '代码': { 'zh-TW': '程式碼', en: 'Code', ja: 'コード', ko: '코드' },
   '快速': { 'zh-TW': '快速', en: 'Fast', ja: '高速', ko: '빠름' },
   '云端': { 'zh-TW': '雲端', en: 'Cloud', ja: 'クラウド', ko: '클라우드' },
+  '本地': { 'zh-TW': '本地', en: 'Local', ja: 'ローカル', ko: '로컬' },
   '测活中…': { 'zh-TW': '測活中…', en: 'Testing…', ja: 'テスト中…', ko: '테스트 중…' },
   '已跑通': { 'zh-TW': '已跑通', en: 'Reachable', ja: '接続OK', ko: '연결됨' },
   '免费模型已跑通：{name}（{ms} 毫秒）': { 'zh-TW': '免費模型已跑通：{name}（{ms} 毫秒）', en: 'Free model works: {name} ({ms} ms)', ja: '無料モデル接続OK：{name}（{ms} ms）', ko: '무료 모델 연결 성공: {name} ({ms}ms)' },

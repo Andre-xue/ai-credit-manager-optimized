@@ -1549,8 +1549,11 @@ function App() {
           </>
         ) : (
           /* v0.1.493 桌面底部（MangoDisk 式）：状态卡只以 App 图标开头（无状态圆点），
-             主/副文案沿用原同步状态条的真实状态逻辑；点击不再直接登录，而是向上弹出
-             菜单（账户项承接原点击行为；474 的独立更新行删除，状态并入菜单项与卡上红点） */
+             点击不再直接登录，而是向上弹出菜单（账户项承接原点击行为；474 的独立
+             更新行删除，状态并入菜单项与卡上红点）。
+             v0.1.494 卡面再简化（Ethan 圈注）：只剩 App 图标 + 一个模式状态词——
+             未登录云同步显示「本地」、已登录显示「云端」；副文案整行删除，
+             同步中/失败/最近同步等细节只在弹出菜单的账户项里看 */
           <div className="sidebar-bottom">
             <button
               ref={sideCardRef}
@@ -1558,20 +1561,13 @@ function App() {
               className="side-card"
               aria-haspopup="menu"
               aria-expanded={sideMenuOpen}
-              aria-label={!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}
+              aria-label={!cloudUser ? t('本地') : t('云端')}
               onClick={toggleSideMenu}
             >
               <span className="side-card-mark"><img src="./pwa-512.png" alt="" className="app-mark-img" /></span>
               {sidebarVisible && (
                 <span className="side-card-text">
-                  <b>{!cloudUser ? t('本地模式') : syncing ? t('同步中…') : syncError ? t('同步失败') : t('已云同步')}</b>
-                  <span>{!cloudUser
-                    ? t('未登录云同步 · 点此登录')
-                    : syncing
-                      ? (cloudUser.name ?? cloudUser.email ?? t('正在与云端同步'))
-                      : syncError
-                        ? t('点此重试')
-                        : t('最近 {time} · 点此刷新', { time: syncTimeText(lastSyncAt) })}</span>
+                  <b>{!cloudUser ? t('本地') : t('云端')}</b>
                 </span>
               )}
               {sidebarVisible && sidebarUpdateHasDot(autoUpd) && <span className="side-card-dot" />}
