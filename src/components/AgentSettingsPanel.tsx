@@ -4,6 +4,7 @@ import type { Account } from '../core/types'
 import {
   AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
   detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
+  loginStateText,
   type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry,
 } from '../core/agents'
 import {
@@ -87,7 +88,12 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
     return () => { cancelled = true }
   }, [settings.accounts, detectMap])
 
-  const loginText = (login?: string) => (login === 'yes' ? '已登录' : login === 'no' ? '未登录' : login === 'unknown' ? '读不到' : '检测中…')
+  // v0.1.511（②）：统一走 loginStateText——unknown 且凭据在钥匙串的显示「钥匙串保管…」，
+  // 有派活成功标记的显示「已验证（派活成功）」，不再用误导性的「读不到」。
+  const loginText = (login?: string, def?: AgentDef) => loginStateText(
+    login === 'yes' || login === 'no' || login === 'unknown' ? login : undefined,
+    { probeMissing: def?.credProbeMissing, verifiedAt: def ? settings.verifiedAgents?.[def.id] : undefined },
+  )
   const entryStats = (entryId: string) => {
     const es = ledger.filter(l => l.agentEntryId === entryId)
     return { count: es.length, ms: es.reduce((sum, l) => sum + (l.durationMs || 0), 0) }
@@ -183,26 +189,32 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
       </div>
 
       {cat === 'agents' && (
+        <>
         <div className="aw-card">
           <div className="aw-card-head">
             <span>本机 Agent（改动只存本机）</span>
             <button className="btn sm" onClick={onRedetect}><RefreshCw size={13} /> 重新检测</button>
           </div>
-          <div className="aw-agent-row">
+          {/* v0.1.511（⑦）：全局设置收成一条横向条，置于平台卡片网格上方 */}
+          <div className="asp-global-bar">
             <div className="aw-agent-main">
               <b>桌面型送达后自动发送（回车）</b>
               <div className="aw-note">派活分三档：有官方命令的走「无头直派」（第一档，如 dsh headless / codex exec / agy）；只有桌面应用时才走「粘贴送达（兜底）」——自动等窗口就绪并粘贴进输入框。开这个开关后，粘贴完连回车一起按、直接发出；关着时只粘贴，你到应用里确认后再按发送。自动粘贴需要辅助功能权限（与翻译功能共用同一个权限）。</div>
             </div>
             <JellyToggle checked={settings.delivery.autoSend} onChange={v => set({ delivery: { autoSend: v } })} />
           </div>
+        </div>
+        {/* v0.1.511（⑦）：平台横向卡片网格（宽屏三列、窄屏自动换行）——行为逻辑与旧竖排一致 */}
+        <div className="asp-grid">
           {AGENT_REGISTRY.map(def => {
             const det = detectMap[def.id]
             const avail = agentAvailability(def, det, settings, accounts, settings.accounts)
             const installed = !!det?.installed
             return (
-              <div key={def.id} className="aw-agent-row">
+              <div key={def.id} className="aw-agent-row asp-card">
                 <div className="aw-agent-main">
                   <div className="aw-agent-title">
+                    <span className="asp-avatar">{(def.name.match(/^[A-Za-z]+/)?.[0] ?? def.name).slice(0, 2)}</span>
                     <b>{def.name}</b>
                     <span className={`aw-tag ${def.kind === 'account' ? 'acct' : 'shell'}`}>{def.kind === 'account' ? '账号登录型' : '空壳型'}</span>
                     {def.headlessCli
@@ -212,7 +224,7 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                     {installed && det?.cliVersion && <span className="aw-note">{det.cliVersion}</span>}
                   </div>
                   {def.headlessCli && !detectHasCli(det) && detectHasApp(det) && (
-                    <div className="aw-note">桌面应用已安装（仅作粘贴送达兜底）；命令没装之前不算就绪——派活以命令为准。</div>
+                    <div className="aw-note">桌面应用已安装，但无头型派活只走命令、不走粘贴送达；命令没装之前派活会被拦下。</div>
                   )}
                   {(() => {
                     const plan = buildInstallCommand(def)
@@ -250,7 +262,7 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                   {def.qualification && <div className="aw-note warn">{def.qualification}</div>}
                   {!installed && <div className="aw-note">{def.installHint}</div>}
                   {installed && def.headlessCli && !detectHasCli(det) && def.cliInstallHint && (
-                    <div className="aw-note warn">未检测到 {def.cliNames[0]} 命令，现在只能粘贴送达（兜底）；装上命令即可无头直派：{def.cliInstallHint}</div>
+                    <div className="aw-note warn">未检测到 {def.cliNames[0]} 命令，派活会被拦下；装上命令即可无头直派：{def.cliInstallHint}</div>
                   )}
                   {installed && def.kind === 'account' && !def.headlessCli && <div className="aw-note">使用自身登录账号（免 Key），魔方只派活与盯进度，不记细账</div>}
                   {installed && def.headlessCli && avail.state === 'ready' && <div className="aw-note">{avail.reason}，魔方只派活与盯进度，不记细账</div>}
@@ -295,16 +307,18 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                               <div className="asp-entry-title">
                                 <b>{e.label}</b>
                                 <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
-                                <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login)}</span>
+                                <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>
                                 <span className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</span>
                               </div>
                               {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
                               {st?.login !== 'yes' && (def.loginCommandNative || def.loginCommandIsolated) && (
                                 <div className="asp-login-wrap">
-                                  <button className="btn sm" onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>去登录</button>
+                                  <button className={`btn sm ${st?.login === 'unknown' && def.credProbeMissing === 'unknown' ? 'ghost' : ''}`} onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>去登录</button>
                                   {loginOpen[e.id] && (
                                     <div className="asp-login-box">
-                                      <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：</div>
+                                      <div className="aw-note">{def.id === 'dsh'
+                                        ? '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，会打开浏览器登录页，登录完回到这里点「重新检测」：'
+                                        : '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：'}</div>
                                       <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
                                       <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
                                     </div>
@@ -330,30 +344,40 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                       </div>
                       {guide[def.id] && <div className="aw-note">{guide[def.id]}</div>}
                     </div>
-                  ) : (
-                    <div className="asp-entries">
-                      <div className="aw-note">
-                        <span className="aw-tag off">仅单账户</span> {def.multiAccountNote} · 当前登录态：{loginText(acctStatus[nativeEntryId(def.id)]?.login)}
-                      </div>
-                      {def.loginCommandNative && (
-                        <div className="asp-login-wrap">
-                          <button className="btn sm" onClick={() => setLoginOpen(o => ({ ...o, [def.id]: !o[def.id] }))}>去登录</button>
-                          {loginOpen[def.id] && (
-                            <div className="asp-login-box">
-                              <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，在打开的界面里用 Google 账号登录，完后点上方「重新检测」：</div>
-                              <code className="asp-install-cmd">{def.loginCommandNative}</code>
-                              <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(def.loginCommandNative ?? ''); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
-                            </div>
-                          )}
+                  ) : (() => {
+                    const singleLogin = acctStatus[nativeEntryId(def.id)]?.login
+                    const verifiedAt = settings.verifiedAgents?.[def.id]
+                    const keychainUnknown = singleLogin === 'unknown' && def.credProbeMissing === 'unknown'
+                    return (
+                      <div className="asp-entries">
+                        <div className="aw-note">
+                          <span className="aw-tag off">仅单账户</span> {def.multiAccountNote} · 当前登录态：{loginText(singleLogin, def)}
+                          {keychainUnknown && !verifiedAt && '——登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。'}
                         </div>
-                      )}
-                    </div>
-                  )
+                        {def.loginCommandNative && !(keychainUnknown && verifiedAt) && (
+                          <div className="asp-login-wrap">
+                            <button className={`btn sm ${keychainUnknown ? 'ghost' : ''}`} onClick={() => setLoginOpen(o => ({ ...o, [def.id]: !o[def.id] }))}>{keychainUnknown ? '重新登录' : '去登录'}</button>
+                            {loginOpen[def.id] && (
+                              <div className="asp-login-box">
+                                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，在打开的界面里用 Google 账号登录，完后点上方「重新检测」：</div>
+                                <code className="asp-install-cmd">{def.loginCommandNative}</code>
+                                <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(def.loginCommandNative ?? ''); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()
                 )}
               </div>
             )
           })}
         </div>
+        <div className="asp-summary">
+          共 {AGENT_REGISTRY.length} 个平台 · 已启用 {AGENT_REGISTRY.filter(d => settings.enabled[d.id]).length} 个 · 派活方式：无头直派优先；无头型启动失败如实报错、不自动降级粘贴
+        </div>
+        </>
       )}
 
       {cat === 'relay' && (

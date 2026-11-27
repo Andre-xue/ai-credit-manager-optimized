@@ -55,9 +55,13 @@ export interface AgentDef {
 export function humanizeAgentError(raw: string): string {
   const t = String(raw ?? '')
   if (!t) return ''
+  // v0.1.511（⑤）：DSH 的 MISSING_CREDENTIAL 是「默认路线要 API Key、没走账号登录路线」，
+  // 原文里带 credentials 字样曾被下面的鉴权规则误判成「登录失效」——必须先于鉴权规则单独成类。
+  if (/MISSING_CREDENTIAL|no API key for provider route/i.test(t)) return 'DSH 这条路线需要 API Key，没有走账号登录路线'
   if (/quota|额度|余额不足|insufficient|exceeded your|resource_exhausted/i.test(t)) return '额度或余额不足，对方平台拒绝继续执行'
   if (/rate.?limit|too many requests|\b429\b|限流/i.test(t)) return '被对方平台限流了，需要等一会儿再试'
-  if (/auth|unauthor|\b401\b|登录|not logged in|credentials/i.test(t)) return '登录态失效或还没登录，需要重新登录'
+  if (/env: (node|python3?|bash|sh)\b/.test(t)) return '命令依赖的运行环境没找到（启动路径里缺 node 等运行时）'
+  if (/auth|unauthor|\b401\b|登录|not logged in|credentials|sign in/i.test(t)) return '登录态失效或还没登录，需要重新登录'
   if (/command not found|ENOENT|no such file|找不到命令/i.test(t)) return '命令不存在，可能没装好或被移动了'
   if (/ENOTFOUND|ECONN|network|fetch failed|网络/i.test(t)) return '网络连不上对方服务'
   if (/timed? ?out|超时/i.test(t)) return '执行超时被中断'
@@ -94,10 +98,10 @@ export const AGENT_REGISTRY: AgentDef[] = [
     headlessCli: true, credHomeEnv: 'DSH_HOME', nativeCredHome: '.dsh',
     credProbeFile: '.credentials.yaml', credProbeMissing: 'no',
     installPlan: { type: 'npm', pkg: '@deepseek-ai/dsh' },
-    loginCommandNative: 'dsh', loginCommandIsolated: 'DSH_HOME={dir} dsh',
+    loginCommandNative: 'dsh web', loginCommandIsolated: 'DSH_HOME={dir} dsh web',
     installHint: '装 dsh 命令：终端运行 npm install -g @deepseek-ai/dsh（有命令走无头直派）；或到 deepseek.com/download 装桌面端（与命令版共用 ~/.dsh 登录，macOS 需 Apple 芯片 + macOS 13 以上）',
     cliInstallHint: 'npm install -g @deepseek-ai/dsh',
-    loginGuide: '在终端运行 DSH_HOME={dir} dsh，在打开的界面里登录要添加的账号；登录完成后回到这里点「重新检测」',
+    loginGuide: '在终端运行 DSH_HOME={dir} dsh web，会打开浏览器里的 DSH 登录页，登录要添加的账号；登录完成后回到这里点「重新检测」',
   },
   {
     id: 'antigravity', name: 'Antigravity', kind: 'account', dispatch: 'open',
@@ -173,7 +177,9 @@ export function agentDef(id: string): AgentDef | undefined {
 
 /** 各 CLI 的非交互派活命令（按各自官方 CLI 约定核实；kimi 的 --print 组合待真机核对）。
  *  sessionId 给定时走各家官方续会话形式（DSH --session-id / Codex exec resume / agy --conversation）。 */
-export function buildCliInvocation(agentId: string, taskText: string, sessionId?: string): { command: string; args: string[] } | null {
+export function buildCliInvocation(
+  agentId: string, taskText: string, sessionId?: string, opts?: { dshPatchPath?: string },
+): { command: string; args: string[] } | null {
   switch (agentId) {
     case 'pi': return { command: 'pi', args: ['-p', taskText] }
     case 'opencode': return { command: 'opencode', args: ['run', taskText] }
@@ -181,9 +187,18 @@ export function buildCliInvocation(agentId: string, taskText: string, sessionId?
     case 'kimi-code': return { command: 'kimi', args: ['--print', '-p', taskText] }
     case 'claude-code': return { command: 'claude', args: ['-p', taskText] }
     // v0.1.509 第一档（官方无头）：flags 必须在任务文本之前
-    case 'dsh': return sessionId
-      ? { command: 'dsh', args: ['headless', '--json', '--session-id', sessionId, taskText] }
-      : { command: 'dsh', args: ['headless', '--json', taskText] }
+    // v0.1.511（⑤）：改显式 --profile headless + --patch 账号路线覆盖层——headless 档案的
+    // 默认模型路线是 deepseek-official（要 API Key），不带覆盖层时账号登录用户派活必报
+    // MISSING_CREDENTIAL。覆盖层只放 App 自己目录、逐次调用传入，绝不改用户档案文件。
+    // 启动器参数（--profile/--patch）必须排在第一个未识别 token（--json 起）之前。
+    case 'dsh': {
+      const args = ['--profile', 'headless']
+      if (opts?.dshPatchPath) args.push('--patch', opts.dshPatchPath)
+      args.push('--json')
+      if (sessionId) args.push('--session-id', sessionId)
+      args.push(taskText)
+      return { command: 'dsh', args }
+    }
     case 'codex-desktop': return sessionId
       ? { command: 'codex', args: ['exec', 'resume', '--json', '--full-auto', '--skip-git-repo-check', sessionId, taskText] }
       : { command: 'codex', args: ['exec', '--json', '--full-auto', '--skip-git-repo-check', taskText] }
@@ -252,6 +267,31 @@ export interface AgentSettings {
   delivery: { autoSend: boolean }
   /** 多账户条目（v0.1.509）：仅支持凭据目录隔离的 Agent（DSH / Codex）有条目 */
   accounts: AgentAccountEntry[]
+  /** v0.1.511（②）：登录态读不到（凭据在系统钥匙串）的 Agent 首次派活成功的时间戳。
+   *  探测永远只能报 unknown，靠真实派活成功落「已验证」标记，免得界面常年挂着像没登录。 */
+  verifiedAgents?: Record<string, number>
+}
+
+/** 标记某 Agent 已由真实派活验证过登录可用（幂等：已有标记不覆盖，保留首次时间） */
+export function markAgentVerified(s: AgentSettings, agentId: string, now: number): AgentSettings {
+  if (s.verifiedAgents?.[agentId]) return s
+  return { ...s, verifiedAgents: { ...(s.verifiedAgents ?? {}), [agentId]: now } }
+}
+
+/** 条目/单账户的登录态展示文案（v0.1.511 ②）：unknown 不再说「读不到」——
+ *  凭据由系统钥匙串保管、魔方按设计不读；有派活成功标记时直接报已验证。 */
+export function loginStateText(
+  login: 'yes' | 'no' | 'unknown' | undefined,
+  opts?: { probeMissing?: 'no' | 'unknown'; verifiedAt?: number },
+): string {
+  if (login === 'yes') return '已登录'
+  if (login === 'no') return '未登录'
+  if (login === 'unknown') {
+    if (opts?.verifiedAt) return '已验证（派活成功）'
+    if (opts?.probeMissing === 'unknown') return '钥匙串保管，魔方读不到'
+    return '读不到'
+  }
+  return '检测中…'
 }
 
 /** Agent × 账户条目：独立开关 / 独立凭据目录 / 独立记账。凭据只存用户本机登录产生的文件，App 不收集密码。 */
@@ -339,6 +379,8 @@ export function loadAgentSettings(): AgentSettings {
       master: { masterAgentId: p.master?.masterAgentId ?? '', crossReview: !!p.master?.crossReview, reviewerAgentId: p.master?.reviewerAgentId ?? '' },
       delivery: { autoSend: !!p.delivery?.autoSend },
       accounts: normalizeAccountEntries(p.accounts),
+      verifiedAgents: (p.verifiedAgents && typeof p.verifiedAgents === 'object' && !Array.isArray(p.verifiedAgents))
+        ? p.verifiedAgents : {},
     }
   } catch { return base }
 }
@@ -414,7 +456,7 @@ export function agentAvailability(
       return {
         state: 'not-installed',
         reason: detectHasApp(detect)
-          ? `桌面应用已装，但 ${def.cliNames[0]} 命令未安装：派活以命令为准，桌面应用仅作粘贴送达兜底。点「一键安装」装上命令即可无头直派`
+          ? `桌面应用已装，但 ${def.cliNames[0]} 命令未安装：无头型派活只走命令、不降级粘贴，先一键安装命令再派活`
           : def.installHint,
       }
     }

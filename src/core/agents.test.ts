@@ -3,6 +3,7 @@ import {
   AGENT_REGISTRY, agentDef, buildCliInvocation, defaultAgentSettings,
   agentAvailability, quotaGate, capCheck, buildShellEnv, parseDelegation,
   pickStartable, isHeavyTask, parseCliUsage, summarizeLedger, ledgerSpentSince,
+  loadAgentSettings, saveAgentSettings, markAgentVerified, loginStateText,
   type AgentSettings, type AgentLedgerEntry,
 } from './agents'
 import type { Account } from './types'
@@ -37,7 +38,7 @@ describe('注册表分类与资格', () => {
     expect(buildCliInvocation('claude-code', '干活')).toEqual({ command: 'claude', args: ['-p', '干活'] })
     expect(buildCliInvocation('kimi-code', '干活')?.command).toBe('kimi')
     // v0.1.509：DSH 有官方 headless 通道（形式在 agentTier.test.ts 详测）；真无调用形式的是纯桌面型
-    expect(buildCliInvocation('dsh', '干活')).toEqual({ command: 'dsh', args: ['headless', '--json', '干活'] })
+    expect(buildCliInvocation('dsh', '干活')).toEqual({ command: 'dsh', args: ['--profile', 'headless', '--json', '干活'] })
     expect(buildCliInvocation('workbuddy-app', '干活')).toBeNull()
   })
 })
@@ -166,6 +167,37 @@ describe('调度：并行上限与重活锁', () => {
     expect(isHeavyTask('写一首诗')).toBe(false)
     expect(isHeavyTask('写一首诗', true)).toBe(true)
     expect(isHeavyTask('帮我跑一下构建', false)).toBe(false)
+  })
+})
+
+describe('v0.1.511（②）：已验证标记与登录态文案', () => {
+  it('markAgentVerified 幂等：首次时间保留、再标记不覆盖', () => {
+    const s0 = defaultAgentSettings()
+    const s1 = markAgentVerified(s0, 'antigravity', 111)
+    expect(s1.verifiedAgents).toEqual({ antigravity: 111 })
+    const s2 = markAgentVerified(s1, 'antigravity', 222)
+    expect(s2.verifiedAgents).toEqual({ antigravity: 111 })
+    expect(markAgentVerified(s1, 'dsh', 333).verifiedAgents).toEqual({ antigravity: 111, dsh: 333 })
+  })
+  it('标记随 settings 存读往返不丢（510 落盘口径）', () => {
+    const s = markAgentVerified(defaultAgentSettings(), 'antigravity', 999)
+    saveAgentSettings(s)
+    const back = loadAgentSettings()
+    expect(back.verifiedAgents?.antigravity).toBe(999)
+  })
+  it('loginStateText：钥匙串口径不再说「读不到」、已验证优先', () => {
+    expect(loginStateText('yes')).toBe('已登录')
+    expect(loginStateText('no')).toBe('未登录')
+    expect(loginStateText('unknown', { probeMissing: 'unknown' })).toBe('钥匙串保管，魔方读不到')
+    expect(loginStateText('unknown', { probeMissing: 'unknown' })).not.toBe('读不到')
+    expect(loginStateText('unknown', { probeMissing: 'unknown', verifiedAt: 5 })).toBe('已验证（派活成功）')
+    expect(loginStateText(undefined)).toBe('检测中…')
+  })
+  it('DSH 登录指引走 dsh web 且文案提到浏览器登录页（①）', () => {
+    const dsh = agentDef('dsh')!
+    expect(dsh.loginCommandNative).toBe('dsh web')
+    expect(dsh.loginGuide).toContain('浏览器')
+    expect(dsh.loginGuide).toContain('重新检测')
   })
 })
 

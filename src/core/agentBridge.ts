@@ -80,6 +80,15 @@ export async function agentWhich(name: string): Promise<string> {
   try { return await inv<string>('agent_which', { name }) } catch { return '' }
 }
 
+/** v0.1.511（⑤）：确保 DSH 账号路线覆盖层文件存在于 App 自己目录
+ *  （~/.ai-credit-manager/agents/dsh-account-route.yml），返回绝对路径；
+ *  非桌面端 / 失败返回空串（派活回落到不带覆盖层的旧形式）。 */
+export async function agentDshAccountPatch(): Promise<string> {
+  const inv = invokeFn()
+  if (!inv) return ''
+  try { return await inv<string>('agent_dsh_account_patch') } catch { return '' }
+}
+
 // ---------------- 桌面型自动送达（v0.1.509，仅 macOS） ----------------
 
 /** 写系统剪贴板（复用翻译模块的 pbcopy 命令）；成功返回 true */

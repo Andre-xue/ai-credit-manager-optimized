@@ -9,8 +9,9 @@ import {
   parseDelegation, pickStartable, isHeavyTask, quotaGate, capCheck, parseCliUsage,
   loadAgentSettings, saveAgentSettings, loadAgentTasks, saveAgentTasks,
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
-  effectiveDispatch, detectHasApp, multiAccountCapable, pickEntryLru, fillLoginGuide,
-  parseSessionId, isHeadlessInterfaceFailure, tierLabel, nativeEntryId,
+  effectiveDispatch, multiAccountCapable, pickEntryLru, fillLoginGuide,
+  parseSessionId, tierLabel, nativeEntryId,
+  markAgentVerified, loginStateText,
   type AgentDef, type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
   type AgentAccountEntry,
 } from '../core/agents'
@@ -21,9 +22,10 @@ import {
 import {
   agentDetect, agentLaunchApp, agentRunStart, agentRunPoll, agentRunStop, agentClipboardWrite,
   agentVaultBaseline, agentVaultPoll, agentVaultList, agentVaultRestore, agentVaultDeleteEntries, agentVaultPrune,
-  agentVaultStats, agentVaultDeleteBaseline, agentAccountsProbe,
+  agentVaultStats, agentVaultDeleteBaseline, agentAccountsProbe, agentDshAccountPatch,
   type VaultStatsResult, type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
+import { parseCliOutput } from '../core/agentOutput'
 import { runDelivery, deliveryPresentation, deliveryChipLabel, createBridgeDeliveryProvider } from '../core/agentDelivery'
 import { WORKSHOP_SKILLS, buildSkillTaskText, type WorkshopSkill } from '../core/workshopSkills'
 import { buildUsageView, buildModelChoices } from '../core/agentUsageView'
@@ -143,6 +145,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
 
   const updateTask = useCallback((id: string, patch: Partial<AgentTask>) => {
     setTasks(prev => prev.map(t => (t.id === id ? { ...t, ...patch } : t)))
+  }, [])
+
+  // v0.1.511（⑤）：DSH 账号路线覆盖层路径——首次派 dsh 的活时向 Rust 懒取一次并缓存
+  const dshPatchRef = useRef('')
+  const ensureDshPatch = useCallback(async (): Promise<string> => {
+    if (!dshPatchRef.current) {
+      try { dshPatchRef.current = await agentDshAccountPatch() } catch { dshPatchRef.current = '' }
+    }
+    return dshPatchRef.current
   }, [])
 
   const addLedger = useCallback((e: AgentLedgerEntry) => {
@@ -490,7 +501,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       taskText: task.planFor ?? task.text, taskTitle: task.title,
       agentName: task.agentName, output: outputText, changedFiles,
     })
-    const inv = buildCliInvocation(rDef.id, prompt)
+    // v0.1.511（⑤）：审查者是 DSH 时同样要带账号路线覆盖层
+    const inv = buildCliInvocation(rDef.id, prompt, undefined,
+      rDef.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
     if (!inv) { fail('审查者没有 CLI 派活方式', rDef.name); return }
     const runId = `review-${task.id}`
     try {
@@ -502,7 +515,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } catch (e) {
       fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`, rDef.name)
     }
-  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed])
+  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed, ensureDshPatch])
 
   const finalizeCliTask = useCallback(async (task: AgentTask, exitCode: number) => {
     const now = Date.now()
@@ -531,6 +544,19 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       status, endedAt: now, exitCode,
       note: wasStopped ? '已被你停止' : exitCode === 0 ? undefined : (humanizeAgentError(outputText) || `进程退出码 ${exitCode}`),
     })
+    // v0.1.511（②）：钥匙串保管登录态的 Agent 首次派活成功 → 落「已验证」标记，
+    // 设置页/条目不再常年显示「读不到」、更不会误以为没登录（标记随 settings 落盘）
+    if (status === 'done') {
+      const doneDef = agentDef(task.agentId)
+      if (doneDef?.credProbeMissing === 'unknown') {
+        setSettings(prev => {
+          if (prev.verifiedAgents?.[task.agentId]) return prev
+          const next = markAgentVerified(prev, task.agentId, Date.now())
+          saveAgentSettings(next)
+          return next
+        })
+      }
+    }
     // 二期联动（主控拆活回填 / 额度类失败接力 / 完成后的交叉审查）
     if (status === 'done' && task.planFor) {
       handleMasterPlan(task, outputText)
@@ -546,6 +572,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
    *  确认输入框焦点，见 agentDelivery / Rust paste_deliver）→ 按设置决定是否连回车发送。
    *  degradeReason 给定时（第一档无头直派失败降级），最终文案如实带上降级说明，绝不假装无头成功。 */
   const deliverToApp = useCallback(async (task: AgentTask, def: AgentDef, degradeReason?: string) => {
+    // v0.1.511（⑥）：降级原因先落到任务的持久字段 note——此前只拼在最终 delivery.note 里，
+    // 中间覆盖 dispatch/tier 的 updateTask 把它冲得不可见（Codex 真机实证：卡上只剩
+    // 「粘贴送达（兜底）」徽标，用户不知道为什么没走无头直派）。原因先人话化再落盘，
+    // 且下面每一次 updateTask 都不再清它；最终 delivery.note 也继续带同一句。
+    const humanReason = degradeReason ? (humanizeAgentError(degradeReason) || degradeReason) : ''
+    const degradeNote = degradeReason
+      ? `无头直派失败：${humanReason}，已降级为粘贴送达（兜底）`
+      : ''
+    if (degradeNote) updateTask(task.id, { note: degradeNote })
     let copied = await agentClipboardWrite(task.text)
     if (!copied) {
       try { await navigator.clipboard?.writeText(task.text); copied = true } catch { copied = false }
@@ -557,7 +592,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     if (!ok) {
       updateTask(task.id, {
         status: 'failed', endedAt: Date.now(), delivery: undefined,
-        note: `${degradeReason ? `无头直派失败（${degradeReason}），降级粘贴也没能打开应用。` : ''}没能打开 ${def.name}（可能未安装或被系统拦截）${copied ? '；任务已复制到剪贴板，手动打开应用后按 ⌘V 粘贴发送即可' : '，请手动打开后粘贴任务'}`,
+        note: `${degradeNote ? `${degradeNote}，降级粘贴也没能打开应用。` : ''}没能打开 ${def.name}（可能未安装或被系统拦截）${copied ? '；任务已复制到剪贴板，手动打开应用后按 ⌘V 粘贴发送即可' : '，请手动打开后粘贴任务'}`,
       })
       return
     }
@@ -568,7 +603,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     const provider = createBridgeDeliveryProvider(def.appNames, def.bundleIds, task.text)
     const result = await runDelivery(provider, { autoSend: settingsRef.current.delivery.autoSend })
     const pres = deliveryPresentation(result, def.name)
-    const note = degradeReason ? `无头直派失败（${degradeReason}），已降级为粘贴送达（兜底）。${pres.note}` : pres.note
+    const note = degradeNote ? `${degradeNote}。${pres.note}` : pres.note
     // 送达期间用户可能已标记完成 / 放弃 / 接力走了：只给仍停在待粘贴的卡回填。
     // 守卫必须在 setTasks 的 updater 里用最新状态判——快速送达（首轮即就绪 /
     // 无权限秒回）时 tasksRef 还没刷进 manual 状态，用 ref 判会把结果误丢，
@@ -589,7 +624,17 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       const eff = effectiveDispatch(def, det) ?? def.dispatch
       updateTask(task.id, { status: 'running', startedAt: Date.now(), note: undefined, dispatch: eff, tier: eff === 'cli' ? 1 : 3 })
       if (eff === 'open') {
-        // 第三档（兜底）：命令不在、只有桌面应用时才走粘贴送达
+        // v0.1.511（⑥修订，Ethan 定）：无头型 Agent 彻底取消自动降档粘贴——命令未装就
+        // 直接拦下、卡上写明先一键安装（主控拆活/接力派生的任务不走 submit 门控，
+        // 在这一层兜底）；粘贴送达只留给本来就只有粘贴档的 Agent（WorkBuddy/Qoder 等）
+        if (def.headlessCli) {
+          updateTask(task.id, {
+            status: 'failed', endedAt: Date.now(),
+            note: `${def.cliNames[0]} 命令未安装：无头型派活只走命令、不降级粘贴。先一键安装命令再派活（下方按钮或设置 · Agent 管理）`,
+          })
+          return
+        }
+        // 第三档（兜底）：只有粘贴档的 Agent，命令不在、只有桌面应用时走粘贴送达
         await deliverToApp(task, def)
         return
       }
@@ -623,7 +668,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           envPairs = [...envPairs, ...cred.pairs]
         }
       }
-      const inv = buildCliInvocation(def.id, task.text, task.sessionId)
+      // v0.1.511（⑤）：dsh 派活带账号路线覆盖层（--patch），原生与隔离条目同口径
+      const inv = buildCliInvocation(def.id, task.text, task.sessionId,
+        def.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
       if (!inv) { updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '该 Agent 没有 CLI 派活方式' }); return }
       try {
         await agentRunStart(task.id, inv.command, inv.args, task.workdir, envPairs)
@@ -631,17 +678,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         outputsRef.current.set(task.id, [])
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        // 第一档启动就失败且桌面应用在 → 如实降级第三档粘贴送达
-        if (def.headlessCli && detectHasApp(det)) {
-          await deliverToApp(task, def, `启动失败：${msg}`)
-          return
-        }
-        updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: `启动失败：${msg}` })
+        // v0.1.511（⑥修订）：启动失败一律如实失败——无头型绝不自动降级去打开桌面应用
+        // 粘贴；失败原因人话化后落卡常驻，修复动作（去登录/一键安装）由卡上按钮承接
+        const human = humanizeAgentError(msg)
+        updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: human || `启动失败：${msg}` })
       }
     } finally {
       startingRef.current.delete(task.id)
     }
-  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed])
+  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed, ensureDshPatch])
 
   // 调度：排队任务按并行上限 + 重活锁启动
   useEffect(() => {
@@ -684,24 +729,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         if (!poll.running && poll.exitCode !== null) {
           const fresh = tasksRef.current.find(t => t.id === task.id)
           if (fresh && fresh.status === 'running') {
-            const fdef = agentDef(fresh.agentId)
-            const outText = (outputsRef.current.get(task.id) ?? []).join('\n')
-            if (fdef?.headlessCli && fresh.kind === 'account' && poll.exitCode !== 0
-              && isHeadlessInterfaceFailure(outText, poll.exitCode)
-              && detectHasApp(detectMapRef.current[fresh.agentId])) {
-              // 第一档接口失败（多半是版本差异改了参数）→ 先收保险箱 diff，再如实降级第三档
-              if (baselinedRef.current.has(task.id)) {
-                await agentVaultPoll(task.id).catch(() => null)
-                baselinedRef.current.delete(task.id)
-                void refreshVault()
-              }
-              stoppedRef.current.delete(task.id)
-              const reasonLine = outText.split('\n').filter(x => x.trim()).slice(-2).join(' ').slice(0, 140) || `退出码 ${poll.exitCode}`
-              updateTask(task.id, { exitCode: poll.exitCode })
-              void deliverToApp(fresh, fdef, reasonLine)
-            } else {
-              void finalizeCliTask(fresh, poll.exitCode)
-            }
+            // v0.1.511（⑥修订）：无头接口失败（版本差异改了参数等）也只如实失败、
+            // 不再降级粘贴——统一走 finalizeCliTask（内含保险箱 diff 收尾与人话原因）
+            void finalizeCliTask(fresh, poll.exitCode)
           }
         }
       }
@@ -770,6 +800,33 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       ].filter(c => hashQuery === '' || c.name.includes(hashQuery))
     : []
   const pickerSkills = hashMatch ? WORKSHOP_SKILLS.filter(sk => sk.name.toLowerCase().includes(hashQuery)) : []
+  // v0.1.511（⑨）：# 面板方向与高度——向上弹时不得盖页签、不得被窗口顶部裁行；
+  // 上方空间不足就改向下弹，高度按可用空间封顶、面板内滚动
+  const pickerVisible = pickerList.length > 0 || pickerEntries.length > 0 || pickerCommands.length > 0 || pickerSkills.length > 0
+  const inputWrapRef = useRef<HTMLDivElement>(null)
+  const [pickerDir, setPickerDir] = useState<{ down: boolean; maxH: number }>({ down: false, maxH: 320 })
+  useEffect(() => {
+    if (!pickerVisible || !inputWrapRef.current) return
+    const r = inputWrapRef.current.getBoundingClientRect()
+    const tabsEl = document.querySelector('.aw-tabs')
+    const limitTop = (tabsEl ? tabsEl.getBoundingClientRect().bottom : 0) + 8
+    const spaceAbove = Math.max(0, r.top - limitTop)
+    const spaceBelow = Math.max(0, window.innerHeight - r.bottom - 12)
+    const CAP = 320
+    if (spaceAbove >= CAP) setPickerDir({ down: false, maxH: CAP })
+    else if (spaceBelow > spaceAbove) setPickerDir({ down: true, maxH: Math.max(140, Math.min(CAP, spaceBelow)) })
+    else setPickerDir({ down: false, maxH: Math.max(140, spaceAbove) })
+  }, [pickerVisible, input])
+  // v0.1.511（⑧）：用量浮层点外部关闭
+  const usageBarRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!usageOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (usageBarRef.current && !usageBarRef.current.contains(e.target as Node)) setUsageOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [usageOpen])
   const openHandover = (task: AgentTask) => { setHovKey(''); setHovModelId(''); setHandoverFor(task) }
 
   const noVaultCoverage = !settings.vault.enabled || !workdir.trim()
@@ -1037,24 +1094,31 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                   <button className={`aw-entry-chip ${entryPick === 'auto' ? 'on' : ''}`} onClick={() => setEntryPick('auto')}>自动（最久未用）</button>
                   {entries.map(e => {
                     const login = accountStatus[e.id]?.login
+                    const chipText = loginStateText(login, {
+                      probeMissing: selDef.credProbeMissing,
+                      verifiedAt: settings.verifiedAgents?.[selDef.id],
+                    })
                     return (
                       <button key={e.id} className={`aw-entry-chip ${entryPick === e.id ? 'on' : ''}`} onClick={() => setEntryPick(e.id)}>
-                        {e.label}{login === 'yes' ? ' · 已登录' : login === 'no' ? ' · 未登录' : ''}
+                        {e.label}{login === 'yes' ? ' · 已登录' : login === 'no' ? ' · 未登录'
+                          : settings.verifiedAgents?.[selDef.id] ? ' · 已验证'
+                          : login === 'unknown' && selDef.credProbeMissing === 'unknown' ? ' · 待派活验证'
+                          : login ? ` · ${chipText}` : ''}
                       </button>
                     )
                   })}
                 </div>
               )
             })()}
-            <div className="aw-input-wrap">
+            <div className="aw-input-wrap" ref={inputWrapRef}>
               <textarea
                 className="aw-input" rows={3} value={input}
                 placeholder="写下要派的活，打 # 可指定 Agent（如：#Pi 把 src 里的日志改成英文）"
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
               />
-              {(pickerList.length > 0 || pickerEntries.length > 0 || pickerCommands.length > 0 || pickerSkills.length > 0) && (
-                <div className="aw-picker">
+              {pickerVisible && (
+                <div className={`aw-picker ${pickerDir.down ? 'down' : ''}`} style={{ maxHeight: pickerDir.maxH }}>
                   {(pickerList.length > 0 || pickerEntries.length > 0) && <div className="aw-picker-group">委派 Agent</div>}
                   {pickerList.map(a => (
                     <button key={a.id} onClick={() => setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, `$1#${a.name} `))}>
@@ -1103,7 +1167,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
             {readyAgents.length === 0 && (
               <div className="aw-note warn">当前没有可委派的 Agent：到「设置 · Agent 管理」启用已安装的 Agent（空壳型还需绑定 Key / 免费路线 / 自身登录）。</div>
             )}
-            <div className="aw-usagebar">
+            <div className="aw-usagebar" ref={usageBarRef}>
               <button className="aw-usage-main" onClick={() => setUsageOpen(o => !o)}>
                 <span>缓存命中率 {usage.cacheHitPct == null ? '—（暂无数据）' : `${usage.cacheHitPct.toFixed(1)}%`}</span>
                 <span>输出速度 {usage.lastTps == null ? '—（暂无数据）' : `${usage.lastTps.toFixed(0)} tok/s`}</span>
@@ -1304,9 +1368,31 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     && (task.status === 'manual' || task.status === 'done') && (
                     <div className="aw-note">桌面型任务不支持自动审查（没有可审的输出）</div>
                   )}
-                  {task.output.length > 0 && (
-                    <pre className="aw-output">{task.output.slice(-60).join('\n')}</pre>
-                  )}
+                  {task.output.length > 0 && (() => {
+                    // v0.1.511（④）：主区域只给人话——进度行 + 最终答复；无头 CLI 的 JSON
+                    // 事件流不再整段糊卡，原文折叠进「原始输出」（默认收起）。失败原因走
+                    // humanizeAgentError 人话行（解析器抽出的 errorText 优先于卡上 note）。
+                    const parsed = parseCliOutput(task.agentId, task.output)
+                    const humanFail = task.status === 'failed'
+                      ? (humanizeAgentError(parsed.errorText) || task.note || '')
+                      : ''
+                    const progressTail = parsed.progress.slice(-12)
+                    return (
+                      <>
+                        {progressTail.length > 0 && (
+                          <div className="aw-progress-lines">
+                            {progressTail.map((p, i) => <div key={i}>{p}</div>)}
+                          </div>
+                        )}
+                        {parsed.finalText && <div className="aw-final">{parsed.finalText}</div>}
+                        {humanFail && <div className="aw-note warn">{humanFail}</div>}
+                        <details className="aw-raw">
+                          <summary>原始输出</summary>
+                          <pre className="aw-output">{task.output.slice(-60).join('\n')}</pre>
+                        </details>
+                      </>
+                    )
+                  })()}
                   <div className="aw-task-btns">
                     {task.status === 'running' && (task.dispatch ?? agentDef(task.agentId)?.dispatch) === 'cli' && (
                       <button className="btn sm" onClick={() => void stopTask(task)}><Square size={13} /> 停止</button>

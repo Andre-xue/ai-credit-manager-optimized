@@ -3336,7 +3336,11 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; min-width: 260px;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg);
   padding: 5px; display: flex; flex-direction: column;
+  /* v0.1.511（⑨）：高度封顶（JS 按可用空间再收紧）、面板内滚动，不许裁行 */
+  max-height: 320px; overflow-y: auto;
 }
+/* v0.1.511（⑨）：上方空间不足时改向下弹（JS 判定），同样封顶滚动 */
+.aw-picker.down { bottom: auto; top: calc(100% + 6px); }
 .aw-picker button {
   display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: none; background: none;
   border-radius: 6px; cursor: pointer; text-align: left; color: var(--text); font-size: 13px;
@@ -3369,6 +3373,17 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   font-size: 11.5px; line-height: 1.55; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
   margin: 8px 0;
 }
+/* v0.1.511（④）：任务卡人话输出——进度行 + 最终答复；原始事件流只在 .aw-raw 折叠里 */
+.aw-progress-lines {
+  font-size: 12.5px; line-height: 1.65; color: var(--text-2); margin: 6px 0;
+}
+.aw-final {
+  font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin: 8px 0; color: var(--text);
+}
+.aw-raw { margin: 6px 0; }
+.aw-raw > summary { cursor: pointer; font-size: 12px; color: var(--text-2); user-select: none; }
 .aw-task-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .aw-task-btns .aw-note { display: inline-flex; align-items: center; gap: 5px; }
 .aw-approval {
@@ -3476,7 +3491,9 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .aw-usagebar { position: relative; margin-top: 10px; }
 .aw-usage-main { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; width: 100%; text-align: left; border: none; border-top: 1px solid var(--border); background: none; padding: 8px 2px 0; font-size: 12.5px; cursor: pointer; color: var(--text); }
 .aw-usage-toggle { margin-left: auto; color: var(--primary); }
-.aw-usage-pop { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; border: 1px solid var(--border); background: var(--card); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; display: grid; gap: 5px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.25); }
+/* v0.1.511（⑧）：背景必须用真实存在的 --panel——此前写的 --card 全仓未定义、算成透明，
+   浮层文字直接印在下方结算卡上叠字。另加高度封顶+内滚动，层级压过结算卡 */
+.aw-usage-pop { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 60; border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; display: grid; gap: 5px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.25); max-height: 240px; overflow-y: auto; }
 .aw-modal-backdrop { position: fixed; inset: 0; background: rgba(20, 20, 30, 0.45); display: flex; align-items: center; justify-content: center; z-index: 1200; }
 .aw-modal { background: var(--card); color: var(--text); border-radius: 14px; padding: 18px; width: min(520px, 92vw); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3); }
 .aw-modal h3 { margin: 0 0 6px; font-size: 16px; }
@@ -3484,3 +3501,27 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .aw-modal-opt { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; font-size: 13px; }
 .aw-modal-select { width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
 .aw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* v0.1.511（⑦）：Agent 管理平台横向卡片（预览定版）——全局横条 + 三列网格 + 汇总条 */
+.asp-global-bar { display: flex; align-items: flex-start; gap: 12px; }
+.asp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
+@media (max-width: 1200px) { .asp-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 760px) { .asp-grid { grid-template-columns: 1fr; } }
+.asp-grid .aw-agent-row.asp-card {
+  position: relative; flex-direction: column; align-items: stretch; gap: 10px;
+  border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: var(--panel);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+.asp-card > .jelly-toggle { position: absolute; top: 16px; right: 16px; }
+.asp-card .aw-agent-title { padding-right: 58px; }
+.asp-avatar {
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+  background: var(--panel-2); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; color: var(--text);
+}
+.asp-summary {
+  margin-top: 14px; font-size: 12.5px; color: var(--text-2);
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 11px 14px;
+}
