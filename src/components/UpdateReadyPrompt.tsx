@@ -8,6 +8,7 @@ import {
   deferDownloadedInstall, dismissUpdatePrompt, type AutoUpdateUiState,
 } from '../core/autoUpdate'
 import { loadPendingUpdate } from '../core/updater'
+import { UpdateProgressBar } from './UpdateProgressBar'
 import { t } from '../core/i18n'
 
 export function UpdateReadyPrompt() {
@@ -25,6 +26,17 @@ export function UpdateReadyPrompt() {
             </div>
           </div>
         </div>
+      </div>
+    )
+  }
+  if (ui.kind === 'downloading') {
+    // 后台下载中（v0.1.495 补强）：右下角悬浮小卡实时进度，不再只有点开
+    // 侧边栏菜单才能看到一行字；与手动弹窗共用 UpdateProgressBar 呈现。
+    return (
+      <div className="upd-dl-card">
+        <div className="upd-new"><Download size={15} /> {t('新版本 {ver} 正在后台下载', { ver: `v${ui.version.replace(/^v/i, '')}` })}</div>
+        <UpdateProgressBar downloaded={ui.downloaded} total={ui.total} />
+        <div className="upd-hint">{t('下载完成后会弹窗询问是否立即更新')}</div>
       </div>
     )
   }

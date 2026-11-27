@@ -408,7 +408,7 @@ export function SteamDealsTool({ notify, onBack }: {
   }, [library, libQuery, libSort])
 
   return (
-    <ToolShell title="Steam 迷你商城" desc="Steam 商店特惠与全目录搜索：折扣、现价、原价、好评率，可按分类/平台筛选；绑定你的 Steam 账户后还能看「我的库」，商城里已拥有的游戏会标「已入库」。" onBack={onBack}>
+    <ToolShell wide title="Steam 迷你商城" desc="Steam 商店特惠与全目录搜索：折扣、现价、原价、好评率，可按分类/平台筛选；绑定你的 Steam 账户后还能看「我的库」，商城里已拥有的游戏会标「已入库」。" onBack={onBack}>
       <div className="sm-root">
         <div className="sm-head">
           <div className="sm-tabs" role="tablist" aria-label="Steam 商城页签">

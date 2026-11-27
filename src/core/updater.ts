@@ -344,8 +344,8 @@ async function installViaMirrorFast(onProgress?: (p: InstallProgress) => void): 
   const pkg = await resolveMirrorPackage()
   if (!pkg) return false
   const { invoke, Channel } = await import('@tauri-apps/api/core')
-  const channel = new Channel<number>()
-  channel.onmessage = (downloaded: number) => onProgress?.({ downloaded })
+  const channel = new Channel<InstallProgress>()
+  channel.onmessage = (p) => onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
   await invoke('update_fast_install', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
   return true
 }
@@ -400,6 +400,16 @@ export function loadAutoUpdateEnabled(): boolean {
 
 export function saveAutoUpdateEnabled(on: boolean): void {
   try { localStorage.setItem(AUTO_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+  // 「静默更新」开关有两处（更新弹窗底部 + 设置页签），同一偏好：保存即广播，
+  // 两处监听后同步显示（v0.1.495）。
+  try { window.dispatchEvent(new CustomEvent<boolean>('acm-silent-update-pref', { detail: on })) } catch { /* 忽略 */ }
+}
+
+/** 订阅「静默更新」偏好变更（两处开关同步显示用） */
+export function onSilentUpdatePrefChange(fn: (on: boolean) => void): () => void {
+  const h = (e: Event) => fn((e as CustomEvent<boolean>).detail)
+  window.addEventListener('acm-silent-update-pref', h)
+  return () => window.removeEventListener('acm-silent-update-pref', h)
 }
 
 /** 安装前落标记：安装会退出/重启进程，重启回来据此轻提示一次「已更新到 vX」 */
@@ -434,8 +444,8 @@ export async function downloadUpdateInBackground(onProgress?: (p: InstallProgres
     const pkg = await resolveMirrorPackage()
     if (pkg && versionGreater(pkg.version, APP_VERSION)) {
       const { invoke, Channel } = await import('@tauri-apps/api/core')
-      const channel = new Channel<number>()
-      channel.onmessage = (downloaded: number) => onProgress?.({ downloaded })
+      const channel = new Channel<InstallProgress>()
+      channel.onmessage = (p) => onProgress?.({ downloaded: p.downloaded, total: p.total || undefined })
       const filePath = await invoke<string>('update_fast_download', { path: pkg.path, fileName: pkg.fileName, onProgress: channel })
       const p: PendingUpdate = {
         version: pkg.version, notes: pkg.notes, via: 'mirror',

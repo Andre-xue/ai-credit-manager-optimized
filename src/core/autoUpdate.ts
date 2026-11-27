@@ -1,9 +1,11 @@
-// 后台自动更新状态机（v0.1.474，仅桌面端）：
-// 启动延迟静默检查 → 后台把安装包下载好 → 弹窗问「现在更新 / 稍后」；
-// 选稍后则布防 Rust 关窗闸门（update_close_arm），用户下次关窗（隐藏进
-// 托盘也算）或退出时，Rust 广播 update-close-requested，本模块等进行中的
-// 任务（邮件删除/同步、签到、图库索引等，见 appBusy）结束后再安装，
-// 不硬打断。状态经 subscribe 供侧边栏入口与弹窗渲染；持久化在 updater.ts。
+// 后台自动更新状态机（v0.1.474，仅桌面端；v0.1.495 起「静默更新」新口径）：
+// 启动延迟静默检查 → 后台把安装包下载好 → 静默更新开启时等空闲（appBusy）
+// 自动安装并重启（scheduleSilentAutoInstall），弹窗同时给出「现在更新 /
+// 稍后」供手动介入；关闭静默更新则只弹窗等用户点。选稍后则布防 Rust 关窗
+// 闸门（update_close_arm），用户下次关窗（隐藏进托盘也算）或退出时，Rust
+// 广播 update-close-requested，本模块等进行中的任务（邮件删除/同步、签到、
+// 图库索引等，见 appBusy）结束后再安装，不硬打断。闸门也是静默自动装等
+// 不到空闲时的兜底。状态经 subscribe 供侧边栏入口与弹窗渲染；持久化在 updater.ts。
 import { isDesktopApp } from './openExternal'
 import {
   checkDesktopUpdate, loadAutoUpdateEnabled, loadPendingUpdate, savePendingUpdate,
@@ -117,10 +119,34 @@ export function dismissUpdatePrompt(): void {
   if (uiState.kind === 'ready') setUiState({ ...uiState, promptOpen: false })
 }
 
-/** Rust 关窗闸门广播：有关待安装的「稍后」更新时，等任务结束装上再放行 */
+let silentInstallToken = 0
+
+/** 静默更新开启时（v0.1.495 新口径，覆盖 474 的「只下载等询问」）：下载就绪后
+    先布防关窗闸门兜底，再等空闲自动安装并重启——runInstall 内部复用 appBusy
+    等空闲、最长 10 分钟，等不到回落 deferred 由闸门在关窗时兜底。用户点
+    「稍后」/关掉静默更新/本轮已被接管时取消自动装（token + 状态双重校验）。 */
+function scheduleSilentAutoInstall(version: string): void {
+  if (!loadAutoUpdateEnabled()) return
+  const token = ++silentInstallToken
+  void armClose(true)
+  void (async () => {
+    // 留 3 秒让「已下载好」状态先被看到，随后安装遮罩会接管界面
+    await sleep(3000)
+    if (token !== silentInstallToken) return
+    const s = uiState
+    if (s.kind !== 'ready' || s.version !== version) return
+    if (!loadAutoUpdateEnabled()) return
+    const p = loadPendingUpdate()
+    if (!p) return
+    const ok = await runInstall(p)
+    if (!ok) notifyFn('更新安装失败，请稍后重试', 'err')
+  })()
+}
+
+/** Rust 关窗闸门广播：有待安装更新（选过「稍后」，或静默更新开启等空闲兜底）时，等任务结束装上再放行 */
 async function onCloseRequested(action: 'hide' | 'exit'): Promise<void> {
   const p = loadPendingUpdate()
-  if (!p || !p.deferred || installing) {
+  if (!p || installing || (!p.deferred && !loadAutoUpdateEnabled())) {
     await proceedClose(action)
     return
   }
@@ -152,6 +178,7 @@ async function silentCheckAndDownload(): Promise<void> {
     return
   }
   setUiState({ kind: 'ready', version: p.version, promptOpen: true })
+  scheduleSilentAutoInstall(p.version)
 }
 
 /** App 主窗口挂载时调用一次（桌面端）：刚更新提示、待安装恢复、启动静默检查、关窗闸门监听 */
@@ -174,6 +201,8 @@ export function initAutoUpdate(opts: { notify: (msg: string, kind?: 'ok' | 'err'
     // 上次已下载好但没装成（进程被强杀等）：直接再弹窗询问；曾选过「稍后」的重新布防
     if (pending.deferred) void armClose(true)
     setUiState({ kind: 'ready', version: pending.version, promptOpen: true })
+    // 没表态过的待安装 + 静默更新开启：接回空闲自动安装链；选过「稍后」的尊重其选择，不自动装
+    if (!pending.deferred) scheduleSilentAutoInstall(pending.version)
     return
   }
   if (!loadAutoUpdateEnabled()) return

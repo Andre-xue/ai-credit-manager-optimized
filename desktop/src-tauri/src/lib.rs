@@ -1121,6 +1121,15 @@ const UPDATE_MIRRORS: [&str; 4] = [
 ];
 const UPDATE_REPO: &str = "Andre-xue/ai-credit-manager-optimized";
 
+/// 更新下载进度（v0.1.495：通道同时带总大小。此前只报已下载字节，前端算不出
+/// 百分比、进度条永远 0%——手动弹窗与后台下载都只能干显示「已下载 X MB」，
+/// 正是「点了下载并安装几乎没反馈」的实处。total=0 表示源站未给长度。）
+#[derive(Clone, serde::Serialize)]
+struct UpdateDlProgress {
+    downloaded: u64,
+    total: u64,
+}
+
 /// 测速：对每个候选源拉前 32KB，按耗时排序（失败排最后）
 fn probe_mirror_order(path: &str) -> Vec<String> {
     let client = match reqwest::blocking::Client::builder()
@@ -1157,7 +1166,7 @@ fn probe_mirror_order(path: &str) -> Vec<String> {
 fn download_update_package(
     path: &str,
     file_name: &str,
-    on_progress: &tauri::ipc::Channel<u64>,
+    on_progress: &tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<(std::path::PathBuf, String), String> {
     use sha2::Digest;
     let order = probe_mirror_order(path);
@@ -1226,7 +1235,7 @@ fn update_fast_install(
     app: tauri::AppHandle,
     path: String,
     file_name: String,
-    on_progress: tauri::ipc::Channel<u64>,
+    on_progress: tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<String, String> {
     let (dest, used_url) = download_update_package(&path, &file_name, &on_progress)?;
     install_downloaded_update(&app, &dest, &file_name)?;
@@ -1238,7 +1247,7 @@ fn update_fast_install(
 fn update_fast_download(
     path: String,
     file_name: String,
-    on_progress: tauri::ipc::Channel<u64>,
+    on_progress: tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<String, String> {
     let (dest, _used_url) = download_update_package(&path, &file_name, &on_progress)?;
     Ok(dest.to_string_lossy().to_string())
@@ -1264,16 +1273,17 @@ fn download_with_watchdog(
     client: &reqwest::blocking::Client,
     url: &str,
     dest: &std::path::Path,
-    on_progress: &tauri::ipc::Channel<u64>,
+    on_progress: &tauri::ipc::Channel<UpdateDlProgress>,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
     let mut resp = client.get(url).send().map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
+    let total = resp.content_length().unwrap_or(0);
     let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     let mut buf = [0u8; 65536];
-    let mut total: u64 = 0;
+    let mut total_bytes: u64 = 0;
     let start = std::time::Instant::now();
     let mut window_start = std::time::Instant::now();
     let mut window_bytes: u64 = 0;
@@ -1283,9 +1293,9 @@ fn download_with_watchdog(
             break;
         }
         file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        total += n as u64;
+        total_bytes += n as u64;
         window_bytes += n as u64;
-        let _ = on_progress.send(total);
+        let _ = on_progress.send(UpdateDlProgress { downloaded: total_bytes, total });
         if window_start.elapsed() >= std::time::Duration::from_secs(8) {
             if start.elapsed() > std::time::Duration::from_secs(10) && window_bytes < 240 * 1024 {
                 return Err("该镜像速度过慢，自动切换".into());
@@ -1294,7 +1304,7 @@ fn download_with_watchdog(
             window_bytes = 0;
         }
     }
-    if total < 1024 * 1024 {
+    if total_bytes < 1024 * 1024 {
         return Err("下载内容异常过小".into());
     }
     Ok(())
@@ -1334,8 +1344,19 @@ fn install_downloaded_update(app: &tauri::AppHandle, dest: &std::path::Path, fil
             return Err(format!("写入新应用失败：{e}"));
         }
         let _ = std::fs::remove_dir_all(&backup);
-        std::process::Command::new("open")
-            .arg(&bundle)
+        // 重启必须等本进程完全退出后再拉起新包（v0.1.495 修）：此前直接 open
+        // 同一 bundle 再 exit(0)——对仍在运行的同 bundle id 执行 open，
+        // LaunchServices 只激活现有实例、不拉新进程，本进程随即退出就变成
+        // 「装完 App 直接消失、没有自动重启回来」（2026-11-26 录屏症状；
+        // 手动快速通道 update_fast_install 与后台安装共用此函数，同受影响）。
+        // 改派一个 detached 小脚本守着本进程 PID，确认退出后才 open 新包。
+        let pid = std::process::id();
+        let bundle_q = bundle.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; /usr/bin/open '{bundle_q}'"
+        );
+        std::process::Command::new("/bin/sh")
+            .args(["-c", &script])
             .spawn()
             .map_err(|e| e.to_string())?;
         std::process::exit(0);
@@ -4594,6 +4615,15 @@ pub fn run() {
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
     // 不接住它，点 Dock 就毫无反应、只能去点菜单栏图标（Ethan 实机反馈，v0.1.313 修）。
     app.run(|app_handle, event| {
+        // 待安装更新已布防时，⌘Q / 应用菜单「退出」也必须过关窗闸门（v0.1.495 补）：
+        // 此前闸门只接了红 X 关窗、托盘退出、quit_app 三路，⌘Q 走 ExitRequested
+        // 直退出、绕过闸门，选了「稍后」关窗安装也永不触发。布防中拦下并广播
+        // 给前端（前端装完自带重启，或放行时先解除布防，不会死循环）。
+        if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+            if update_close_gate(app_handle, "exit") {
+                api.prevent_exit();
+            }
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
             show_main_window(app_handle, None);

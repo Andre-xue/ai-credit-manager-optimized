@@ -11,8 +11,33 @@ permissions:
   contents: write
 
 jobs:
+  # v0.1.495 起的发版硬闸：新版本号必须严格大于最新已发布 release 的版本号，
+  # 否则整个发布直接失败（2026-11-27 小号晚发导致更新器误报「已是最新」的教训）。
+  # 发版清单同步注明：打 tag 前先确认 package.json 版本号 > GitHub 最新 release。
+  version-guard:
+    name: Version monotonic guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: New version must be strictly greater than latest published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            NEW="${GITHUB_REF_NAME#v}"
+          else
+            NEW=$(node -p "require('./package.json').version")
+          fi
+          echo "待发布版本: $NEW"
+          TAGS=$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')
+          echo "已发布 tag 数: $(printf '%s' "$TAGS" | grep -c . || true)"
+          node scripts/check-version-monotonic.mjs "$NEW" $TAGS
+
   build-desktop:
     name: Build ${{ matrix.name }}
+    needs: version-guard
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

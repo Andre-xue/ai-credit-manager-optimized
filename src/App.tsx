@@ -85,7 +85,8 @@ import { cloud, type CloudUser } from './core/cloud'
 import { mirrorCloudSession, clearCloudSessionMirror, restoreCloudSessionMirror, restoreCloudSessionMirrorForce } from './core/sessionMirror'
 import { UpdateModal } from './components/UpdateModal'
 import { UpdateReadyPrompt } from './components/UpdateReadyPrompt'
-import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled } from './core/updater'
+import { APP_VERSION, currentPlatform, loadAutoUpdateEnabled, saveAutoUpdateEnabled, onSilentUpdatePrefChange } from './core/updater'
+import { SilentUpdateSwitch } from './components/SilentUpdateSwitch'
 import { initAutoUpdate, getAutoUpdateUiState, subscribeAutoUpdate, reopenUpdatePrompt } from './core/autoUpdate'
 import { NOTE_CATEGORIES, buildNote, categoryFromNote, type NoteCategory } from './core/modelCategories'
 import { pullPayload, pushPayload, applyPayload, getLastSyncAt, getClientId, checkRemoteVersion, setBaseline, getRemoteVersion, type PullResult } from './core/sync'
@@ -5451,8 +5452,10 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
   // v0.1.486「在这台设备上保持解锁」：仅本机偏好（不进云同步/备份），默认开
   const [keepUnlocked, setKeepUnlocked] = useState(() => keepUnlockedEnabled())
   const [launchDesktop, setLaunchDesktopState] = useState(() => comfyLaunchDesktopEnabled())
-  // 自动更新开关（v0.1.474，仅桌面、仅本机 acm.update.autoEnabled.v1，默认开）
+  // 「静默更新」开关（v0.1.474 建、v0.1.495 改名统一口径；仅桌面、仅本机
+  // acm.update.autoEnabled.v1，默认开；与更新弹窗底部的开关同一偏好、广播同步）
   const [autoUpdEnabled, setAutoUpdEnabled] = useState(() => loadAutoUpdateEnabled())
+  useEffect(() => onSilentUpdatePrefChange(v => setAutoUpdEnabled(v)), [])
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const toggleClearCat = (key: ClearCat) => setClearSel(sel => sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key])
   const [confirmReset, setConfirmReset] = useState(false)
@@ -6362,8 +6365,8 @@ function SettingsView({ state, onChange, notify, onOpenVault, onClear, onChangeP
               <button className="btn sm primary" onClick={onCheckUpdate}><RefreshCw size={14} /> {t('检查更新')}</button>
             </SettingsRow>
             {isDesktopApp() && (
-              <SettingsRow title={t('自动更新')} desc={t('启动时静默检查并在后台下载新版本，下载完弹窗询问是否安装（仅本机保存）')}>
-                <Toggle checked={autoUpdEnabled} onChange={v => { setAutoUpdEnabled(v); saveAutoUpdateEnabled(v) }} />
+              <SettingsRow title={t('静默更新')} desc={autoUpdEnabled ? t('已开启 · 空闲时自动下载、安装并重启') : t('已关闭 · 需手动下载，下载后自动安装重启')}>
+                <SilentUpdateSwitch checked={autoUpdEnabled} onChange={v => { setAutoUpdEnabled(v); saveAutoUpdateEnabled(v) }} />
               </SettingsRow>
             )}
           </SettingsSection>)}

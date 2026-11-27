@@ -51,7 +51,27 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 /* ---------- Shell ---------- */
 .claude-ui.app-shell, .app-shell { background: var(--bg); display: flex; min-height: 100dvh; }
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.content { width: 100%; max-width: 1180px; margin: 0 auto; padding: 28px 32px 72px; }
+/* v0.1.495：全 App 一级页面统一全宽——摘掉 1180px 封顶，左右边距统一 16px（上下 28/72 不变）。
+   手机壳不受影响：liquid-glass.css 的 .phone-shell .content 特异性更高、左右本就是 16px，
+   且手机视口下封顶本不生效，改后手机布局逐像素一致。 */
+.content { width: 100%; max-width: none; margin: 0 auto; padding: 28px 16px 72px; }
+/* v0.1.495：工坊内层第二层封顶——网格/表格类摘掉随全宽铺满；
+   表单/长文类保留内宽不动（.ws-tool 880px、.translate-page 960px、AI 页 .ai-shell 780px 均不碰） */
+.content .fg-tool { max-width: none; }
+.content .ws-tool.fm { max-width: none; }
+.content .ws-tool.ws-tool-wide { max-width: none; }
+
+/* v0.1.495：「静默更新」双色开关——开绿关红（Ethan 定案，不用常规果冻开关） */
+.silent-switch { width: 46px; height: 26px; border-radius: 999px; border: none; padding: 0; position: relative; cursor: pointer; flex: none; transition: background .25s ease; }
+.silent-switch.on { background: #16a34a; }
+.silent-switch.off { background: #dc2626; }
+.silent-switch-knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .28s cubic-bezier(.34,1.4,.64,1), transform .1s ease; pointer-events: none; display: flex; align-items: center; justify-content: center; }
+.silent-switch.on .silent-switch-knob { left: 23px; }
+.silent-switch:active .silent-switch-knob { transform: scale(.9); }
+
+/* v0.1.495：后台下载更新的悬浮进度卡（右下角，非模态不挡操作） */
+.upd-dl-card { position: fixed; right: 16px; bottom: 16px; z-index: 90; width: 320px; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.upd-dl-card .upd-progress { margin-bottom: 4px; }
 .content-ai { max-width: none; padding: 0; }
 
 /* ---------- Sidebar ---------- */
@@ -379,7 +399,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   .app-shell:not(.phone-shell) .sidebar { border-radius:20px; border:1px solid var(--border) !important; height:calc(100dvh - 24px); top:12px; overflow:hidden; }
   .main { min-width:0; }
   .topbar { border-radius:20px; border:1px solid var(--border); margin-bottom:0; top:12px; }
-  .content { padding:20px 8px 40px; }
+  /* v0.1.495：桌面内容区左右边距 8px → 16px（与基础 .content 规则统一；上下 20/40 不变） */
+  .content { padding:20px 16px 40px; }
   .desktop-sidebar-restore { top:104px; }
 }
 @media (max-width:1100px) { .bento-grid { grid-template-columns:repeat(2,1fr); } .bento-main { grid-column:span 2; } }

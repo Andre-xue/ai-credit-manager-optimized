@@ -4,9 +4,12 @@ import { X, RefreshCw, Download, RotateCw, ExternalLink, Copy, Check, Info, Load
 import {
   APP_VERSION, currentPlatform, checkDesktopUpdate, checkReleaseUpdate,
   installDesktopUpdate, relaunchApp, dockerUpdateCommands, latestApkUrl,
-  checkMiniappUpdate, markJustUpdated, type UpdatePlatform, type DesktopCheckStage,
+  checkMiniappUpdate, markJustUpdated, loadAutoUpdateEnabled, saveAutoUpdateEnabled,
+  onSilentUpdatePrefChange, type UpdatePlatform, type DesktopCheckStage,
 } from '../core/updater'
+import { SilentUpdateSwitch } from './SilentUpdateSwitch'
 import { noteManualUpdateFound, noteManualUpToDate } from '../core/autoUpdate'
+import { UpdateProgressBar } from './UpdateProgressBar'
 import { openExternal } from '../core/openExternal'
 import { t } from '../core/i18n'
 
@@ -19,8 +22,8 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   const [notes, setNotes] = useState('')
   const [releaseUrl, setReleaseUrl] = useState('')
   const [errMsg, setErrMsg] = useState('')
-  const [downloadedMb, setDownloadedMb] = useState(0)
-  const [totalMb, setTotalMb] = useState(0)
+  const [dlBytes, setDlBytes] = useState(0)
+  const [dlTotal, setDlTotal] = useState(0)
   const [copied, setCopied] = useState(false)
   const [apkUrl, setApkUrl] = useState<string | null>(null)
   const [fallback, setFallback] = useState(false)
@@ -28,6 +31,9 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
   // 检查阶段文案（v0.1.464）：连接中/确认中/重试中，不再只有一个干转的「正在检查更新…」
   const [stage, setStage] = useState<DesktopCheckStage>('connecting')
   const [nonce, setNonce] = useState(0)
+  // 「静默更新」开关（v0.1.495）：与设置页签同一偏好，变更互相广播同步
+  const [silentUpd, setSilentUpd] = useState(() => loadAutoUpdateEnabled())
+  useEffect(() => onSilentUpdatePrefChange(v => setSilentUpd(v)), [])
 
   useEffect(() => {
     let alive = true
@@ -89,11 +95,11 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
 
   const doInstall = async () => {
     setPhase('downloading')
-    setDownloadedMb(0)
-    setTotalMb(0)
+    setDlBytes(0)
+    setDlTotal(0)
     const ok = await installDesktopUpdate(p => {
-      setDownloadedMb(Math.round(p.downloaded / 1024 / 1024 * 10) / 10)
-      if (p.total) setTotalMb(Math.round(p.total / 1024 / 1024 * 10) / 10)
+      setDlBytes(p.downloaded)
+      if (p.total) setDlTotal(p.total)
     })
     if (!ok) { setErrMsg(t('下载安装失败，请稍后重试')); setPhase('error'); return }
     // v0.1.474：装完自动重启（旧流程停在「ready」等用户点重启，实机反馈
@@ -133,14 +139,7 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
               {isDesktop && (
                 <>
                   <div className="upd-hint">{t('点击下方按钮自动下载并安装，完成后将自动重启应用。')}</div>
-                  {phase === 'downloading' && (
-                    <>
-                      <div className="upd-progress"><div style={{ width: `${totalMb > 0 ? Math.min(100, Math.round(downloadedMb / totalMb * 100)) : 0}%` }} /></div>
-                      <div className="upd-downloading"><Loader2 size={14} className="spin" /> {totalMb > 0
-                        ? t('正在下载… {pct}%（{mb} / {total} MB）', { pct: Math.min(100, Math.round(downloadedMb / totalMb * 100)), mb: downloadedMb, total: totalMb })
-                        : t('正在下载… 已下载 {mb} MB', { mb: downloadedMb })}</div>
-                    </>
-                  )}
+                  {phase === 'downloading' && <UpdateProgressBar downloaded={dlBytes} total={dlTotal || undefined} />}
                   <button className="btn primary" style={{ width: '100%' }} disabled={phase === 'downloading'} onClick={() => void doInstall()}>
                     <Download size={16} /> {phase === 'downloading' ? t('下载中…') : t('下载并安装')}
                   </button>
@@ -214,7 +213,18 @@ export function UpdateModal({ onClose, notify }: { onClose: () => void; notify: 
             </div>
           )}
         </div>
-        <div className="modal-foot"><button className="btn" onClick={onClose}>{t('关闭')}</button></div>
+        <div className="modal-foot" style={{ justifyContent: isDesktop ? 'space-between' : 'flex-end', alignItems: 'center' }}>
+          {isDesktop && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0, textAlign: 'left' }}>
+              <SilentUpdateSwitch checked={silentUpd} onChange={v => { setSilentUpd(v); saveAutoUpdateEnabled(v) }} />
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: 600, lineHeight: 1.25 }}>{t('静默更新')}</span>
+                <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: silentUpd ? '#16a34a' : '#dc2626', lineHeight: 1.3 }}>{silentUpd ? t('已开启 · 空闲时自动下载、安装并重启') : t('已关闭 · 需手动下载，下载后自动安装重启')}</span>
+              </span>
+            </span>
+          )}
+          <button className="btn" onClick={onClose}>{t('关闭')}</button>
+        </div>
       </div>
     </div>
   )

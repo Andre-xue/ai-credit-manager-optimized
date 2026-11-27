@@ -106,10 +106,10 @@ export function RouteSelect({ data, routeKey, setRouteKey }: { data: WorkshopRou
   )
 }
 
-export function ToolShell({ title, desc, onBack, children }: { title: string; desc: string; onBack: () => void; children: React.ReactNode }) {
+export function ToolShell({ title, desc, onBack, wide, children }: { title: string; desc: string; onBack: () => void; wide?: boolean; children: React.ReactNode }) {
   const [nonce, setNonce] = useState(0)
   return (
-    <div className="ws-tool">
+    <div className={`ws-tool${wide ? ' ws-tool-wide' : ''}`}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <button className="btn sm ghost" onClick={onBack}><ArrowLeft size={14} /> 返回工坊</button>
         <button className="btn sm ghost" title="刷新本页" onClick={() => setNonce(n => n + 1)}><RefreshCw size={14} /></button>
@@ -485,7 +485,7 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
   if (tool === 'steamdeals') return <SteamDealsTool notify={notify} onBack={back} />
   if (tool === 'watch') return <WatchTool accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} onBack={back} />
   if (tool === 'mail') return (
-    <ToolShell title="邮箱" desc="多平台多账户统一收件箱：验证码、安全、订阅、广告自动分类，实时同步；凭据加密只存本机（仅桌面端）。" onBack={back}>
+    <ToolShell wide title="邮箱" desc="多平台多账户统一收件箱：验证码、安全、订阅、广告自动分类，实时同步；凭据加密只存本机（仅桌面端）。" onBack={back}>
       <MailTool accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} />
     </ToolShell>
   )
@@ -504,12 +504,12 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
     </ToolShell>
   )
   if (tool === 'image') return (
-    <ToolShell title="AI 图像" desc="云端生图（原侧边栏 AI 图像，已并入工坊）。" onBack={back}>
+    <ToolShell wide title="AI 图像" desc="云端生图（原侧边栏 AI 图像，已并入工坊）。" onBack={back}>
       <ImageView accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} settings={settings} onOpenLocal={() => onOpenTab('local-image')} />
     </ToolShell>
   )
   if (tool === 'video') return (
-    <ToolShell title="AI 视频" desc="云端生视频（原侧边栏 AI 视频，已并入工坊）。" onBack={back}>
+    <ToolShell wide title="AI 视频" desc="云端生视频（原侧边栏 AI 视频，已并入工坊）。" onBack={back}>
       <VideoView accounts={accounts} sessionPwd={sessionPwd} onUnlock={onUnlock ?? (() => {})} notify={notify} settings={settings} onOpenLocal={() => onOpenTab('local-video')} />
     </ToolShell>
   )

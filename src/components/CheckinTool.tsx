@@ -444,7 +444,7 @@ export function CheckinTool({ sessionPwd, onUnlock, notify, onBack }: {
     !total ? '' : claimable > 0 ? `${total} 个账号 · ${claimable} 个待签到` : done === total ? `${total} 个账号 · 今日全部已签 ✓` : `${total} 个账号 · 已签 ${done}`
 
   return (
-    <ToolShell title="每日签到" desc="各 AI 平台的每日签到领积分，按国内/国外与功能分组；每个平台可单独关掉自动签到。凭据加密只存本机。" onBack={onBack}>
+    <ToolShell wide title="每日签到" desc="各 AI 平台的每日签到领积分，按国内/国外与功能分组；每个平台可单独关掉自动签到。凭据加密只存本机。" onBack={onBack}>
       <LegacyMigrationBanner sessionPwd={sessionPwd} onUnlock={onUnlock} />
 
       {/* 大页签（v0.1.488）：账号池管理从工坊迁入本页，与每日签到并列；chip 样式同 438/477/478 口径 */}
