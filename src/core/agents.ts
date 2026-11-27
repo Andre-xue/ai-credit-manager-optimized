@@ -49,6 +49,21 @@ export interface AgentDef {
 }
 
 /** 一键安装的命令拼装（纯函数）：返回给用户确认的完整命令原文与实际执行形式 */
+/** v0.1.509（D）：把 CLI/运行时的原始报错翻成人话（失败态规矩：不许英文原文直出）。
+ * 命中已知模式返回人话原因；命不中返回 ''（调用方保留原有文案，原始信息仍留在任务输出区供排查）。 */
+export function humanizeAgentError(raw: string): string {
+  const t = String(raw ?? '')
+  if (!t) return ''
+  if (/quota|额度|余额不足|insufficient|exceeded your|resource_exhausted/i.test(t)) return '额度或余额不足，对方平台拒绝继续执行'
+  if (/rate.?limit|too many requests|\b429\b|限流/i.test(t)) return '被对方平台限流了，需要等一会儿再试'
+  if (/auth|unauthor|\b401\b|登录|not logged in|credentials/i.test(t)) return '登录态失效或还没登录，需要重新登录'
+  if (/command not found|ENOENT|no such file|找不到命令/i.test(t)) return '命令不存在，可能没装好或被移动了'
+  if (/ENOTFOUND|ECONN|network|fetch failed|网络/i.test(t)) return '网络连不上对方服务'
+  if (/timed? ?out|超时/i.test(t)) return '执行超时被中断'
+  if (/unknown option|unexpected argument/i.test(t)) return '本机命令的版本与工作台的调用方式对不上'
+  return ''
+}
+
 export function buildInstallCommand(def: AgentDef): { display: string; command: string; args: string[]; needsNpm: boolean } | null {
   const plan = def.installPlan
   if (!plan) return null
@@ -647,6 +662,14 @@ export interface AgentTask {
   /** v0.1.509 多账户：本任务用的账户条目（仅 DSH / Codex 等可隔离凭据的 Agent） */
   accountEntryId?: string
   accountEntryLabel?: string
+  /** v0.1.509（A–D）：已被交接/接力——原卡只读保留，不再给收尾动作 */
+  handedOver?: boolean
+  /** v0.1.509（A–D）：本任务被 # 面板「审查」命令或交接指定强制交叉审查 */
+  forceReview?: boolean
+  /** v0.1.509（A–D）：交接时指定的模型展示名（能否真正生效看接棒者，卡上如实标注） */
+  handoverModel?: string
+  /** 交接指定模型命中的自有账户引擎 id（仅空壳型绑定同一账户时注入 env 真生效） */
+  handoverEngineId?: string
 }
 
 export const AGENT_TASKS_KEY = 'acm.agents.tasks.v1'

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
-  AGENT_REGISTRY, agentDef, agentAvailability, buildCliInvocation, buildShellEnv,
+  AGENT_REGISTRY, agentDef, agentAvailability, buildCliInvocation, humanizeAgentError, buildShellEnv,
   parseDelegation, pickStartable, isHeavyTask, quotaGate, capCheck, parseCliUsage,
   loadAgentSettings, saveAgentSettings, loadAgentTasks, saveAgentTasks,
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
@@ -25,6 +25,9 @@ import {
   type VaultStatsResult, type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
 import { runDelivery, deliveryPresentation, deliveryChipLabel, createBridgeDeliveryProvider } from '../core/agentDelivery'
+import { WORKSHOP_SKILLS, buildSkillTaskText, type WorkshopSkill } from '../core/workshopSkills'
+import { buildUsageView, buildModelChoices } from '../core/agentUsageView'
+import { loadProbeStore } from '../core/probeCenter'
 import {
   formatBytes, formatDuration, mergeVaultUsage, loadPruneLog, savePruneLog,
   type VaultEntry, type VaultPruneLog,
@@ -82,6 +85,14 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const [cleanConfirmId, setCleanConfirmId] = useState<string | null>(null)
   const [accountStatus, setAccountStatus] = useState<Record<string, AgentAccountStatus>>({})
   const [entryPick, setEntryPick] = useState<string>('auto')
+  // v0.1.509（A–D）：# 面板原生命令/技能的待生效选择、交接弹窗、用量弹层
+  const [pendingReview, setPendingReview] = useState(false)
+  const [skillPick, setSkillPick] = useState<WorkshopSkill | null>(null)
+  const [handoverFor, setHandoverFor] = useState<AgentTask | null>(null)
+  const [hovKey, setHovKey] = useState('')
+  const [hovModelId, setHovModelId] = useState('')
+  const [usageOpen, setUsageOpen] = useState(false)
+  const usage = useMemo(() => buildUsageView(ledger, loadProbeStore()), [ledger])
   const [input, setInput] = useState('')
   const [targetAgent, setTargetAgent] = useState<string>('auto')
   const [workdir, setWorkdir] = useState(() => loadAgentSettings().vault.workdir)
@@ -191,7 +202,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   }, [])
 
   /** 供 Key 环境构建（派活与审查共用）：绑定账户时解密注入，Key 只进子进程环境变量 */
-  const buildRunEnv = useCallback(async (def: AgentDef, st: AgentSettings): Promise<{ envPairs: Array<[string, string]> } | { error: string }> => {
+  const buildRunEnv = useCallback(async (def: AgentDef, st: AgentSettings, modelOverride?: string): Promise<{ envPairs: Array<[string, string]> } | { error: string }> => {
     const binding = st.bindings[def.id]
     if (binding?.kind === 'account') {
       const acct = accountsRef.current.find(a => a.id === binding.accountId)
@@ -200,7 +211,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       if (!pwd) return { error: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' }
       let plain = ''
       try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch { return { error: '解密绑定账户的 Key 失败，已取消派活' } }
-      const modelId = enginesFor(acct.providerId)[0]?.id
+      const modelId = modelOverride ?? enginesFor(acct.providerId)[0]?.id
       return { envPairs: Object.entries(buildShellEnv(binding, acct, plain, modelId)) }
     }
     return { envPairs: Object.entries(buildShellEnv(binding, undefined, undefined)) }
@@ -240,7 +251,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
     const cap = capCheck(st, ledgerSpentSince(ledgerRef.current, startOfDay.getTime()), ledgerSpentSince(ledgerRef.current, sessionStartRef.current))
     if (cap === 'over-stop') {
-      return { ...base, status: 'unresolved', note: '已达到额度护栏上限（单会话/每日），已停住；到设置 · 额度护栏调整上限后，点任务卡上的「换人续跑」或重新派发' }
+      return { ...base, status: 'unresolved', note: '已达到额度护栏上限（单会话/每日），已停住；到设置 · 额度护栏调整上限后，点任务卡上的「换人」或重新派发' }
     }
     return base
   }, [])
@@ -259,7 +270,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   }, [])
 
   /** 真正执行接力：打包上下文 → 生成接棒任务（过闸入队）→ 原任务标「已接力 → XX」 */
-  const doRelay = useCallback(async (orig: AgentTask, candidateId: string, reasonLabel: string) => {
+  const doRelay = useCallback(async (orig: AgentTask, candidateId: string, reasonLabel: string, opts?: { entryId?: string; modelLabel?: string; modelTargetId?: string }) => {
     const candDef = agentDef(candidateId)
     if (!candDef) return
     // 条目级接力：同平台换账户续跑——接棒条目不能是原条目本身；换账户后会话不通用，走上下文打包
@@ -267,9 +278,11 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     let succEntryLabel: string | undefined
     if (multiAccountCapable(candDef)) {
       const cands = settingsRef.current.accounts.filter(e => e.agentId === candDef.id && e.enabled)
-      const entry = candDef.id === orig.agentId
-        ? pickEntryLru(cands.filter(e => e.id !== orig.accountEntryId))
-        : pickEntryLru(cands)
+      const entry = opts?.entryId
+        ? cands.find(e => e.id === opts.entryId)
+        : candDef.id === orig.agentId
+          ? pickEntryLru(cands.filter(e => e.id !== orig.accountEntryId))
+          : pickEntryLru(cands)
       if (!entry && candDef.id === orig.agentId) {
         updateTask(orig.id, {
           status: 'unresolved', relayProposal: undefined,
@@ -298,6 +311,13 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         ? '桌面应用已打开待粘贴，用户标记额度耗尽'
         : `失败（退出码 ${orig.exitCode ?? '—'}）`,
     }
+    // 交接指定模型：仅当接棒者是空壳型且绑定的正是该模型所属的自有账户时，引擎 id 才注入 env 真生效
+    let hovEngineId: string | undefined
+    if (opts?.modelTargetId?.startsWith('own:')) {
+      const parts = opts.modelTargetId.split(':')
+      const binding = settingsRef.current.bindings[candDef.id]
+      if (binding?.kind === 'account' && binding.accountId === parts[1] && parts[2]) hovEngineId = parts[2]
+    }
     const successor = prepareDerivedTask({
       id: uid(), text: buildRelayContextPack(packInput), title: relayTitle(packInput),
       agentId: candDef.id, agentName: candDef.name, kind: candDef.kind,
@@ -305,6 +325,8 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       status: 'queued', output: [], createdAt: Date.now(),
       relayFromId: orig.id, relayReason: reasonLabel,
       accountEntryId: succEntryId, accountEntryLabel: succEntryLabel,
+      handoverModel: opts?.modelLabel, handoverEngineId: hovEngineId,
+      note: opts?.modelLabel ? `交接指定模型：${opts.modelLabel}${hovEngineId ? '（已按指定模型派活）' : '（接棒者用自身账号/默认模型时，此指定仅作记录）'}` : undefined,
       // 同 Agent 同条目续跑才走 resume 带会话（当前候选规则下同条目不入选，此为兜底接线）；换账户/换人走上下文包
       sessionId: candDef.id === orig.agentId && succEntryId !== undefined && succEntryId === orig.accountEntryId ? orig.sessionId : undefined,
     })
@@ -323,9 +345,9 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       : wasManual ? 'stopped' : orig.status
     setTasks(prev => [successor, ...prev.map(t => (t.id === orig.id
       ? {
-          ...t, relayToId: successor.id, relayProposal: undefined,
+          ...t, relayToId: successor.id, relayProposal: undefined, handedOver: true,
           status: origStatus, endedAt: t.endedAt ?? Date.now(),
-          note: `已接力 → ${candDef.name}（${reasonLabel}）`,
+          note: `已${reasonLabel === '手动交接' ? '交接' : '接力'} → ${candDef.name}${succEntryLabel ? ` · ${succEntryLabel}` : ''}（${reasonLabel}）`,
         }
       : t))])
     notify(`已接力：${orig.agentName} → ${candDef.name} 续跑`)
@@ -430,7 +452,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   /** 交叉审查发起：把目标 + 输出摘要 + 改动清单递给审查者 CLI；失败如实标在任务卡上 */
   const maybeStartReview = useCallback(async (task: AgentTask, outputText: string) => {
     const st = settingsRef.current
-    if (!st.master.crossReview) return
+    if (!st.master.crossReview && !task.forceReview) return
     const fail = (reason: string, reviewerName?: string) =>
       updateTask(task.id, { review: { state: 'failed', reviewerName, reason } })
     const reviewerId = st.master.reviewerAgentId
@@ -496,7 +518,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     })
     updateTask(task.id, {
       status, endedAt: now, exitCode,
-      note: wasStopped ? '已被你停止' : exitCode === 0 ? undefined : `进程退出码 ${exitCode}`,
+      note: wasStopped ? '已被你停止' : exitCode === 0 ? undefined : (humanizeAgentError(outputText) || `进程退出码 ${exitCode}`),
     })
     // 二期联动（主控拆活回填 / 额度类失败接力 / 完成后的交叉审查）
     if (status === 'done' && task.planFor) {
@@ -571,7 +593,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         }
       }
       // 供 Key：绑定账户时解密注入（Key 只进子进程环境变量）
-      const envRes = await buildRunEnv(def, st)
+      const envRes = await buildRunEnv(def, st, task.handoverEngineId)
       if ('error' in envRes) {
         updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: envRes.error })
         return
@@ -724,13 +746,55 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const pickerList = hashMatch
     ? readyAgents.filter(a => a.name.toLowerCase().startsWith(hashMatch[2].toLowerCase()) || a.id.startsWith(hashMatch[2].toLowerCase()))
     : []
+  // v0.1.509（A）：# 面板三组——①委派 Agent 细到账户条目 ②原生命令 ③工坊技能（清单读工坊同一份注册表）
+  const hashQuery = (hashMatch?.[2] ?? '').toLowerCase()
+  const pickerEntries = hashMatch
+    ? pickerList.filter(a => multiAccountCapable(a)).flatMap(a =>
+        settings.accounts.filter(e => e.agentId === a.id && e.enabled).map(e => ({ agent: a, entry: e })))
+    : []
+  const pickerCommands = hashMatch
+    ? [
+        { id: 'compact', name: '压缩上下文', desc: '把最近一件任务的记录打包成上下文摘要（接 508 上下文打包）' },
+        { id: 'review', name: '审查', desc: '下一件任务完成后强制交叉审查一次（接 508 交叉审查）' },
+      ].filter(c => hashQuery === '' || c.name.includes(hashQuery))
+    : []
+  const pickerSkills = hashMatch ? WORKSHOP_SKILLS.filter(sk => sk.name.toLowerCase().includes(hashQuery)) : []
+  const openHandover = (task: AgentTask) => { setHovKey(''); setHovModelId(''); setHandoverFor(task) }
 
   const noVaultCoverage = !settings.vault.enabled || !workdir.trim()
+
+  /** 原生命令「压缩上下文」：最近一件任务的记录经 508 上下文打包，生成一件摘要任务派给原 Agent（不可用则主控/首个可用） */
+  const dispatchCompact = () => {
+    const latest = tasksRef.current.find(t => t.output || t.status === 'done' || t.status === 'failed')
+    if (!latest) { notify('还没有可压缩的任务记录', 'err'); return }
+    let target = agentDef(latest.agentId)
+    if (!target || availOf(target.id)?.state !== 'ready') {
+      target = (settings.master.masterAgentId ? agentDef(settings.master.masterAgentId) : undefined) ?? readyAgents[0]
+    }
+    if (!target || availOf(target.id)?.state !== 'ready') { notify('没有可用的 Agent 来执行压缩', 'err'); return }
+    const pack = buildRelayContextPack({
+      originalText: latest.text, originalTitle: latest.title ?? latest.text, fromAgentName: latest.agentName,
+      reason: '压缩上下文', workdir: latest.workdir,
+      output: (outputsRef.current.get(latest.id) ?? latest.output).join('\n'),
+      changedFiles: [], lastStatus: latest.status,
+    })
+    const task: AgentTask = {
+      id: uid(),
+      text: `请把下面这份任务记录压缩成一份简洁的上下文摘要（包含：原始目标、已完成的工作、改动过的文件、未完成的事项），供后续接力使用：\n\n${pack}`,
+      title: `上下文压缩（自：${(latest.title ?? latest.text).slice(0, 40)}）`,
+      agentId: target.id, agentName: target.name, kind: target.kind,
+      workdir: latest.workdir, heavy: false, outsideOk: latest.outsideOk,
+      status: 'queued', output: [], createdAt: Date.now(),
+    }
+    setTasks(prev => [task, ...prev])
+    notify('已派「压缩上下文」任务')
+  }
 
   const submit = () => {
     const parsed = parseDelegation(input)
     if (parsed.unknownToken) { notify(`没有叫 #${parsed.unknownToken} 的 Agent，请从 # 列表里选`, 'err'); return }
-    const taskText = (parsed.agentId ? parsed.taskText : input).trim()
+    const rawText = (parsed.agentId ? parsed.taskText : input).trim()
+    const taskText = skillPick ? buildSkillTaskText(skillPick, rawText) : rawText
     if (!taskText) { notify('先写下要派的活', 'err'); return }
     let agentId = parsed.agentId
     if (!agentId) {
@@ -751,6 +815,8 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       id: uid(), text: taskText, agentId, agentName: def.name, kind: def.kind,
       workdir: workdir.trim(), heavy, outsideOk: noVaultCoverage ? outsideOk : false,
       status: 'queued', output: [], createdAt: Date.now(),
+      ...(pendingReview ? { forceReview: true } : {}),
+      ...(skillPick ? { title: `【技能 · ${skillPick.name}】${rawText.split('\n')[0].slice(0, 48)}` } : {}),
     }
     // 主控拆活（二期）：没写 #、没指定委派对象、落到 CLI 型主控时，先递给主控拆成子任务清单；
     // 桌面型主控只能人工拆活，整单打开它（设置里已明示），行为与一期一致。
@@ -777,7 +843,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     const gate = quotaGate(settings, def, settings.bindings[agentId], accounts)
     if (gate.decision === 'approval') {
       setTasks(prev => [{ ...base, status: 'waiting-approval', approvalReason: gate.reason }, ...prev])
-      setInput('')
+      setInput(''); setSkillPick(null); setPendingReview(false)
       notify('已停住：这次派活要花付费账户的钱，请在任务卡上放行')
       return
     }
@@ -787,7 +853,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     if (cap === 'over-stop') { notify('已达到额度护栏上限（单会话/每日），本次派活已停住；到设置 · 额度护栏调整上限后再派', 'err'); return }
     if (cap === 'over-notify') notify('提醒：Agent 花费已超过你设的上限，本次仍继续派活')
     setTasks(prev => [base, ...prev])
-    setInput('')
+    setInput(''); setSkillPick(null); setPendingReview(false)
   }
 
   const stopTask = async (task: AgentTask) => {
@@ -976,16 +1042,40 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
               />
-              {pickerList.length > 0 && (
+              {(pickerList.length > 0 || pickerEntries.length > 0 || pickerCommands.length > 0 || pickerSkills.length > 0) && (
                 <div className="aw-picker">
+                  {(pickerList.length > 0 || pickerEntries.length > 0) && <div className="aw-picker-group">委派 Agent</div>}
                   {pickerList.map(a => (
                     <button key={a.id} onClick={() => setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, `$1#${a.name} `))}>
                       <b>{a.name}</b><span>{a.kind === 'account' ? '账号登录型 · 免 Key' : '空壳型 · 供 Key'}</span>
                     </button>
                   ))}
+                  {pickerEntries.map(({ agent, entry }) => (
+                    <button key={`${agent.id}:${entry.id}`} onClick={() => { setTargetAgent(agent.id); setEntryPick(entry.id); setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, `$1#${agent.name} `)) }}>
+                      <b>{agent.name} · {entry.label}</b><span>账户条目</span>
+                    </button>
+                  ))}
+                  {pickerCommands.length > 0 && <div className="aw-picker-group">原生命令</div>}
+                  {pickerCommands.map(c => (
+                    <button key={c.id} onClick={() => { setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, '$1')); if (c.id === 'compact') dispatchCompact(); else setPendingReview(true) }}>
+                      <b>{c.name}</b><span>{c.desc}</span>
+                    </button>
+                  ))}
+                  {pickerSkills.length > 0 && <div className="aw-picker-group">工坊技能</div>}
+                  {pickerSkills.map(sk => (
+                    <button key={sk.id} onClick={() => { setSkillPick(sk); setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, '$1')) }}>
+                      <b>{sk.name}</b><span>工坊技能 · 选中后写下具体任务，派活时按该技能口径执行</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
+            {(skillPick || pendingReview) && (
+              <div className="aw-pick-chips">
+                {skillPick && <span className="aw-pick-chip">工坊技能 · {skillPick.name}<button onClick={() => setSkillPick(null)}>×</button></span>}
+                {pendingReview && <span className="aw-pick-chip">下一件任务将强制交叉审查<button onClick={() => setPendingReview(false)}>×</button></span>}
+              </div>
+            )}
             <div className="aw-dispatch-foot">
               {noVaultCoverage ? (
                 <label className="aw-ack">
@@ -1002,6 +1092,25 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
             {readyAgents.length === 0 && (
               <div className="aw-note warn">当前没有可委派的 Agent：到「设置 · Agent 管理」启用已安装的 Agent（空壳型还需绑定 Key / 免费路线 / 自身登录）。</div>
             )}
+            <div className="aw-usagebar">
+              <button className="aw-usage-main" onClick={() => setUsageOpen(o => !o)}>
+                <span>缓存命中率 {usage.cacheHitPct == null ? '—（暂无数据）' : `${usage.cacheHitPct.toFixed(1)}%`}</span>
+                <span>输出速度 {usage.lastTps == null ? '—（暂无数据）' : `${usage.lastTps.toFixed(0)} tok/s`}</span>
+                <span>费用 ${usage.costUsd.toFixed(2)}{usage.costYuan ? ` / ¥${usage.costYuan.toFixed(2)}` : ''}</span>
+                <span>上下文已用 {usage.contextPct == null ? '—（暂无数据）' : `${usage.contextPct.toFixed(0)}%`}</span>
+                <span className="aw-usage-toggle">{usageOpen ? '收起用量' : '用量详情'}</span>
+              </button>
+              {usageOpen && (
+                <div className="aw-usage-pop">
+                  <div>上下文占用：{usage.contextPct == null ? '暂无数据' : `${usage.contextPct.toFixed(1)}%`}（账本已记录输入+输出共 {usage.contextTokens} tokens）</div>
+                  <div>输出速度：最近 {usage.lastTps == null ? '暂无数据' : `${usage.lastTps.toFixed(1)} tok/s`} · 平均 {usage.avgTps == null ? '暂无数据' : `${usage.avgTps.toFixed(1)} tok/s`}</div>
+                  <div>首字延迟（探测中心样本）：{usage.ttftMs == null ? '暂无数据' : `${Math.round(usage.ttftMs)} ms`}</div>
+                  <div>缓存命中：最近 暂无数据 · 平均 暂无数据（现有数据源没有缓存统计，不编造）</div>
+                  <div>输入 tokens：{usage.inputTokens} · 输出 tokens：{usage.outputTokens} · 缓存读取 tokens：暂无数据</div>
+                  <div>费用估算：${usage.costUsd.toFixed(4)}{usage.costYuan ? ` / ¥${usage.costYuan.toFixed(4)}` : ''}（账本累计，CLI 自报原值）</div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="aw-card aw-settle">
@@ -1048,6 +1157,59 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
 
           <div className="aw-tasks">
             {tasks.length === 0 && <div className="aw-card aw-note">还没有任务。在上方写下要派的活，点「派活」。</div>}
+            {handoverFor && (() => {
+              const orig = handoverFor
+              const options: Array<{ key: string; label: string; agentId: string; entryId?: string }> = []
+              for (const a of readyAgents) {
+                if (multiAccountCapable(a)) {
+                  for (const e of settings.accounts.filter(x => x.agentId === a.id && x.enabled)) {
+                    if (a.id === orig.agentId && e.id === orig.accountEntryId) continue
+                    options.push({ key: `${a.id}::${e.id}`, label: `${a.name} · ${e.label}`, agentId: a.id, entryId: e.id })
+                  }
+                } else if (a.id !== orig.agentId) {
+                  options.push({ key: a.id, label: a.name, agentId: a.id })
+                }
+              }
+              const models = buildModelChoices(loadProbeStore())
+              const platforms = [...new Set(models.map(m => m.platformName))]
+              return (
+                <div className="aw-modal-backdrop" onClick={() => setHandoverFor(null)}>
+                  <div className="aw-modal" onClick={e => e.stopPropagation()}>
+                    <h3>交接任务</h3>
+                    <p className="aw-note">把「{orig.title ?? orig.text}」交给另一个 Agent / 账户续跑：原任务卡只读保留并标注已交接，新任务带（续）与上下文包。</p>
+                    <div className="aw-modal-label">先选目标 Agent（多账户细到条目）</div>
+                    {options.length === 0 && <p className="aw-note">暂无其他可交接的 Agent（都未就绪，或只有当前这一个）。</p>}
+                    {options.map(o => (
+                      <label key={o.key} className="aw-modal-opt">
+                        <input type="radio" name="hov-agent" checked={hovKey === o.key} onChange={() => setHovKey(o.key)} /> {o.label}
+                      </label>
+                    ))}
+                    <div className="aw-modal-label">再选模型（来自探测中心目录，已按平台分组、去重、带实测状态）</div>
+                    <select className="aw-modal-select" value={hovModelId} onChange={e => setHovModelId(e.target.value)}>
+                      <option value="">不指定（接棒者默认）</option>
+                      {platforms.map(pl => (
+                        <optgroup key={pl} label={pl}>
+                          {models.filter(m => m.platformName === pl).map(m => (
+                            <option key={m.id} value={m.id}>{m.label}（{m.status === 'ok' ? '实测可用' : m.status === 'bad' ? '实测不可用' : '未测'}）</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                    {models.length === 0 && <p className="aw-note">探测中心暂无模型目录（还没测过任何模型），可以先不指定模型。</p>}
+                    <div className="aw-modal-actions">
+                      <button className="btn" onClick={() => setHandoverFor(null)}>取消</button>
+                      <button className="btn primary" disabled={!hovKey} onClick={() => {
+                        const opt = options.find(o => o.key === hovKey)
+                        if (!opt) return
+                        const model = models.find(m => m.id === hovModelId)
+                        setHandoverFor(null)
+                        void doRelay(orig, opt.agentId, '手动交接', { entryId: opt.entryId, modelLabel: model?.label, modelTargetId: hovModelId || undefined })
+                      }}>确认交接</button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
             {tasks.map(task => {
               const meta = STATUS_META[task.status]
               const elapsed = task.startedAt ? (task.endedAt ?? Date.now()) - task.startedAt : 0
@@ -1138,15 +1300,21 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     {task.status === 'running' && (task.dispatch ?? agentDef(task.agentId)?.dispatch) === 'cli' && (
                       <button className="btn sm" onClick={() => void stopTask(task)}><Square size={13} /> 停止</button>
                     )}
-                    {(task.status === 'failed' || task.status === 'stopped' || task.status === 'unresolved') && !task.relayToId && (
-                      <button className="btn sm" onClick={() => considerRelay(task, '手动换人')}><Repeat size={13} /> 换人续跑</button>
+                    {(task.status === 'failed' || task.status === 'stopped' || task.status === 'unresolved') && !task.relayToId && !task.handedOver && (
+                      <button className="btn sm" onClick={() => openHandover(task)}><Repeat size={13} /> 换人</button>
+                    )}
+                    {task.status === 'failed' && /还没登录|登录态/.test(task.note ?? '') && (
+                      <button className="btn sm" onClick={() => setView('settings')}>去登录</button>
+                    )}
+                    {task.status === 'failed' && /未安装|命令不存在/.test(task.note ?? '') && (
+                      <button className="btn sm" onClick={() => setView('settings')}>一键安装</button>
                     )}
                     {task.status === 'manual' && (
                       <>
                         <button className="btn sm" onClick={() => { void navigator.clipboard?.writeText(task.text).then(() => notify('任务文本已复制，去应用里粘贴')) }}><Copy size={13} /> 复制任务</button>
                         <button className="btn sm primary" onClick={() => completeManualTask(task)}><CheckCircle2 size={13} /> 标记完成</button>
-                        {!task.relayToId && (
-                          <button className="btn sm" onClick={() => considerRelay(task, '额度耗尽（手动标记）')}><Repeat size={13} /> 额度耗尽，换人</button>
+                        {!task.relayToId && !task.handedOver && (
+                          <button className="btn sm" onClick={() => openHandover(task)}><Repeat size={13} /> 换人</button>
                         )}
                         <button className="btn sm ghost" onClick={() => updateTask(task.id, { status: 'stopped', endedAt: Date.now(), note: '已放弃（手动关闭）' })}><XCircle size={13} /> 放弃</button>
                       </>

@@ -3,6 +3,7 @@ import {
   FolderCog, FileText, Languages, PenLine, Image as ImageIcon, Images, SearchCheck, Search, Table2, Mic,
   ArrowLeft, Copy, Loader2, Upload, Hammer, ChevronRight, LayoutGrid, Star,
 } from 'lucide-react'
+import { workshopSkillMeta } from '../core/workshopSkills'
 import type { Account } from '../core/types'
 import { loadWorkshopRoutes, runWorkshopChat, type WorkshopRoute, type WorkshopRouteData } from '../core/workshopChat'
 import {
@@ -523,34 +524,34 @@ export function WorkshopView({ accounts, sessionPwd, notify, onOpenTab, settings
     {
       title: '文档与文件', sub: '找、读、理',
       cards: [
-        { id: 'files', name: '文件管家', desc: '访达式浏览你的文件夹，本地索引加持，一句话找到文件、读出内容、直接预览。', tag: '本地索引', tagClass: 'local', grad: 'g1', icon: <FolderCog size={21} />, action: () => setTool('files'), isNew: true },
-        { id: 'summary', name: '文档总结', desc: '丢进 PDF / Word / 长文，一键出摘要、要点清单和大纲。', tag: '文档解析', grad: 'g2', icon: <FileText size={21} />, action: () => setTool('summary') },
-        { id: 'docqa', name: '文档问答', desc: '导入文档建本地知识库，围绕文档内容提问，答案带出处。', tag: '本地知识库', grad: 'g4', icon: <MessagesSquare size={21} />, action: () => setTool('docqa') },
-        { id: 'translate', name: 'AI 翻译', desc: '整篇文档或粘贴文本翻译，保留段落结构，可双语对照。', tag: '整页翻译', grad: 'g5', icon: <Languages size={21} />, action: () => setTool('translate') },
+        { id: 'files', ...workshopSkillMeta('files'), tag: '本地索引', tagClass: 'local', grad: 'g1', icon: <FolderCog size={21} />, action: () => setTool('files'), isNew: true },
+        { id: 'summary', ...workshopSkillMeta('summary'), tag: '文档解析', grad: 'g2', icon: <FileText size={21} />, action: () => setTool('summary') },
+        { id: 'docqa', ...workshopSkillMeta('docqa'), tag: '本地知识库', grad: 'g4', icon: <MessagesSquare size={21} />, action: () => setTool('docqa') },
+        { id: 'translate', ...workshopSkillMeta('translate'), tag: '整页翻译', grad: 'g5', icon: <Languages size={21} />, action: () => setTool('translate') },
       ],
     },
     {
       title: '创作生成', sub: '写、画、说',
       cards: [
-        { id: 'polish', name: '文案润色', desc: '改写、扩写、缩写、换语气——把草稿变成能直接发的成稿。', tag: '免费模型可用', tagClass: 'free', grad: 'g3', icon: <PenLine size={21} />, action: () => setTool('polish') },
-        { id: 'image', name: 'AI 图像', desc: '云端生图，生成完自动存进你的文件夹（本地生图在侧边栏本地生成里）。', tag: '云端生图', grad: 'g6', icon: <ImageIcon size={21} />, action: () => setTool('image') },
-        { id: 'video', name: 'AI 视频', desc: '云端生视频，生成完自动存进你的文件夹（本地生视频在侧边栏本地生成里）。', tag: '云端生视频', grad: 'g5', icon: <Film size={21} />, action: () => setTool('video') },
-        { id: 'gallery', name: 'AI 图库', desc: '苹果照片式图库：AI 生成与本地照片视频按日期成册，悬停播放、点开大图慢慢看。', tag: '照片式浏览', grad: 'g2', icon: <Images size={21} />, action: () => setTool('gallery'), isNew: true },
-        { id: 'voice', name: '语音转写', desc: '录音、会议音频转文字稿——本地 whisper 引擎制作中，下一批上架。', tag: '第二批', grad: 'g4', icon: <Mic size={21} />, action: () => notify('语音转写在第二批：本地 whisper 引擎接入中') },
+        { id: 'polish', ...workshopSkillMeta('polish'), tag: '免费模型可用', tagClass: 'free', grad: 'g3', icon: <PenLine size={21} />, action: () => setTool('polish') },
+        { id: 'image', ...workshopSkillMeta('image'), tag: '云端生图', grad: 'g6', icon: <ImageIcon size={21} />, action: () => setTool('image') },
+        { id: 'video', ...workshopSkillMeta('video'), tag: '云端生视频', grad: 'g5', icon: <Film size={21} />, action: () => setTool('video') },
+        { id: 'gallery', ...workshopSkillMeta('gallery'), tag: '照片式浏览', grad: 'g2', icon: <Images size={21} />, action: () => setTool('gallery'), isNew: true },
+        { id: 'voice', ...workshopSkillMeta('voice'), tag: '第二批', grad: 'g4', icon: <Mic size={21} />, action: () => notify('语音转写在第二批：本地 whisper 引擎接入中') },
       ],
     },
     {
       title: '效率助理', sub: '杂活自动化',
       cards: [
-        { id: 'webcheck', name: '联网核查', desc: '给一句话或一条消息，AI 联网搜证核实真假并附来源。', tag: '免 Key 搜索', tagClass: 'free', grad: 'g2', icon: <SearchCheck size={21} />, action: () => setTool('webcheck') },
-        { id: 'table', name: '表格问答', desc: '把 CSV 丢进来，用问话查数、汇总、找异常，不用写公式。', tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
-        { id: 'dailycheckin', name: '每日签到', desc: 'WorkBuddy、MiniMax Code 每日积分签到：授权一次，每天点一下领积分。', tag: '领积分', grad: 'g3', icon: <CalendarCheck size={21} />, action: () => setTool('dailycheckin'), isNew: true },
-        { id: 'freegames', name: '免费游戏', desc: 'Epic 每周喜加一自动领取：绑定一次，定时自动领入库。', tag: '喜加一', grad: 'g3', icon: <Gamepad2 size={21} />, action: () => setTool('freegames'), isNew: true },
-        { id: 'steamdeals', name: 'Steam 迷你商城', desc: 'Steam 商店特惠与全目录搜索：折扣、现价、好评率，可按分类/平台筛选；绑定 Steam 账户还能看我的库、已拥有的标「已入库」。', tag: '免 Key', tagClass: 'free', grad: 'g3', icon: <BadgePercent size={21} />, action: () => setTool('steamdeals'), isNew: true },
-        { id: 'watch', name: '看剧', desc: 'AI 找剧、热门推荐、直播、点播：App 内播放器直接看，直播多套源自动切换，点播带选集与续播；片单与追剧日历只存本机。', tag: '看剧追剧', grad: 'g6', icon: <Tv size={21} />, action: () => setTool('watch'), isNew: true },
-        ...(isDesktopApp() ? [{ id: 'mail', name: '邮箱', desc: 'Gmail、Outlook、QQ、163、iCloud 等全部邮箱一个收件箱：验证码自动分类、实时同步、凭据只存本机。', tag: '统一收件箱', grad: 'g5', icon: <Mail size={21} />, action: () => setTool('mail'), isNew: true }] : []),
-        ...(isDesktopApp() ? [{ id: 'translator', name: '翻译助手', desc: '在任何应用里划词、框选截图就能翻译：全局快捷键取词、本地 OCR、译文小窗可复制/替换/朗读，引擎用你现有模型与免费路线。', tag: '划词截图', grad: 'g2', icon: <Globe size={21} />, action: () => setTool('translator'), isNew: true }] : []),
-        { id: 'catalog', name: 'AI 工具大全', desc: '各平台 AI 工具目录与签到入口汇总，原侧边栏入口已并入工坊。', tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
+        { id: 'webcheck', ...workshopSkillMeta('webcheck'), tag: '免 Key 搜索', tagClass: 'free', grad: 'g2', icon: <SearchCheck size={21} />, action: () => setTool('webcheck') },
+        { id: 'table', ...workshopSkillMeta('table'), tag: '文档解析', grad: 'g1', icon: <Table2 size={21} />, action: () => setTool('table') },
+        { id: 'dailycheckin', ...workshopSkillMeta('dailycheckin'), tag: '领积分', grad: 'g3', icon: <CalendarCheck size={21} />, action: () => setTool('dailycheckin'), isNew: true },
+        { id: 'freegames', ...workshopSkillMeta('freegames'), tag: '喜加一', grad: 'g3', icon: <Gamepad2 size={21} />, action: () => setTool('freegames'), isNew: true },
+        { id: 'steamdeals', ...workshopSkillMeta('steamdeals'), tag: '免 Key', tagClass: 'free', grad: 'g3', icon: <BadgePercent size={21} />, action: () => setTool('steamdeals'), isNew: true },
+        { id: 'watch', ...workshopSkillMeta('watch'), tag: '看剧追剧', grad: 'g6', icon: <Tv size={21} />, action: () => setTool('watch'), isNew: true },
+        ...(isDesktopApp() ? [{ id: 'mail', ...workshopSkillMeta('mail'), tag: '统一收件箱', grad: 'g5', icon: <Mail size={21} />, action: () => setTool('mail'), isNew: true }] : []),
+        ...(isDesktopApp() ? [{ id: 'translator', ...workshopSkillMeta('translator'), tag: '划词截图', grad: 'g2', icon: <Globe size={21} />, action: () => setTool('translator'), isNew: true }] : []),
+        { id: 'catalog', ...workshopSkillMeta('catalog'), tag: '导航目录', grad: 'g4', icon: <LayoutGrid size={21} />, action: () => onOpenTab('checkin') },
       ],
     },
   ]

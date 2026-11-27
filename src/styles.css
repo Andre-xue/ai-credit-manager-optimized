@@ -3467,3 +3467,20 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .asp-install-out { margin: 6px 0 0; max-height: 160px; overflow: auto; background: var(--surface-muted, #f2efe6); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
 .asp-login-wrap { margin-top: 6px; }
 .asp-login-box { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+
+/* v0.1.509（A–D）：# 面板分组 / 选中 chip / 用量状态行与弹层 / 交接弹窗 / 空 Agent 提示 */
+.aw-picker-group { padding: 6px 10px 2px; font-size: 11px; font-weight: 600; color: var(--hatch-widget-muted, #8a8f98); }
+.aw-pick-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.aw-pick-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 6px 3px 10px; border-radius: 999px; background: var(--primary-soft); color: var(--text); }
+.aw-pick-chip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: inherit; padding: 2px 4px; }
+.aw-usagebar { position: relative; margin-top: 10px; }
+.aw-usage-main { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; width: 100%; text-align: left; border: none; border-top: 1px solid var(--border); background: none; padding: 8px 2px 0; font-size: 12.5px; cursor: pointer; color: var(--text); }
+.aw-usage-toggle { margin-left: auto; color: var(--primary); }
+.aw-usage-pop { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; border: 1px solid var(--border); background: var(--card); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; display: grid; gap: 5px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.25); }
+.aw-modal-backdrop { position: fixed; inset: 0; background: rgba(20, 20, 30, 0.45); display: flex; align-items: center; justify-content: center; z-index: 1200; }
+.aw-modal { background: var(--card); color: var(--text); border-radius: 14px; padding: 18px; width: min(520px, 92vw); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3); }
+.aw-modal h3 { margin: 0 0 6px; font-size: 16px; }
+.aw-modal-label { font-size: 12px; font-weight: 600; margin: 14px 0 6px; color: var(--hatch-widget-muted, #8a8f98); }
+.aw-modal-opt { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; font-size: 13px; }
+.aw-modal-select { width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.aw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }

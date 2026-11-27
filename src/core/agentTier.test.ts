@@ -4,7 +4,7 @@ import {
   agentDef, effectiveDispatch, dispatchTier, tierLabel, detectHasCli, detectHasApp,
   buildCliInvocation, parseSessionId, isHeadlessInterfaceFailure,
   normalizeAccountEntries, makeAccountEntry, pickEntryLru, agentAvailability,
-  buildInstallCommand, loginCommandFor,
+  buildInstallCommand, loginCommandFor, humanizeAgentError,
   defaultAgentSettings, type AgentDetectResult, type AgentAccountEntry,
 } from './agents'
 
@@ -188,5 +188,20 @@ describe('去登录命令原文', () => {
     const ci: AgentAccountEntry = { ...isolated, agentId: 'codex-desktop' }
     expect(loginCommandFor(agentDef('codex-desktop')!, cn, '/Users/x/.codex')).toBe('codex login')
     expect(loginCommandFor(agentDef('codex-desktop')!, ci, '/Users/x/creds/e1')).toBe('CODEX_HOME=/Users/x/creds/e1 codex login')
+  })
+})
+
+describe('humanizeAgentError（D：报错翻成人话）', () => {
+  it('已知模式逐个命中', () => {
+    expect(humanizeAgentError('Error: authentication required')).toContain('登录')
+    expect(humanizeAgentError('quota exceeded: weekly limit')).toContain('额度')
+    expect(humanizeAgentError('429 Too Many Requests')).toContain('限流')
+    expect(humanizeAgentError('spawn dsh ENOENT')).toContain('命令不存在')
+    expect(humanizeAgentError('fetch failed: ENOTFOUND api.x')).toContain('网络')
+    expect(humanizeAgentError('error: unknown option --json')).toContain('调用方式对不上')
+  })
+  it('未知错误返回空（调用方保留原文案，原始信息留在输出区）', () => {
+    expect(humanizeAgentError('something weird happened')).toBe('')
+    expect(humanizeAgentError('')).toBe('')
   })
 })
