@@ -284,6 +284,9 @@ export interface AgentSettings {
   /** v0.1.511（②）：登录态读不到（凭据在系统钥匙串）的 Agent 首次派活成功的时间戳。
    *  探测永远只能报 unknown，靠真实派活成功落「已验证」标记，免得界面常年挂着像没登录。 */
   verifiedAgents?: Record<string, number>
+  /** v0.1.516：Agent 管理页签行里被隐藏的平台 id（仅本机偏好，随本设置一同存本机文件）。
+   *  隐藏只是不在设置页显示：不停用、不删数据，不影响检测、派活与记账。 */
+  hiddenPlatforms?: string[]
 }
 
 /** 标记某 Agent 已由真实派活验证过登录可用（幂等：已有标记不覆盖，保留首次时间） */
@@ -408,6 +411,7 @@ export function defaultAgentSettings(): AgentSettings {
     master: { masterAgentId: '', crossReview: false, reviewerAgentId: '' },
     delivery: { autoSend: false },
     accounts: normalizeAccountEntries(undefined),
+    hiddenPlatforms: [],
   }
 }
 
@@ -429,6 +433,8 @@ export function loadAgentSettings(): AgentSettings {
       accounts: normalizeAccountEntries(p.accounts),
       verifiedAgents: (p.verifiedAgents && typeof p.verifiedAgents === 'object' && !Array.isArray(p.verifiedAgents))
         ? p.verifiedAgents : {},
+      hiddenPlatforms: Array.isArray(p.hiddenPlatforms)
+        ? p.hiddenPlatforms.filter((x): x is string => typeof x === 'string') : [],
     }
   } catch { return base }
 }

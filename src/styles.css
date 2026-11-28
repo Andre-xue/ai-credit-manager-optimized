@@ -3538,6 +3538,94 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   padding: 11px 14px;
 }
 
+/* v0.1.516：Agent 管理平台页签式布局（预览定版，取代 511 的卡片网格）——
+   页签行（行内横向滚动）+ 显示设置 + 整页平台详情（头/可折叠分区/一户一卡） */
+.asp-tabs-wrap { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }
+.asp-tabs {
+  flex: 1; min-width: 0; display: flex; gap: 8px; overflow-x: auto;
+  padding: 2px 2px 6px; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.asp-tabs::-webkit-scrollbar { display: none; }
+.asp-tab {
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; flex: none;
+  padding: 7px 15px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel); font-size: 13.5px; font-weight: 500; color: var(--text-2); cursor: pointer;
+}
+.asp-tab.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.asp-tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex: none; }
+.asp-tab-dot.on { background: var(--green, #1f9d4d); }
+.asp-display-btn {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: none;
+  padding: 7px 15px; margin-top: 2px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel); font-size: 13.5px; font-weight: 500; color: var(--text-2); cursor: pointer;
+}
+.asp-display-panel { margin-top: 10px; }
+.asp-display-head { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.asp-display-row {
+  display: flex; align-items: center; gap: 14px; padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.asp-display-row .asp-display-name { flex: 1; min-width: 0; font-weight: 500; }
+.asp-display-row.off .asp-display-name { opacity: 0.45; }
+.asp-detail {
+  display: block; margin-top: 14px; padding: 20px;
+  border: 1px solid var(--border); border-radius: 16px; background: var(--panel);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+.asp-p-head { display: flex; align-items: flex-start; gap: 14px; }
+.asp-avatar.lg { width: 48px; height: 48px; border-radius: 12px; font-size: 16px; }
+.asp-p-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.asp-p-name { font-size: 17px; }
+.asp-p-actions { margin-left: auto; display: flex; align-items: center; gap: 14px; flex: none; }
+.asp-section { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 6px; }
+.asp-sec-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 10px 0 6px; font-size: 15px; font-weight: 600; min-height: 40px;
+  background: none; border: none; cursor: pointer; color: inherit; font-family: inherit;
+}
+.asp-chev { margin-left: auto; color: var(--text-3); transition: transform 0.25s ease; flex: none; }
+.asp-chev:not(.open) { transform: rotate(-90deg); }
+.asp-sec-body { display: flex; flex-direction: column; gap: 5px; padding-bottom: 8px; }
+.asp-accounts { display: flex; flex-wrap: wrap; gap: 14px; padding-bottom: 6px; }
+.asp-acct-card {
+  flex: 1 1 300px; max-width: 520px; flex-direction: column; align-items: stretch; gap: 7px;
+  border: 1px solid var(--border); border-radius: 16px; padding: 15px; background: var(--panel);
+}
+.asp-acct-top { display: flex; align-items: flex-start; gap: 8px; }
+.asp-acct-top .asp-entry-title { flex: 1; min-width: 0; }
+.asp-guide { border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 6px; }
+.asp-guide-toggle {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  font-size: 13px; font-weight: 500; color: var(--text-2);
+  background: none; border: none; cursor: pointer; padding: 4px 0; font-family: inherit;
+}
+.asp-guide-toggle .asp-chev { margin-left: auto; }
+.asp-guide .asp-login-box { margin-top: 4px; }
+.asp-add-card {
+  flex: 1 1 300px; max-width: 520px; min-height: 150px;
+  border: 1.5px dashed var(--border); border-radius: 16px; background: transparent;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+  padding: 22px 16px; color: var(--text-3); cursor: pointer; font-family: inherit;
+}
+.asp-add-card:hover { border-color: var(--primary); color: var(--primary); }
+.asp-add-plus {
+  width: 34px; height: 34px; border-radius: 50%; border: 1.5px dashed currentColor;
+  display: flex; align-items: center; justify-content: center; font-size: 19px; line-height: 1;
+}
+.asp-add-title { font-size: 14px; font-weight: 600; color: var(--text-2); }
+.asp-add-card:hover .asp-add-title { color: var(--primary); }
+.asp-acct-hint { margin: 2px 0 6px; }
+.asp-install-card {
+  margin-top: 18px; border: 1px solid var(--border); border-radius: 16px; padding: 16px;
+}
+.asp-empty { margin-top: 14px; padding: 40px 24px; text-align: center; }
+.asp-empty b { font-size: 15px; }
+@media (max-width: 680px) {
+  .asp-p-head { flex-wrap: wrap; }
+  .asp-p-actions { margin-left: 0; width: 100%; justify-content: space-between; }
+  .asp-acct-card, .asp-add-card { max-width: none; }
+}
+
 /* v0.1.512（③）：任务板布局收口——卡片 16px 圆角、标题 15px 半粗、数字等宽对齐、
    间距只用 8/16/24/32；紫色只留主按钮/选中态/关键徽标，状态色走既有绿橙红灰。 */
 .aw-card { border-radius: 16px; }

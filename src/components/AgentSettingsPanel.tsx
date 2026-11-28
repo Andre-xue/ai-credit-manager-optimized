@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Trash2, Pencil } from 'lucide-react'
+import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Trash2, Pencil, ChevronDown, SlidersHorizontal } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
   AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
   detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
   loginStateText, entryDisplayName, renameAccountEntry,
-  type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry,
+  type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry, type AgentAccountEntry,
 } from '../core/agents'
 import {
   agentAccountsProbe, agentAccountCreateDir, agentWhich, agentRunStart, agentRunPoll, agentRunStop,
@@ -65,6 +65,11 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
   const [guide, setGuide] = useState<Record<string, string>>({})
   // v0.1.515：条目改名的行内编辑态（正在编辑的条目 id + 草稿名）
   const [editName, setEditName] = useState<{ id: string; draft: string } | null>(null)
+  // v0.1.516：平台页签式布局——当前选中平台、显示设置面板与分区分折叠的展开态
+  const [selPlatform, setSelPlatform] = useState('antigravity')
+  const [displayOpen, setDisplayOpen] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(true)
+  const [accountsOpen, setAccountsOpen] = useState(true)
 
   // 账户条目登录态探测（只查凭据文件在不在，绝不读内容）；单账户 Agent 用合成原生条目
   useEffect(() => {
@@ -191,6 +196,277 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
     set({ relay: { ...settings.relay, chain } })
   }
 
+  // ---- v0.1.516：平台页签式布局的渲染件（行为逻辑与 511 卡片版一致，只换组织方式） ----
+  const hiddenPlatforms = settings.hiddenPlatforms ?? []
+  const visibleDefs = AGENT_REGISTRY.filter(d => !hiddenPlatforms.includes(d.id))
+  const selectedDef = visibleDefs.find(d => d.id === selPlatform) ?? visibleDefs[0]
+
+  /** 一键安装块（确认闸 → 流式输出 → 装完自动重新检测），逻辑与旧卡片版逐字一致 */
+  const renderInstallBlock = (def: AgentDef, det: AgentDetectResult | undefined) => {
+    const plan = buildInstallCommand(def)
+    const inst = installs[def.id]
+    const hasCli = detectHasCli(det)
+    if (!plan || hasCli) return null
+    return (
+      <div className="asp-install asp-install-card">
+        {!inst && (plan.needsNpm && npmPath === ''
+          ? <div className="aw-note warn">未检测到 npm：先装 Node.js（nodejs.org 官网或 brew install node），再回来一键安装</div>
+          : <button className="btn sm primary" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>一键安装</button>)}
+        {inst?.phase === 'confirm' && (
+          <div className="asp-install-confirm">
+            <div className="aw-note">将要执行（官方路线，确认后才会运行）：</div>
+            <code className="asp-install-cmd">{plan.display}</code>
+            <div className="asp-install-btns">
+              <button className="btn sm primary" onClick={() => void startInstall(def)}>确认安装</button>
+              <button className="btn sm ghost" onClick={() => setInstalls(prev => { const n = { ...prev }; delete n[def.id]; return n })}>取消</button>
+            </div>
+          </div>
+        )}
+        {(inst?.phase === 'running' || inst?.phase === 'done' || inst?.phase === 'failed') && (
+          <div className="asp-install-run">
+            <div className="asp-install-head">
+              <span>{inst.phase === 'running' ? '安装中…' : inst.phase === 'done' ? '安装完成，已重新检测' : `安装失败：${inst.error ?? ''}`}</span>
+              {inst.phase === 'running' && <button className="btn sm" onClick={() => void stopInstall(def)}>停止</button>}
+              {inst.phase === 'failed' && <button className="btn sm" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>重试</button>}
+            </div>
+            <pre className="asp-install-out">{inst.lines.slice(-30).join('\n')}</pre>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /** 多账户条目卡（一户一卡）：改名（515）、身份小字、登录态、条目开关、登录指引（默认折叠） */
+  const renderEntryCard = (def: AgentDef, e: AgentAccountEntry) => {
+    const st = acctStatus[e.id]
+    const stats = entryStats(e.id)
+    const verifiedAt = settings.verifiedAgents?.[def.id]
+    const keychainUnknown = st?.login === 'unknown' && def.credProbeMissing === 'unknown'
+    const showGuide = st?.login !== 'yes' && !(keychainUnknown && !!verifiedAt) && !!(def.loginCommandNative || def.loginCommandIsolated)
+    return (
+      <div key={e.id} className="asp-entry-row asp-acct-card">
+        <div className="asp-acct-top">
+          <div className="asp-entry-title">
+            {editName?.id === e.id ? (
+              <>
+                <input
+                  className="asp-entry-name-input"
+                  value={editName.draft}
+                  autoFocus
+                  placeholder={e.label}
+                  aria-label="条目显示名"
+                  onChange={ev => setEditName({ id: e.id, draft: ev.target.value })}
+                  onKeyDown={ev => {
+                    if (ev.key === 'Enter') { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }
+                    if (ev.key === 'Escape') setEditName(null)
+                  }}
+                />
+                <button className="btn sm" onClick={() => { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }}>保存</button>
+                <button className="btn sm ghost" onClick={() => setEditName(null)}>取消</button>
+              </>
+            ) : (
+              <>
+                <b>{entryDisplayName(e)}</b>
+                <button className="btn sm ghost" aria-label="给条目改名" title="给这个账户起个能认出来的名字（如主号 / 小号）" onClick={() => setEditName({ id: e.id, draft: e.customLabel ?? '' })}>
+                  <Pencil size={12} />
+                </button>
+              </>
+            )}
+            <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
+            <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>
+          </div>
+          <JellyToggle
+            checked={e.enabled}
+            onChange={v => onChange({ ...settings, accounts: settings.accounts.map(x => (x.id === e.id ? { ...x, enabled: v } : x)) })}
+          />
+          {e.credDir === 'isolated' && (
+            <button className="btn sm ghost" aria-label="删除账户条目" onClick={() => onChange({ ...settings, accounts: settings.accounts.filter(x => x.id !== e.id) })}>
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+        {e.identity && <div className="aw-note">账号：{e.identity}</div>}
+        <div className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</div>
+        {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
+        {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
+        {showGuide && (
+          <div className="asp-guide">
+            <button className="asp-guide-toggle" aria-expanded={!!loginOpen[e.id]} onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>
+              登录指引 <ChevronDown size={14} className={`asp-chev ${loginOpen[e.id] ? 'open' : ''}`} />
+            </button>
+            {loginOpen[e.id] && (
+              <div className="asp-login-box">
+                <div className="aw-note">{def.id === 'dsh'
+                  ? '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，会打开浏览器登录页，登录完回到这里点「重新检测」：'
+                  : '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：'}</div>
+                <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
+                <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /** 无头型单账户卡（现行注册表暂无此型，保留旧口径渲染） */
+  const renderSingleEntryCard = (def: AgentDef) => {
+    const singleLogin = acctStatus[nativeEntryId(def.id)]?.login
+    const verifiedAt = settings.verifiedAgents?.[def.id]
+    const keychainUnknown = singleLogin === 'unknown' && def.credProbeMissing === 'unknown'
+    return (
+      <div className="asp-entry-row asp-acct-card">
+        <div className="asp-entry-title">
+          <b>默认（现有登录）</b>
+          <span className="aw-tag off">仅单账户</span>
+          <span className={`asp-login ${singleLogin ?? 'unknown'}`}>{loginText(singleLogin, def)}</span>
+        </div>
+        <div className="aw-note">{def.multiAccountNote}</div>
+        {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
+        {def.loginCommandNative && !(keychainUnknown && !!verifiedAt) && (
+          <div className="asp-guide">
+            <button className="asp-guide-toggle" aria-expanded={!!loginOpen[def.id]} onClick={() => setLoginOpen(o => ({ ...o, [def.id]: !o[def.id] }))}>
+              登录指引 <ChevronDown size={14} className={`asp-chev ${loginOpen[def.id] ? 'open' : ''}`} />
+            </button>
+            {loginOpen[def.id] && (
+              <div className="asp-login-box">
+                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，在打开的界面里用 Google 账号登录，完后点上方「重新检测」：</div>
+                <code className="asp-install-cmd">{def.loginCommandNative}</code>
+                <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(def.loginCommandNative ?? ''); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /** 桌面应用型（WorkBuddy / Qoder）单账户卡：应用内登录、无凭据目录可探，如实说明 */
+  const renderAppAccountCard = (def: AgentDef) => {
+    const stats = entryStats(nativeEntryId(def.id))
+    return (
+      <div className="asp-entry-row asp-acct-card">
+        <div className="asp-entry-title">
+          <b>默认（现有登录）</b>
+          <span className="aw-tag off">原生目录</span>
+        </div>
+        <div className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</div>
+        <div className="aw-note">使用自身登录账号（免 Key），魔方只派活与盯进度，不记细账；直接在应用里登录即可，魔方不经手账号密码。</div>
+      </div>
+    )
+  }
+
+  /** 平台详情整页：平台头 + 状态与说明（可折叠）+ 安装卡/账户区 */
+  const renderPlatformDetail = (def: AgentDef) => {
+    const det = detectMap[def.id]
+    const avail = agentAvailability(def, det, settings, accounts, settings.accounts)
+    const installed = !!det?.installed
+    const hasCli = detectHasCli(det)
+    const tier = installed ? dispatchTier(def, det) : null
+    const multi = multiAccountCapable(def)
+    const entries = settings.accounts.filter(e => e.agentId === def.id)
+    return (
+      <div className="aw-agent-row asp-detail">
+        <div className="asp-p-head">
+          <span className="asp-avatar lg">{(def.name.match(/^[A-Za-z]+/)?.[0] ?? def.name).slice(0, 2)}</span>
+          <div className="asp-p-head-main">
+            <div className="aw-agent-title">
+              <b className="asp-p-name">{def.name}</b>
+              <span className={`aw-tag ${def.kind === 'account' ? 'acct' : 'shell'}`}>{def.kind === 'account' ? '账号登录型' : '空壳型'}</span>
+              {def.headlessCli
+                ? <span className={`aw-tag ${hasCli ? 'ok' : 'off'}`}>{hasCli ? '已安装（命令）' : detectHasApp(det) ? '未安装（命令）' : '未安装'}</span>
+                : <span className={`aw-tag ${installed ? 'ok' : 'off'}`}>{installed ? `已安装${det?.cliPath ? '（命令）' : det?.appPath ? '（应用）' : det?.via === 'app' ? '（应用）' : '（命令）'}` : '未安装'}</span>}
+              {tier && <span className="aw-tag tier">{tierLabel(tier)}</span>}
+            </div>
+            {det?.cliVersion && <div className="aw-note">{det.cliVersion}</div>}
+          </div>
+          <div className="asp-p-actions">
+            <button className="btn sm" onClick={onRedetect}><RefreshCw size={13} /> 重新检测</button>
+            <JellyToggle
+              checked={!!settings.enabled[def.id]}
+              disabled={!installed}
+              onChange={v => set({ enabled: { ...settings.enabled, [def.id]: v } })}
+            />
+          </div>
+        </div>
+
+        <div className="asp-section">
+          <button className="asp-sec-head" aria-expanded={statusOpen} onClick={() => setStatusOpen(o => !o)}>
+            状态与说明 <ChevronDown size={15} className={`asp-chev ${statusOpen ? 'open' : ''}`} />
+          </button>
+          {statusOpen && (
+            <div className="asp-sec-body">
+              {def.headlessCli && !hasCli && detectHasApp(det) && (
+                <div className="aw-note">桌面应用已安装，但无头型派活只走命令、不走粘贴送达；命令没装之前派活会被拦下。</div>
+              )}
+              {def.qualification && <div className="aw-note warn">{def.qualification}</div>}
+              {!installed && <div className="aw-note">{def.installHint}</div>}
+              {installed && def.headlessCli && !hasCli && def.cliInstallHint && (
+                <div className="aw-note warn">未检测到 {def.cliNames[0]} 命令，派活会被拦下；装上命令即可无头直派：{def.cliInstallHint}</div>
+              )}
+              {installed && def.headlessCli && avail.state === 'ready' && <div className="aw-note">{avail.reason}，魔方只派活与盯进度，不记细账</div>}
+              {installed && avail.state === 'blocked' && <div className="aw-note warn">{avail.reason}</div>}
+              {installed && def.kind === 'shell' && (
+                <label className="aw-bind">
+                  <span>供 Key 绑定</span>
+                  <select
+                    value={bindingValue(settings.bindings[def.id])}
+                    onChange={e => {
+                      const b = parseBinding(e.target.value)
+                      const bindings = { ...settings.bindings }
+                      if (b) bindings[def.id] = b; else delete bindings[def.id]
+                      set({ bindings })
+                    }}>
+                    <option value="">未绑定（不可委派）</option>
+                    <option value="free">免费路线（自动）</option>
+                    {def.selfLogin && <option value="self">使用自身登录（如订阅账号）</option>}
+                    {keyAccounts.map(a => (
+                      <option key={a.id} value={`account:${a.id}`}>
+                        {a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId}（{PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+
+        {renderInstallBlock(def, det)}
+
+        {installed && def.kind === 'account' && (
+          <div className="asp-section">
+            <button className="asp-sec-head" aria-expanded={accountsOpen} onClick={() => setAccountsOpen(o => !o)}>
+              账户 {multi && <span className="aw-note">{entries.length} 个 · 一个账户一张卡</span>}
+              <ChevronDown size={15} className={`asp-chev ${accountsOpen ? 'open' : ''}`} />
+            </button>
+            {accountsOpen && (
+              <>
+                <div className="asp-accounts">
+                  {multi
+                    ? entries.map(e => renderEntryCard(def, e))
+                    : def.headlessCli
+                      ? renderSingleEntryCard(def)
+                      : renderAppAccountCard(def)}
+                  {multi && (
+                    <button className="asp-add-card" onClick={() => void addEntry(def)}>
+                      <span className="asp-add-plus">+</span>
+                      <span className="asp-add-title">添加账户</span>
+                      <span className="aw-note">独立目录 · 独立登录</span>
+                    </button>
+                  )}
+                </div>
+                {multi && <p className="aw-note asp-acct-hint">派活默认用最久未用的已启用账户；每个账户一份独立凭据目录，只存你本机登录产生的文件，魔方不收集账号密码。</p>}
+                {def.id === 'workbuddy-app' && <p className="aw-note asp-acct-hint">粘贴送达是兜底方式：派活时会把 WorkBuddy 窗口带到前台，任务粘贴后请留意是否已发送。</p>}
+                {guide[def.id] && <div className="aw-note">{guide[def.id]}</div>}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div>
       <div className="aw-cat-row">
@@ -206,11 +482,7 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
       {cat === 'agents' && (
         <>
         <div className="aw-card">
-          <div className="aw-card-head">
-            <span>本机 Agent（改动只存本机）</span>
-            <button className="btn sm" onClick={onRedetect}><RefreshCw size={13} /> 重新检测</button>
-          </div>
-          {/* v0.1.511（⑦）：全局设置收成一条横向条，置于平台卡片网格上方 */}
+          {/* v0.1.516：全局设置横条独立成卡（预览定版），平台改走下方页签式布局 */}
           <div className="asp-global-bar">
             <div className="aw-agent-main">
               <b>桌面型送达后自动发送（回车）</b>
@@ -219,208 +491,58 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
             <JellyToggle checked={settings.delivery.autoSend} onChange={v => set({ delivery: { autoSend: v } })} />
           </div>
         </div>
-        {/* v0.1.511（⑦）：平台横向卡片网格（宽屏三列、窄屏自动换行）——行为逻辑与旧竖排一致 */}
-        <div className="asp-grid">
-          {AGENT_REGISTRY.map(def => {
-            const det = detectMap[def.id]
-            const avail = agentAvailability(def, det, settings, accounts, settings.accounts)
-            const installed = !!det?.installed
-            return (
-              <div key={def.id} className="aw-agent-row asp-card">
-                <div className="aw-agent-main">
-                  <div className="aw-agent-title">
-                    <span className="asp-avatar">{(def.name.match(/^[A-Za-z]+/)?.[0] ?? def.name).slice(0, 2)}</span>
-                    <b>{def.name}</b>
-                    <span className={`aw-tag ${def.kind === 'account' ? 'acct' : 'shell'}`}>{def.kind === 'account' ? '账号登录型' : '空壳型'}</span>
-                    {def.headlessCli
-                      ? <span className={`aw-tag ${detectHasCli(det) ? 'ok' : 'off'}`}>{detectHasCli(det) ? '已安装（命令）' : detectHasApp(det) ? '未安装（命令）' : '未安装'}</span>
-                      : <span className={`aw-tag ${installed ? 'ok' : 'off'}`}>{installed ? `已安装${det?.cliPath ? '（命令）' : det?.appPath ? '（应用）' : det?.via === 'app' ? '（应用）' : '（命令）'}` : '未安装'}</span>}
-                    {installed && dispatchTier(def, det) && <span className="aw-tag tier">{tierLabel(dispatchTier(def, det)!)}</span>}
-                    {installed && det?.cliVersion && <span className="aw-note">{det.cliVersion}</span>}
-                  </div>
-                  {def.headlessCli && !detectHasCli(det) && detectHasApp(det) && (
-                    <div className="aw-note">桌面应用已安装，但无头型派活只走命令、不走粘贴送达；命令没装之前派活会被拦下。</div>
-                  )}
-                  {(() => {
-                    const plan = buildInstallCommand(def)
-                    const inst = installs[def.id]
-                    const hasCli = detectHasCli(det)
-                    if (!plan || hasCli) return null
-                    return (
-                      <div className="asp-install">
-                        {!inst && (plan.needsNpm && npmPath === ''
-                          ? <div className="aw-note warn">未检测到 npm：先装 Node.js（nodejs.org 官网或 brew install node），再回来一键安装</div>
-                          : <button className="btn sm primary" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>一键安装</button>)}
-                        {inst?.phase === 'confirm' && (
-                          <div className="asp-install-confirm">
-                            <div className="aw-note">将要执行（官方路线，确认后才会运行）：</div>
-                            <code className="asp-install-cmd">{plan.display}</code>
-                            <div className="asp-install-btns">
-                              <button className="btn sm primary" onClick={() => void startInstall(def)}>确认安装</button>
-                              <button className="btn sm ghost" onClick={() => setInstalls(prev => { const n = { ...prev }; delete n[def.id]; return n })}>取消</button>
-                            </div>
-                          </div>
-                        )}
-                        {(inst?.phase === 'running' || inst?.phase === 'done' || inst?.phase === 'failed') && (
-                          <div className="asp-install-run">
-                            <div className="asp-install-head">
-                              <span>{inst.phase === 'running' ? '安装中…' : inst.phase === 'done' ? '安装完成，已重新检测' : `安装失败：${inst.error ?? ''}`}</span>
-                              {inst.phase === 'running' && <button className="btn sm" onClick={() => void stopInstall(def)}>停止</button>}
-                              {inst.phase === 'failed' && <button className="btn sm" onClick={() => setInstalls(prev => ({ ...prev, [def.id]: { phase: 'confirm', lines: [] } }))}>重试</button>}
-                            </div>
-                            <pre className="asp-install-out">{inst.lines.slice(-30).join('\n')}</pre>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()}
-                  {def.qualification && <div className="aw-note warn">{def.qualification}</div>}
-                  {!installed && <div className="aw-note">{def.installHint}</div>}
-                  {installed && def.headlessCli && !detectHasCli(det) && def.cliInstallHint && (
-                    <div className="aw-note warn">未检测到 {def.cliNames[0]} 命令，派活会被拦下；装上命令即可无头直派：{def.cliInstallHint}</div>
-                  )}
-                  {installed && def.kind === 'account' && !def.headlessCli && <div className="aw-note">使用自身登录账号（免 Key），魔方只派活与盯进度，不记细账</div>}
-                  {installed && def.headlessCli && avail.state === 'ready' && <div className="aw-note">{avail.reason}，魔方只派活与盯进度，不记细账</div>}
-                  {installed && avail.state === 'blocked' && <div className="aw-note warn">{avail.reason}</div>}
-                  {installed && def.kind === 'shell' && (
-                    <label className="aw-bind">
-                      <span>供 Key 绑定</span>
-                      <select
-                        value={bindingValue(settings.bindings[def.id])}
-                        onChange={e => {
-                          const b = parseBinding(e.target.value)
-                          const bindings = { ...settings.bindings }
-                          if (b) bindings[def.id] = b; else delete bindings[def.id]
-                          set({ bindings })
-                        }}>
-                        <option value="">未绑定（不可委派）</option>
-                        <option value="free">免费路线（自动）</option>
-                        {def.selfLogin && <option value="self">使用自身登录（如订阅账号）</option>}
-                        {keyAccounts.map(a => (
-                          <option key={a.id} value={`account:${a.id}`}>
-                            {a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId}（{PROVIDER_MAP[a.providerId]?.shortName ?? a.providerId}）
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                </div>
-                <JellyToggle
-                  checked={!!settings.enabled[def.id]}
-                  disabled={!installed}
-                  onChange={v => set({ enabled: { ...settings.enabled, [def.id]: v } })}
-                />
-                {installed && def.headlessCli && (
-                  multiAccountCapable(def) ? (
-                    <div className="asp-entries">
-                      {settings.accounts.filter(e => e.agentId === def.id).map(e => {
-                        const st = acctStatus[e.id]
-                        const stats = entryStats(e.id)
-                        // v0.1.511（②）语义在条目行同样成立：钥匙串保管、探测只能 unknown 的
-                        // Agent，未验证时把口径说清；派活成功落「已验证」后不再挂「去登录」
-                        const verifiedAt = settings.verifiedAgents?.[def.id]
-                        const keychainUnknown = st?.login === 'unknown' && def.credProbeMissing === 'unknown'
-                        return (
-                          <div key={e.id} className="asp-entry-row">
-                            <div className="asp-entry-main">
-                              <div className="asp-entry-title">
-                                {editName?.id === e.id ? (
-                                  <>
-                                    <input
-                                      className="asp-entry-name-input"
-                                      value={editName.draft}
-                                      autoFocus
-                                      placeholder={e.label}
-                                      aria-label="条目显示名"
-                                      onChange={ev => setEditName({ id: e.id, draft: ev.target.value })}
-                                      onKeyDown={ev => {
-                                        if (ev.key === 'Enter') { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }
-                                        if (ev.key === 'Escape') setEditName(null)
-                                      }}
-                                    />
-                                    <button className="btn sm" onClick={() => { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }}>保存</button>
-                                    <button className="btn sm ghost" onClick={() => setEditName(null)}>取消</button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <b>{entryDisplayName(e)}</b>
-                                    <button className="btn sm ghost" aria-label="给条目改名" title="给这个账户起个能认出来的名字（如主号 / 小号）" onClick={() => setEditName({ id: e.id, draft: e.customLabel ?? '' })}>
-                                      <Pencil size={12} />
-                                    </button>
-                                  </>
-                                )}
-                                <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
-                                <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>
-                                <span className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</span>
-                              </div>
-                              {e.identity && <div className="aw-note">账号：{e.identity}</div>}
-                              {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
-                              {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
-                              {st?.login !== 'yes' && !(keychainUnknown && verifiedAt) && (def.loginCommandNative || def.loginCommandIsolated) && (
-                                <div className="asp-login-wrap">
-                                  <button className={`btn sm ${st?.login === 'unknown' && def.credProbeMissing === 'unknown' ? 'ghost' : ''}`} onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>去登录</button>
-                                  {loginOpen[e.id] && (
-                                    <div className="asp-login-box">
-                                      <div className="aw-note">{def.id === 'dsh'
-                                        ? '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，会打开浏览器登录页，登录完回到这里点「重新检测」：'
-                                        : '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：'}</div>
-                                      <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
-                                      <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                            <JellyToggle
-                              checked={e.enabled}
-                              onChange={v => onChange({ ...settings, accounts: settings.accounts.map(x => (x.id === e.id ? { ...x, enabled: v } : x)) })}
-                            />
-                            {e.credDir === 'isolated' && (
-                              <button className="btn sm ghost" aria-label="删除账户条目" onClick={() => onChange({ ...settings, accounts: settings.accounts.filter(x => x.id !== e.id) })}>
-                                <Trash2 size={13} />
-                              </button>
-                            )}
-                          </div>
-                        )
-                      })}
-                      <div className="asp-entry-actions">
-                        <button className="btn sm" onClick={() => void addEntry(def)}>＋ 添加账户</button>
-                        <span className="aw-note">派活默认用最久未用的已启用账户；每个账户一份独立凭据目录，只存你本机登录产生的文件，魔方不收集账号密码。</span>
-                      </div>
-                      {guide[def.id] && <div className="aw-note">{guide[def.id]}</div>}
-                    </div>
-                  ) : (() => {
-                    const singleLogin = acctStatus[nativeEntryId(def.id)]?.login
-                    const verifiedAt = settings.verifiedAgents?.[def.id]
-                    const keychainUnknown = singleLogin === 'unknown' && def.credProbeMissing === 'unknown'
-                    return (
-                      <div className="asp-entries">
-                        <div className="aw-note">
-                          <span className="aw-tag off">仅单账户</span> {def.multiAccountNote} · 当前登录态：{loginText(singleLogin, def)}
-                          {keychainUnknown && !verifiedAt && '——登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。'}
-                        </div>
-                        {def.loginCommandNative && !(keychainUnknown && verifiedAt) && (
-                          <div className="asp-login-wrap">
-                            <button className={`btn sm ${keychainUnknown ? 'ghost' : ''}`} onClick={() => setLoginOpen(o => ({ ...o, [def.id]: !o[def.id] }))}>{keychainUnknown ? '重新登录' : '去登录'}</button>
-                            {loginOpen[def.id] && (
-                              <div className="asp-login-box">
-                                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，在打开的界面里用 Google 账号登录，完后点上方「重新检测」：</div>
-                                <code className="asp-install-cmd">{def.loginCommandNative}</code>
-                                <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(def.loginCommandNative ?? ''); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()
-                )}
-              </div>
-            )
-          })}
+
+        {/* 平台页签行 + 显示设置入口：点页签下方整页换成该平台；页签行内可横向滚动 */}
+        <div className="asp-tabs-wrap">
+          <div className="asp-tabs" role="tablist" aria-label="平台">
+            {visibleDefs.map(def => (
+              <button
+                key={def.id}
+                role="tab"
+                aria-selected={selectedDef?.id === def.id}
+                className={`asp-tab ${selectedDef?.id === def.id ? 'on' : ''}`}
+                onClick={() => setSelPlatform(def.id)}
+              >
+                <span className={`asp-tab-dot ${settings.enabled[def.id] ? 'on' : ''}`} />
+                {def.name}
+              </button>
+            ))}
+            {visibleDefs.length === 0 && <span className="aw-note">全部平台已隐藏，在显示设置里打开任意一个即可恢复。</span>}
+          </div>
+          <button className="asp-display-btn" aria-expanded={displayOpen} onClick={() => setDisplayOpen(o => !o)}>
+            <SlidersHorizontal size={14} /> 显示设置
+          </button>
         </div>
+
+        {displayOpen && (
+          <div className="aw-card asp-display-panel">
+            <div className="asp-display-head">显示设置 <span className="aw-note">已隐藏 {hiddenPlatforms.length} 个</span></div>
+            <p className="aw-note">隐藏只是不在这里显示，不停用平台、不删任何数据；与平台自己的启用开关互不影响。</p>
+            {AGENT_REGISTRY.map(def => {
+              const vis = !hiddenPlatforms.includes(def.id)
+              return (
+                <div key={def.id} className={`asp-display-row ${vis ? '' : 'off'}`}>
+                  <span className="asp-display-name">{def.name}</span>
+                  <span className="aw-note">{vis ? '显示中' : '已隐藏'}</span>
+                  <JellyToggle
+                    checked={vis}
+                    onChange={v => set({ hiddenPlatforms: v ? hiddenPlatforms.filter(x => x !== def.id) : [...hiddenPlatforms, def.id] })}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {selectedDef ? renderPlatformDetail(selectedDef) : (
+          <div className="aw-card asp-empty">
+            <b>全部平台已隐藏</b>
+            <p className="aw-note">全部平台已隐藏，在显示设置里打开任意一个即可恢复。</p>
+          </div>
+        )}
+
         <div className="asp-summary">
-          共 {AGENT_REGISTRY.length} 个平台 · 已启用 {AGENT_REGISTRY.filter(d => settings.enabled[d.id]).length} 个 · 派活方式：无头直派优先；无头型启动失败如实报错、不自动降级粘贴
+          共 {AGENT_REGISTRY.length} 个平台 · 已启用 {AGENT_REGISTRY.filter(d => settings.enabled[d.id]).length} 个 · 已隐藏 {hiddenPlatforms.length} 个 · 派活方式：无头直派优先；无头型启动失败如实报错、不自动降级粘贴
         </div>
         </>
       )}
