@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot, Play, Square, Copy, Trash2, ShieldAlert, FolderLock, Settings2, LayoutList,
   CheckCircle2, XCircle, Clock3, Hourglass, Hand, ExternalLink, Repeat, ClipboardCheck,
-  History, Trophy, Swords,
+  History, Trophy, Swords, FolderOpen,
 } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
@@ -1370,11 +1370,11 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                   void (async () => {
                     try {
                       const { open } = await import('@tauri-apps/plugin-dialog')
-                      const picked = await open({ directory: true, multiple: false })
+                      const picked = await open({ directory: true, multiple: false, title: '选择让 Agent 干活的项目文件夹' })
                       if (typeof picked === 'string' && picked) setWorkdir(picked)
                     } catch { notify('打开文件夹选择失败，可以直接把路径粘贴到输入框里', 'err') }
                   })()
-                }}>选择</button>
+                }}><FolderOpen size={13} /> 选择</button>
               )}
               <select className="aw-heavy" value={heavyMode} onChange={e => setHeavyMode(e.target.value as typeof heavyMode)} title="重活判定">
                 <option value="auto">自动判定轻重</option>
