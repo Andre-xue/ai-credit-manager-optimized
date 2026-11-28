@@ -44,7 +44,8 @@ import {
   type VaultEntry, type VaultPruneLog,
 } from '../core/agentVault'
 import { isDesktopApp } from '../core/openExternal'
-import { decryptSecret } from '../core/crypto'
+import { decryptSecret, verifyVault } from '../core/crypto'
+import { resolveVaultPassword, tryKeychainAutoUnlock, VAULT_KEY_CANCELLED_ERROR } from '../core/persistentUnlock'
 import { enginesFor } from '../data/engines'
 import { PROVIDER_MAP } from '../data/providers'
 import { AgentSettingsPanel } from './AgentSettingsPanel'
@@ -79,10 +80,15 @@ interface ReviewRun {
 let uidSeq = 0
 const uid = () => `task-${Date.now()}-${++uidSeq}`
 
-export function AgentWorkbench({ accounts, sessionPwd, notify }: {
+export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAutoUnlocked }: {
   accounts: Account[]
   sessionPwd: string
   notify: (m: string, kind?: 'ok' | 'err') => void
+  /** v0.1.518：原地解锁框验密成功后把密码按 manual 态接管进 App 会话（App 既有
+   *  effect 会按「保持解锁」开关把主密码写进系统钥匙串，供以后启动自动恢复） */
+  onUnlocked?: (pwd: string) => void
+  /** v0.1.518：钥匙串静默恢复成功后把密码按 auto 态接管进 App 会话 */
+  onAutoUnlocked?: (pwd: string) => void
 }) {
   const desktop = isDesktopApp()
   const [view, setView] = useState<View>('board')
@@ -119,6 +125,11 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
   const [heavyMode, setHeavyMode] = useState<'auto' | 'heavy' | 'light'>('auto')
   const [outsideOk, setOutsideOk] = useState(false)
   const [, setNowTick] = useState(0)
+  // v0.1.518：派活取 Key 时的原地解锁框（密码输入/错误提示/校验中）
+  const [unlockPromptOpen, setUnlockPromptOpen] = useState(false)
+  const [unlockInput, setUnlockInput] = useState('')
+  const [unlockError, setUnlockError] = useState('')
+  const [unlockBusy, setUnlockBusy] = useState(false)
 
   const tasksRef = useRef(tasks)
   tasksRef.current = tasks
@@ -233,21 +244,79 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     return () => window.clearInterval(t)
   }, [])
 
+  // ---- v0.1.518：派活取 Key 的按需解锁（静默恢复 → 原地弹框 → 自动续跑） ----
+  // Ethan 定案：不许再把用户赶去 Key 页解锁再重派。编排决策在 persistentUnlock
+  // 的 resolveVaultPassword（单测覆盖）；这里负责弹框与会话接管。
+  const onUnlockedRef = useRef(onUnlocked)
+  onUnlockedRef.current = onUnlocked
+  const onAutoUnlockedRef = useRef(onAutoUnlocked)
+  onAutoUnlockedRef.current = onAutoUnlocked
+  const unlockPromiseRef = useRef<Promise<string | null> | null>(null)
+  const unlockResolveRef = useRef<((pwd: string | null) => void) | null>(null)
+  const ensuredPwdRef = useRef('')
+  // 会话被上锁后清掉本组件缓存的密码，下次取 Key 重新走一遍编排
+  useEffect(() => { if (!sessionPwd) ensuredPwdRef.current = '' }, [sessionPwd])
+
+  /** 原地弹解锁框：并发派活共用同一个框、同一份等待；成功返回密码，取消返回 null */
+  const promptVaultUnlock = useCallback((): Promise<string | null> => {
+    if (!unlockPromiseRef.current) {
+      unlockPromiseRef.current = new Promise<string | null>(resolve => { unlockResolveRef.current = resolve })
+      setUnlockInput('')
+      setUnlockError('')
+      setUnlockPromptOpen(true)
+    }
+    return unlockPromiseRef.current
+  }, [])
+
+  const settleUnlockPrompt = useCallback((pwd: string | null) => {
+    const resolve = unlockResolveRef.current
+    unlockResolveRef.current = null
+    unlockPromiseRef.current = null
+    setUnlockPromptOpen(false)
+    setUnlockInput('')
+    setUnlockError('')
+    resolve?.(pwd)
+  }, [])
+
+  /** 解锁框确认：验主密码（与各页既有解锁同一条 verifyVault），通过才接管会话并续跑刚才的派活 */
+  const submitUnlockPrompt = useCallback(async () => {
+    const pwd = unlockInput
+    if (!pwd || unlockBusy) return
+    setUnlockBusy(true)
+    try {
+      const ok = await verifyVault(pwd)
+      if (!ok) { setUnlockError('主密码错误，请重新输入'); return }
+      onUnlockedRef.current?.(pwd)
+      settleUnlockPrompt(pwd)
+    } finally { setUnlockBusy(false) }
+  }, [unlockInput, unlockBusy, settleUnlockPrompt])
+
+  /** 取 Key 前拿到主密码：会话/缓存已有直接用；没有先静默试钥匙串恢复，再原地弹框 */
+  const ensureVaultPwd = useCallback(async (): Promise<string | null> => {
+    const known = sessionPwdRef.current || ensuredPwdRef.current
+    if (known) return known
+    const outcome = await resolveVaultPassword('', { recover: tryKeychainAutoUnlock, prompt: promptVaultUnlock })
+    if (outcome.status !== 'ready') return null
+    ensuredPwdRef.current = outcome.pwd
+    if (outcome.via === 'recovered') onAutoUnlockedRef.current?.(outcome.pwd)
+    return outcome.pwd
+  }, [promptVaultUnlock])
+
   /** 供 Key 环境构建（派活与审查共用）：绑定账户时解密注入，Key 只进子进程环境变量 */
   const buildRunEnv = useCallback(async (def: AgentDef, st: AgentSettings, modelOverride?: string): Promise<{ envPairs: Array<[string, string]> } | { error: string }> => {
     const binding = st.bindings[def.id]
     if (binding?.kind === 'account') {
       const acct = accountsRef.current.find(a => a.id === binding.accountId)
       if (!acct?.encryptedKey) return { error: '绑定的账户不存在或没有 Key，已取消派活' }
-      const pwd = sessionPwdRef.current
-      if (!pwd) return { error: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' }
+      const pwd = await ensureVaultPwd()
+      if (!pwd) return { error: VAULT_KEY_CANCELLED_ERROR }
       let plain = ''
       try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch { return { error: '解密绑定账户的 Key 失败，已取消派活' } }
       const modelId = modelOverride ?? enginesFor(acct.providerId)[0]?.id
       return { envPairs: Object.entries(buildShellEnv(binding, acct, plain, modelId)) }
     }
     return { envPairs: Object.entries(buildShellEnv(binding, undefined, undefined)) }
-  }, [])
+  }, [ensureVaultPwd])
 
   /** v0.1.517：DSH 条目 Key 注入——条目绑了 Key 管理的 DeepSeek 账户时，解密后以
    *  DEEPSEEK_API_KEY 注入子进程环境（官方路线认这个变量，2026-11-28 真机验通）。
@@ -258,12 +327,12 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     if (!entry || binding?.kind !== 'account') return { pairs: [] }
     const acct = accountsRef.current.find(a => a.id === binding.accountId)
     if (!acct?.encryptedKey) return { error: '条目绑定的 DeepSeek 账户不存在或没有 Key，已取消派活（到设置 · Agent 管理的 DSH 条目里重新绑定）' }
-    const pwd = sessionPwdRef.current
-    if (!pwd) return { error: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' }
+    const pwd = await ensureVaultPwd()
+    if (!pwd) return { error: VAULT_KEY_CANCELLED_ERROR }
     let plain = ''
     try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch { return { error: '解密绑定账户的 Key 失败，已取消派活' } }
     return { pairs: entryKeyEnvPairs(entry, plain) }
-  }, [])
+  }, [ensureVaultPwd])
 
   /** 多账户条目解析：定条目 + 凭据目录环境变量。未登录（探测确定）/ 读不到隔离目录时给出 error，
    *  绝不拿其他账户顶替——用错账户比停住更糟。 */
@@ -1269,6 +1338,31 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         </div>
         <span className="aw-topnote">运行中 {runningCount} / 并行上限 {settings.parallel.maxParallel}</span>
       </div>
+
+      {/* v0.1.518：派活取 Key 的原地解锁框——钥匙串静默恢复失败后才出现；解锁成功
+          自动续跑刚才那次派活，取消才把「已取消」文案落到任务卡上 */}
+      {unlockPromptOpen && (
+        <div className="aw-modal-backdrop" onClick={() => { if (!unlockBusy) settleUnlockPrompt(null) }}>
+          <div className="aw-modal" style={{ width: 'min(420px, 92vw)' }} onClick={e => e.stopPropagation()}>
+            <h3>解锁保险箱</h3>
+            <p className="aw-note">这次派活要用到绑定账户的 Key，输一次主密码解锁，解锁后会自动继续刚才的派活。</p>
+            <div className="aw-modal-label">主密码</div>
+            <input
+              className="aw-modal-select" type="password" autoFocus value={unlockInput}
+              onChange={e => { setUnlockInput(e.target.value); setUnlockError('') }}
+              onKeyDown={e => { if (e.key === 'Enter') void submitUnlockPrompt() }}
+              placeholder="输入保险箱主密码"
+            />
+            {unlockError && <p className="aw-note" style={{ color: 'var(--danger, #d33)' }}>{unlockError}</p>}
+            <div className="aw-modal-actions">
+              <button className="btn sm" disabled={unlockBusy} onClick={() => settleUnlockPrompt(null)}>取消</button>
+              <button className="btn sm primary" disabled={!unlockInput || unlockBusy} onClick={() => void submitUnlockPrompt()}>
+                {unlockBusy ? '验证中…' : '解锁并继续派活'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {view === 'settings' && (
         <AgentSettingsPanel

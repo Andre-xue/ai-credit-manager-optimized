@@ -20,7 +20,8 @@ import {
   __setKeychainBackendForTest, applyKeepUnlockedChange, canUseKeyMaterial,
   keepUnlockedEnabled, keychainStoreMasterPassword, keychainReadMasterPassword,
   keychainDeleteMasterPassword, refreshKeychainAfterPasswordChange,
-  requiresStepUp, tryKeychainAutoUnlock, type KeychainBackend,
+  requiresStepUp, tryKeychainAutoUnlock, resolveVaultPassword, VAULT_KEY_CANCELLED_ERROR,
+  type KeychainBackend,
 } from './persistentUnlock'
 
 const PWD = 'test1234'
@@ -128,5 +129,54 @@ describe('生命周期', () => {
     await keychainStoreMasterPassword(PWD) // 模拟残留
     await refreshKeychainAfterPasswordChange(NEW_PWD)
     expect(kc.value).toBe(null)
+  })
+})
+
+describe('v0.1.518：派活取 Key 的按需解锁编排 resolveVaultPassword', () => {
+  it('会话已有密码：直接 ready/session，恢复与弹框都不触发', async () => {
+    let recoverCalls = 0, promptCalls = 0
+    const r = await resolveVaultPassword(PWD, {
+      recover: async () => { recoverCalls++; return NEW_PWD },
+      prompt: async () => { promptCalls++; return NEW_PWD },
+    })
+    expect(r).toEqual({ status: 'ready', pwd: PWD, via: 'session' })
+    expect(recoverCalls).toBe(0)
+    expect(promptCalls).toBe(0)
+  })
+
+  it('会话为空：先静默恢复，恢复成功走 recovered、绝不弹框（用户无感）', async () => {
+    let promptCalls = 0
+    const r = await resolveVaultPassword('', {
+      recover: async () => PWD,
+      prompt: async () => { promptCalls++; return NEW_PWD },
+    })
+    expect(r).toEqual({ status: 'ready', pwd: PWD, via: 'recovered' })
+    expect(promptCalls).toBe(0)
+  })
+
+  it('恢复不到才弹框：弹框成功走 prompt 续跑', async () => {
+    const r = await resolveVaultPassword('', {
+      recover: async () => null,
+      prompt: async () => NEW_PWD,
+    })
+    expect(r).toEqual({ status: 'ready', pwd: NEW_PWD, via: 'prompt' })
+  })
+
+  it('恢复抛错也继续走弹框，不许把异常当取消', async () => {
+    const r = await resolveVaultPassword('', {
+      recover: async () => { throw new Error('钥匙串不可用') },
+      prompt: async () => NEW_PWD,
+    })
+    expect(r).toEqual({ status: 'ready', pwd: NEW_PWD, via: 'prompt' })
+  })
+
+  it('恢复不到 + 用户取消弹框 → cancelled，落卡文案是「已取消」口径', async () => {
+    const r = await resolveVaultPassword('', {
+      recover: async () => null,
+      prompt: async () => null,
+    })
+    expect(r).toEqual({ status: 'cancelled' })
+    expect(VAULT_KEY_CANCELLED_ERROR).toContain('已取消')
+    expect(VAULT_KEY_CANCELLED_ERROR).not.toContain('API Key 管理')
   })
 })

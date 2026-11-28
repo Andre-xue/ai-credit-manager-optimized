@@ -173,6 +173,35 @@ export async function applyKeepUnlockedChange(on: boolean): Promise<void> {
 }
 
 /**
+ * v0.1.518：按需取主密码的决策编排（工作台派活取 Key 用；Ethan 2026-11-28 定案：
+ * 取 Key 时不许先把用户赶去 Key 页解锁再重派）。
+ * 顺序：会话已有密码 → 直接用；没有 → 先静默重试一次钥匙串自动恢复（与启动
+ * 恢复同一条 tryKeychainAutoUnlock）；仍没有 → 由调用方原地弹解锁框，解锁成功
+ * 续跑、用户取消才落「已取消」报错。本函数只做决策（可单测），接管会话与弹框
+ * 由调用方按 via 分工：via='recovered' 时调用方把密码按 auto 态接管进会话；
+ * via='prompt' 时弹框成功路径已按 manual 态完成接管（含「保持解锁」开时的
+ * 钥匙串条目写入，由 App 既有 effect 统一处理）。
+ */
+export type VaultPasswordResolution =
+  | { status: 'ready'; pwd: string; via: 'session' | 'recovered' | 'prompt' }
+  | { status: 'cancelled' }
+
+/** 用户取消解锁后才落到任务卡上的如实说法（不许拿它当未解锁时的第一反应） */
+export const VAULT_KEY_CANCELLED_ERROR = '已取消：保险箱没解锁，取不出绑定账户的 Key'
+
+export async function resolveVaultPassword(current: string, deps: {
+  recover: () => Promise<string | null>
+  prompt: () => Promise<string | null>
+}): Promise<VaultPasswordResolution> {
+  if (current) return { status: 'ready', pwd: current, via: 'session' }
+  const recovered = await deps.recover().catch(() => null)
+  if (recovered) return { status: 'ready', pwd: recovered, via: 'recovered' }
+  const prompted = await deps.prompt().catch(() => null)
+  if (prompted) return { status: 'ready', pwd: prompted, via: 'prompt' }
+  return { status: 'cancelled' }
+}
+
+/**
  * 改主密码成功后的钥匙串生命周期：开关开则把条目换成新密码（下次启动用新密码
  * 自动解锁）；开关关则确保条目不存在。旧条目若留着，启动校验必然失败被清，
  * 这里主动同步更新，省去一次无谓的失败尝试。

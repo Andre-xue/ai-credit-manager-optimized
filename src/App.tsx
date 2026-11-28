@@ -463,6 +463,12 @@ function App() {
     setSessionPwd('')
     setUnlockKind('none')
   }, [])
+  /** v0.1.518：钥匙串静默恢复出的密码按 auto 态接管（工作台派活取 Key 时按需恢复用，
+   *  与启动自动恢复同口径；看明文/删 Key 仍按 auto 态走 step-up） */
+  const adoptAutoUnlock = useCallback((pwd: string) => {
+    setSessionPwd(pwd)
+    setUnlockKind('auto')
+  }, [])
   /** 从设置页指纹/人脸解锁后，带入 Key 管理页的初始解锁密码（仅作用于 Key 页） */
   const [keyPageInitialPwd, setKeyPageInitialPwd] = useState('')
   useEffect(() => {
@@ -1869,7 +1875,7 @@ function App() {
 
           {tab === 'workshop' && <WorkshopView accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} settings={state.settings} serviceController={isPhone ? undefined : serviceController} onUnlock={unlockSession} openSignal={wsSignal} onOpenTab={(tb) => openTab(tb as Tab)} />}
 
-          {tab === 'agents' && <AgentWorkbench accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} />}
+          {tab === 'agents' && <AgentWorkbench accounts={state.accounts} sessionPwd={sessionPwd} notify={notify} onUnlocked={unlockSession} onAutoUnlocked={adoptAutoUnlock} />}
 
           {/* 翻译助手宿主（v0.1.440）：全局快捷键/截图事件在此跑翻译并弹小窗。
               v0.1.473：Alt+E 输入翻译改开置顶输入小窗（宿主直连 Rust），不再
