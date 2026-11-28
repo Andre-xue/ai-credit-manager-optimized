@@ -140,7 +140,7 @@ export const AGENT_REGISTRY: AgentDef[] = [
     cliInstallHint: 'npm install -g @deepseek-ai/dsh',
     // v0.1.517：DSH 0.2.2-rc.5 的账号路线对命令行不可用（登录记录不落 CLI 凭据存储，
     // 2026-11-28 五路验死），派活改走默认 official 路线 + DeepSeek API Key，不再有终端登录命令。
-    loginGuide: '给这个条目绑定 Key 管理里的 DeepSeek 账户即可派活（派活时自动注入 Key、不落盘）；或在 DSH 网页版 设置→模型 存入 DeepSeek API Key，二选一',
+    loginGuide: '给这个条目绑定 Key 管理里的 DeepSeek 账户即可派活（派活时自动注入 Key、不落盘）；或在 DSH 网页版 设置→模型 存入 DeepSeek API Key，二选一；把条目改成所绑 DeepSeek 账户的名字，就不会认错',
   },
   {
     id: 'antigravity', name: 'Antigravity', kind: 'account', dispatch: 'open',
@@ -152,7 +152,7 @@ export const AGENT_REGISTRY: AgentDef[] = [
     qualification: '已装可接；其内置 Claude 模型官方标注 2026-11-30 下线，之后以 Gemini 为主',
     installHint: '装 agy 命令：按 antigravity.google 的 CLI 安装指引安装（与桌面端同一个 Google 账号、共用登录态）；或到 antigravity.google 下载桌面端并登录',
     cliInstallHint: '按 antigravity.google 的 CLI 安装指引安装 agy 命令',
-    loginGuide: '在终端运行 HOME={dir} agy，在打开的界面里用要添加的 Google 账号登录（这个目录的钥匙串已由魔方预建好，不会再弹「找不到钥匙串」）；登录完成后回到这里点「重新检测」',
+    loginGuide: '在终端运行 HOME={dir} agy，在打开的界面里用要添加的 Google 账号登录（这个目录的钥匙串已由魔方预建好，不会再弹「找不到钥匙串」）；登录完成后，CLI 界面顶部会显示当前登录的账号，回到这里把条目改成那个名字，就不会认错；最后点「重新检测」',
   },
   {
     id: 'codex-desktop', name: 'Codex', kind: 'account', dispatch: 'open', aliases: ['Codex 桌面端'],
@@ -164,7 +164,7 @@ export const AGENT_REGISTRY: AgentDef[] = [
     qualification: '免费档可用（桌面端限量模型）；命令版 codex exec 与桌面端共用同一 ChatGPT 登录',
     installHint: '装 codex 命令：终端运行 npm install -g @openai/codex（有命令走无头直派，与桌面端共用 ~/.codex 登录）；或到 OpenAI 官网下载 Codex 桌面端并登录账号',
     cliInstallHint: 'npm install -g @openai/codex',
-    loginGuide: '在终端运行 CODEX_HOME={dir} codex login，登录要添加的账号（该目录已预置 cli_auth_credentials_store = "file"，登录会落到这个目录的 auth.json）；完成后回到这里点「重新检测」',
+    loginGuide: '在终端运行 CODEX_HOME={dir} codex login，登录要添加的账号（该目录已预置 cli_auth_credentials_store = "file"，登录会落到这个目录的 auth.json）；登录完成后，CLI 界面顶部会显示当前登录的账号，回到这里把条目改成那个名字，就不会认错；最后点「重新检测」',
   },
   {
     id: 'workbuddy-app', name: 'WorkBuddy', kind: 'account', dispatch: 'open',
@@ -372,6 +372,20 @@ export function renameAccountEntry(s: AgentSettings, entryId: string, name: stri
     return { ...e, customLabel: next }
   })
   return changed ? { ...s, accounts } : s
+}
+
+/** v0.1.518：删除隔离条目的二次确认文案（纯函数）：说清删的是卡 + 本机登录文件、
+ *  账号本身不受影响、重新添加要重新登录 */
+export function entryDeleteConfirmText(e: AgentAccountEntry): string {
+  return `删除账户卡「${entryDisplayName(e)}」？它在本机的登录文件会一并删掉（账号本身不受影响，在别处照常能用），删除后重新添加需要重新登录一次。`
+}
+
+/** v0.1.518：删除隔离条目的结果提示（纯函数）：目录删成功 = 卡与登录文件都删了；
+ *  删失败 = 卡仍移除（设置记录不留半截），但如实提示登录文件还在、位置在哪，不许静默 */
+export function entryDeleteNotice(e: AgentAccountEntry, dirDeleted: boolean, dirPath: string): string {
+  const name = entryDisplayName(e)
+  if (dirDeleted) return `已删除账户卡「${name}」，它在本机的登录文件也一并删掉了`
+  return `账户卡「${name}」已删除，但它在本机的登录文件没能删掉${dirPath ? `，位置在 ${dirPath}` : ''}，可以手动删掉那个文件夹`
 }
 
 /** 把派活查到的打码身份存到条目上（与现值相同返回原 settings） */

@@ -5,10 +5,11 @@ import {
   AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
   detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
   loginStateText, entryDisplayName, renameAccountEntry, dshEntryKeyState,
+  entryDeleteConfirmText, entryDeleteNotice,
   type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry, type AgentAccountEntry,
 } from '../core/agents'
 import {
-  agentAccountsProbe, agentAccountCreateDir, agentWhich, agentRunStart, agentRunPoll, agentRunStop,
+  agentAccountsProbe, agentAccountCreateDir, agentAccountDeleteDir, agentWhich, agentRunStart, agentRunPoll, agentRunStop,
   entryProbeIn, agentAgySetupEntry,
   type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
@@ -65,6 +66,13 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
   const [guide, setGuide] = useState<Record<string, string>>({})
   // v0.1.515：条目改名的行内编辑态（正在编辑的条目 id + 草稿名）
   const [editName, setEditName] = useState<{ id: string; draft: string } | null>(null)
+  // v0.1.518：新建条目后自动打开改名编辑的标记（输入框换成「按 CLI 顶部账号填」的提示）
+  const [freshRenameId, setFreshRenameId] = useState<string | null>(null)
+  // v0.1.518：条目卡「详情」折叠的展开态（凭据目录路径收在这里，卡面不再直接露路径）
+  const [detailOpen, setDetailOpen] = useState<Record<string, boolean>>({})
+  // v0.1.518：删除隔离条目的二次确认（确认后连带删本机凭据目录，见 confirmDeleteEntry）
+  const [deleteFor, setDeleteFor] = useState<AgentAccountEntry | null>(null)
+  const [deleting, setDeleting] = useState(false)
   // v0.1.516：平台页签式布局——当前选中平台、显示设置面板与分区分折叠的展开态
   const [selPlatform, setSelPlatform] = useState('antigravity')
   const [displayOpen, setDisplayOpen] = useState(false)
@@ -123,7 +131,26 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
     }
     onChange({ ...settings, accounts: [...settings.accounts, entry] })
     setGuide(g => ({ ...g, [def.id]: `新账户「${entry.label}」的凭据目录已建好${path ? `（${path}）` : ''}。${fillLoginGuide(def, path)}` }))
-    notify(`已添加账户「${entry.label}」：按行内指引在终端登录后，点「重新检测」确认登录态`)
+    // v0.1.518：新建条目立刻打开改名编辑——三家 CLI 都不报账号身份，只能靠名字认人，
+    // 趁刚建好先把名字标对（取消也不影响条目创建，日后点铅笔随时能改）
+    setAccountsOpen(true)
+    setFreshRenameId(entry.id)
+    setEditName({ id: entry.id, draft: '' })
+    notify(`已添加账户「${entry.label}」：先给它起个能认出来的名字，再按行内指引在终端登录，完后点「重新检测」确认登录态`)
+  }
+
+  // v0.1.518：删除隔离条目——先删本机凭据目录（Rust 校验路径合规），再移除设置记录；
+  // 目录删失败也移除记录（不留半截状态），但如实提示登录文件还在、位置在哪
+  const confirmDeleteEntry = async () => {
+    const e = deleteFor
+    if (!e || deleting) return
+    setDeleting(true)
+    const dirPath = acctStatus[e.id]?.dirPath ?? ''
+    const dirDeleted = await agentAccountDeleteDir(e.agentId, e.id)
+    onChange({ ...settings, accounts: settings.accounts.filter(x => x.id !== e.id) })
+    setDeleteFor(null)
+    setDeleting(false)
+    notify(entryDeleteNotice(e, dirDeleted, dirPath), dirDeleted ? 'ok' : 'err')
   }
 
   // ---- 一键安装（官方路线）：确认闸 → 子进程流式输出 → 装完自动重新检测 ----
@@ -258,16 +285,16 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                   className="asp-entry-name-input"
                   value={editName.draft}
                   autoFocus
-                  placeholder={e.label}
+                  placeholder={freshRenameId === e.id ? '按你在 CLI 界面顶部看到的账号填，如 x998***' : e.label}
                   aria-label="条目显示名"
                   onChange={ev => setEditName({ id: e.id, draft: ev.target.value })}
                   onKeyDown={ev => {
-                    if (ev.key === 'Enter') { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }
-                    if (ev.key === 'Escape') setEditName(null)
+                    if (ev.key === 'Enter') { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null); if (freshRenameId === e.id) setFreshRenameId(null) }
+                    if (ev.key === 'Escape') { setEditName(null); if (freshRenameId === e.id) setFreshRenameId(null) }
                   }}
                 />
-                <button className="btn sm" onClick={() => { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }}>保存</button>
-                <button className="btn sm ghost" onClick={() => setEditName(null)}>取消</button>
+                <button className="btn sm" onClick={() => { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null); if (freshRenameId === e.id) setFreshRenameId(null) }}>保存</button>
+                <button className="btn sm ghost" onClick={() => { setEditName(null); if (freshRenameId === e.id) setFreshRenameId(null) }}>取消</button>
               </>
             ) : (
               <>
@@ -287,14 +314,16 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
             onChange={v => onChange({ ...settings, accounts: settings.accounts.map(x => (x.id === e.id ? { ...x, enabled: v } : x)) })}
           />
           {e.credDir === 'isolated' && (
-            <button className="btn sm ghost" aria-label="删除账户条目" onClick={() => onChange({ ...settings, accounts: settings.accounts.filter(x => x.id !== e.id) })}>
+            <button className="btn sm ghost" aria-label="删除账户条目" onClick={() => setDeleteFor(e)}>
               <Trash2 size={13} />
             </button>
           )}
         </div>
+        {freshRenameId === e.id && editName?.id === e.id && (
+          <div className="aw-note">新账户先标个名字不会认错：按你在 CLI 界面顶部看到的账号填，如 x998***；现在不填也行，之后点铅笔随时能改。</div>
+        )}
         {e.identity && <div className="aw-note">账号：{e.identity}</div>}
         <div className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</div>
-        {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
         {isDsh && (
           <>
             <label className="aw-bind">
@@ -326,9 +355,23 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
             </button>
             {loginOpen[e.id] && (
               <div className="asp-login-box">
-                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：</div>
+                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令登录；登录完成后，CLI 界面顶部会显示当前登录的账号，回到这里把条目改成那个名字，就不会认错；最后点上方「重新检测」：</div>
                 <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
                 <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
+              </div>
+            )}
+          </div>
+        )}
+        {/* v0.1.518：凭据目录路径从卡面收进「详情」折叠，卡面只留名字/状态/开关/统计 */}
+        {st?.dirPath && (
+          <div className="asp-guide">
+            <button className="asp-guide-toggle" aria-expanded={!!detailOpen[e.id]} onClick={() => setDetailOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>
+              详情 <ChevronDown size={14} className={`asp-chev ${detailOpen[e.id] ? 'open' : ''}`} />
+            </button>
+            {detailOpen[e.id] && (
+              <div className="asp-login-box">
+                <div className="aw-note">凭据目录（只存你本机登录产生的文件，魔方不读里面的内容）：</div>
+                <div className="aw-note asp-dir">{st.dirPath}</div>
               </div>
             )}
           </div>
@@ -722,6 +765,20 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
               </label>
             </div>
           )}
+        </div>
+      )}
+
+      {/* v0.1.518：删除隔离条目的二次确认（连带删本机凭据目录，不留孤儿） */}
+      {deleteFor && (
+        <div className="aw-modal-backdrop" onClick={() => { if (!deleting) setDeleteFor(null) }}>
+          <div className="aw-modal" role="dialog" aria-label="删除账户卡" onClick={e => e.stopPropagation()}>
+            <h3>删除账户卡</h3>
+            <p className="aw-note">{entryDeleteConfirmText(deleteFor)}</p>
+            <div className="aw-modal-actions">
+              <button className="btn" disabled={deleting} onClick={() => setDeleteFor(null)}>取消</button>
+              <button className="btn danger" disabled={deleting} onClick={() => void confirmDeleteEntry()}>{deleting ? '删除中…' : '确认删除'}</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

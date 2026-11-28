@@ -6,6 +6,7 @@ import {
   loadAgentSettings, saveAgentSettings, markAgentVerified, loginStateText,
   multiAccountCapable, normalizeAccountEntries, entryEnvPairs, loginCommandFor, nativeEntryId,
   entryDisplayName, renameAccountEntry, setEntryIdentity,
+  entryDeleteConfirmText, entryDeleteNotice, fillLoginGuide,
   type AgentSettings, type AgentLedgerEntry,
 } from './agents'
 import type { Account } from './types'
@@ -316,5 +317,52 @@ describe('v0.1.515：parseCliUsage 认 agy 嵌套 usage', () => {
   it('只有 step_update.usage 时也能吃到', () => {
     const out = '{"event":"step_update","step_update":{"step_index":0,"usage":{"input_tokens":100,"output_tokens":20}}}'
     expect(parseCliUsage(out)).toEqual({ inputTokens: 100, outputTokens: 20, costUsd: 0 })
+  })
+})
+
+describe('v0.1.518：登录指引补「按 CLI 顶部账号改名」', () => {
+  it('Antigravity / Codex 指引写明 CLI 顶部看账号、回来改名不会认错', () => {
+    for (const id of ['antigravity', 'codex-desktop']) {
+      const g = agentDef(id)!.loginGuide!
+      expect(g).toContain('CLI 界面顶部会显示当前登录的账号')
+      expect(g).toContain('把条目改成那个名字，就不会认错')
+      // fillLoginGuide 填目录后同样带这句（添加账户后的指引消息走它）
+      expect(fillLoginGuide(agentDef(id)!, '/tmp/creds-x')).toContain('把条目改成那个名字，就不会认错')
+    }
+  })
+  it('DSH 指引（无 CLI 登录界面）：改成所绑账户的名字，不会认错；517 口径不回退', () => {
+    const g = agentDef('dsh')!.loginGuide!
+    expect(g).toContain('把条目改成所绑 DeepSeek 账户的名字，就不会认错')
+    expect(g).toContain('绑定 Key 管理里的 DeepSeek 账户')
+    expect(g).not.toContain('dsh web')
+  })
+})
+
+describe('v0.1.518：删除隔离条目的文案合成', () => {
+  const entry = { id: 'ent-antigravity-x-0', agentId: 'antigravity', label: '账号A', credDir: 'isolated' as const, enabled: true, createdAt: 1 }
+  it('确认文案：说清删卡 + 本机登录文件、账号本身不受影响、重加要重新登录；用改名后的显示名', () => {
+    const t = entryDeleteConfirmText({ ...entry, customLabel: '小号' })
+    expect(t).toContain('「小号」')
+    expect(t).toContain('本机的登录文件会一并删掉')
+    expect(t).toContain('账号本身不受影响')
+    expect(t).toContain('重新添加需要重新登录一次')
+  })
+  it('结果提示：目录删成功 = 卡与登录文件都删了', () => {
+    const t = entryDeleteNotice(entry, true, '/Users/x/.ai-credit-manager/agents/creds/antigravity/ent-antigravity-x-0')
+    expect(t).toContain('已删除账户卡「账号A」')
+    expect(t).toContain('登录文件也一并删掉了')
+    expect(t).not.toContain('没能删掉')
+  })
+  it('结果提示：目录删失败 = 卡仍删除，但如实说登录文件还在并给位置', () => {
+    const dir = '/Users/x/.ai-credit-manager/agents/creds/antigravity/ent-antigravity-x-0'
+    const t = entryDeleteNotice(entry, false, dir)
+    expect(t).toContain('账户卡「账号A」已删除')
+    expect(t).toContain('没能删掉')
+    expect(t).toContain(dir)
+  })
+  it('结果提示：删失败且不知道位置时不编造路径', () => {
+    const t = entryDeleteNotice(entry, false, '')
+    expect(t).toContain('没能删掉')
+    expect(t).not.toContain('位置在')
   })
 })

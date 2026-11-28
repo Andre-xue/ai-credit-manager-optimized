@@ -101,6 +101,16 @@ export async function agentAccountCreateDir(agentId: string, entryId: string): P
   try { return await inv<string>('agent_account_create_dir', { agentId, entryId }) } catch { return '' }
 }
 
+/** v0.1.518：删除隔离条目的凭据目录（连带 Antigravity 的 .kcpass），返回是否删净。
+ *  true = 已删或本来就没有（含非桌面端：本机没有这类目录）；false = Rust 明确报失败，
+ *  调用方仍移除设置记录、但必须如实提示用户登录文件还在。Rust 侧会校验目标路径
+ *  严格位于 agents/creds 根目录之下且最后一段等于 entryId，不合规拒绝执行。 */
+export async function agentAccountDeleteDir(agentId: string, entryId: string): Promise<boolean> {
+  const inv = invokeFn()
+  if (!inv) return true
+  try { await inv<string>('agent_account_delete_dir', { agentId, entryId }); return true } catch { return false }
+}
+
 /** 查命令解析路径（找不到返回空串）；一键安装前探 npm 用 */
 export async function agentWhich(name: string): Promise<string> {
   const inv = invokeFn()

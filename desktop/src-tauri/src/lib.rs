@@ -926,6 +926,34 @@ fn agent_account_create_dir(agent_id: String, entry_id: String) -> Result<String
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// v0.1.518：删除隔离条目的凭据目录（删条目时连带删本机登录文件，不留孤儿目录）。
+/// 路径安全：agent_account_dir 已对每段做 agent_safe_segment 校验（禁穿越）；这里再
+/// 显式复核目标严格位于 ~/.ai-credit-manager/agents/creds/<agent_id>/<entry_id>：
+/// 必须在 creds 根之下、父段等于 agent_id、最后一段等于 entry_id，不合规拒绝执行。
+/// Antigravity 条目连带删 creds/antigravity/<entry_id>.kcpass（钥匙串密码文件）。
+/// 目录本来就不存在视为已删（Ok）；删除动作失败返回 Err，界面会如实提示位置。
+#[tauri::command]
+fn agent_account_delete_dir(agent_id: String, entry_id: String) -> Result<String, String> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or_else(|| "拿不到用户主目录".to_string())?);
+    let creds_root = home.join(".ai-credit-manager").join("agents").join("creds");
+    let dir = agent_account_dir(&agent_id, &entry_id, "isolated", "")
+        .ok_or_else(|| "凭据目录路径不合法".to_string())?;
+    let last_ok = dir.file_name().map(|n| n.to_string_lossy() == entry_id.as_str()).unwrap_or(false);
+    let parent_ok = dir.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy() == agent_id.as_str()).unwrap_or(false);
+    if !dir.starts_with(&creds_root) || !last_ok || !parent_ok {
+        return Err("凭据目录路径校验不通过，已拒绝删除".to_string());
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除凭据目录失败：{e}"))?;
+    }
+    if agent_id == "antigravity" {
+        if let Some(kcpass) = agent_agy_kcpass_path(&entry_id) {
+            if kcpass.exists() { let _ = std::fs::remove_file(&kcpass); }
+        }
+    }
+    Ok(dir.to_string_lossy().to_string())
+}
+
 // ---------------- Antigravity HOME 型条目（v0.1.512 ④） ----------------
 // agy 没有凭据目录变量，但登录按 HOME 隔离（2026-11-28 Ethan 真机实证）：条目目录即
 // HOME、状态落其下 .gemini；令牌存 macOS 钥匙串、钥匙串路径随 HOME 走，所以建条目时
@@ -933,15 +961,57 @@ fn agent_account_create_dir(agent_id: String, entry_id: String) -> Result<String
 // 「找不到钥匙串」。钥匙串密码由 App 生成、只存本机 creds 目录旁的 .kcpass 文件
 // （0600 权限），不进日志、不进界面、不随同步走，报错文案也绝不带密码。
 
-fn agent_agy_kcpass_path(entry_id: &str) -> Option<std::path::PathBuf> {
+/// v0.1.518：条目目录 / 钥匙串 / 密码文件的路径配对（纯函数，可单测）——三者只由
+/// home 与 entry_id 决定：条目目录 = creds/antigravity/<entry_id>，钥匙串在条目
+/// HOME 的 Library/Keychains/login.keychain-db，密码文件在 creds/antigravity 旁
+/// 的 <entry_id>.kcpass。setup / unlock / 自愈全部经此解路径，杜绝两边各拼一套
+/// 导致配对不上（512 的旧实现虽拼法相同，但 setup 的幂等跳过分支不碰密码文件，
+/// 钥匙串已存在时可能留下与 .kcpass 对不上的半成品，要到派活解锁才炸）。
+fn agent_agy_paths(home: &std::path::Path, entry_id: &str) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
     if !agent_safe_segment(entry_id) { return None }
+    let agent_root = home.join(".ai-credit-manager").join("agents").join("creds").join("antigravity");
+    let dir = agent_root.join(entry_id);
+    let kc = dir.join("Library").join("Keychains").join("login.keychain-db");
+    let kcpass = agent_root.join(format!("{entry_id}.kcpass"));
+    Some((dir, kc, kcpass))
+}
+
+fn agent_agy_kcpass_path(entry_id: &str) -> Option<std::path::PathBuf> {
     let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
-    Some(home.join(".ai-credit-manager").join("agents").join("creds").join("antigravity").join(format!("{entry_id}.kcpass")))
+    agent_agy_paths(&home, entry_id).map(|(_, _, p)| p)
 }
 
 fn agent_agy_keychain_path(entry_id: &str) -> Option<std::path::PathBuf> {
-    let dir = agent_account_dir("antigravity", entry_id, "isolated", "")?;
-    Some(dir.join("Library").join("Keychains").join("login.keychain-db"))
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    agent_agy_paths(&home, entry_id).map(|(_, kc, _)| kc)
+}
+
+/// 条目 HOME 下 agy 令牌文件的路径（与登录态探测同口径：状态目录
+/// .gemini/antigravity-cli 下的 antigravity-oauth-token）。只查存在性、绝不读内容；
+/// 解锁失败时用它判断条目是否登录过——没登录过才许重建钥匙串，已有登录的不许动。
+fn agent_agy_token_path(entry_id: &str) -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    agent_agy_paths(&home, entry_id).map(|(dir, _, _)| dir.join(".gemini").join("antigravity-cli").join("antigravity-oauth-token"))
+}
+
+/// 用给定密码建钥匙串（setup 与自愈重建共用同一条路径）
+#[cfg(target_os = "macos")]
+fn agent_agy_create_keychain(kc: &std::path::Path, pw: &str) -> Result<(), String> {
+    let out = std::process::Command::new("security")
+        .arg("create-keychain").arg("-p").arg(pw).arg(kc)
+        .output().map_err(|e| format!("调用系统钥匙串失败：{e}"))?;
+    if !out.status.success() {
+        return Err("系统钥匙串创建失败：请确认这台 Mac 的钥匙串服务可用，稍后再试一次".to_string());
+    }
+    Ok(())
+}
+
+/// 用给定密码试解锁钥匙串（setup 自检与派活解锁共用同一条路径，保证配对一致）
+#[cfg(target_os = "macos")]
+fn agent_agy_try_unlock(kc: &std::path::Path, pw: &str) -> bool {
+    std::process::Command::new("security")
+        .arg("unlock-keychain").arg("-p").arg(pw).arg(kc)
+        .output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn agent_agy_load_or_make_password(entry_id: &str) -> Result<String, String> {
@@ -976,7 +1046,10 @@ fn agent_agy_load_or_make_password(entry_id: &str) -> Result<String, String> {
     Ok(pw)
 }
 
-/// 建 Antigravity 隔离条目：HOME 目录 + 预建钥匙串（幂等：已在则跳过创建）
+/// 建 Antigravity 隔离条目：HOME 目录 + 预建钥匙串。
+/// v0.1.518：密码先经 .kcpass 落定（无论钥匙串是否已存在都走同一条），不存在才建串，
+/// 建完（或已存在时）立即用同一密码自检解锁一次——配对不上当场如实报错，不再把
+/// 半成品留到首次派活才炸（512 的幂等跳过分支正是这么留下对不上的配对的）。
 #[tauri::command]
 fn agent_agy_setup_entry(entry_id: String) -> Result<String, String> {
     let dir = agent_account_dir("antigravity", &entry_id, "isolated", "")
@@ -984,23 +1057,25 @@ fn agent_agy_setup_entry(entry_id: String) -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建条目目录失败：{e}"))?;
     #[cfg(target_os = "macos")]
     {
-        let kc_dir = dir.join("Library").join("Keychains");
-        std::fs::create_dir_all(&kc_dir).map_err(|e| format!("创建钥匙串目录失败：{e}"))?;
-        let kc = kc_dir.join("login.keychain-db");
+        let kc = agent_agy_keychain_path(&entry_id).ok_or_else(|| "条目标识不合法".to_string())?;
+        if let Some(kc_dir) = kc.parent() {
+            std::fs::create_dir_all(kc_dir).map_err(|e| format!("创建钥匙串目录失败：{e}"))?;
+        }
+        let pw = agent_agy_load_or_make_password(&entry_id)?;
         if !kc.exists() {
-            let pw = agent_agy_load_or_make_password(&entry_id)?;
-            let out = std::process::Command::new("security")
-                .arg("create-keychain").arg("-p").arg(&pw).arg(&kc)
-                .output().map_err(|e| format!("调用系统钥匙串失败：{e}"))?;
-            if !out.status.success() {
-                return Err("系统钥匙串创建失败：请确认这台 Mac 的钥匙串服务可用，稍后再试一次".to_string());
-            }
+            agent_agy_create_keychain(&kc, &pw)?;
+        }
+        if !agent_agy_try_unlock(&kc, &pw) {
+            return Err("预建钥匙串的解锁自检失败：钥匙串与密码文件配对不上，这个条目没有建。请稍后重新添加这个账户；若反复出现，请把这条报错发给开发者".to_string());
         }
     }
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// 派活前解锁条目钥匙串（重启/睡醒后会锁上）；失败如实报错、绝不带密码原文
+/// 派活前解锁条目钥匙串（重启/睡醒后会锁上）；失败如实报错、绝不带密码原文。
+/// v0.1.518：解锁失败先自愈一次——条目从未登录过（HOME 下无令牌文件）时钥匙串里
+/// 没有值得保护的数据，删掉旧串按 .kcpass 的密码重建再试；已登录过的条目绝不
+/// 自动重建（会弄丢登录），如实报错让用户先在终端用该条目打开一次 agy。
 #[tauri::command]
 fn agent_agy_unlock_keychain(entry_id: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -1010,18 +1085,48 @@ fn agent_agy_unlock_keychain(entry_id: String) -> Result<(), String> {
             return Err("这个账户条目的钥匙串不存在（条目可能建得不完整）：请删掉该条目后重新添加".to_string());
         }
         let pw = agent_agy_load_or_make_password(&entry_id)?;
-        let out = std::process::Command::new("security")
-            .arg("unlock-keychain").arg("-p").arg(&pw).arg(&kc)
-            .output().map_err(|e| format!("调用系统钥匙串失败：{e}"))?;
-        if !out.status.success() {
-            return Err("解锁这个账户的钥匙串失败：可以删掉该条目后重新添加，或先在终端用该条目登录一次".to_string());
+        if agent_agy_try_unlock(&kc, &pw) {
+            return Ok(());
         }
-        Ok(())
+        let logged_in = agent_agy_token_path(&entry_id).map(|p| p.exists()).unwrap_or(false);
+        if logged_in {
+            return Err("这个账户的钥匙串解锁失败：它已经登录过，魔方没有自动重建钥匙串以免弄丢登录。请先在终端用这个条目打开一次 agy，再回来派活".to_string());
+        }
+        let _ = std::fs::remove_file(&kc);
+        agent_agy_create_keychain(&kc, &pw)?;
+        if agent_agy_try_unlock(&kc, &pw) {
+            return Ok(());
+        }
+        Err("这个账户的钥匙串解锁失败，魔方自动重建后仍解不开：它还没登录过，可以删掉这个条目重新添加一次".to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = entry_id;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod agy_path_pairing_tests {
+    use super::agent_agy_paths;
+
+    #[test]
+    fn agy_paths_pairing() {
+        let home = std::path::Path::new("/Users/test");
+        let (dir, kc, kcpass) = agent_agy_paths(home, "ent-antigravity-abc-0").expect("路径应可解");
+        assert_eq!(dir, home.join(".ai-credit-manager").join("agents").join("creds").join("antigravity").join("ent-antigravity-abc-0"));
+        // 钥匙串必须在条目 HOME 内、密码文件必须是条目目录的同级 <entry_id>.kcpass——
+        // setup 建串与 unlock 解锁都经 agent_agy_paths 取这对路径，配对关系由此保证
+        assert_eq!(kc, dir.join("Library").join("Keychains").join("login.keychain-db"));
+        assert_eq!(kcpass, dir.parent().unwrap().join("ent-antigravity-abc-0.kcpass"));
+    }
+
+    #[test]
+    fn agy_paths_reject_traversal() {
+        let home = std::path::Path::new("/Users/test");
+        assert!(agent_agy_paths(home, "..").is_none());
+        assert!(agent_agy_paths(home, "a/b").is_none());
+        assert!(agent_agy_paths(home, "").is_none());
     }
 }
 
@@ -6550,7 +6655,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .register_uri_scheme_protocol("acmplugin", |_app, request| plugin_frame_response(request))
         .setup(|app| setup_desktop_shell(app))
-        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, local_store_read, local_store_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_account_probe, agent_account_create_dir, agent_dsh_account_patch, agent_which, agent_agy_setup_entry, agent_agy_unlock_keychain, agent_list_sessions, agent_git_info, agent_worktree_add, agent_worktree_diff, agent_worktree_merge, agent_worktree_remove, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel, translator::agent_ax_trusted, translator::agent_app_probe, translator::agent_activate_app, translator::agent_paste_deliver])
+        .invoke_handler(tauri::generate_handler![proxy_usage, call_provider_api, call_cloud_llm, send_notification, open_url, open_protocol_url, open_mic_settings, open_speech_settings, biometric_available, biometric_auth, vault_keychain_set, vault_keychain_get, vault_keychain_delete, choose_save_dir, write_file_to_dir, write_binary_to_dir, sync_file_read, sync_file_write, local_store_read, local_store_write, icloud_drive_dir, video_thumb, media_thumb, gallery_scan, photos_library_dir, update_fast_install, update_fast_download, update_install_downloaded, update_close_arm, update_close_proceed, update_diag_note, update_diag_read, update_diag_dir, photos_db_assets, photos_access_probe, is_app_installed, open_local_app, detect_local_services, get_system_memory_gb, check_local_service, start_local_service, stop_local_service, is_service_app_managed, qwentts_status, qwentts_setup, qwentts_test, qwentts_synthesize, qwentts_cancel_synthesize, tts_test_direct, tts_clone_direct, tts_synthesize_direct, edge_tts_synthesize, voicestudio_test, voicestudio_list, voicestudio_clone, voicestudio_synthesize, fetch_local_models, choose_model_file, ollama_embed, stop_service_by_port, reconcile_local_service, comfyui_api, comfyui_checkpoints, show_main, mini_hide, quit_app, set_window_glass, autostart_is_enabled, autostart_set, silent_start_get, silent_start_set, shortcuts_apply, mini_hover, mini_interacted, icon_display_apply, gateway_set_routes, gateway_start, gateway_stop, gateway_status, plugin_http, plugin_http_b64, plugin_http_media, plugin_frame_put, plugin_frame_remove, plugin_process_start, plugin_process_stop, plugin_process_running, plugin_process_output, agent_detect, agent_launch_app, agent_account_probe, agent_account_create_dir, agent_account_delete_dir, agent_dsh_account_patch, agent_which, agent_agy_setup_entry, agent_agy_unlock_keychain, agent_list_sessions, agent_git_info, agent_worktree_add, agent_worktree_diff, agent_worktree_merge, agent_worktree_remove, agent_run_start, agent_run_poll, agent_run_stop, agent_vault_scan, agent_vault_baseline, agent_vault_poll, agent_vault_list, agent_vault_restore, agent_vault_delete_entries, agent_vault_prune, agent_vault_stats, agent_vault_delete_baseline, open_external_path, mcp_start, mcp_write, mcp_read, mcp_stop, mcp_running, mcp_logs, list_media_apps, open_media_external, open_epic_browser, dlna::dlna_discover, dlna::dlna_play, dlna::dlna_pause, dlna::dlna_resume, dlna::dlna_stop, mail_imap::mail_imap_connect, mail_imap::mail_imap_cancel_connect, mail_imap::mail_imap_disconnect, mail_imap::mail_imap_list_folders, mail_imap::mail_imap_fetch_headers, mail_imap::mail_imap_fetch_message, mail_imap::mail_imap_fetch_structure, mail_imap::mail_imap_fetch_sections, mail_imap::mail_imap_store_flags, mail_imap::mail_imap_delete_messages, mail_imap::mail_imap_folder_counts, mail_imap::mail_imap_idle_start, mail_imap::mail_imap_idle_stop, mail_imap::mail_imap_search_all, mail_imap::mail_oauth_listen_start, mail_imap::mail_oauth_listen_result, mail_imap::mail_oauth_listen_stop, translator::translator_permissions, translator::translator_diag_note, translator::translator_request_accessibility, translator::translator_request_screen, translator::translator_open_settings, translator::translator_shortcuts_apply, translator::translator_get_selection, translator::translator_clipboard_write, translator::translator_clipboard_read, translator::translator_paste_text, translator::translator_show_pop, translator::translator_update_pop, translator::translator_show_input, translator::translator_pop_payload, translator::translator_hide_pop, translator::translator_pop_set_on_top, translator::translator_pop_geom_save, translator::translator_start_capture, translator::translator_capture_finish, translator::translator_capture_cancel, translator::agent_ax_trusted, translator::agent_app_probe, translator::agent_activate_app, translator::agent_paste_deliver])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // macOS：主窗口隐藏到菜单栏常驻后，点击 Dock 图标只会发来 Reopen 事件；
