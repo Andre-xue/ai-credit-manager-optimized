@@ -140,3 +140,38 @@ describe('v0.1.515（②）：parseCliIdentity / maskIdentity', () => {
     expect(parseCliIdentity('codex-desktop', ['{"type":"item.completed","item":{"type":"agent_message","text":"mail me at a@b.com"}}'])).toBeNull()
   })
 })
+
+describe('v0.1.515：agy 真实事件形状（2026-11-28 实机截图原文口径）', () => {
+  const searchStep = (idx: number) => `{"event":"step_update","step_update":{"conversation_id":"c9","step_index":${idx},"state":"DONE","step_type":"tool_call","tool_info":{"name":"search_web"}}}`
+  it('result.response 是最终答案；连续同名进度行合并计数', () => {
+    const lines = [
+      '{"event":"init","conversation_id":"c9"}',
+      searchStep(2), searchStep(3), searchStep(5),
+      '{"event":"step_update","step_update":{"conversation_id":"c9","step_index":8,"state":"DONE","step_type":"agent_response","text_delta":"片段","duration_seconds":6.49,"usage":{"input_tokens":2768,"output_tokens":810,"thinking_tokens":243,"cache_read_tokens":13432,"total_tokens":3578}}}',
+      '{"event":"result","result":{"conversation_id":"c9","status":"SUCCESS","response":"最终答案全文：今日金价 812 元/克。","duration_seconds":34.21,"num_turns":1,"usage":{"input_tokens":20297,"output_tokens":1408,"thinking_tokens":664,"cache_read_tokens":39388,"total_tokens":21705}}}',
+    ]
+    const p = parseCliOutput('antigravity', lines)
+    expect(p.finalText).toBe('最终答案全文：今日金价 812 元/克。')
+    expect(p.progress).toEqual(['会话已建立', '正在搜索网页 ×3'])
+    expect(p.errorText).toBe('')
+  })
+  it('没有 result 事件时，回落拼接 agent_response 的 text_delta', () => {
+    const lines = [
+      '{"event":"init","conversation_id":"c10"}',
+      '{"event":"step_update","step_update":{"conversation_id":"c10","step_index":0,"state":"DONE","step_type":"agent_response","text_delta":"你好"}}',
+      '{"event":"step_update","step_update":{"conversation_id":"c10","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"，世界"}}',
+    ]
+    const p = parseCliOutput('antigravity', lines)
+    expect(p.finalText).toBe('你好，世界')
+  })
+  it('不同动作不合并、同名不连续也不合并', () => {
+    const lines = [
+      '{"event":"init","conversation_id":"c11"}',
+      searchStep(0),
+      '{"event":"step_update","step_update":{"conversation_id":"c11","step_index":1,"state":"DONE","step_type":"tool_call","tool_info":{"name":"read_file"}}}',
+      searchStep(2),
+    ]
+    const p = parseCliOutput('antigravity', lines)
+    expect(p.progress).toEqual(['会话已建立', '第 1 步 · 正在搜索网页', '第 2 步 · 正在读取文件', '第 3 步 · 正在搜索网页'])
+  })
+})

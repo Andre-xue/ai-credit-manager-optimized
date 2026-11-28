@@ -107,6 +107,27 @@ function agyStepLabel(stepType: string, su: Record<string, unknown>): string | n
   return null
 }
 
+/** 连续同名步骤进度行合并计数（v0.1.515）：「第 3 步 · 正在搜索网页」「第 4 步 · 正在搜索网页」…
+ *  合成一行「正在搜索网页 ×4」，不让一排相同的行糊满卡片。只合并紧挨着的同名步骤行，
+ *  无步骤前缀的行（会话已建立等）不参与合并、也会打断连续段。 */
+function mergeStepProgress(lines: string[]): string[] {
+  const out: string[] = []
+  const labels: Array<string | null> = []
+  for (const line of lines) {
+    const m = line.match(/^第 \d+ 步 · (.+)$/)
+    const label = m ? m[1] : null
+    const li = labels.length - 1
+    if (label && li >= 0 && labels[li] === label) {
+      const cnt = out[li].match(/ ×(\d+)$/)
+      out[li] = cnt ? `${label} ×${Number(cnt[1]) + 1}` : `${label} ×2`
+    } else {
+      out.push(line)
+      labels.push(label)
+    }
+  }
+  return out
+}
+
 function parseAgy(lines: string[]): ParsedCliOutput {
   const out: ParsedCliOutput = { progress: [], finalText: '', errorText: '' }
   let streamed = ''
@@ -124,6 +145,13 @@ function parseAgy(lines: string[]): ParsedCliOutput {
     }
     if (ev === 'step_update') {
       const su = asRecord(o.step_update) ?? o
+      // v0.1.515：真实事件形状——答复增量在 step_update 里（step_type=agent_response + text_delta），
+      // 拼起来作 result 缺失时的答案回落（不单独占进度行，最终答案才是主内容）
+      if (str(su.step_type) === 'agent_response') {
+        const td = str(su.text_delta)
+        if (td) streamed += td
+        continue
+      }
       const idx = typeof su.step_index === 'number' ? su.step_index : -1
       const label = agyStepLabel(str(su.step_type), su)
       if (label) {
@@ -148,11 +176,19 @@ function parseAgy(lines: string[]): ParsedCliOutput {
       continue
     }
     if (ev === 'result' || ev === 'final' || ev === 'done') {
-      const text = str(o.text) || str(o.result) || str(o.response) || str(asRecord(o.result)?.text)
+      // v0.1.515：agy 1.5.18 真实形状——答案在 result.response（result 是对象、status=SUCCESS），
+      // 旧解析只认 result.text / 顶层 text，答案被漏掉、卡上只剩进度行（Ethan 18:36 实机实证）
+      const res = asRecord(o.result)
+      const text = str(res?.response) || str(o.text) || str(o.result) || str(o.response) || str(res?.text)
       if (text) out.finalText = text
+      if (res?.status && res.status !== 'SUCCESS' && !out.errorText) {
+        const e = str(res.error) || str(o.message)
+        if (e) out.errorText = e
+      }
     }
   }
   if (!out.finalText && streamed.trim()) out.finalText = streamed.trim()
+  out.progress = mergeStepProgress(out.progress)
   return out
 }
 

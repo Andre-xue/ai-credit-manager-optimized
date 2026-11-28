@@ -663,15 +663,24 @@ export function isHeavyTask(text: string, manual?: boolean): boolean {
 
 /** Claude Code -p 的 JSON 输出含 usage/total_cost_usd；其他 CLI 无结构化用量时返回 null（如实不编造） */
 export function parseCliUsage(output: string): { inputTokens: number; outputTokens: number; costUsd: number } | null {
+  type UsageShape = { input_tokens?: number; output_tokens?: number }
   const lines = output.split('\n').map(l => l.trim()).filter(Boolean)
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
-      const j = JSON.parse(lines[i]) as { usage?: { input_tokens?: number; output_tokens?: number }; total_cost_usd?: number }
-      if (j && typeof j === 'object' && j.usage) {
-        return {
-          inputTokens: j.usage.input_tokens ?? 0,
-          outputTokens: j.usage.output_tokens ?? 0,
-          costUsd: typeof j.total_cost_usd === 'number' ? j.total_cost_usd : 0,
+      // v0.1.515：agy 的 usage 嵌在 result.usage / step_update.usage 里（不是顶层），一并认；
+      // 从尾行往前找，agy 的 result 行在最后、装的是全程总量，先命中它
+      const j = JSON.parse(lines[i]) as {
+        usage?: UsageShape; total_cost_usd?: number
+        result?: { usage?: UsageShape }; step_update?: { usage?: UsageShape }
+      }
+      if (j && typeof j === 'object') {
+        const usage = j.usage ?? j.result?.usage ?? j.step_update?.usage
+        if (usage) {
+          return {
+            inputTokens: usage.input_tokens ?? 0,
+            outputTokens: usage.output_tokens ?? 0,
+            costUsd: typeof j.total_cost_usd === 'number' ? j.total_cost_usd : 0,
+          }
         }
       }
     } catch { /* 非 JSON 行跳过 */ }

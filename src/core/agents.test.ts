@@ -296,3 +296,17 @@ describe('v0.1.515：条目改名与身份', () => {
     expect(setEntryIdentity(s1, target.id, 'x998***@gmail.com')).toBe(s1)
   })
 })
+
+describe('v0.1.515：parseCliUsage 认 agy 嵌套 usage', () => {
+  it('result.usage（全程总量、在最后一行）优先命中', () => {
+    const out = [
+      '{"event":"step_update","step_update":{"step_index":8,"step_type":"agent_response","usage":{"input_tokens":2768,"output_tokens":810,"total_tokens":3578}}}',
+      '{"event":"result","result":{"status":"SUCCESS","response":"x","usage":{"input_tokens":20297,"output_tokens":1408,"total_tokens":21705}}}',
+    ].join('\n')
+    expect(parseCliUsage(out)).toEqual({ inputTokens: 20297, outputTokens: 1408, costUsd: 0 })
+  })
+  it('只有 step_update.usage 时也能吃到', () => {
+    const out = '{"event":"step_update","step_update":{"step_index":0,"usage":{"input_tokens":100,"output_tokens":20}}}'
+    expect(parseCliUsage(out)).toEqual({ inputTokens: 100, outputTokens: 20, costUsd: 0 })
+  })
+})
