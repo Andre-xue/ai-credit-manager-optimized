@@ -12,7 +12,7 @@ import {
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
   effectiveDispatch, multiAccountCapable, pickEntryLru, fillLoginGuide,
   parseSessionId, tierLabel, nativeEntryId,
-  markAgentVerified, loginStateText, entryEnvPairs,
+  markAgentVerified, loginStateText, entryEnvPairs, entryDisplayName, setEntryIdentity,
   type AgentDef, type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
   type AgentAccountEntry,
 } from '../core/agents'
@@ -33,7 +33,7 @@ import {
 } from '../core/agentRace'
 import { AgentSessionsPanel, type SessionImportPayload } from './AgentSessionsPanel'
 import { AgentRaceCompare } from './AgentRaceCompare'
-import { parseCliOutput } from '../core/agentOutput'
+import { parseCliOutput, parseCliIdentity } from '../core/agentOutput'
 import { runDelivery, deliveryPresentation, deliveryChipLabel, createBridgeDeliveryProvider } from '../core/agentDelivery'
 import { WORKSHOP_SKILLS, buildSkillTaskText, type WorkshopSkill } from '../core/workshopSkills'
 import { buildUsageView, buildModelChoices } from '../core/agentUsageView'
@@ -269,7 +269,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     if (!entry) return { pairs: [] }
     const status = accountStatusRef.current[entry.id]
     if (status?.login === 'no') {
-      return { entry, pairs: [], error: `账户「${entry.label}」还没登录：${fillLoginGuide(def, status.dirPath)}` }
+      return { entry, pairs: [], error: `账户「${entryDisplayName(entry)}」还没登录：${fillLoginGuide(def, status.dirPath)}` }
     }
     if (entry.credDir === 'isolated') {
       if (!status?.dirPath) return { entry, pairs: [], error: '读不到该账户的凭据目录，已取消派活（不会拿其他账户顶替）' }
@@ -345,7 +345,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         return
       }
       succEntryId = entry?.id
-      succEntryLabel = entry?.label
+      succEntryLabel = entry ? entryDisplayName(entry) : undefined
     }
     const chain = relayChainOf(orig)
     const root = chain[chain.length - 1] ?? orig
@@ -544,7 +544,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       await agentRunStart(runId, inv.command, inv.args, task.workdir, reviewEnvPairs)
       reviewRunsRef.current.set(task.id, {
         runId, cursor: 0, output: [], reviewerId: rDef.id, reviewerName: rDef.name, kind: rDef.kind,
-        entryId: reviewEntry?.id, entryLabel: reviewEntry?.label, startedAt: Date.now(),
+        entryId: reviewEntry?.id, entryLabel: reviewEntry ? entryDisplayName(reviewEntry) : undefined, startedAt: Date.now(),
       })
     } catch (e) {
       fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`, rDef.name)
@@ -597,7 +597,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         await agentRunStart(runId, inv.command, inv.args, target.raceWorktree ?? target.workdir, envPairs)
         raceReviewRunsRef.current.set(target.id, {
           runId, cursor: 0, output: [], reviewerId: rDef.id, reviewerName: rDef.name, kind: rDef.kind,
-          entryId: rEntry?.id, entryLabel: rEntry?.label, startedAt: Date.now(),
+          entryId: rEntry?.id, entryLabel: rEntry ? entryDisplayName(rEntry) : undefined, startedAt: Date.now(),
         })
       } catch (e) {
         fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`)
@@ -654,6 +654,19 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           saveAgentSettings(next)
           return next
         })
+      }
+      // v0.1.515（②）：初始化事件若自带账号身份（公开字段），打码后存到条目上，条目行就能看出登的是哪个账号。
+      // 三家当前版本事件流均无身份字段（查证见 agentOutput.parseCliIdentity），取不到就不存、不硬凑。
+      if (task.accountEntryId) {
+        const ident = parseCliIdentity(task.agentId, outputText.split('\n'))
+        if (ident) {
+          setSettings(prev => {
+            const next = setEntryIdentity(prev, task.accountEntryId!, ident)
+            if (next === prev) return prev
+            saveAgentSettings(next)
+            return next
+          })
+        }
       }
     }
     // 二期联动（主控拆活回填 / 额度类失败接力 / 完成后的交叉审查）
@@ -784,7 +797,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
           return
         }
         if (cred.entry) {
-          if (!task.accountEntryId) updateTask(task.id, { accountEntryId: cred.entry.id, accountEntryLabel: cred.entry.label })
+          if (!task.accountEntryId) updateTask(task.id, { accountEntryId: cred.entry.id, accountEntryLabel: entryDisplayName(cred.entry) })
           touchEntryUsed(cred.entry.id)
           envPairs = [...envPairs, ...cred.pairs]
           // v0.1.512（④）：HOME 型条目派活前解锁它自己的钥匙串（失败如实停住）
@@ -1053,7 +1066,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         ? settings.accounts.find(e => e.id === entryPick && e.agentId === agentId && e.enabled)
         : undefined
       const entry = explicit ?? pickEntryLru(settings.accounts.filter(e => e.agentId === agentId))
-      if (entry) base = { ...base, accountEntryId: entry.id, accountEntryLabel: entry.label }
+      if (entry) base = { ...base, accountEntryId: entry.id, accountEntryLabel: entryDisplayName(entry) }
     }
     const viaMaster = !parsed.agentId && targetAgent === 'auto'
       && !!settings.master.masterAgentId && agentId === settings.master.masterAgentId
@@ -1095,7 +1108,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       workdir: p.cwd, heavy: false, outsideOk: p.outsideOk,
       status: 'queued', output: [], createdAt: Date.now(),
       sessionId: p.sessionId,
-      accountEntryId: entry?.id, accountEntryLabel: entry?.label,
+      accountEntryId: entry?.id, accountEntryLabel: entry ? entryDisplayName(entry) : undefined,
       note: `从 ${def.name} 本地存档导入（会话 ${p.sessionId.slice(0, 8)}…），用原会话上下文续跑`,
     }
     setTasks(prev => [task, ...prev])
@@ -1160,7 +1173,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       const paidLabel = paid ? (acct ? (acct.label || PROVIDER_MAP[acct.providerId]?.name || acct.providerId) : '已绑定的付费账户') : undefined
       if (multiAccountCapable(def)) {
         for (const e of settings.accounts.filter(x => x.agentId === def.id && x.enabled)) {
-          cands.push({ agentId: def.id, agentName: def.name, entryId: e.id, entryLabel: e.label, cost: paid ? 'paid' : 'free', paidLabel })
+          cands.push({ agentId: def.id, agentName: def.name, entryId: e.id, entryLabel: entryDisplayName(e), cost: paid ? 'paid' : 'free', paidLabel })
         }
       } else {
         cands.push({ agentId: def.id, agentName: def.name, cost: paid ? 'paid' : 'free', paidLabel })
@@ -1375,7 +1388,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                     })
                     return (
                       <button key={e.id} className={`aw-entry-chip ${entryPick === e.id ? 'on' : ''}`} onClick={() => setEntryPick(e.id)}>
-                        {e.label}{login === 'yes' ? ' · 已登录' : login === 'no' ? ' · 未登录'
+                        {entryDisplayName(e)}{login === 'yes' ? ' · 已登录' : login === 'no' ? ' · 未登录'
                           : settings.verifiedAgents?.[selDef.id] ? ' · 已验证'
                           : login === 'unknown' && selDef.credProbeMissing === 'unknown' ? ' · 待派活验证'
                           : login ? ` · ${chipText}` : ''}
@@ -1402,7 +1415,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                   ))}
                   {pickerEntries.map(({ agent, entry }) => (
                     <button key={`${agent.id}:${entry.id}`} onClick={() => { setTargetAgent(agent.id); setEntryPick(entry.id); setInput(prev => prev.replace(/(^|\s)#([^\s#]*)$/, `$1#${agent.name} `)) }}>
-                      <b>{agent.name} · {entry.label}</b><span>账户条目</span>
+                      <b>{agent.name} · {entryDisplayName(entry)}</b><span>账户条目</span>
                     </button>
                   ))}
                   {pickerCommands.length > 0 && <div className="aw-picker-group">原生命令</div>}
@@ -1583,7 +1596,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                 if (multiAccountCapable(a)) {
                   for (const e of settings.accounts.filter(x => x.agentId === a.id && x.enabled)) {
                     if (a.id === orig.agentId && e.id === orig.accountEntryId) continue
-                    options.push({ key: `${a.id}::${e.id}`, label: `${a.name} · ${e.label}`, agentId: a.id, entryId: e.id })
+                    options.push({ key: `${a.id}::${e.id}`, label: `${a.name} · ${entryDisplayName(e)}`, agentId: a.id, entryId: e.id })
                   }
                 } else if (a.id !== orig.agentId) {
                   options.push({ key: a.id, label: a.name, agentId: a.id })

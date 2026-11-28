@@ -3480,6 +3480,7 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
 .asp-entry-row { display: flex; align-items: flex-start; gap: 10px; }
 .asp-entry-main { flex: 1; min-width: 0; }
 .asp-entry-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.asp-entry-name-input { font: inherit; font-size: 13.5px; padding: 3px 8px; border: 1px solid var(--border, #d8d8de); border-radius: 8px; background: var(--panel); color: var(--text); min-width: 180px; }
 .asp-login { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-muted, #eee); color: var(--muted); white-space: nowrap; }
 .asp-login.yes { background: #e3f4e5; color: #1d7a2f; }
 .asp-login.no { background: #fbe7e7; color: #b3261e; }

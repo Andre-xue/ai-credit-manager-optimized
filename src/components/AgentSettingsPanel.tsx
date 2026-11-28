@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react'
+import { Bot, Repeat, ShieldCheck, FolderLock, Crown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Trash2, Pencil } from 'lucide-react'
 import type { Account } from '../core/types'
 import {
   AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
   detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
-  loginStateText,
+  loginStateText, entryDisplayName, renameAccountEntry,
   type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry,
 } from '../core/agents'
 import {
@@ -63,6 +63,8 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
 
   const [acctStatus, setAcctStatus] = useState<Record<string, AgentAccountStatus>>({})
   const [guide, setGuide] = useState<Record<string, string>>({})
+  // v0.1.515：条目改名的行内编辑态（正在编辑的条目 id + 草稿名）
+  const [editName, setEditName] = useState<{ id: string; draft: string } | null>(null)
 
   // 账户条目登录态探测（只查凭据文件在不在，绝不读内容）；单账户 Agent 用合成原生条目
   useEffect(() => {
@@ -322,11 +324,36 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
                           <div key={e.id} className="asp-entry-row">
                             <div className="asp-entry-main">
                               <div className="asp-entry-title">
-                                <b>{e.label}</b>
+                                {editName?.id === e.id ? (
+                                  <>
+                                    <input
+                                      className="asp-entry-name-input"
+                                      value={editName.draft}
+                                      autoFocus
+                                      placeholder={e.label}
+                                      aria-label="条目显示名"
+                                      onChange={ev => setEditName({ id: e.id, draft: ev.target.value })}
+                                      onKeyDown={ev => {
+                                        if (ev.key === 'Enter') { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }
+                                        if (ev.key === 'Escape') setEditName(null)
+                                      }}
+                                    />
+                                    <button className="btn sm" onClick={() => { onChange(renameAccountEntry(settings, e.id, editName.draft)); setEditName(null) }}>保存</button>
+                                    <button className="btn sm ghost" onClick={() => setEditName(null)}>取消</button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <b>{entryDisplayName(e)}</b>
+                                    <button className="btn sm ghost" aria-label="给条目改名" title="给这个账户起个能认出来的名字（如主号 / 小号）" onClick={() => setEditName({ id: e.id, draft: e.customLabel ?? '' })}>
+                                      <Pencil size={12} />
+                                    </button>
+                                  </>
+                                )}
                                 <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
                                 <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>
                                 <span className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</span>
                               </div>
+                              {e.identity && <div className="aw-note">账号：{e.identity}</div>}
                               {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
                               {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
                               {st?.login !== 'yes' && !(keychainUnknown && verifiedAt) && (def.loginCommandNative || def.loginCommandIsolated) && (

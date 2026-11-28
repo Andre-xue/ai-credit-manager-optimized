@@ -213,6 +213,53 @@ function parsePlain(lines: string[]): ParsedCliOutput {
   return out
 }
 
+/** 身份打码（v0.1.515 ②）：只留可辨认的头部与域名，原始身份不落盘。
+ *  邮箱 x998820j@gmail.com → x998***@gmail.com；用户名同理截断加 ***。 */
+export function maskIdentity(raw: string): string {
+  const v = raw.trim()
+  const keepOf = (s: string) => Math.min(4, Math.max(3, Math.floor(s.length / 2)))
+  const at = v.indexOf('@')
+  if (at > 0) return `${v.slice(0, keepOf(v.slice(0, at)))}***@${v.slice(at + 1)}`
+  return `${v.slice(0, keepOf(v))}***`
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function identityFromRecord(o: Record<string, unknown>): string | null {
+  for (const v of [o.email, o.user_email, o.account_email]) {
+    if (typeof v === 'string' && EMAIL_RE.test(v.trim())) return maskIdentity(v)
+  }
+  for (const k of ['user', 'account']) {
+    const em = asRecord(o[k])?.email
+    if (typeof em === 'string' && EMAIL_RE.test(em.trim())) return maskIdentity(em)
+  }
+  return null
+}
+
+/** 从会话初始化事件里找账号身份（v0.1.515 ②）：只看三家各自的初始化事件
+ *  （dsh `session` / codex `thread.started` / agy `init`）的公开字段，命中第一条初始化事件即止，
+ *  不扫后续事件（避免把任务正文里的 user_input 之类误当身份）。
+ *  2026-11-28 查证结论：三家当前版本的初始化事件都不带身份字段——
+ *  dsh 的 session 事件经其官方包源码确认只有 {sessionId, cwd}；
+ *  codex 的 thread.started 只有 {thread_id}；agy 的 init 只有 {conversation_id}。
+ *  故本函数对现行事件流恒返回 null；哪家将来在初始化事件里加了邮箱字段，会被这里接住并打码存下。 */
+export function parseCliIdentity(agentId: string, lines: string[]): string | null {
+  for (const line of lines) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    let o: Record<string, unknown> | null = null
+    try { o = asRecord(JSON.parse(t)) } catch { continue }
+    if (!o) continue
+    const isInit =
+      (agentId === 'dsh' && o.type === 'session')
+      || (agentId === 'codex-desktop' && o.type === 'thread.started')
+      || (agentId === 'antigravity' && (o.event === 'init' || o.type === 'init'))
+    if (!isInit) continue
+    return identityFromRecord(o)
+  }
+  return null
+}
+
 /** 按 Agent 分发解析；headless 三家走结构化解析，其余走纯文本 */
 export function parseCliOutput(agentId: string, lines: string[]): ParsedCliOutput {
   if (!lines.length) return { ...EMPTY }

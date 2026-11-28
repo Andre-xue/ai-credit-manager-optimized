@@ -313,11 +313,45 @@ export interface AgentAccountEntry {
   id: string
   agentId: string
   label: string
+  /** v0.1.515：用户自定的显示名（多账户后靠它分清谁是谁）。只改展示，不动 id / 凭据目录 / 记账归因；未设或清空时回落 label */
+  customLabel?: string
+  /** v0.1.515：派活事件流初始化事件自带的账号身份，只存打码形态（原始邮箱不落盘）。
+   *  2026-11-28 查证三家当前事件流均无身份字段（见 agentOutput.parseCliIdentity），故恒为空、条目行不显示。 */
+  identity?: string
   /** native = 用户原生凭据目录（复用现有登录）；isolated = ~/.ai-credit-manager/agents/creds/<agent>/<id> */
   credDir: 'native' | 'isolated'
   enabled: boolean
   lastUsedAt?: number
   createdAt: number
+}
+
+/** 条目展示名：改过名用改的名，没改/清空回落默认名 label（三处展示统一走这里） */
+export function entryDisplayName(e: AgentAccountEntry): string {
+  const c = e.customLabel?.trim()
+  return c ? c : e.label
+}
+
+/** 给条目改名：name 去空白后为空 = 清除自定义名、回落默认名；没变化返回原 settings（引用不变） */
+export function renameAccountEntry(s: AgentSettings, entryId: string, name: string): AgentSettings {
+  const next = name.trim() || undefined
+  let changed = false
+  const accounts = s.accounts.map(e => {
+    if (e.id !== entryId || (e.customLabel ?? undefined) === next) return e
+    changed = true
+    return { ...e, customLabel: next }
+  })
+  return changed ? { ...s, accounts } : s
+}
+
+/** 把派活查到的打码身份存到条目上（与现值相同返回原 settings） */
+export function setEntryIdentity(s: AgentSettings, entryId: string, identity: string): AgentSettings {
+  let changed = false
+  const accounts = s.accounts.map(e => {
+    if (e.id !== entryId || e.identity === identity) return e
+    changed = true
+    return { ...e, identity }
+  })
+  return changed ? { ...s, accounts } : s
 }
 
 export const nativeEntryId = (agentId: string) => `native-${agentId}`

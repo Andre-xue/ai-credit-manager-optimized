@@ -5,6 +5,7 @@ import {
   pickStartable, isHeavyTask, parseCliUsage, summarizeLedger, ledgerSpentSince,
   loadAgentSettings, saveAgentSettings, markAgentVerified, loginStateText,
   multiAccountCapable, normalizeAccountEntries, entryEnvPairs, loginCommandFor, nativeEntryId,
+  entryDisplayName, renameAccountEntry, setEntryIdentity,
   type AgentSettings, type AgentLedgerEntry,
 } from './agents'
 import type { Account } from './types'
@@ -258,5 +259,40 @@ describe('用量解析与账本汇总', () => {
     expect(s.byAccount).toEqual([{ accountId: 'a1', accountLabel: '账户-a1', tasks: 2, costYuan: 0.5, costUsd: 0, tokens: 0 }])
     expect(ledgerSpentSince(entries, 50)).toBeCloseTo(0.5)
     expect(ledgerSpentSince(entries, 1000)).toBe(0)
+  })
+})
+
+describe('v0.1.515：条目改名与身份', () => {
+  it('entryDisplayName：没改名回落默认名、改名用新名、纯空白名回落', () => {
+    const s = defaultAgentSettings()
+    const e = s.accounts.find(x => x.agentId === 'antigravity')!
+    expect(entryDisplayName(e)).toBe('默认（现有登录）')
+    expect(entryDisplayName({ ...e, customLabel: '主号' })).toBe('主号')
+    expect(entryDisplayName({ ...e, customLabel: '  ' })).toBe('默认（现有登录）')
+  })
+  it('renameAccountEntry：改名只动目标条目、id 与凭据目录不变；清空回落默认名；没变化返回原引用', () => {
+    const s0 = defaultAgentSettings()
+    const target = s0.accounts.find(x => x.agentId === 'dsh')!
+    const s1 = renameAccountEntry(s0, target.id, '  小号  ')
+    const renamed = s1.accounts.find(x => x.id === target.id)!
+    expect(renamed.customLabel).toBe('小号')
+    expect(renamed.id).toBe(target.id)
+    expect(renamed.credDir).toBe(target.credDir)
+    expect(entryDisplayName(renamed)).toBe('小号')
+    expect(s1.accounts.filter(x => x.id !== target.id)).toEqual(s0.accounts.filter(x => x.id !== target.id))
+    const s2 = renameAccountEntry(s1, target.id, '')
+    expect(entryDisplayName(s2.accounts.find(x => x.id === target.id)!)).toBe('默认（现有登录）')
+    expect(renameAccountEntry(s0, target.id, '')).toBe(s0)
+  })
+  it('改名与身份随 settings 存读往返不丢', () => {
+    const s0 = defaultAgentSettings()
+    const target = s0.accounts.find(x => x.agentId === 'codex-desktop')!
+    const s1 = setEntryIdentity(renameAccountEntry(s0, target.id, '工作号'), target.id, 'x998***@gmail.com')
+    saveAgentSettings(s1)
+    const back = loadAgentSettings()
+    const e = back.accounts.find(x => x.id === target.id)!
+    expect(entryDisplayName(e)).toBe('工作号')
+    expect(e.identity).toBe('x998***@gmail.com')
+    expect(setEntryIdentity(s1, target.id, 'x998***@gmail.com')).toBe(s1)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseCliOutput } from './agentOutput'
+import { parseCliOutput, parseCliIdentity, maskIdentity } from './agentOutput'
 import { humanizeAgentError } from './agents'
 
 describe('parseCliOutput · dsh headless --json（v0.1.511 ④）', () => {
@@ -113,5 +113,30 @@ describe('parseCliOutput · 纯文本通道与兜底（v0.1.511 ④）', () => {
   })
   it('空输入返回空结构', () => {
     expect(parseCliOutput('dsh', [])).toEqual({ progress: [], finalText: '', errorText: '' })
+  })
+})
+
+describe('v0.1.515（②）：parseCliIdentity / maskIdentity', () => {
+  it('maskIdentity：邮箱只留头部与域名、用户名截断', () => {
+    expect(maskIdentity('x998820j@gmail.com')).toBe('x998***@gmail.com')
+    expect(maskIdentity('xwj99xwj@gmail.com')).toBe('xwj9***@gmail.com')
+    expect(maskIdentity('andre')).toBe('and***')
+  })
+  it('三家现行初始化事件都不带身份字段 → 恒为 null（2026-11-28 查证口径）', () => {
+    expect(parseCliIdentity('dsh', ['{"type":"session","sessionId":"s1","cwd":"/tmp"}'])).toBeNull()
+    expect(parseCliIdentity('codex-desktop', ['{"type":"thread.started","thread_id":"t1"}'])).toBeNull()
+    expect(parseCliIdentity('antigravity', ['{"event":"init","conversation_id":"c1"}'])).toBeNull()
+  })
+  it('初始化事件带 email 时接住并打码；非初始化事件里的邮箱不误收', () => {
+    expect(parseCliIdentity('dsh', ['{"type":"session","sessionId":"s1","cwd":"/tmp","email":"x998820j@gmail.com"}']))
+      .toBe('x998***@gmail.com')
+    expect(parseCliIdentity('antigravity', ['{"event":"init","conversation_id":"c1","user":{"email":"xwj99xwj@gmail.com"}}']))
+      .toBe('xwj9***@gmail.com')
+    // 任务正文 / 结果里出现的邮箱不是身份，不许收
+    expect(parseCliIdentity('dsh', [
+      '{"type":"session","sessionId":"s1","cwd":"/tmp"}',
+      '{"type":"final","text":"联系邮箱 someone@example.com"}',
+    ])).toBeNull()
+    expect(parseCliIdentity('codex-desktop', ['{"type":"item.completed","item":{"type":"agent_message","text":"mail me at a@b.com"}}'])).toBeNull()
   })
 })
