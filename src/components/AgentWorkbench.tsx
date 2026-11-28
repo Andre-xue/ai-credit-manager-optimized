@@ -12,7 +12,7 @@ import {
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
   effectiveDispatch, multiAccountCapable, pickEntryLru, fillLoginGuide,
   parseSessionId, tierLabel, nativeEntryId,
-  markAgentVerified, loginStateText, entryEnvPairs, entryDisplayName, setEntryIdentity,
+  markAgentVerified, loginStateText, entryEnvPairs, entryKeyEnvPairs, dshEntryKeyState, entryDisplayName, setEntryIdentity,
   type AgentDef, type AgentSettings, type AgentTask, type AgentLedgerEntry, type AgentDetectResult,
   type AgentAccountEntry,
 } from '../core/agents'
@@ -23,7 +23,7 @@ import {
 import {
   agentDetect, agentLaunchApp, agentRunStart, agentRunPoll, agentRunStop, agentClipboardWrite,
   agentVaultBaseline, agentVaultPoll, agentVaultList, agentVaultRestore, agentVaultDeleteEntries, agentVaultPrune,
-  agentVaultStats, agentVaultDeleteBaseline, agentAccountsProbe, agentDshAccountPatch,
+  agentVaultStats, agentVaultDeleteBaseline, agentAccountsProbe,
   entryProbeIn, agentAgyUnlockKeychain, agentGitInfo, agentWorktreeAdd, agentWorktreeDiff,
   type VaultStatsResult, type AgentAccountStatus, type AgentAccountProbeIn,
 } from '../core/agentBridge'
@@ -167,15 +167,6 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     setTasks(prev => prev.map(t => (t.id === id ? { ...t, ...patch } : t)))
   }, [])
 
-  // v0.1.511（⑤）：DSH 账号路线覆盖层路径——首次派 dsh 的活时向 Rust 懒取一次并缓存
-  const dshPatchRef = useRef('')
-  const ensureDshPatch = useCallback(async (): Promise<string> => {
-    if (!dshPatchRef.current) {
-      try { dshPatchRef.current = await agentDshAccountPatch() } catch { dshPatchRef.current = '' }
-    }
-    return dshPatchRef.current
-  }, [])
-
   const addLedger = useCallback((e: AgentLedgerEntry) => {
     setLedger(prev => [e, ...prev].slice(0, 500))
   }, [])
@@ -256,6 +247,22 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       return { envPairs: Object.entries(buildShellEnv(binding, acct, plain, modelId)) }
     }
     return { envPairs: Object.entries(buildShellEnv(binding, undefined, undefined)) }
+  }, [])
+
+  /** v0.1.517：DSH 条目 Key 注入——条目绑了 Key 管理的 DeepSeek 账户时，解密后以
+   *  DEEPSEEK_API_KEY 注入子进程环境（官方路线认这个变量，2026-11-28 真机验通）。
+   *  没绑定返回空（照常派活：用户可能已在 DSH 网页版模型页存过 Key，失败再走人话指引）。
+   *  Key 只进子进程环境，不落盘、不进日志（要记也只记变量名）。 */
+  const buildDshEntryEnv = useCallback(async (entry: AgentAccountEntry | undefined): Promise<{ pairs: Array<[string, string]> } | { error: string }> => {
+    const binding = entry?.keyBinding
+    if (!entry || binding?.kind !== 'account') return { pairs: [] }
+    const acct = accountsRef.current.find(a => a.id === binding.accountId)
+    if (!acct?.encryptedKey) return { error: '条目绑定的 DeepSeek 账户不存在或没有 Key，已取消派活（到设置 · Agent 管理的 DSH 条目里重新绑定）' }
+    const pwd = sessionPwdRef.current
+    if (!pwd) return { error: '保险箱未解锁，取不出绑定账户的 Key：请先到「API Key 管理」页解锁，再重新派发' }
+    let plain = ''
+    try { plain = await decryptSecret(acct.encryptedKey, pwd) } catch { return { error: '解密绑定账户的 Key 失败，已取消派活' } }
+    return { pairs: entryKeyEnvPairs(entry, plain) }
   }, [])
 
   /** 多账户条目解析：定条目 + 凭据目录环境变量。未登录（探测确定）/ 读不到隔离目录时给出 error，
@@ -535,9 +542,13 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
       taskText: task.planFor ?? task.text, taskTitle: task.title,
       agentName: task.agentName, output: outputText, changedFiles,
     })
-    // v0.1.511（⑤）：审查者是 DSH 时同样要带账号路线覆盖层
-    const inv = buildCliInvocation(rDef.id, prompt, undefined,
-      rDef.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
+    // v0.1.517：审查者是 DSH 时同样注入条目绑定的 Key（官方路线）
+    if (rDef.id === 'dsh') {
+      const keyEnv = await buildDshEntryEnv(reviewEntry)
+      if ('error' in keyEnv) { fail(keyEnv.error, rDef.name); return }
+      reviewEnvPairs = [...reviewEnvPairs, ...keyEnv.pairs]
+    }
+    const inv = buildCliInvocation(rDef.id, prompt)
     if (!inv) { fail('审查者没有 CLI 派活方式', rDef.name); return }
     const runId = `review-${task.id}`
     try {
@@ -549,7 +560,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } catch (e) {
       fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`, rDef.name)
     }
-  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed, ensureDshPatch, ensureEntryUnlocked])
+  }, [buildRunEnv, updateTask, resolveEntryCred, touchEntryUsed, buildDshEntryEnv, ensureEntryUnlocked])
 
   /** v0.1.512（②）：赛马两版都完成后互相交叉审查——A 审 B、B 审 A，结论落在被审任务的
    *  raceReview 上（对比层与任务卡共用），费用记审查者名下。审查者在被审者的 worktree 里
@@ -589,8 +600,13 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         taskText: target.text, taskTitle: target.title, agentName: target.agentName,
         output: outputText, changedFiles,
       })
-      const inv = buildCliInvocation(rDef.id, prompt, undefined,
-        rDef.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
+      // v0.1.517：赛马审查者是 DSH 时同样注入条目绑定的 Key
+      if (rDef.id === 'dsh') {
+        const keyEnv = await buildDshEntryEnv(rEntry)
+        if ('error' in keyEnv) { fail(keyEnv.error); continue }
+        envPairs = [...envPairs, ...keyEnv.pairs]
+      }
+      const inv = buildCliInvocation(rDef.id, prompt)
       if (!inv) { fail('审查者没有 CLI 派活方式'); continue }
       const runId = `race-review-${target.id}`
       try {
@@ -603,7 +619,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
         fail(`审查启动失败：${e instanceof Error ? e.message : String(e)}`)
       }
     }
-  }, [buildRunEnv, resolveEntryCred, touchEntryUsed, ensureEntryUnlocked, ensureDshPatch, updateTask])
+  }, [buildRunEnv, resolveEntryCred, touchEntryUsed, ensureEntryUnlocked, buildDshEntryEnv, updateTask])
 
   /** 赛马收尾判定：一件任务到终局后看对手——两件都终局且都完成才发起交叉审查 */
   const maybeFinishRace = useCallback((finished: AgentTask, status: AgentTask['status']) => {
@@ -806,11 +822,20 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
             updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: unlockErr })
             return
           }
+          // v0.1.517：DSH 条目绑了 Key → DEEPSEEK_API_KEY 注入（与上面的 DSH_HOME
+          // 目录注入并存互不影响）；解密失败如实停住，绝不无 Key 硬派
+          if (def.id === 'dsh') {
+            const keyEnv = await buildDshEntryEnv(cred.entry)
+            if ('error' in keyEnv) {
+              updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: keyEnv.error })
+              return
+            }
+            envPairs = [...envPairs, ...keyEnv.pairs]
+          }
         }
       }
-      // v0.1.511（⑤）：dsh 派活带账号路线覆盖层（--patch），原生与隔离条目同口径
-      const inv = buildCliInvocation(def.id, task.text, task.sessionId,
-        def.id === 'dsh' ? { dshPatchPath: await ensureDshPatch() } : undefined)
+      // v0.1.517：DSH 不再带 511 的账号路线覆盖层（--patch），走默认 official 路线
+      const inv = buildCliInvocation(def.id, task.text, task.sessionId)
       if (!inv) { updateTask(task.id, { status: 'failed', endedAt: Date.now(), note: '该 Agent 没有 CLI 派活方式' }); return }
       try {
         await agentRunStart(task.id, inv.command, inv.args, effWorkdir, envPairs)
@@ -826,7 +851,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
     } finally {
       startingRef.current.delete(task.id)
     }
-  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed, ensureDshPatch, ensureEntryUnlocked])
+  }, [updateTask, buildRunEnv, deliverToApp, resolveEntryCred, touchEntryUsed, buildDshEntryEnv, ensureEntryUnlocked])
 
   // 调度：排队任务按并行上限 + 重活锁启动
   useEffect(() => {
@@ -1392,6 +1417,15 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                   <span className="aw-entry-label">用哪个账户：</span>
                   <button className={`aw-entry-chip ${entryPick === 'auto' ? 'on' : ''}`} onClick={() => setEntryPick('auto')}>自动（最久未用）</button>
                   {entries.map(e => {
+                    // v0.1.517：DSH 条目不看登录态（官方 API 路线无登录概念），看 Key 配置状态
+                    if (selDef.id === 'dsh') {
+                      const ks = dshEntryKeyState(e, ledger.some(l => l.agentEntryId === e.id && l.status === 'done'))
+                      return (
+                        <button key={e.id} className={`aw-entry-chip ${entryPick === e.id ? 'on' : ''}`} onClick={() => setEntryPick(e.id)}>
+                          {entryDisplayName(e)} · {ks.text}
+                        </button>
+                      )
+                    }
                     const login = accountStatus[e.id]?.login
                     const chipText = loginStateText(login, {
                       probeMissing: selDef.credProbeMissing,

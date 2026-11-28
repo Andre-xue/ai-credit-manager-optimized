@@ -5,8 +5,10 @@ import {
   buildCliInvocation, parseSessionId, isHeadlessInterfaceFailure,
   normalizeAccountEntries, makeAccountEntry, pickEntryLru, agentAvailability,
   buildInstallCommand, loginCommandFor, humanizeAgentError,
+  entryKeyEnvPairs, dshEntryKeyState,
   defaultAgentSettings, type AgentDetectResult, type AgentAccountEntry,
 } from './agents'
+import { entryProbeIn } from './agentBridge'
 
 const det = (p: Partial<AgentDetectResult>): AgentDetectResult => ({ id: 'x', installed: true, via: '', path: '', ...p })
 
@@ -50,11 +52,9 @@ describe('无头调用形式（按官方文档核实，flags 在任务前）', (
   it('DSH headless --json；续跑带 --session-id', () => {
     expect(buildCliInvocation('dsh', '查金价')).toEqual({ command: 'dsh', args: ['--profile', 'headless', '--json', '查金价'] })
     expect(buildCliInvocation('dsh', '继续', 'session-abc')).toEqual({ command: 'dsh', args: ['--profile', 'headless', '--json', '--session-id', 'session-abc', '继续'] })
-    // v0.1.511（⑤）：带覆盖层时 --patch 排在 --json 之前（启动器参数须在首个未识别 token 前）
-    expect(buildCliInvocation('dsh', '查金价', undefined, { dshPatchPath: '/x/agents/dsh-account-route.yml' }))
-      .toEqual({ command: 'dsh', args: ['--profile', 'headless', '--patch', '/x/agents/dsh-account-route.yml', '--json', '查金价'] })
-    expect(buildCliInvocation('dsh', '继续', 'session-abc', { dshPatchPath: '/x/p.yml' })?.args)
-      .toEqual(['--profile', 'headless', '--patch', '/x/p.yml', '--json', '--session-id', 'session-abc', '继续'])
+    // v0.1.517：511 的账号路线覆盖层（--patch）已撤除——任何情况下都不许再出现
+    expect(buildCliInvocation('dsh', '查金价')?.args).not.toContain('--patch')
+    expect(buildCliInvocation('dsh', '继续', 'session-abc')?.args).not.toContain('--patch')
   })
   it('Codex exec --json；续跑 exec resume 带 thread id', () => {
     expect(buildCliInvocation('codex-desktop', '修 bug')).toEqual({ command: 'codex', args: ['exec', '--json', '--full-auto', '--skip-git-repo-check', '修 bug'] })
@@ -184,9 +184,12 @@ describe('一键安装命令拼装（逐家与官方口径一致）', () => {
 describe('去登录命令原文', () => {
   const native: AgentAccountEntry = { id: 'native-dsh', agentId: 'dsh', label: '默认', credDir: 'native', enabled: true, createdAt: 0 }
   const isolated: AgentAccountEntry = { id: 'ent-dsh-b', agentId: 'dsh', label: '账号A', credDir: 'isolated', enabled: true, createdAt: 1 }
-  it('DSH：原生 dsh / 隔离带 DSH_HOME', () => {
-    expect(loginCommandFor(agentDef('dsh')!, native, '/Users/x/.dsh')).toBe('dsh web')
-    expect(loginCommandFor(agentDef('dsh')!, isolated, '/Users/x/creds/ent-dsh-b')).toBe('DSH_HOME=/Users/x/creds/ent-dsh-b dsh web')
+  it('DSH（v0.1.517 新口径）：不再有终端登录命令，指引改走条目绑 Key / 网页版存 Key', () => {
+    expect(loginCommandFor(agentDef('dsh')!, native, '/Users/x/.dsh')).toBe('')
+    expect(loginCommandFor(agentDef('dsh')!, isolated, '/Users/x/creds/ent-dsh-b')).toBe('')
+    expect(agentDef('dsh')!.loginGuide).toContain('绑定 Key 管理里的 DeepSeek 账户')
+    expect(agentDef('dsh')!.loginGuide).toContain('网页版')
+    expect(agentDef('dsh')!.loginGuide).not.toContain('dsh web')
   })
   it('Codex：原生 codex login / 隔离带 CODEX_HOME', () => {
     const cn: AgentAccountEntry = { ...native, agentId: 'codex-desktop' }
@@ -209,15 +212,61 @@ describe('humanizeAgentError（D：报错翻成人话）', () => {
     expect(humanizeAgentError('something weird happened')).toBe('')
     expect(humanizeAgentError('')).toBe('')
   })
-  it('v0.1.511（⑤）：MISSING_CREDENTIAL 单独成类，绝不映射成登录失效', () => {
+  it('v0.1.511（⑤）成类、v0.1.517 改文案：MISSING_CREDENTIAL 给两条补 Key 的路，绝不映射成登录失效', () => {
     const raw = 'MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment'
     const out = humanizeAgentError(raw)
-    expect(out).toContain('需要 API Key')
-    expect(out).toContain('账号登录路线')
+    expect(out).toContain('还没有可用的 DeepSeek API Key')
+    expect(out).toContain('给条目绑定 Key 管理里的 DeepSeek 账户')
+    expect(out).toContain('网页版设置→模型里存入 Key 后重试')
     expect(out).not.toContain('登录态失效')
-    expect(humanizeAgentError('no API key for provider route "x"')).toContain('需要 API Key')
+    expect(humanizeAgentError('no API key for provider route "x"')).toContain('还没有可用的 DeepSeek API Key')
   })
   it('v0.1.511（③⑥）：env: node 报错翻成人话（运行时缺失）', () => {
     expect(humanizeAgentError('env: node: No such file or directory')).toContain('运行环境没找到')
+  })
+})
+
+describe('v0.1.517：DSH 条目 Key 绑定注入与状态口径', () => {
+  const FAKE_KEY = 'FAKE-DSH-KEY-517'
+  const bound: AgentAccountEntry = {
+    id: 'native-dsh', agentId: 'dsh', label: '默认', credDir: 'native', enabled: true, createdAt: 0,
+    keyBinding: { kind: 'account', accountId: 'acct-deepseek-1' },
+  }
+  const unbound: AgentAccountEntry = { id: 'ent-dsh-b', agentId: 'dsh', label: '账号A', credDir: 'isolated', enabled: true, createdAt: 1 }
+
+  it('有绑定 + 有明文 Key → 注入 DEEPSEEK_API_KEY（原生与隔离条目同口径）', () => {
+    expect(entryKeyEnvPairs(bound, FAKE_KEY)).toEqual([['DEEPSEEK_API_KEY', FAKE_KEY]])
+    expect(entryKeyEnvPairs({ ...bound, credDir: 'isolated' }, FAKE_KEY)).toEqual([['DEEPSEEK_API_KEY', FAKE_KEY]])
+  })
+  it('无绑定 / 无明文 Key / 条目缺失 → 不注入', () => {
+    expect(entryKeyEnvPairs(unbound, FAKE_KEY)).toEqual([])
+    expect(entryKeyEnvPairs(bound, undefined)).toEqual([])
+    expect(entryKeyEnvPairs(bound, '')).toEqual([])
+    expect(entryKeyEnvPairs(undefined, FAKE_KEY)).toEqual([])
+  })
+  it('条目状态：派活成功过 = 已验证 > 已绑定待验证 > 未配置 Key', () => {
+    expect(dshEntryKeyState(bound, true)).toEqual({ state: 'verified', text: '已验证' })
+    expect(dshEntryKeyState(unbound, true).state).toBe('verified')
+    expect(dshEntryKeyState(bound, false)).toEqual({ state: 'bound', text: '已绑定 Key · 待派活验证' })
+    expect(dshEntryKeyState(unbound, false)).toEqual({ state: 'none', text: '未配置 Key' })
+  })
+  it('探测合成：DSH 只取目录、登录态永不下结论；Codex 口径不受影响', () => {
+    const dsh = agentDef('dsh')!
+    expect(dsh.probeInconclusive).toBe(true)
+    const p = entryProbeIn(dsh, { id: 'native-dsh', credDir: 'native' })!
+    expect(p.missingMeans).toBe('unknown')
+    expect(p.probeExistsMeans).toBe('unknown')
+    expect(p.probeFile).toBe('.credentials.yaml')
+    const codex = entryProbeIn(agentDef('codex-desktop')!, { id: 'native-codex-desktop', credDir: 'native' })!
+    expect(codex.probeExistsMeans).toBeUndefined()
+    expect(codex.missingMeans).toBe('unknown')
+  })
+  it('DSH 就绪文案不再写「自身登录免 Key」，如实说明官方 API 路线', () => {
+    const detFull: AgentDetectResult = { id: 'dsh', installed: true, via: 'cli', path: '/bin/dsh', cliPath: '/bin/dsh' }
+    const s = { ...defaultAgentSettings(), enabled: { dsh: true } }
+    const avail = agentAvailability(agentDef('dsh')!, detFull, s, [])
+    expect(avail.state).toBe('ready')
+    expect(avail.reason).toContain('官方 API')
+    expect(avail.reason).not.toContain('免 Key')
   })
 })

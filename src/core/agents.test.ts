@@ -73,11 +73,17 @@ describe('可用性判定', () => {
     const s2 = settings({ enabled: { pi: true }, bindings: { pi: { kind: 'free' } } })
     expect(agentAvailability(pi, det('pi'), s2, []).state).toBe('ready')
   })
-  it('账号型启用即 ready（免 Key）', () => {
+  it('账号型启用即 ready（v0.1.517：DSH 改走官方 API 路线，不再写免 Key）', () => {
     const s = settings({ enabled: { dsh: true } })
     const r = agentAvailability(dsh, det('dsh'), s, [])
     expect(r.state).toBe('ready')
-    expect(r.reason).toContain('免 Key')
+    expect(r.reason).toContain('官方 API')
+    expect(r.reason).not.toContain('免 Key')
+    // 其余账号登录型（Codex）仍是自身登录免 Key 口径
+    const s2 = settings({ enabled: { 'codex-desktop': true } })
+    const r2 = agentAvailability(agentDef('codex-desktop')!, det('codex-desktop'), s2, [])
+    expect(r2.state).toBe('ready')
+    expect(r2.reason).toContain('免 Key')
   })
 })
 
@@ -195,11 +201,13 @@ describe('v0.1.511（②）：已验证标记与登录态文案', () => {
     expect(loginStateText('unknown', { probeMissing: 'unknown', verifiedAt: 5 })).toBe('已验证（派活成功）')
     expect(loginStateText(undefined)).toBe('检测中…')
   })
-  it('DSH 登录指引走 dsh web 且文案提到浏览器登录页（①）', () => {
+  it('DSH 指引（v0.1.517 新口径）：无终端登录命令，改走条目绑 Key / 网页版存 Key', () => {
     const dsh = agentDef('dsh')!
-    expect(dsh.loginCommandNative).toBe('dsh web')
-    expect(dsh.loginGuide).toContain('浏览器')
-    expect(dsh.loginGuide).toContain('重新检测')
+    expect(dsh.loginCommandNative).toBeUndefined()
+    expect(dsh.loginCommandIsolated).toBeUndefined()
+    expect(dsh.loginGuide).toContain('绑定 Key 管理里的 DeepSeek 账户')
+    expect(dsh.loginGuide).toContain('网页版')
+    expect(dsh.loginGuide).not.toContain('dsh web')
   })
 })
 

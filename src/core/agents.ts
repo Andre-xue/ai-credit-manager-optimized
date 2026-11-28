@@ -40,6 +40,10 @@ export interface AgentDef {
   credProbeFile?: string
   /** 原生目录探测文件缺失的语义：no = 确定未登录；unknown = 读不到（如登录在系统钥匙串） */
   credProbeMissing?: 'no' | 'unknown'
+  /** v0.1.517：探测只取凭据目录路径、登录态永不下结论（DSH：.credentials.yaml 在不在
+   *  与官方 API 路线能不能派活无关——文件里可能只有别的记录；登录态改看条目 Key
+   *  绑定与派活实证，不再拿文件存在性冒充「已登录」） */
+  probeInconclusive?: boolean
   /** 装命令的一行指引（只有应用、没命令时在 Agent 管理里提示） */
   cliInstallHint?: string
   /** 新账户条目的登录指引模板（{dir} 替换为隔离凭据目录路径） */
@@ -59,9 +63,10 @@ export interface AgentDef {
 export function humanizeAgentError(raw: string): string {
   const t = String(raw ?? '')
   if (!t) return ''
-  // v0.1.511（⑤）：DSH 的 MISSING_CREDENTIAL 是「默认路线要 API Key、没走账号登录路线」，
-  // 原文里带 credentials 字样曾被下面的鉴权规则误判成「登录失效」——必须先于鉴权规则单独成类。
-  if (/MISSING_CREDENTIAL|no API key for provider route/i.test(t)) return 'DSH 这条路线需要 API Key，没有走账号登录路线'
+  // v0.1.511（⑤）单独成类、v0.1.517 改文案：DSH 走官方 API 路线，MISSING_CREDENTIAL =
+  // 凭据存储与启动环境里都没有 DeepSeek API Key。原文带 credentials 字样曾被下面的鉴权
+  // 规则误判成「登录失效」——必须先于鉴权规则单独成类，并直接给出两条补 Key 的路。
+  if (/MISSING_CREDENTIAL|no API key for provider route/i.test(t)) return 'DSH 还没有可用的 DeepSeek API Key：给条目绑定 Key 管理里的 DeepSeek 账户，或在 DSH 网页版设置→模型里存入 Key 后重试'
   if (/quota|额度|余额不足|insufficient|exceeded your|resource_exhausted/i.test(t)) return '额度或余额不足，对方平台拒绝继续执行'
   if (/rate.?limit|too many requests|\b429\b|限流/i.test(t)) return '被对方平台限流了，需要等一会儿再试'
   if (/env: (node|python3?|bash|sh)\b/.test(t)) return '命令依赖的运行环境没找到（启动路径里缺 node 等运行时）'
@@ -104,18 +109,38 @@ export function entryEnvPairs(def: AgentDef, entry: AgentAccountEntry, dirPath: 
   return []
 }
 
+/** v0.1.517：DSH 条目 Key 绑定的环境注入（纯函数）——条目绑了 Key 管理账户且调用方
+ *  解出了明文 Key 时，以官方认的环境变量名注入子进程；与 entryEnvPairs 并列叠加，
+ *  原生/隔离条目同口径。Key 只进子进程环境：不落盘、不进 UI 文案与日志。 */
+export function entryKeyEnvPairs(entry: AgentAccountEntry | undefined, plainKey: string | undefined): Array<[string, string]> {
+  if (!entry || entry.keyBinding?.kind !== 'account' || !plainKey) return []
+  return [['DEEPSEEK_API_KEY', plainKey]]
+}
+
+/** v0.1.517：DSH 条目的配置状态（取代旧「.credentials.yaml 在不在 = 已登录」口径）：
+ *  派活成功过（账本实证）→ 已验证；绑了 Key 还没派活成功 → 已绑定 Key · 待派活验证；
+ *  什么都没有 → 未配置 Key（仍可派活：用户可能已在 DSH 网页版模型页存过 Key）。 */
+export function dshEntryKeyState(
+  entry: AgentAccountEntry, hasDoneTask: boolean,
+): { state: 'verified' | 'bound' | 'none'; text: string } {
+  if (hasDoneTask) return { state: 'verified', text: '已验证' }
+  if (entry.keyBinding?.kind === 'account') return { state: 'bound', text: '已绑定 Key · 待派活验证' }
+  return { state: 'none', text: '未配置 Key' }
+}
+
 export const AGENT_REGISTRY: AgentDef[] = [
   // ---------- 账号登录型（桌面应用，自身账号免 Key） ----------
   {
     id: 'dsh', name: 'DSH', kind: 'account', dispatch: 'open',
     appNames: ['DeepSeek Harness', 'DSH', 'DeepSeek'], bundleIds: [], cliNames: ['dsh'],
     headlessCli: true, credHomeEnv: 'DSH_HOME', credIsolation: 'env', nativeCredHome: '.dsh',
-    credProbeFile: '.credentials.yaml', credProbeMissing: 'no',
+    credProbeFile: '.credentials.yaml', credProbeMissing: 'unknown', probeInconclusive: true,
     installPlan: { type: 'npm', pkg: '@deepseek-ai/dsh' },
-    loginCommandNative: 'dsh web', loginCommandIsolated: 'DSH_HOME={dir} dsh web',
-    installHint: '装 dsh 命令：终端运行 npm install -g @deepseek-ai/dsh（有命令走无头直派）；或到 deepseek.com/download 装桌面端（与命令版共用 ~/.dsh 登录，macOS 需 Apple 芯片 + macOS 13 以上）',
+    installHint: '装 dsh 命令：终端运行 npm install -g @deepseek-ai/dsh（有命令走无头直派）；或到 deepseek.com/download 装桌面端（macOS 需 Apple 芯片 + macOS 13 以上）',
     cliInstallHint: 'npm install -g @deepseek-ai/dsh',
-    loginGuide: '在终端运行 DSH_HOME={dir} dsh web，会打开浏览器里的 DSH 登录页，登录要添加的账号；登录完成后回到这里点「重新检测」',
+    // v0.1.517：DSH 0.2.2-rc.5 的账号路线对命令行不可用（登录记录不落 CLI 凭据存储，
+    // 2026-11-28 五路验死），派活改走默认 official 路线 + DeepSeek API Key，不再有终端登录命令。
+    loginGuide: '给这个条目绑定 Key 管理里的 DeepSeek 账户即可派活（派活时自动注入 Key、不落盘）；或在 DSH 网页版 设置→模型 存入 DeepSeek API Key，二选一',
   },
   {
     id: 'antigravity', name: 'Antigravity', kind: 'account', dispatch: 'open',
@@ -192,7 +217,7 @@ export function agentDef(id: string): AgentDef | undefined {
 /** 各 CLI 的非交互派活命令（按各自官方 CLI 约定核实；kimi 的 --print 组合待真机核对）。
  *  sessionId 给定时走各家官方续会话形式（DSH --session-id / Codex exec resume / agy --conversation）。 */
 export function buildCliInvocation(
-  agentId: string, taskText: string, sessionId?: string, opts?: { dshPatchPath?: string },
+  agentId: string, taskText: string, sessionId?: string,
 ): { command: string; args: string[] } | null {
   switch (agentId) {
     case 'pi': return { command: 'pi', args: ['-p', taskText] }
@@ -200,15 +225,14 @@ export function buildCliInvocation(
     case 'qwen-code': return { command: 'qwen', args: ['-p', taskText] }
     case 'kimi-code': return { command: 'kimi', args: ['--print', '-p', taskText] }
     case 'claude-code': return { command: 'claude', args: ['-p', taskText] }
-    // v0.1.509 第一档（官方无头）：flags 必须在任务文本之前
-    // v0.1.511（⑤）：改显式 --profile headless + --patch 账号路线覆盖层——headless 档案的
-    // 默认模型路线是 deepseek-official（要 API Key），不带覆盖层时账号登录用户派活必报
-    // MISSING_CREDENTIAL。覆盖层只放 App 自己目录、逐次调用传入，绝不改用户档案文件。
-    // 启动器参数（--profile/--patch）必须排在第一个未识别 token（--json 起）之前。
+    // v0.1.509 第一档（官方无头）：flags 必须在任务文本之前。
+    // v0.1.517：撤掉 511 的 --patch 账号路线覆盖层——账号路线（deepseek-account）对
+    // 0.2.2-rc.5 的命令行不可用（登录记录不落 CLI 凭据存储、无头派活恒报
+    // ACCOUNT_SIGN_IN_REQUIRED，2026-11-28 真机五路验死）；改走 headless 档案默认的
+    // official 路线，Key 由派活侧以 DEEPSEEK_API_KEY 环境变量注入（或用户在 DSH
+    // 网页版模型页存过）。启动器参数（--profile）必须排在 --json 之前。
     case 'dsh': {
-      const args = ['--profile', 'headless']
-      if (opts?.dshPatchPath) args.push('--patch', opts.dshPatchPath)
-      args.push('--json')
+      const args = ['--profile', 'headless', '--json']
       if (sessionId) args.push('--session-id', sessionId)
       args.push(taskText)
       return { command: 'dsh', args }
@@ -323,6 +347,10 @@ export interface AgentAccountEntry {
   identity?: string
   /** native = 用户原生凭据目录（复用现有登录）；isolated = ~/.ai-credit-manager/agents/creds/<agent>/<id> */
   credDir: 'native' | 'isolated'
+  /** v0.1.517（DSH 专用）：条目级 Key 绑定——复用 KeyBinding 数据结构，绑定对象限定
+   *  Key 管理里的 DeepSeek 平台账户；派活时把该账户的 Key 以 DEEPSEEK_API_KEY 注入
+   *  子进程环境（不落盘）。其它 Agent 的条目不设此字段。 */
+  keyBinding?: KeyBinding
   enabled: boolean
   lastUsedAt?: number
   createdAt: number
@@ -518,6 +546,11 @@ export function agentAvailability(
       return { state: 'blocked', reason: '账户条目都已停用（到设置 · Agent 管理启用至少一个账户）' }
     }
     if (def.headlessCli) {
+      // v0.1.517：DSH 例外——走官方 API 路线、需要 DeepSeek API Key（条目绑定自动注入，
+      // 或用户在 DSH 网页版模型页存过），不再是「自身登录免 Key」
+      if (def.id === 'dsh') {
+        return { state: 'ready', reason: '无头直派（dsh 命令）· 走 DeepSeek 官方 API：条目绑定的 Key 自动注入，或用 DSH 网页版里存过的 Key' }
+      }
       return { state: 'ready', reason: `无头直派（${def.cliNames[0]} 命令）· 使用自身登录账号，免 Key` }
     }
     return { state: 'ready', reason: '使用自身登录账号（免 Key）' }

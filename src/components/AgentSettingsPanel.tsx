@@ -4,7 +4,7 @@ import type { Account } from '../core/types'
 import {
   AGENT_REGISTRY, agentDef, agentAvailability, multiAccountCapable, makeAccountEntry, dispatchTier, tierLabel,
   detectHasCli, detectHasApp, nativeEntryId, fillLoginGuide, buildInstallCommand, loginCommandFor,
-  loginStateText, entryDisplayName, renameAccountEntry,
+  loginStateText, entryDisplayName, renameAccountEntry, dshEntryKeyState,
   type AgentSettings, type AgentDetectResult, type KeyBinding, type AgentDef, type AgentLedgerEntry, type AgentAccountEntry,
 } from '../core/agents'
 import {
@@ -243,6 +243,11 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
     const verifiedAt = settings.verifiedAgents?.[def.id]
     const keychainUnknown = st?.login === 'unknown' && def.credProbeMissing === 'unknown'
     const showGuide = st?.login !== 'yes' && !(keychainUnknown && !!verifiedAt) && !!(def.loginCommandNative || def.loginCommandIsolated)
+    // v0.1.517：DSH 走官方 API 路线——没有「登录态」，只有 Key 配置状态（账本派活成功
+    // 实证 = 已验证）；条目卡内直接绑 Key 管理的 DeepSeek 账户
+    const isDsh = def.id === 'dsh'
+    const dshState = isDsh ? dshEntryKeyState(e, ledger.some(l => l.agentEntryId === e.id && l.status === 'done')) : null
+    const deepseekAccounts = keyAccounts.filter(a => a.providerId === 'deepseek')
     return (
       <div key={e.id} className="asp-entry-row asp-acct-card">
         <div className="asp-acct-top">
@@ -273,7 +278,9 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
               </>
             )}
             <span className="aw-tag off">{e.credDir === 'native' ? '原生目录' : '隔离目录'}</span>
-            <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>
+            {dshState
+              ? <span className={`asp-login ${dshState.state === 'verified' ? 'yes' : dshState.state === 'bound' ? 'unknown' : 'no'}`}>{dshState.text}</span>
+              : <span className={`asp-login ${st?.login ?? 'unknown'}`}>{loginText(st?.login, def)}</span>}
           </div>
           <JellyToggle
             checked={e.enabled}
@@ -288,7 +295,30 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
         {e.identity && <div className="aw-note">账号：{e.identity}</div>}
         <div className="aw-note">{stats.count} 件任务 · 累计 {formatDuration(stats.ms)}</div>
         {st?.dirPath && <div className="aw-note asp-dir">{st.dirPath}</div>}
-        {keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
+        {isDsh && (
+          <>
+            <label className="aw-bind">
+              <span>DeepSeek Key 绑定</span>
+              <select
+                value={e.keyBinding?.kind === 'account' ? `account:${e.keyBinding.accountId}` : ''}
+                onChange={ev => {
+                  const v = ev.target.value
+                  const keyBinding: KeyBinding | undefined = v.startsWith('account:') ? { kind: 'account', accountId: v.slice('account:'.length) } : undefined
+                  onChange({ ...settings, accounts: settings.accounts.map(x => (x.id === e.id ? { ...x, keyBinding } : x)) })
+                }}>
+                <option value="">未绑定</option>
+                {deepseekAccounts.map(a => (
+                  <option key={a.id} value={`account:${a.id}`}>
+                    {a.label || PROVIDER_MAP[a.providerId]?.name || a.providerId}（DeepSeek）
+                  </option>
+                ))}
+              </select>
+            </label>
+            {deepseekAccounts.length === 0 && <div className="aw-note">Key 管理里还没有 DeepSeek 账户：先到「API Key 管理」添加，再回来绑定。</div>}
+            <div className="aw-note">{def.loginGuide}</div>
+          </>
+        )}
+        {!isDsh && keychainUnknown && !verifiedAt && <div className="aw-note">登录态由系统钥匙串保管，魔方读不到，以派活结果为准；派活成功一次后这里会显示「已验证」。</div>}
         {showGuide && (
           <div className="asp-guide">
             <button className="asp-guide-toggle" aria-expanded={!!loginOpen[e.id]} onClick={() => setLoginOpen(o => ({ ...o, [e.id]: !o[e.id] }))}>
@@ -296,9 +326,7 @@ export function AgentSettingsPanel({ settings, onChange, accounts, detectMap, le
             </button>
             {loginOpen[e.id] && (
               <div className="asp-login-box">
-                <div className="aw-note">{def.id === 'dsh'
-                  ? '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，会打开浏览器登录页，登录完回到这里点「重新检测」：'
-                  : '登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：'}</div>
+                <div className="aw-note">登录由你本人在官方流程里完成，魔方不经手账号密码。在终端运行下面这条命令，登录完点上方「重新检测」：</div>
                 <code className="asp-install-cmd">{loginCommandFor(def, e, st?.dirPath ?? '')}</code>
                 <button className="btn sm ghost" onClick={() => { void navigator.clipboard?.writeText(loginCommandFor(def, e, st?.dirPath ?? '')); notify('登录命令已复制，去终端粘贴运行') }}>复制命令</button>
               </div>

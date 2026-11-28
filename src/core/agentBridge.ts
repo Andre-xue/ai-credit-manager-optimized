@@ -65,6 +65,12 @@ export function entryProbeIn(def: AgentDef, entry: Pick<AgentAccountEntry, 'id' 
     // 登录态保持 unknown，靠首次派活成功落「已验证」标记（与原生条目同口径）
     return { ...base, probeFile: '', probePath: '.gemini/antigravity-cli', probeExistsMeans: 'unknown' }
   }
+  if (def.probeInconclusive) {
+    // v0.1.517（DSH）：探测只为拿凭据目录路径（隔离条目派活要 DSH_HOME），登录态
+    // 永不下结论——.credentials.yaml 在不在与官方 API 路线能否派活无关，状态改看
+    // 条目 Key 绑定与派活实证（dshEntryKeyState）
+    return { ...base, missingMeans: 'unknown', probeExistsMeans: 'unknown' }
+  }
   return base
 }
 
@@ -100,15 +106,6 @@ export async function agentWhich(name: string): Promise<string> {
   const inv = invokeFn()
   if (!inv) return ''
   try { return await inv<string>('agent_which', { name }) } catch { return '' }
-}
-
-/** v0.1.511（⑤）：确保 DSH 账号路线覆盖层文件存在于 App 自己目录
- *  （~/.ai-credit-manager/agents/dsh-account-route.yml），返回绝对路径；
- *  非桌面端 / 失败返回空串（派活回落到不带覆盖层的旧形式）。 */
-export async function agentDshAccountPatch(): Promise<string> {
-  const inv = invokeFn()
-  if (!inv) return ''
-  try { return await inv<string>('agent_dsh_account_patch') } catch { return '' }
 }
 
 // ---------------- 桌面型自动送达（v0.1.509，仅 macOS） ----------------

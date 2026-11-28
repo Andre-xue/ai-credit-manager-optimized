@@ -29,7 +29,7 @@ describe('parseCliOutput · dsh headless --json（v0.1.511 ④）', () => {
     const p = parseCliOutput('dsh', fail)
     expect(p.errorText).toContain('MISSING_CREDENTIAL')
     expect(p.finalText).toBe('')
-    expect(humanizeAgentError(p.errorText)).toContain('需要 API Key')
+    expect(humanizeAgentError(p.errorText)).toContain('还没有可用的 DeepSeek API Key')
   })
   it('stderr 汇总行 dsh: CODE: msg 也能兜底出失败原因', () => {
     const p = parseCliOutput('dsh', ['dsh: ACCOUNT_SIGN_IN_REQUIRED: Sign in to DeepSeek to use the account provider'])
