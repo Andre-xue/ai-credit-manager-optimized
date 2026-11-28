@@ -3670,6 +3670,10 @@ html.trs-pop-dark, html.trs-pop-dark body, html.trs-pop-dark #root { background:
   background: none; border: none; cursor: pointer; text-align: left; padding: 10px 12px; color: var(--text);
 }
 .aw-session-main:hover { background: var(--panel-2); }
+/* v0.1.519（④）：会话行顶行——主按钮 + 「从列表移除」并排 */
+.aw-session-rowtop { display: flex; align-items: stretch; }
+.aw-session-rowtop .aw-session-main { flex: 1; min-width: 0; }
+.aw-session-hide { align-self: center; flex: none; margin-right: 8px; white-space: nowrap; }
 .aw-session-title { font-size: 13.5px; font-weight: 600; word-break: break-word; }
 .aw-session-form { border-top: 1px dashed var(--border); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 /* v0.1.512（②）：赛马对比层 */

@@ -1188,6 +1188,59 @@ fn sess_read_head_lines(p: &std::path::Path, max_lines: usize, max_bytes: usize)
     out
 }
 
+/// v0.1.519（③）：DSH v4 存档是 zstd 压缩的 JSONL（session.v4.jsonl.zstd），
+/// 512 的解析器只认明文 .jsonl、读不到里面，故列表全是无标题/没记工作目录。
+/// 这里做头部流式解压：只解出前 max_bytes 字节、取前 max_lines 行就停，
+/// 不整包解压；解压或读到一半出错就返回已读到的行（调用方还有目录名兜底）。
+fn sess_read_zstd_head_lines(p: &std::path::Path, max_lines: usize, max_bytes: usize) -> Vec<String> {
+    use std::io::{BufRead, BufReader, Read};
+    let f = match std::fs::File::open(p) { Ok(f) => f, Err(_) => return vec![] };
+    let dec = match zstd::stream::read::Decoder::new(f) { Ok(d) => d, Err(_) => return vec![] };
+    let mut reader = BufReader::new(dec.take(max_bytes as u64));
+    let mut out = Vec::new();
+    let mut line = String::new();
+    loop {
+        if out.len() >= max_lines { break }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => out.push(line.trim().to_string()),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+/// 按文件形态选读法：.zstd 走流式解压，其余按明文头部读
+fn sess_read_archive_head_lines(p: &std::path::Path, max_lines: usize, max_bytes: usize) -> Vec<String> {
+    if p.to_string_lossy().ends_with(".zstd") {
+        sess_read_zstd_head_lines(p, max_lines, max_bytes)
+    } else {
+        sess_read_head_lines(p, max_lines, max_bytes)
+    }
+}
+
+/// DSH 存档按工作目录分组存放，父目录名是 cwd 的编码：'/' 换成 '-'、首尾各加一对 '-'。
+/// 解码候选（纯函数，单测覆盖）：--Users-andre-- → /Users/andre；--root-- 是根目录
+/// 的编码（今晚 headless 在 / 下跑出的存档实证），候选 ["/", "/root"] 由调用方按存在性挑。
+fn sess_decode_cwd_candidates(name: &str) -> Vec<String> {
+    let inner = match name.strip_prefix("--").and_then(|s| s.strip_suffix("--")) {
+        Some(s) if !s.is_empty() => s,
+        _ => return vec![],
+    };
+    if inner == "root" { return vec!["/".to_string(), "/root".to_string()] }
+    vec![format!("/{}", inner.replace('-', "/"))]
+}
+
+/// 从存档父目录名兜底解工作目录：候选里第一个真实存在的目录才算数，
+/// 一个都不存在就返回空（宁可显示「没记工作目录」，不拿解码猜测冒充）。
+fn sess_cwd_from_dirname(parent_name: &str) -> String {
+    for cand in sess_decode_cwd_candidates(parent_name) {
+        if std::path::Path::new(&cand).is_dir() { return cand }
+    }
+    String::new()
+}
+
 fn sess_truncate(s: &str, max_chars: usize) -> String {
     let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.chars().count() <= max_chars { t } else { format!("{}…", t.chars().take(max_chars).collect::<String>()) }
@@ -1305,12 +1358,68 @@ fn sess_collect_jsonl(dir: &std::path::Path, depth: usize, out: &mut Vec<std::pa
     }
 }
 
+/// 从一个 JSON 值里掏纯文本：字符串直取；数组取各段 text 拼接；对象取 content/text
+fn sess_text_of(v: &serde_json::Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        let s = s.trim();
+        if !s.is_empty() { return Some(s.to_string()) }
+        return None;
+    }
+    if let Some(arr) = v.as_array() {
+        let mut parts = Vec::new();
+        for c in arr {
+            if let Some(t) = c.get("text").and_then(|x| x.as_str()) { parts.push(t.to_string()) }
+            else if let Some(t) = c.as_str() { parts.push(t.to_string()) }
+        }
+        let joined = parts.join(" ").trim().to_string();
+        if !joined.is_empty() { return Some(joined) }
+        return None;
+    }
+    if v.is_object() {
+        for key in ["content", "text"] {
+            if let Some(inner) = v.get(key) {
+                if let Some(t) = sess_text_of(inner) { return Some(t) }
+            }
+        }
+    }
+    None
+}
+
+/// DSH 事件里的一条用户输入文本（v0.1.519 ③）：认几种已知形状——role=user 的
+/// 消息事件、type 带 user/input 的事件；跳过以 '<' 开头的注入块，不冒充用户的话。
+fn sess_dsh_user_text(v: &serde_json::Value) -> Option<String> {
+    let data = v.get("data").cloned().unwrap_or(serde_json::Value::Null);
+    for o in [v, &data] {
+        if o.get("role").and_then(|x| x.as_str()) == Some("user") {
+            for key in ["content", "message", "text"] {
+                if let Some(inner) = o.get(key) {
+                    if let Some(t) = sess_text_of(inner) {
+                        if !t.starts_with('<') { return Some(t) }
+                    }
+                }
+            }
+        }
+        let ty = o.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if ty.contains("user") || ty == "input" || ty == "user_input" || ty == "prompt" {
+            for key in ["text", "message", "content", "input", "prompt"] {
+                if let Some(inner) = o.get(key) {
+                    if let Some(t) = sess_text_of(inner) {
+                        if !t.starts_with('<') { return Some(t) }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// DSH 事件日志里尽力提取 (会话 id, 标题, 标题来源, 工作目录)：认标题事件与头部字段
-/// 几种已知形状；日志若是压缩帧读不出就全空返回（调用方退回目录名/文件名当 id）。
+/// 几种已知形状；存档没自带标题时退回首条用户输入（截断 40 字、来源标 first-input）。
 fn sess_dsh_extract(lines: &[String]) -> (String, String, String, String) {
     let mut id = String::new();
     let mut title = String::new();
     let mut title_source = "none".to_string();
+    let mut first_input = String::new();
     let mut cwd = String::new();
     for line in lines {
         if !line.starts_with('{') { continue }
@@ -1338,7 +1447,14 @@ fn sess_dsh_extract(lines: &[String]) -> (String, String, String, String) {
                 }
             }
         }
+        if first_input.is_empty() {
+            if let Some(t) = sess_dsh_user_text(&v) { first_input = sess_truncate(&t, 40) }
+        }
         if !id.is_empty() && !title.is_empty() && !cwd.is_empty() { break }
+    }
+    if title.is_empty() && !first_input.is_empty() {
+        title = first_input;
+        title_source = "first-input".to_string();
     }
     (id, title, title_source, cwd)
 }
@@ -1353,7 +1469,7 @@ fn sess_parse_dsh_dir(dir: &std::path::Path, entry: &AgentSessionHomeIn) -> Opti
         if !p.is_file() { continue }
         latest = latest.max(sess_mtime_ms(&p));
         let name = ent.file_name().to_string_lossy().to_string();
-        if name.ends_with(".jsonl") {
+        if name.ends_with(".jsonl") || name.ends_with(".jsonl.zstd") {
             jsonl_files.push(p);
         } else if matches!(name.as_str(), "header.json" | "session.json" | "meta.json" | "index.json") {
             if let Ok(text) = std::fs::read_to_string(&p) {
@@ -1379,14 +1495,21 @@ fn sess_parse_dsh_dir(dir: &std::path::Path, entry: &AgentSessionHomeIn) -> Opti
             if let Some(s) = m.get("createdAt").and_then(|x| x.as_str()) { created_at = sess_parse_iso_ms(s) }
         }
     }
-    if id.is_empty() || title.is_empty() {
+    if id.is_empty() || title.is_empty() || cwd.is_empty() {
+        // v0.1.519（③）：读取按形态分流——.jsonl.zstd 走头部流式解压，明文走头部直读
         for f in &jsonl_files {
-            let lines = sess_read_head_lines(f, 160, 256 * 1024);
+            let lines = sess_read_archive_head_lines(f, 160, 256 * 1024);
             let (i2, t2, ts2, c2) = sess_dsh_extract(&lines);
             if id.is_empty() { id = i2 }
             if title.is_empty() && !t2.is_empty() { title = t2; title_source = ts2 }
             if cwd.is_empty() { cwd = c2 }
-            if !id.is_empty() && !title.is_empty() { break }
+            if !id.is_empty() && !title.is_empty() && !cwd.is_empty() { break }
+        }
+    }
+    if cwd.is_empty() {
+        // 存档里没解出工作目录：退回父目录名解码（父目录名就是 cwd 的编码）
+        if let Some(parent_name) = dir.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()) {
+            cwd = sess_cwd_from_dirname(&parent_name);
         }
     }
     if id.is_empty() {
@@ -1401,12 +1524,17 @@ fn sess_parse_dsh_dir(dir: &std::path::Path, entry: &AgentSessionHomeIn) -> Opti
 }
 
 fn sess_parse_dsh_file(p: &std::path::Path, entry: &AgentSessionHomeIn) -> Option<AgentSessionOut> {
-    let lines = sess_read_head_lines(p, 160, 256 * 1024);
-    let (mut id, title, title_source, cwd) = sess_dsh_extract(&lines);
+    let lines = sess_read_archive_head_lines(p, 160, 256 * 1024);
+    let (mut id, title, title_source, mut cwd) = sess_dsh_extract(&lines);
     if id.is_empty() {
         if let Some(u) = sess_uuid_from_name(p) { id = u }
     }
     if id.is_empty() { return None }
+    if cwd.is_empty() {
+        if let Some(parent_name) = p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()) {
+            cwd = sess_cwd_from_dirname(&parent_name);
+        }
+    }
     let updated_at = sess_mtime_ms(p);
     Some(AgentSessionOut {
         entry_id: entry.entry_id.clone(), entry_label: entry.entry_label.clone(),
@@ -1436,7 +1564,7 @@ fn sess_walk_dsh(dir: &std::path::Path, depth: usize, entry: &AgentSessionHomeIn
             } else {
                 subdirs.push(p);
             }
-        } else if name.ends_with(".jsonl") {
+        } else if name.ends_with(".jsonl") || name.ends_with(".jsonl.zstd") {
             match sess_parse_dsh_file(&p, entry) {
                 Some(s) => out.push(s),
                 None => *skipped += 1,
@@ -3424,6 +3552,8 @@ fn local_store_path(name: &str) -> Result<std::path::PathBuf, String> {
         "agents-tasks" => "agents-tasks.json",
         "agents-ledger" => "agents-ledger.json",
         "agents-vault-prune-log" => "agents-vault-prune-log.json",
+        "agents-draft" => "agents-draft.json",
+        "agents-hidden-sessions" => "agents-hidden-sessions.json",
         "prefs" => "prefs.json",
         _ => return Err(format!("不允许的本机存储名：{}", name)),
     };
@@ -6881,6 +7011,50 @@ mod update_relaunch_tests {
     }
 
     #[test]
+    fn sess_decode_cwd_candidates_examples() {
+        // v0.1.519（③）：任务书钉死的两个例子 + 非编码名不解
+        assert_eq!(sess_decode_cwd_candidates("--Users-andre--"), vec!["/Users/andre".to_string()]);
+        assert_eq!(sess_decode_cwd_candidates("--root--"), vec!["/".to_string(), "/root".to_string()]);
+        assert!(sess_decode_cwd_candidates("sessions").is_empty());
+        assert!(sess_decode_cwd_candidates("").is_empty());
+        // 根目录候选按存在性挑："/" 在任何 unix 上都存在
+        assert_eq!(sess_cwd_from_dirname("--root--"), "/");
+        // 不存在的解码结果不冒充工作目录
+        assert_eq!(sess_cwd_from_dirname("--no-such-dir-zzz--"), "");
+    }
+
+    #[test]
+    fn sess_dsh_zstd_fixture_extracts_title_and_cwd() {
+        // v0.1.519（③）：真 zstd 小夹具（只含假数据）——头部流式解压后能提出
+        // 会话 id / cwd / 首条用户输入标题（截断 40 字、来源 first-input）
+        let jsonl = concat!(
+            "{\"type\":\"session\",\"sessionId\":\"00000000-1111-2222-3333-444444444444\",\"cwd\":\"/tmp/fake-proj\"}\n",
+            "{\"type\":\"user_input\",\"text\":\"帮我给登录页加一个记住我选项顺便把按钮样式也调一下这是第十个字之后的填充内容继续填充\"}\n",
+            "{\"type\":\"final\",\"text\":\"done\"}\n",
+        );
+        let compressed = zstd::stream::encode_all(jsonl.as_bytes(), 3).expect("zstd 压缩夹具应成功");
+        let dir = std::env::temp_dir().join(format!("acm-sess-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("session.v4.jsonl.zstd");
+        std::fs::write(&file, &compressed).expect("写夹具应成功");
+        let lines = sess_read_archive_head_lines(&file, 160, 256 * 1024);
+        assert!(lines.len() >= 2, "应解出至少前两行，实际 {} 行", lines.len());
+        let (id, title, title_source, cwd) = sess_dsh_extract(&lines);
+        assert_eq!(id, "00000000-1111-2222-3333-444444444444");
+        assert_eq!(cwd, "/tmp/fake-proj");
+        assert_eq!(title_source, "first-input");
+        assert!(title.starts_with("帮我给登录页加一个记住我选项"), "标题应取自首条输入，实际：{}", title);
+        assert!(title.chars().count() <= 41, "首条输入标题应截断到 40 字上下，实际 {} 字", title.chars().count());
+        let _ = std::fs::remove_dir_all(&dir);
+        // 坏存档（不是 zstd）不许 panic、返回空行走兜底
+        let bad = dir.join("bad.jsonl.zstd");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(&bad, b"this is not zstd at all").expect("写坏夹具应成功");
+        assert!(sess_read_archive_head_lines(&bad, 10, 1024).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn local_store_path_whitelist() {
         // 白名单内的名字落到 ~/.ai-credit-manager/local-store/ 对应文件
         for (name, file) in [
@@ -6888,6 +7062,8 @@ mod update_relaunch_tests {
             ("agents-tasks", "agents-tasks.json"),
             ("agents-ledger", "agents-ledger.json"),
             ("agents-vault-prune-log", "agents-vault-prune-log.json"),
+            ("agents-draft", "agents-draft.json"),
+            ("agents-hidden-sessions", "agents-hidden-sessions.json"),
             ("prefs", "prefs.json"),
         ] {
             let p = local_store_path(name).expect("HOME 应已设置");

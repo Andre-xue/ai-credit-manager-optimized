@@ -9,6 +9,7 @@ import {
   AGENT_REGISTRY, agentDef, agentAvailability, buildCliInvocation, humanizeAgentError, buildShellEnv,
   parseDelegation, pickStartable, isHeavyTask, quotaGate, capCheck, parseCliUsage,
   loadAgentSettings, saveAgentSettings, loadAgentTasks, saveAgentTasks,
+  loadDispatchDraft, saveDispatchDraft, resolveDispatchDraft, type AgentDispatchDraft,
   loadAgentLedger, saveAgentLedger, summarizeLedger, ledgerSpentSince,
   effectiveDispatch, multiAccountCapable, pickEntryLru, fillLoginGuide,
   parseSessionId, tierLabel, nativeEntryId,
@@ -101,7 +102,10 @@ export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAut
   const [pruneLog, setPruneLog] = useState<VaultPruneLog | null>(() => loadPruneLog())
   const [cleanConfirmId, setCleanConfirmId] = useState<string | null>(null)
   const [accountStatus, setAccountStatus] = useState<Record<string, AgentAccountStatus>>({})
-  const [entryPick, setEntryPick] = useState<string>('auto')
+  // v0.1.519（①）：派活卡草稿快照（挂载时读一次；恢复口径见 resolveDispatchDraft）
+  const [initialDraft] = useState<AgentDispatchDraft>(() =>
+    resolveDispatchDraft(loadDispatchDraft(), loadAgentSettings().vault.workdir))
+  const [entryPick, setEntryPick] = useState<string>(initialDraft.entryPick)
   // v0.1.509（A–D）：# 面板原生命令/技能的待生效选择、交接弹窗、用量弹层
   const [pendingReview, setPendingReview] = useState(false)
   const [skillPick, setSkillPick] = useState<WorkshopSkill | null>(null)
@@ -119,11 +123,11 @@ export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAut
     needsApproval: Array<RaceCandidateInput & { speed: { basis: string } }>
   } | null>(null)
   const [compareRaceId, setCompareRaceId] = useState<string | null>(null)
-  const [input, setInput] = useState('')
-  const [targetAgent, setTargetAgent] = useState<string>('auto')
-  const [workdir, setWorkdir] = useState(() => loadAgentSettings().vault.workdir)
-  const [heavyMode, setHeavyMode] = useState<'auto' | 'heavy' | 'light'>('auto')
-  const [outsideOk, setOutsideOk] = useState(false)
+  const [input, setInput] = useState(initialDraft.input)
+  const [targetAgent, setTargetAgent] = useState<string>(initialDraft.targetAgent)
+  const [workdir, setWorkdir] = useState(initialDraft.workdir)
+  const [heavyMode, setHeavyMode] = useState<'auto' | 'heavy' | 'light'>(initialDraft.heavyMode)
+  const [outsideOk, setOutsideOk] = useState(initialDraft.outsideOk)
   const [, setNowTick] = useState(0)
   // v0.1.518：派活取 Key 时的原地解锁框（密码输入/错误提示/校验中）
   const [unlockPromptOpen, setUnlockPromptOpen] = useState(false)
@@ -159,7 +163,20 @@ export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAut
   const vaultPolledAtRef = useRef(new Map<string, number>())
   const sessionStartRef = useRef(Date.now())
 
-  useEffect(() => { setEntryPick('auto') }, [targetAgent])
+  // v0.1.519（①）：原先有个 [targetAgent] effect 在换目标时把 entryPick 重置为
+  // auto——它会把草稿恢复的条目选择、以及 # 面板点别家条目刚设好的 entryPick
+  // 一并冲掉。改为只在目标下拉的 onChange 里显式重置（真正的用户换人动作）。
+
+  // v0.1.519（①）：草稿即时落盘——字段一变先更新快照，250ms 防抖写文件层；
+  // 组件卸载（切换模块）时立即冲刷，刚敲完字就切走也不丢。
+  const draftRef = useRef<AgentDispatchDraft>(initialDraft)
+  useEffect(() => {
+    draftRef.current = { input, targetAgent, entryPick, workdir, heavyMode, outsideOk }
+    const t = window.setTimeout(() => saveDispatchDraft(draftRef.current), 250)
+    return () => window.clearTimeout(t)
+  }, [input, targetAgent, entryPick, workdir, heavyMode, outsideOk])
+  useEffect(() => () => { saveDispatchDraft(draftRef.current) }, [])
+
   useEffect(() => { saveAgentSettings(settings) }, [settings])
   useEffect(() => { saveAgentTasks(tasks) }, [tasks])
   useEffect(() => { saveAgentLedger(ledger) }, [ledger])
@@ -171,7 +188,11 @@ export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAut
     setTasks(loadAgentTasks())
     setLedger(loadAgentLedger())
     setPruneLog(loadPruneLog())
-    setWorkdir(loadAgentSettings().vault.workdir)
+    // v0.1.519（①）：文件层对账后按「草稿优先」重套派活卡六字段——首屏镜像里
+    // 没草稿时不能让设置默认工作目录把文件里的草稿盖掉（旧版此处只回填默认目录）。
+    const d = resolveDispatchDraft(loadDispatchDraft(), loadAgentSettings().vault.workdir)
+    setInput(d.input); setTargetAgent(d.targetAgent); setEntryPick(d.entryPick)
+    setWorkdir(d.workdir); setHeavyMode(d.heavyMode); setOutsideOk(d.outsideOk)
   }), [])
 
   const updateTask = useCallback((id: string, patch: Partial<AgentTask>) => {
@@ -1478,7 +1499,7 @@ export function AgentWorkbench({ accounts, sessionPwd, notify, onUnlocked, onAut
           )}
           <div className="aw-card aw-dispatch">
             <div className="aw-dispatch-row">
-              <select className="aw-target" value={targetAgent} onChange={e => setTargetAgent(e.target.value)} disabled={raceMode} title={raceMode ? '赛马模式：选手由实测速度自动挑' : '委派给（# 指定优先）'}>
+              <select className="aw-target" value={targetAgent} onChange={e => { setTargetAgent(e.target.value); setEntryPick('auto') }} disabled={raceMode} title={raceMode ? '赛马模式：选手由实测速度自动挑' : '委派给（# 指定优先）'}>
                 <option value="auto">自动（主控/第一个可用）</option>
                 {readyAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>

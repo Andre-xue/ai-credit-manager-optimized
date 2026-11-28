@@ -485,6 +485,53 @@ export function saveAgentSettings(s: AgentSettings): void {
   writeLocalStore('agents-settings', JSON.stringify(s))
 }
 
+// ---------------- 派活卡草稿（v0.1.519 ①） ----------------
+// 派活卡的输入原本只是组件 useState：切换模块组件卸载就全清（2026-11-28 录屏实证）。
+// 草稿独立存一份文件存储（agents-draft），与设置分开：改草稿不惊动设置保存链。
+
+export interface AgentDispatchDraft {
+  input: string
+  targetAgent: string
+  entryPick: string
+  workdir: string
+  heavyMode: 'auto' | 'heavy' | 'light'
+  outsideOk: boolean
+}
+
+/** 没有草稿时的初始值：工作目录取设置里的默认工作目录，其余取派活卡出厂态 */
+export function defaultDispatchDraft(settingsWorkdir: string): AgentDispatchDraft {
+  return { input: '', targetAgent: 'auto', entryPick: 'auto', workdir: settingsWorkdir, heavyMode: 'auto', outsideOk: false }
+}
+
+export function loadDispatchDraft(): AgentDispatchDraft | null {
+  try {
+    const raw = readLocalStore('agents-draft')
+    if (!raw) return null
+    const p = JSON.parse(raw) as Partial<AgentDispatchDraft>
+    if (!p || typeof p !== 'object') return null
+    return {
+      input: typeof p.input === 'string' ? p.input : '',
+      targetAgent: typeof p.targetAgent === 'string' && p.targetAgent ? p.targetAgent : 'auto',
+      entryPick: typeof p.entryPick === 'string' && p.entryPick ? p.entryPick : 'auto',
+      workdir: typeof p.workdir === 'string' ? p.workdir : '',
+      heavyMode: p.heavyMode === 'heavy' || p.heavyMode === 'light' ? p.heavyMode : 'auto',
+      outsideOk: !!p.outsideOk,
+    }
+  } catch { return null }
+}
+
+export function saveDispatchDraft(d: AgentDispatchDraft): void {
+  writeLocalStore('agents-draft', JSON.stringify(d))
+}
+
+/**
+ * 草稿恢复优先级（519 单测口径）：有草稿 → 全部字段以草稿为准（包括被用户
+ * 清空的工作目录，不许拿默认值把清空的又填回来）；没草稿 → 默认值。
+ */
+export function resolveDispatchDraft(draft: AgentDispatchDraft | null, settingsWorkdir: string): AgentDispatchDraft {
+  return draft ?? defaultDispatchDraft(settingsWorkdir)
+}
+
 // ---------------- 检测结果 ----------------
 
 export interface AgentDetectResult {

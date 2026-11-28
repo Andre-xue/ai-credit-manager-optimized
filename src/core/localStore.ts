@@ -7,13 +7,16 @@
 // 启动 hydrate 时文件覆盖镜像。非桌面端（网页/安卓）无文件层，行为不变。
 import { isDesktopApp } from './openExternal'
 
-export type LocalStoreName = 'agents-settings' | 'agents-tasks' | 'agents-ledger' | 'agents-vault-prune-log'
+export type LocalStoreName = 'agents-settings' | 'agents-tasks' | 'agents-ledger' | 'agents-vault-prune-log' | 'agents-draft' | 'agents-hidden-sessions'
 
 const STORE_KEY: Record<LocalStoreName, string> = {
   'agents-settings': 'acm.agents.settings.v1',
   'agents-tasks': 'acm.agents.tasks.v1',
   'agents-ledger': 'acm.agents.ledger.v1',
   'agents-vault-prune-log': 'acm.agents.vaultPruneLog.v1',
+  // v0.1.519：派活卡草稿（切换模块/重启不丢）与导入会话隐藏名单（仅本机）
+  'agents-draft': 'acm.agents.draft.v1',
+  'agents-hidden-sessions': 'acm.agents.hiddenSessions.v1',
 }
 
 /**

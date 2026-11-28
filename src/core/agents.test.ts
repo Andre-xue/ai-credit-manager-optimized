@@ -4,6 +4,8 @@ import {
   agentAvailability, quotaGate, capCheck, buildShellEnv, parseDelegation,
   pickStartable, isHeavyTask, parseCliUsage, summarizeLedger, ledgerSpentSince,
   loadAgentSettings, saveAgentSettings, markAgentVerified, loginStateText,
+  loadDispatchDraft, saveDispatchDraft, resolveDispatchDraft, defaultDispatchDraft,
+  type AgentDispatchDraft,
   multiAccountCapable, normalizeAccountEntries, entryEnvPairs, loginCommandFor, nativeEntryId,
   entryDisplayName, renameAccountEntry, setEntryIdentity,
   entryDeleteConfirmText, entryDeleteNotice, fillLoginGuide,
@@ -364,5 +366,38 @@ describe('v0.1.518：删除隔离条目的文案合成', () => {
     const t = entryDeleteNotice(entry, false, '')
     expect(t).toContain('没能删掉')
     expect(t).not.toContain('位置在')
+  })
+})
+
+describe('v0.1.519（①）：派活卡草稿持久化', () => {
+  const draft: AgentDispatchDraft = {
+    input: '写了一半的任务', targetAgent: 'dsh', entryPick: 'ent-dsh-x-0',
+    workdir: '/Users/andre/Downloads/Other', heavyMode: 'heavy', outsideOk: true,
+  }
+  it('草稿恢复优先级：有草稿全部字段以草稿为准，没草稿才用默认值', () => {
+    expect(resolveDispatchDraft(draft, '/settings/default')).toEqual(draft)
+    expect(resolveDispatchDraft(null, '/settings/default')).toEqual({
+      input: '', targetAgent: 'auto', entryPick: 'auto',
+      workdir: '/settings/default', heavyMode: 'auto', outsideOk: false,
+    })
+    expect(defaultDispatchDraft('/x').workdir).toBe('/x')
+  })
+  it('草稿里被清空的工作目录不许被默认值填回来', () => {
+    const cleared = { ...draft, workdir: '' }
+    expect(resolveDispatchDraft(cleared, '/settings/default').workdir).toBe('')
+  })
+  it('存/读往返一致；派活成功后只清任务文本、目录与选择保留（组件口径的纯逻辑面）', () => {
+    saveDispatchDraft(draft)
+    const back = loadDispatchDraft()
+    expect(back).toEqual(draft)
+    // 派活成功时组件只 setInput('')，其余字段保持——落盘后仍是这个形状
+    saveDispatchDraft({ ...back!, input: '' })
+    const after = loadDispatchDraft()
+    expect(after?.input).toBe('')
+    expect(after?.workdir).toBe(draft.workdir)
+    expect(after?.targetAgent).toBe(draft.targetAgent)
+    expect(after?.entryPick).toBe(draft.entryPick)
+    expect(after?.heavyMode).toBe('heavy')
+    expect(after?.outsideOk).toBe(true)
   })
 })
