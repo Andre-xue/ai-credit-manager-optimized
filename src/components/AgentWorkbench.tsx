@@ -1363,8 +1363,19 @@ export function AgentWorkbench({ accounts, sessionPwd, notify }: {
                 <option value="auto">自动（主控/第一个可用）</option>
                 {readyAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
-              <input className="aw-workdir" type="text" placeholder="工作目录（保险箱基线范围，如 /Users/你/项目）"
+              <input className="aw-workdir" type="text" placeholder="让 Agent 干活的项目文件夹，如 /Users/andre/项目"
                 value={workdir} onChange={e => setWorkdir(e.target.value)} />
+              {desktop && (
+                <button className="btn sm aw-workdir-pick" onClick={() => {
+                  void (async () => {
+                    try {
+                      const { open } = await import('@tauri-apps/plugin-dialog')
+                      const picked = await open({ directory: true, multiple: false })
+                      if (typeof picked === 'string' && picked) setWorkdir(picked)
+                    } catch { notify('打开文件夹选择失败，可以直接把路径粘贴到输入框里', 'err') }
+                  })()
+                }}>选择</button>
+              )}
               <select className="aw-heavy" value={heavyMode} onChange={e => setHeavyMode(e.target.value as typeof heavyMode)} title="重活判定">
                 <option value="auto">自动判定轻重</option>
                 <option value="heavy">这是重活（构建/测试/打包）</option>
